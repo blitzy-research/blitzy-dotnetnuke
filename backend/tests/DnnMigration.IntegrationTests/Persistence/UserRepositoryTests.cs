@@ -1943,6 +1943,290 @@ public sealed class UserRepositoryTests
     }
 
     /// <summary>
+    /// The BATCHED answer read - the one an account listing issues once for its whole page - answers every
+    /// account it names and no account it does not, scopes itself exactly as the per-account read does, and
+    /// returns the rows in the order a caller can group by walking them once.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// WHY THIS EXISTS ALONGSIDE THE PER-ACCOUNT CASES ABOVE. The listing path is the only caller of this
+    /// overload, and the service that calls it is covered against a substitute repository, so before this
+    /// case the batched statement had never been EXECUTED - not once, in either assembly. Three constructs
+    /// in it fail only at runtime and only against the real schema: the <c>Include</c> of the owning
+    /// declaration, the scoped-declaration subquery, and the three-level ordering. A defect in any of them
+    /// would have shipped green.
+    /// </para>
+    /// <para>
+    /// EVERY SEEDED ROW IS DELIBERATELY OUT OF ORDER. The answers are inserted highest-account-first and
+    /// highest-declaration-first, so the identity keys the store assigns run OPPOSITE to the order the read
+    /// must return. An ordering clause that was dropped, or that ordered by the primary key alone, would
+    /// return them as inserted and this case would report it.
+    /// </para>
+    /// <para>
+    /// The tenant is created by this case rather than borrowed. A bare tenant carries no profile
+    /// declarations of its own, so the scope under test contains exactly the three declarations named below
+    /// and nothing a sibling case left behind.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task BatchedProfileValueRead_AnswersEveryNamedAccountInScopeInStoredOrder()
+    {
+        // The host scope is a SQL NULL portal, so it is expressed as a null and never as an identifier.
+        int? hostScope = null;
+
+        string suffix = Suffix();
+        int tenantId = await CreatePortalAsync();
+
+        int firstUserId = 0;
+        int secondUserId = 0;
+        int unnamedUserId = 0;
+        int firstDefinitionId = 0;
+        int secondDefinitionId = 0;
+        int hostDefinitionId = 0;
+
+        try
+        {
+            firstUserId = await CreateAccountAsync(
+                tenantId,
+                FormattableString.Invariant($"batched_a_{suffix}"));
+            secondUserId = await CreateAccountAsync(
+                tenantId,
+                FormattableString.Invariant($"batched_b_{suffix}"));
+            unnamedUserId = await CreateAccountAsync(
+                tenantId,
+                FormattableString.Invariant($"batched_c_{suffix}"));
+
+            using (IServiceScope scope = _fixture.Services.CreateScope())
+            {
+                IUserProfileRepository profiles =
+                    scope.ServiceProvider.GetRequiredService<IUserProfileRepository>();
+                IUnitOfWork unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+                ProfilePropertyDefinition first = DefinitionForScope(
+                    tenantId,
+                    FormattableString.Invariant($"BatchedFirst{suffix}"),
+                    viewOrder: 1);
+                ProfilePropertyDefinition second = DefinitionForScope(
+                    tenantId,
+                    FormattableString.Invariant($"BatchedSecond{suffix}"),
+                    viewOrder: 2);
+                ProfilePropertyDefinition hostLevel = DefinitionForScope(
+                    hostScope,
+                    FormattableString.Invariant($"BatchedHost{suffix}"),
+                    viewOrder: 3);
+
+                await profiles.AddDefinitionAsync(first);
+                await profiles.AddDefinitionAsync(second);
+                await profiles.AddDefinitionAsync(hostLevel);
+                await unitOfWork.SaveChangesAsync();
+
+                firstDefinitionId = first.PropertyDefinitionId;
+                secondDefinitionId = second.PropertyDefinitionId;
+                hostDefinitionId = hostLevel.PropertyDefinitionId;
+            }
+
+            firstDefinitionId.Should().BeLessThan(
+                secondDefinitionId,
+                "the declaration key is an identity, so the ordering assertions below can rely on the "
+                + "first declaration sorting before the second");
+
+            // LastUpdatedDate is a NOT NULL datetime column and DateTime.MinValue is outside the SQL Server
+            // datetime range, so an explicit instant is supplied rather than left defaulted.
+            DateTime answeredAt = new(2024, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+            using (IServiceScope scope = _fixture.Services.CreateScope())
+            {
+                IUserProfileRepository profiles =
+                    scope.ServiceProvider.GetRequiredService<IUserProfileRepository>();
+                IUnitOfWork unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+                // INSERTED IN REVERSE OF THE ORDER THE READ MUST RETURN, so ProfileID - the identity the
+                // rows receive here - descends as the required order ascends.
+                (int UserId, int DefinitionId, string Value)[] seeded =
+                [
+                    (secondUserId, secondDefinitionId, "b-second"),
+                    (secondUserId, firstDefinitionId, "b-first"),
+                    (firstUserId, secondDefinitionId, "a-second"),
+
+                    // TWO ROWS FOR ONE ACCOUNT AND ONE DECLARATION. dbo.UserProfile carries no unique
+                    // constraint over (UserID, PropertyDefinitionID) - only IX_UserProfile on UserID - so
+                    // legacy data can hold a duplicate pair, and it is the only shape in which the third
+                    // ordering key, ProfileID, decides anything at all. These two are named for the keys
+                    // they receive rather than for their position here, because the identity is assigned in
+                    // insertion order and the read returns them by it.
+                    (firstUserId, firstDefinitionId, "a-first-lower-key"),
+                    (firstUserId, firstDefinitionId, "a-first-higher-key"),
+
+                    // The account nobody names, to prove the read is bounded by the collection it is given.
+                    (unnamedUserId, firstDefinitionId, "c-unnamed"),
+
+                    // The host-level declaration's answer, to prove the scope is matched exactly.
+                    (firstUserId, hostDefinitionId, "a-host"),
+                ];
+
+                foreach ((int userId, int definitionId, string value) in seeded)
+                {
+                    await profiles.AddProfileValueAsync(new UserProfileValue
+                    {
+                        UserId = userId,
+                        PropertyDefinitionId = definitionId,
+                        PropertyValue = value,
+                        Visibility = 0,
+                        LastUpdatedDate = answeredAt,
+                    });
+
+                    // Saved one at a time so the identities are assigned in the seeded order rather than in
+                    // whatever order a batched insert chooses.
+                    await unitOfWork.SaveChangesAsync();
+                }
+            }
+
+            using (IServiceScope scope = _fixture.Services.CreateScope())
+            {
+                IUserProfileRepository profiles =
+                    scope.ServiceProvider.GetRequiredService<IUserProfileRepository>();
+
+                IReadOnlyList<UserProfileValue> answered = await profiles.GetProfileValuesAsync(
+                    tenantId,
+                    new[] { firstUserId, secondUserId });
+
+                answered.Select(value => value.PropertyValue).Should().BeEquivalentTo(
+                    new[] { "a-first-lower-key", "a-first-higher-key", "a-second", "b-first", "b-second" },
+                    "the read answers both named accounts in one statement, excludes the account it was "
+                    + "not given, and excludes the host-level declaration's answer because the scope is "
+                    + "matched exactly rather than widened");
+
+                answered.Select(value => value.PropertyValue).Should().NotContain(
+                    "c-unnamed",
+                    "an account absent from the collection contributes no row, however many answers it holds");
+                answered.Select(value => value.PropertyValue).Should().NotContain(
+                    "a-host",
+                    "a host-level declaration is not part of a tenant's scope, so its answer stays out of "
+                    + "the tenant's batched read exactly as it stays out of the per-account read");
+
+                answered.Should().BeInAscendingOrder(
+                    value => value.UserId,
+                    "the listing groups the flat result by account, which it can only do in one pass while "
+                    + "each account's rows are contiguous");
+
+                answered.Select(value => (value.UserId, value.PropertyDefinitionId, value.PropertyValue))
+                    .Should().Equal(
+                        [
+                            (firstUserId, firstDefinitionId, "a-first-lower-key"),
+                            (firstUserId, firstDefinitionId, "a-first-higher-key"),
+                            (firstUserId, secondDefinitionId, "a-second"),
+                            (secondUserId, firstDefinitionId, "b-first"),
+                            (secondUserId, secondDefinitionId, "b-second"),
+                        ],
+                        "the order is account, then declaration, then the row's own key, and every row was "
+                        + "inserted in the opposite order of the first two - so a read that returned them as "
+                        + "stored, or ordered them by the primary key alone, would fail here");
+
+                answered.Select(value => value.ProfileId).Should().NotBeInAscendingOrder(
+                    "the row's own key is the LAST tiebreak rather than the sort, which is exactly what a "
+                    + "read ordered by the primary key alone would get right by accident");
+
+                answered
+                    .Where(value => value.UserId == firstUserId
+                        && value.PropertyDefinitionId == firstDefinitionId)
+                    .Select(value => value.ProfileId)
+                    .Should().BeInAscendingOrder(
+                        "two answers to one declaration are separated only by their own key, so it decides "
+                        + "their order and does so oldest first");
+
+                answered.Should().OnlyContain(
+                    value => value.PropertyDefinition != null,
+                    "the listing reads the declaration's name and length off each answer, so the owning "
+                    + "declaration travels with the row rather than being fetched per row afterwards");
+
+                answered
+                    .Where(value => value.PropertyDefinitionId == firstDefinitionId)
+                    .Should().OnlyContain(
+                        value => value.PropertyDefinition!.PropertyName
+                            == FormattableString.Invariant($"BatchedFirst{suffix}"),
+                        "the included declaration is the one the answer actually points at");
+
+                IReadOnlyList<UserProfileValue> repeated = await profiles.GetProfileValuesAsync(
+                    tenantId,
+                    new[] { firstUserId, firstUserId, secondUserId, secondUserId });
+
+                repeated.Select(value => value.ProfileId).Should().Equal(
+                    answered.Select(value => value.ProfileId),
+                    "a repeated account identifier is de-duplicated before the statement is composed, so "
+                    + "naming an account twice cannot return its answers twice");
+
+                IReadOnlyList<UserProfileValue> hostAnswers = await profiles.GetProfileValuesAsync(
+                    hostScope,
+                    new[] { firstUserId, secondUserId });
+
+                hostAnswers.Select(value => value.PropertyValue).Should().Equal(
+                    ["a-host"],
+                    "the host scope reaches its own declaration's answers and does not widen to the "
+                    + "tenant's, which is the same exact match asserted from the other side above");
+
+                (await profiles.GetProfileValuesAsync(tenantId, Array.Empty<int>()))
+                    .Should().BeEmpty(
+                        "a page whose window landed past the end of the collection names no account, and "
+                        + "that is answered without a statement rather than refused");
+
+                await Assert.ThrowsAsync<ArgumentNullException>(
+                    () => profiles.GetProfileValuesAsync(tenantId, null!));
+            }
+        }
+        finally
+        {
+            // THE ANSWERS ARE REMOVED BY STATEMENT RATHER THAN THROUGH THE PURGE MEMBER, and the reason is
+            // the duplicate pair this case seeds deliberately. DeleteProfileValuesAsync reads the answers it
+            // is about to remove through a query the scoped-declaration subquery has already marked
+            // AsNoTracking, so no identity resolution is applied and two answers sharing one declaration
+            // materialise two instances of it; RemoveRange then attaches both and the change tracker
+            // refuses the second. That is a property of the duplicate shape, not of this case's subject, and
+            // reproducing it in a teardown would report it as a failure of the read under test. It is
+            // recorded as an out-of-scope observation instead, and the rows go out by identifier - only the
+            // three accounts created above, so nothing else can be reached.
+            await _fixture.Database.ExecuteAsync(
+                """
+                DELETE FROM [dbo].[UserProfile]
+                WHERE [UserID] IN (@firstUserId, @secondUserId, @unnamedUserId);
+                """,
+                new Dictionary<string, object?>
+                {
+                    ["firstUserId"] = firstUserId,
+                    ["secondUserId"] = secondUserId,
+                    ["unnamedUserId"] = unnamedUserId,
+                });
+
+            using (IServiceScope scope = _fixture.Services.CreateScope())
+            {
+                IUserProfileRepository profiles =
+                    scope.ServiceProvider.GetRequiredService<IUserProfileRepository>();
+                IUnitOfWork unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+
+                foreach (int definitionId in new[] { firstDefinitionId, secondDefinitionId, hostDefinitionId })
+                {
+                    if (definitionId > 0)
+                    {
+                        await profiles.DeleteDefinitionAsync(definitionId);
+                    }
+                }
+
+                await unitOfWork.SaveChangesAsync();
+            }
+
+            foreach (int userId in new[] { firstUserId, secondUserId, unnamedUserId })
+            {
+                if (userId > 0)
+                {
+                    await RemoveAccountAsync(userId);
+                }
+            }
+
+            await RemovePortalAsync(tenantId);
+        }
+    }
+
+    /// <summary>
     /// The first tenant, a second tenant and the host level are three distinct scopes on a profile
     /// declaration, on the way in and on the way out.
     /// </summary>

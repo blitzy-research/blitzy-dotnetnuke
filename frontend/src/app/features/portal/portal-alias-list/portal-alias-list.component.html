@@ -4,7 +4,7 @@
     PAGE CHROME. The shared header renders the title and projects this screen's single page-level action
     into its own slot.
   -->
-  <app-page-header [title]="heading">
+  <app-page-header [title]="heading" [subtitle]="portalName()">
     <button class="page-action" type="button" (click)="startCreate()">{{ addActionLabel }}</button>
 
     <!-- After the create action, so the command an operator came for keeps first position. -->
@@ -70,7 +70,7 @@
 
       <!-- THE THREE COMMANDS, in the legacy order. -->
       <div class="portal-alias-list__commands">
-        <button type="submit" [disabled]="loading()"
+        <button class="form-action--primary" type="submit" [disabled]="loading()"
           [attr.aria-busy]="loading() ? 'true' : null">{{ submitLabel() }}</button>
 
         <button type="button" (click)="cancelEdit()">{{ cancelLabel }}</button>
@@ -99,28 +99,38 @@
     </form>
   }
 
-  <!-- THE LISTING, in three mutually exclusive states. -->
+  <!-- THE LISTING, in two mutually exclusive states. -->
   @if (routeUsable() === false) {
-    <!-- The address carried no usable portal identifier. -->
+    <!-- The address carried no usable portal identifier, so there is no listing to render at all. -->
     <app-empty-state [message]="unusableRouteMessage" />
-  } @else if (isListEmpty()) {
-    <!-- Read, and genuinely empty. -->
-    <app-empty-state [message]="emptyMessage">
-      <button type="button" (click)="startCreate()">{{ addActionLabel }}</button>
-    </app-empty-state>
   } @else {
     <!--
       PRESSING THE ROW IS GUARDED TOO, and that is why hiding the button is not the whole of the rule.
       The row press below is a net addition of this screen - the legacy grid had none - and it reaches
       every row, so the component refuses the withheld row there as well and says why.
     -->
+    <!--
+      ⚠ THE GENUINELY-EMPTY STATE IS NOW THE TABLE'S OWN ROW, NOT A PANEL RENDERED INSTEAD OF IT. This
+      screen used to replace the whole grid with `app-empty-state` the moment a portal was read and found
+      to have no host names, which destroyed the grid's `role="status"` result region along with it - so
+      the one transition most in need of a report, a listing narrowing to nothing, announced NOTHING. The
+      grid renders the same wording and the same recovery command inside a spanning row, and its polite
+      region survives to say it. `[failed]` keeps the two apart: a refused read reports that the records
+      could not be READ and never that none EXIST.
+    -->
     <app-data-table
       [columns]="columns()"
       [rows]="rows()"
       [rowKey]="aliasRowKey"
+      [failed]="listFailed()"
+      [emptyMessage]="emptyMessage"
       (rowSelect)="editAlias($event)"
     >
       <span dataTableCaption>{{ heading }}</span>
+
+      <ng-container dataTableEmptyAction>
+        <button type="button" (click)="startCreate()">{{ addActionLabel }}</button>
+      </ng-container>
     </app-data-table>
   }
   <!-- THE DELETION PROMPT. -->

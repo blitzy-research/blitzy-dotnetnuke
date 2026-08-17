@@ -31,6 +31,35 @@
       </span>
     }
 
+  </div>
+
+  <div
+    class="form-field__control"
+    role="group"
+    [attr.aria-labelledby]="groupLabelledBy()"
+    [attr.aria-describedby]="describedBy()"
+  >
+    <ng-content />
+
+    <!--
+      ⚠ THE HELP AFFORDANCE SITS AFTER THE CONTROL IT DESCRIBES, AND ITS POSITION IS A FOCUS-ORDER
+      DECISION RATHER THAN A LAYOUT ONE. It used to be the second child of the label row, so sequential
+      focus reached "Help" before every field - on a screen carrying fourteen of them that doubled the
+      stops between one control and the next, and a person tabbing to a field was interrupted by an
+      affordance describing a field they had not arrived at yet.
+
+      THERE IS NO LEGACY ORDER BEING BROKEN BY THIS. `Website/controls/labelcontrol.ascx` L3-L4 puts
+      `tabindex="-1"` on BOTH the help link button AND its image, so the legacy affordance was deliberately
+      outside the tab order altogether and a keyboard user could never open help at all. Keeping it
+      reachable is this port's improvement on that; placing it after the control is what stops the
+      improvement from costing something.
+
+      Placing it HERE rather than after the whole field is what makes the change free. This wrapper is a
+      baseline-aligned wrapping flex row, so the affordance joins the row the control already occupies: it
+      keeps its inline position beside a control, adds no height to any field, cannot overlap a long label,
+      and - decisively - leaves the caption exactly where it was, so nothing changes about the order in
+      which a screen reader reads a field's name relative to its control.
+    -->
     @if (hasHelp()) {
       <!--
         THE `aria-controls` DECISION, stated explicitly because there are two valid answers and only one
@@ -65,14 +94,15 @@
     }
   </div>
 
-  <div
-    class="form-field__control"
-    role="group"
-    [attr.aria-labelledby]="groupLabelledBy()"
-    [attr.aria-describedby]="describedBy()"
-  >
-    <ng-content />
-  </div>
+  @if (hasLimit()) {
+    <!--
+      THE TYPING BOUND, STATED WHERE IT IS HEARD AND NOT SEEN. Permanently present rather than conditional
+      on anything the reader does, because `aria-describedby` above names it and a description that points
+      at an absent element is dropped by some assistive technology and read as empty by others. Visually
+      hidden because the same sentence is repeated inside the help disclosure, where a sighted reader looks.
+    -->
+    <p class="form-field__limit" data-visually-hidden [id]="limitId()">{{ limitText() }}</p>
+  }
 
   @if (helpExpanded()) {
     <!--

@@ -713,18 +713,75 @@ public sealed class ModuleApiTests
         }
     }
 
-    /// <summary>
-    /// A create with a negative cache period is accepted and the value is persisted exactly as submitted,
-    /// because no legacy rule and no schema constraint forbids it.
-    /// </summary>
+    /// <summary>A create with a negative cache period is REFUSED at the field, and nothing is written.</summary>
     /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THIS TEST WAS REVERSED, AND ITS PREDECESSOR ASSERTED A DOCUMENTED DIVERGENCE INTO EXISTENCE. It
+    /// required that a negative period be "persisted verbatim" on the grounds that no legacy rule forbade
+    /// it, which was factually true and is exactly why the gap existed: <c>modulesettings.ascx</c> L172
+    /// declared only <c>CompareValidator Operator="DataTypeCheck" Type="Integer"</c>, so the legacy screen
+    /// checked that the value was a whole number and nothing more.
+    /// </para>
+    /// <para>
+    /// That omission was judged an oversight rather than a decision. The field's own legacy help text calls
+    /// the value "the time this object is kept in the Cache", and a duration cannot run backwards - a
+    /// negative period has no meaning the cache could act on. The bound is now enforced on the client at the
+    /// field and here on the server, reporting the legacy resource file's own wording, <c>Invalid Cache
+    /// Time</c>. NO UPPER BOUND IS IMPOSED: the legacy validator declared none, the column is an <c>int</c>,
+    /// and inventing a ceiling would be a second unrequested divergence. Zero remains legal and means "do
+    /// not cache". Recorded in MIGRATION_NOTES.md.
+    /// </para>
+    /// </remarks>
     [Fact]
-    public async Task CreateModule_WithNegativeCacheTime_PersistsItVerbatim()
+    public async Task CreateModule_WithNegativeCacheTime_IsRefusedAndNothingIsWritten()
     {
         using HttpClient client = await _fixture.CreateHostClientAsync();
 
         CreateModuleRequest request = NewModuleRequest(_fixture.Seed.RootTabId);
         request.CacheTime = -30;
+
+        int before = await _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(1) FROM [dbo].[Modules];",
+            new Dictionary<string, object?>());
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            ModulesRoute(_fixture.Seed.PortalId),
+            request,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        ValidationProblemDetails? problem = await response.Content
+            .ReadFromJsonAsync<ValidationProblemDetails>(ApiTestFixture.Json);
+
+        problem.Should().NotBeNull();
+        problem!.Errors.Should().ContainKey(
+            nameof(CreateModuleRequest.CacheTime),
+            "the refusal names the offending field, so the client can mark that control and no other");
+        problem.Errors[nameof(CreateModuleRequest.CacheTime)].Should().Contain(
+            "Invalid Cache Time",
+            "reported in the legacy resource file's own wording rather than a newly authored sentence");
+
+        int after = await _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(1) FROM [dbo].[Modules];",
+            new Dictionary<string, object?>());
+
+        after.Should().Be(before, "a refused create writes nothing at all");
+    }
+
+    /// <summary>A create with a zero cache period is accepted: zero means "do not cache".</summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The companion of the refusal above, and the reason the bound is "not negative" rather than "positive".
+    /// </remarks>
+    [Fact]
+    public async Task CreateModule_WithZeroCacheTime_IsAcceptedAndStoredVerbatim()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        CreateModuleRequest request = NewModuleRequest(_fixture.Seed.RootTabId);
+        request.CacheTime = 0;
 
         using HttpResponseMessage response = await client.PostAsJsonAsync(
             ModulesRoute(_fixture.Seed.PortalId),
@@ -734,19 +791,13 @@ public sealed class ModuleApiTests
         response.StatusCode.Should().Be(HttpStatusCode.Created);
 
         ModuleDetailDto created = await ReadDetailAsync(response);
-        created.CacheTime.Should().Be(-30, "the submitted period is stored, not clamped");
-
-        using HttpResponseMessage reread = await client.GetAsync(
-            ModuleRoute(_fixture.Seed.PortalId, created.ModuleId));
-
-        reread.StatusCode.Should().Be(HttpStatusCode.OK);
-        (await ReadDetailAsync(reread)).CacheTime.Should().Be(-30);
+        created.CacheTime.Should().Be(0, "zero is a legal period and is stored, not rewritten");
 
         int stored = await _fixture.Database.ScalarAsync<int>(
             "SELECT [CacheTime] FROM [dbo].[TabModules] WHERE [ModuleID] = @moduleId;",
             new Dictionary<string, object?> { ["moduleId"] = created.ModuleId });
 
-        stored.Should().Be(-30, "the column accepts it, so nothing between the caller and it may rewrite it");
+        stored.Should().Be(0);
     }
 
     /// <summary>
@@ -1578,16 +1629,27 @@ public sealed class ModuleApiTests
     }
 
     /// <summary>
-    /// The placement's appearance fields are accepted on the write path and exposed by no response
-    /// contract, and omitting one is accepted just as setting it is.
+    /// The three appearance columns the legacy settings screen administered are on the write path and on the
+    /// detail response; the four that only a renderer ever chose are on neither, and are preserved rather than
+    /// cleared by an update that cannot name them.
     /// </summary>
     /// <remarks>
-    /// Because no caller can name them, the write path must PRESERVE the stored values rather than clear
-    /// them - the pane column is NOT NULL, so clearing it would fail the write outright.
+    /// <para>
+    /// The three - alignment, colour and border - are declared as fields at `modulesettings.ascx:L120-L139`,
+    /// read at `ModuleSettings.ascx.vb:L144-L147` and saved at `:L345-L347`, so they are part of the legacy
+    /// screen's workflow. They were on no contract at all, which is why the settings screen told an operator
+    /// the module stored no settings of its own while `dbo.TabModules` held a value for each of them.
+    /// </para>
+    /// <para>
+    /// The four that remain excluded are a different case. A pane is chosen by the skin that declares it, a
+    /// container IS a skin object, and print and syndicate are affordances of the legacy rendering pipeline.
+    /// Because no caller can name them, the write path must PRESERVE their stored values rather than clear them
+    /// - the pane column is NOT NULL, so clearing it would fail the write outright.
+    /// </para>
     /// </remarks>
     /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task UpdateModule_DeclaresNoAppearanceFieldOnAnyModuleContract()
+    public async Task UpdateModule_CarriesTheAdministeredAppearanceAndPreservesTheRest()
     {
         using HttpClient client = await _fixture.CreateHostClientAsync();
         ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
@@ -1609,13 +1671,52 @@ public sealed class ModuleApiTests
 
         foreach (string appearance in new[]
         {
-            "PaneName", "Alignment", "Color", "Border", "DisplayPrint", "DisplaySyndicate", "ContainerSrc",
+            "PaneName", "DisplayPrint", "DisplaySyndicate", "ContainerSrc",
         })
         {
             typeof(UpdateModuleRequest).GetProperty(appearance).Should().BeNull(
                 $"the placement's {appearance} drives server-side markup or skinning, both excluded, so the "
                 + "update contract must not offer it");
         }
+
+        foreach (string administered in new[] { "Alignment", "Color", "Border" })
+        {
+            typeof(UpdateModuleRequest).GetProperty(administered).Should().NotBeNull(
+                $"the legacy settings screen let an administrator set {administered}, so the update contract "
+                + "must carry it or the workflow is gone");
+
+            typeof(ModuleDetailDto).GetProperty(administered).Should().NotBeNull(
+                $"and a screen cannot show the stored {administered} it is about to replace unless the detail "
+                + "contract reports it");
+        }
+
+        // A round trip through the write path, proving the three are genuinely stored and read back rather
+        // than merely declared. The empty string is used for the alignment because that is the value behind
+        // the legacy list's "Not Specified" entry, and it must survive as an empty string.
+        using HttpResponseMessage appearanceWrite = await client.PutAsJsonAsync(
+            ModuleRoute(_fixture.Seed.PortalId, created.ModuleId),
+            new UpdateModuleRequest
+            {
+                TabId = _fixture.Seed.RootTabId,
+                ModuleTitle = created.ModuleTitle,
+                Alignment = "center",
+                Color = "#003366",
+                Border = "3",
+            },
+            ApiTestFixture.Json);
+
+        appearanceWrite.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using HttpResponseMessage appearanceRead = await client.GetAsync(
+            ModuleRoute(_fixture.Seed.PortalId, created.ModuleId));
+
+        appearanceRead.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        ModuleDetailDto storedAppearance = await ReadDetailAsync(appearanceRead);
+
+        storedAppearance.Alignment.Should().Be("center");
+        storedAppearance.Color.Should().Be("#003366");
+        storedAppearance.Border.Should().Be("3");
 
         using HttpResponseMessage reread = await client.GetAsync(
             ModuleSettingsRoute(_fixture.Seed.PortalId, created.ModuleId));
@@ -1633,6 +1734,8 @@ public sealed class ModuleApiTests
             "PaneName", "Alignment", "Color", "Border", "DisplayPrint", "DisplaySyndicate",
         })
         {
+            // Including the three administered ones: they are COLUMNS ON THE PLACEMENT, not key-value
+            // settings, so they belong to the detail contract and must not be duplicated onto this one.
             typeof(ModuleSettingsDto).GetProperty(appearance).Should().BeNull(
                 $"the placement's {appearance} drives server-side markup, which this migration excludes, "
                 + "so the settings contract carries the two identifiers and the two settings maps only");
@@ -1691,34 +1794,45 @@ public sealed class ModuleApiTests
     }
 
     /// <summary>
-    /// An update carrying a negative cache period is accepted and persists the value as submitted, matching
-    /// the create path.
+    /// An update carrying a negative cache period is REFUSED, and the stored period is left untouched.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The update counterpart of the create assertion. Both paths are asserted because the removed floor
-    /// was declared twice - once on each request validator and once on each projection - so a fix applied
-    /// to one path would leave the two disagreeing about the same column.
+    /// ⚠ REVERSED FOR THE REASON SET OUT ON THE CREATE COUNTERPART. Both paths are still asserted, and for
+    /// the original reason: the rule is declared once on each request validator, so a change applied to one
+    /// path would leave the two disagreeing about the same column. The value submitted here is <c>-1</c>
+    /// specifically, because that is the value the legacy sentinel vocabulary used for "absent" and is
+    /// therefore the one most likely to be sent by accident.
     /// </remarks>
     [Fact]
-    public async Task UpdateModule_WithNegativeCachePeriod_PersistsItVerbatim()
+    public async Task UpdateModule_WithNegativeCachePeriod_IsRefusedAndLeavesTheStoredPeriod()
     {
         using HttpClient client = await _fixture.CreateHostClientAsync();
         ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
+
+        int before = await _fixture.Database.ScalarAsync<int>(
+            "SELECT [CacheTime] FROM [dbo].[TabModules] WHERE [ModuleID] = @moduleId;",
+            new Dictionary<string, object?> { ["moduleId"] = created.ModuleId });
 
         using HttpResponseMessage response = await client.PutAsJsonAsync(
             ModuleRoute(_fixture.Seed.PortalId, created.ModuleId),
             new UpdateModuleRequest { TabId = _fixture.Seed.RootTabId, CacheTime = -1 },
             ApiTestFixture.Json);
 
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
-        (await ReadDetailAsync(response)).CacheTime.Should().Be(-1);
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        ValidationProblemDetails? problem = await response.Content
+            .ReadFromJsonAsync<ValidationProblemDetails>(ApiTestFixture.Json);
+
+        problem.Should().NotBeNull();
+        problem!.Errors.Should().ContainKey(nameof(UpdateModuleRequest.CacheTime));
+        problem.Errors[nameof(UpdateModuleRequest.CacheTime)].Should().Contain("Invalid Cache Time");
 
         int stored = await _fixture.Database.ScalarAsync<int>(
             "SELECT [CacheTime] FROM [dbo].[TabModules] WHERE [ModuleID] = @moduleId;",
             new Dictionary<string, object?> { ["moduleId"] = created.ModuleId });
 
-        stored.Should().Be(-1);
+        stored.Should().Be(before, "a refused update leaves the column exactly as it was");
     }
 
     // MIGRATION: A FACT ASSERTING THAT AN ADMINISTRATOR'S SUBMISSION MOVES THE PLACEMENT WAS WITHDRAWN

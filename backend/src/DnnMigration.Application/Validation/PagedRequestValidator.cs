@@ -162,6 +162,16 @@ public class PagedRequestValidator<TRequest> : AbstractValidator<TRequest>
     /// </remarks>
     private static string BuildSortFieldUnknownMessage(IReadOnlySet<string> sortableFields)
     {
+        // AN EMPTY SET IS A STATEMENT, NOT AN OVERSIGHT, so it gets its own sentence. A collection whose
+        // order carries meaning of its own - a page hierarchy read depth-first, a price list in the order it
+        // is published - accepts no sort field at all, and "Accepted fields: ." would read as a defect in
+        // this message rather than as the answer it is.
+        if (sortableFields.Count == 0)
+        {
+            return "This collection is returned in one defined order and cannot be re-ordered, so no sort "
+                + "field is accepted. Omit the sort field.";
+        }
+
         IEnumerable<string> accepted = sortableFields.OrderBy(name => name, StringComparer.Ordinal);
 
         return "The sort field is not one that can be ordered by. Accepted fields: "

@@ -35,6 +35,12 @@ public class CreateModuleRequestValidator : AbstractValidator<CreateModuleReques
     private const string VisibilityInvalidMessage = "Visibility must be Maximized, Minimized or None.";
 
     /// <summary>
+    /// The refusal shown for a negative cache period. Worded from the legacy resource entry
+    /// <c>valCacheTime.ErrorMessage</c> so that one rule is not described two ways.
+    /// </summary>
+    private const string CacheTimeNegativeMessage = "Invalid Cache Time";
+
+    /// <summary>
     /// The measured bound on <c>Modules.ModuleTitle</c> (<c>nvarchar(256) NULL</c>). The legacy text box
     /// declared a rendered width but no maximum length, so the column is the sole authority.
     /// </summary>
@@ -79,8 +85,16 @@ public class CreateModuleRequestValidator : AbstractValidator<CreateModuleReques
         RuleFor(request => request.EndDate)
             .Must(SqlServerRange.CanStore).WithMessage(DateUnrepresentableMessage);
 
-        // Deliberately unvalidated, each for a measured reason, so that a later reader does not mistake an
-        // absence for an omission: CacheTime - the legacy validator checked INTEGRALITY AND NOTHING ELSE,
-        // and the code-behind stored whatever parsed (L349-L350, Int32.Parse with no comparison).
+
+        // ⚠ MIGRATION - A CACHE PERIOD MAY NOT BE NEGATIVE, WHICH THE LEGACY RULE ADMITTED.
+        // `modulesettings.ascx:L172` declares exactly one validator on this box, a `CompareValidator` with
+        // `Operator="DataTypeCheck" Type="Integer"`, and the code-behind stored whatever parsed - so `-1`
+        // was accepted and written. That is an omission rather than a decision: `plCacheTime.Help` calls the
+        // value "the time this object is kept in the Cache", and a duration cannot run backwards. The same
+        // bound is applied on the client, so the two agree. NO UPPER BOUND IS DECLARED: neither the legacy
+        // validator nor the `int` column states one, and a long cache period is an unusual choice rather
+        // than an error. Recorded in MIGRATION_NOTES.md.
+        RuleFor(request => request.CacheTime)
+            .GreaterThanOrEqualTo(0).WithMessage(CacheTimeNegativeMessage);
     }
 }

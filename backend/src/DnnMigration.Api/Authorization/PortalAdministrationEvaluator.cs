@@ -59,6 +59,28 @@ internal sealed class PortalAdministrationEvaluator
     private readonly IHttpContextAccessor _httpContextAccessor;
     private readonly IClock _clock;
 
+    /// <summary>
+    /// The host-account answer for each account key asked about while serving this one request.
+    /// </summary>
+    /// <remarks>
+    /// SAFE BECAUSE THE LIFETIME IS ONE REQUEST AND THE SUBJECT CANNOT CHANGE WITHIN IT. This type is
+    /// registered scoped, so the memo is discarded with the request; the host flag is a property of the
+    /// caller's own account and nothing in an authorisation decision writes it; and no endpoint has run yet
+    /// when these questions are asked, so there is no write for a memoised read to be stale against.
+    /// </remarks>
+    private readonly Dictionary<int, bool> _hostAccountByUserId = [];
+
+    /// <summary>
+    /// The administrator role key of each portal asked about while serving this one request, including the
+    /// answer for a portal that has none.
+    /// </summary>
+    /// <remarks>
+    /// Memoised for the same reason and under the same guarantee as <see cref="_hostAccountByUserId"/>. The
+    /// value is itself nullable - a portal may legitimately designate no administrator role - so presence in
+    /// the dictionary rather than a non-null value is what records that the question has been answered.
+    /// </remarks>
+    private readonly Dictionary<int, int?> _administratorRoleIdByPortalId = [];
+
     /// <summary>Initialises a new instance of the <see cref="PortalAdministrationEvaluator"/> class.</summary>
     /// <param name="portalContext">Resolves and holds the tenant the caller arrived through.</param>
     /// <param name="portals">Reads the target portal, whose administrator role key is the question.</param>
@@ -164,6 +186,19 @@ internal sealed class PortalAdministrationEvaluator
     /// <param name="user">The caller.</param>
     /// <param name="cancellationToken">Abandons the read when the caller disconnects.</param>
     /// <returns><see langword="true"/> when the caller's account carries the host flag.</returns>
+    /// <remarks>
+    /// ASKED MANY TIMES PER REQUEST AND READ ONCE. Every tenant-scoped policy reaches this question, most of
+    /// them twice - <see cref="IsTenantBoundAsync"/> asks it and then <see
+    /// cref="IsPortalAdministratorAsync"/> asks it again - and this type is scoped to one request, so the
+    /// answer is memoised for the life of that request rather than re-read per asker. A performance review
+    /// measured the unmemoised form issuing the same statement repeatedly within a single request, and the
+    /// duplication multiplied one-for-one under concurrency.
+    /// <para>
+    /// The answer is memoised PER ACCOUNT KEY rather than as a bare flag, so that a request in which the
+    /// question is asked about two different callers cannot be answered from the wrong one. In practice one
+    /// request has one caller; the key is what makes that a guarantee rather than an assumption.
+    /// </para>
+    /// </remarks>
     internal async Task<bool> IsHostAccountAsync(ClaimsPrincipal? user, CancellationToken cancellationToken)
     {
         if (user?.Identity?.IsAuthenticated != true || TryGetUserId(user) is not { } userId)
@@ -171,11 +206,20 @@ internal sealed class PortalAdministrationEvaluator
             return false;
         }
 
-        User? account = await _users
-            .GetAsync(portalId: null, userId, cancellationToken)
-            .ConfigureAwait(false);
+        if (_hostAccountByUserId.TryGetValue(userId, out bool remembered))
+        {
+            return remembered;
+        }
 
-        return account?.IsSuperUser == true;
+        // One column, one statement, no membership join and no credential-store read: the flag is all this
+        // decision needs, and composing the account to obtain it was the measured waste.
+        bool isHostAccount = await _users
+            .GetHostAccountFlagAsync(userId, cancellationToken)
+            .ConfigureAwait(false) == true;
+
+        _hostAccountByUserId[userId] = isHostAccount;
+
+        return isHostAccount;
     }
 
     /// <summary>Reports whether the caller's token was issued for the tenant the request acts on.</summary>
@@ -307,13 +351,26 @@ internal sealed class PortalAdministrationEvaluator
             return _portalContext.Current.AdministratorRoleId;
         }
 
+        // Read once per portal per request, for the same reason and under the same guarantee as the
+        // host-account answer above: several policies may ask about the same portal while serving one
+        // request, and re-reading the row per asker was measured as duplicated work that multiplied under
+        // concurrency.
+        if (_administratorRoleIdByPortalId.TryGetValue(portalId, out int? remembered))
+        {
+            return remembered;
+        }
+
         // The aliases are deliberately not loaded: the only column this decision reads is the
         // administrator role key, and pulling a collection would cost a join on every protected request.
         Portal? portal = await _portals
             .GetByIdAsync(portalId, includeAliases: false, cancellationToken)
             .ConfigureAwait(false);
 
-        return portal?.AdministratorRoleId;
+        int? administratorRoleId = portal?.AdministratorRoleId;
+
+        _administratorRoleIdByPortalId[portalId] = administratorRoleId;
+
+        return administratorRoleId;
     }
 
     /// <summary>Obtains the tenant the caller arrived through, resolving it first if necessary.</summary>

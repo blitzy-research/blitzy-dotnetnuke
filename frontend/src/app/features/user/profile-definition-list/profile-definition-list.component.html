@@ -8,7 +8,7 @@
   ⚠ THE `createTrigger` REFERENCE IS LOAD-BEARING, NOT DECORATIVE. A confirmed delete destroys the row
   it acted on, and with it the very button that opened the confirmation dialog.
 -->
-<app-page-header [title]="pageTitle">
+<app-page-header [title]="pageTitle" [subtitle]="pageSubtitle">
   <button class="page-action" #createTrigger type="button" [disabled]="saving()" (click)="openCreate()">
     {{ addLabel }}
   </button>
@@ -26,7 +26,7 @@
   own explanation; a failure carrying none — which is what a contract-violating `200` produces, because
   the decoders run downstream of the interceptor — shows the store's authored summary instead.
 -->
-<app-error-banner [problem]="problem()" [fallbackMessage]="readFailureSummary()" />
+<app-error-banner [problem]="problem()" />
 
 @if (hasRows()) {
   <!--
@@ -63,6 +63,7 @@
   [rows]="rows()"
   [rowKey]="definitionRowKey"
   [loading]="loading()"
+  [failed]="listFailed()"
 >
   <span dataTableCaption>{{ gridCaption }}</span>
 </app-data-table>
@@ -275,7 +276,7 @@
 
       <!-- THE FORM ACTIONS. -->
       <div class="profile-definitions__form-actions">
-        <button type="submit" [disabled]="saving()"
+        <button class="form-action--primary" type="submit" [disabled]="saving()"
           [attr.aria-busy]="saving() ? 'true' : null">{{ submitLabel() }}</button>
         <button type="button" [disabled]="saving()" (click)="cancelForm()">
           {{ cancelLabel }}
@@ -298,7 +299,7 @@
     `Delete Module`, `Delete Profile Property` and `Delete role group` across the screens.
   -->
   <app-confirm-dialog
-    [message]="removalMessage"
+    [message]="removalMessage()"
     [confirmLabel]="deleteLabel"
     [danger]="true"
     (confirm)="confirmRemoval()"

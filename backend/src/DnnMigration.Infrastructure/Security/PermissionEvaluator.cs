@@ -10,13 +10,17 @@ namespace DnnMigration.Infrastructure.Security;
 internal sealed class PermissionEvaluator : IPermissionEvaluator
 {
     /// <summary>The role identifier that admits every caller, authenticated or not.</summary>
-    private const int AllUsersRoleId = -1;
+    /// <remarks>
+    /// Aliased from <see cref="SpecialRoleIds"/> rather than restated as a literal, so that the grants this
+    /// evaluator honours and the rows the module permission grid offers can never drift apart.
+    /// </remarks>
+    private const int AllUsersRoleId = SpecialRoleIds.AllUsers;
 
     /// <summary>The role identifier reserved for host accounts, which matches nobody here.</summary>
-    private const int SuperUserRoleId = -2;
+    private const int SuperUserRoleId = SpecialRoleIds.SuperUser;
 
     /// <summary>The role identifier that admits only callers who have not signed in.</summary>
-    private const int UnauthenticatedRoleId = -3;
+    private const int UnauthenticatedRoleId = SpecialRoleIds.Unauthenticated;
 
     /// <summary>The scope code shared by the catalogue entries every module definition inherits.</summary>
     private const string ModuleDefinitionScopeCode = "SYSTEM_MODULE_DEFINITION";
@@ -388,7 +392,7 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
             .GetByTabIdAsync(pages[0].TabId, cancellationToken)
             .ConfigureAwait(false);
 
-        Dictionary<int, PermissionKey> applicable = NarrowCatalogue(catalogue, permissionKey, IsTabScoped);
+        Dictionary<int, string> applicable = NarrowCatalogue(catalogue, permissionKey, IsTabScoped);
 
         if (applicable.Count == 0)
         {
@@ -445,7 +449,7 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
             var matched = new List<MatchedGrant>(pageGrants.Count);
             foreach (TabPermission grant in pageGrants)
             {
-                if (!applicable.TryGetValue(grant.PermissionId, out PermissionKey key))
+                if (!applicable.TryGetValue(grant.PermissionId, out string? key))
                 {
                     continue;
                 }
@@ -508,7 +512,7 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
             .GetByModuleIdAsync(moduleId, cancellationToken)
             .ConfigureAwait(false);
 
-        Dictionary<int, PermissionKey> applicable = NarrowCatalogue(
+        Dictionary<int, string> applicable = NarrowCatalogue(
             catalogue,
             permissionKey,
             entry => IsModuleScoped(entry, module.ModuleDefinitionId));
@@ -529,7 +533,7 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
                 continue;
             }
 
-            if (!applicable.TryGetValue(grant.PermissionId, out PermissionKey key))
+            if (!applicable.TryGetValue(grant.PermissionId, out string? key))
             {
                 continue;
             }
@@ -580,7 +584,7 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
             .GetByTabIdAsync(tabId, cancellationToken)
             .ConfigureAwait(false);
 
-        Dictionary<int, PermissionKey> applicable = NarrowCatalogue(catalogue, permissionKey, IsTabScoped);
+        Dictionary<int, string> applicable = NarrowCatalogue(catalogue, permissionKey, IsTabScoped);
 
         if (applicable.Count == 0)
         {
@@ -598,7 +602,7 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
                 continue;
             }
 
-            if (!applicable.TryGetValue(grant.PermissionId, out PermissionKey key))
+            if (!applicable.TryGetValue(grant.PermissionId, out string? key))
             {
                 continue;
             }
@@ -627,17 +631,26 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
     /// <param name="inScope">The scope test for the collector calling this - definition-bound or page-wide.</param>
     /// <returns>The surviving keys, indexed by permission identifier.</returns>
     /// <remarks>
+    /// <para>
     /// Extracted so the module and page collectors cannot drift apart on the three rules that decide which
     /// catalogue entries are eligible, since a divergence here is an authorisation defect rather than an
     /// inconsistency. The rules are, in order: the entry must carry the key being asked about, it must
     /// belong to the scope being evaluated, and its identifier must not be the wildcard.
+    /// </para>
+    /// <para>
+    /// The value side carries the STORED SPELLING of the key rather than an enumeration member, because
+    /// <see cref="Permission.PermissionKey"/> is free text and an installation may legitimately declare a
+    /// key this solution does not name. Such an entry is carried through here and simply matches no
+    /// requested key further down, which is the closed default; it is never rejected at materialisation and
+    /// never collapsed onto a member it is not.
+    /// </para>
     /// </remarks>
-    private static Dictionary<int, PermissionKey> NarrowCatalogue(
+    private static Dictionary<int, string> NarrowCatalogue(
         IReadOnlyList<Permission> catalogue,
         PermissionKey? permissionKey,
         Func<Permission, bool> inScope)
     {
-        Dictionary<int, PermissionKey> applicable = new(catalogue.Count);
+        Dictionary<int, string> applicable = new(catalogue.Count);
 
         foreach (Permission entry in catalogue)
         {
@@ -781,25 +794,35 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
     /// </param>
     /// <returns>The surviving keys, without duplicates.</returns>
     /// <remarks>
+    /// <para>
     /// A key survives when some grant allows it on a scope where no grant denies it.
+    /// </para>
+    /// <para>
+    /// Keys are compared WITHOUT REGARD TO CASE, in both the deny index and the surviving set, because
+    /// <see cref="Permission.PermissionKey"/> is free text held in a column whose collation is
+    /// case-insensitive: two grants naming <c>EDIT</c> and <c>edit</c> on the same scope are two grants on
+    /// one key, so a deny recorded under either spelling must suppress an allow recorded under the other.
+    /// Folding the deny index through <see cref="CanonicalKey"/> is what makes that true, since a value
+    /// tuple compares its string component ordinally.
+    /// </para>
     /// </remarks>
-    private static HashSet<PermissionKey> Survivors(IReadOnlyCollection<MatchedGrant> matched)
+    private static HashSet<string> Survivors(IReadOnlyCollection<MatchedGrant> matched)
     {
-        HashSet<(PermissionScope Scope, int ScopeId, PermissionKey Key)> denied = new();
+        HashSet<(PermissionScope Scope, int ScopeId, string Key)> denied = new();
 
         foreach (MatchedGrant grant in matched)
         {
             if (!grant.AllowAccess)
             {
-                denied.Add((grant.Scope, grant.ScopeId, grant.Key));
+                denied.Add((grant.Scope, grant.ScopeId, CanonicalKey(grant.Key)));
             }
         }
 
-        HashSet<PermissionKey> held = new();
+        HashSet<string> held = new(StringComparer.OrdinalIgnoreCase);
 
         foreach (MatchedGrant grant in matched)
         {
-            if (grant.AllowAccess && !denied.Contains((grant.Scope, grant.ScopeId, grant.Key)))
+            if (grant.AllowAccess && !denied.Contains((grant.Scope, grant.ScopeId, CanonicalKey(grant.Key))))
             {
                 held.Add(grant.Key);
             }
@@ -807,6 +830,15 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
 
         return held;
     }
+
+    /// <summary>Folds a stored permission key to the single form the deny index is built over.</summary>
+    /// <param name="key">The key exactly as the catalogue row holds it.</param>
+    /// <returns>The case-folded form, used for comparison only and never returned to a caller.</returns>
+    /// <remarks>
+    /// Invariant rather than current-culture, so the fold cannot vary with the host's locale - the Turkish
+    /// dotless i being the case that makes a culture-sensitive fold wrong here.
+    /// </remarks>
+    private static string CanonicalKey(string key) => key.ToUpperInvariant();
 
     /// <summary>Builds the advisory reason for a module identifier that names no module.</summary>
     /// <param name="moduleId">The identifier the caller supplied.</param>
@@ -836,25 +868,22 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
     /// <returns><see langword="true"/> when the caller holds it.</returns>
     private static bool Holds(IReadOnlyCollection<MatchedGrant> matched, PermissionKey permissionKey)
     {
-        return Survivors(matched).Contains(permissionKey);
+        // The surviving set compares without regard to case, so the member's own spelling is the whole
+        // question and a stored value cased differently still answers it.
+        return Survivors(matched).Contains(permissionKey.ToString());
     }
 
-    /// <summary>Renders surviving keys as the canonical strings the contract returns.</summary>
-    /// <param name="keys">The surviving keys.</param>
-    /// <returns>The key names, distinct, in a stable ordinal order.</returns>
+    /// <summary>Renders surviving keys as the strings the contract returns.</summary>
+    /// <param name="keys">The surviving keys, as the catalogue rows spell them.</param>
+    /// <returns>The keys, distinct, in a stable ordinal order.</returns>
     /// <remarks>
-    /// The name of a <see cref="PermissionKey"/> member <em>is</em> the stored spelling and the wire value,
-    /// so rendering is <see cref="object.ToString"/> and nothing more - no upper-casing pass is required,
-    /// because a member cannot be mis-cased.
+    /// The STORED SPELLING is the wire value, so nothing is re-cased on the way out and a key this solution
+    /// does not name travels exactly as its row holds it. The ordering is ordinal so that the sequence is
+    /// reproducible between calls whatever the host's locale.
     /// </remarks>
-    private static IReadOnlyList<string> Names(HashSet<PermissionKey> keys)
+    private static IReadOnlyList<string> Names(HashSet<string> keys)
     {
-        List<string> names = new(keys.Count);
-
-        foreach (PermissionKey key in keys)
-        {
-            names.Add(key.ToString());
-        }
+        List<string> names = new(keys);
 
         names.Sort(StringComparer.Ordinal);
 
@@ -865,9 +894,16 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
     /// <param name="entry">The catalogue entry.</param>
     /// <param name="permissionKey">The key to narrow to, or <see langword="null"/> to accept every key.</param>
     /// <returns><see langword="true"/> when the entry is in play.</returns>
+    /// <remarks>
+    /// A member's identifier IS the spelling the column stores, so the test is a text comparison against
+    /// that identifier - case-insensitively, matching the collation the legacy procedures compared under.
+    /// An entry carrying a key outside the enumeration simply fails this test whenever a key is named, and
+    /// is kept whenever none is.
+    /// </remarks>
     private static bool Applies(Permission entry, PermissionKey? permissionKey)
     {
-        return permissionKey is not PermissionKey wanted || entry.PermissionKey == wanted;
+        return permissionKey is not PermissionKey wanted
+            || string.Equals(entry.PermissionKey, wanted.ToString(), StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>Decides whether a catalogue entry belongs to the module scope being evaluated.</summary>
@@ -931,11 +967,14 @@ internal sealed class PermissionEvaluator : IPermissionEvaluator
     /// <summary>A grant that reached the caller, with its permission resolved to a key.</summary>
     /// <param name="Scope">Which kind of thing the grant was recorded against.</param>
     /// <param name="ScopeId">The module or page the grant was recorded against.</param>
-    /// <param name="Key">The key the grant confers or denies.</param>
+    /// <param name="Key">
+    /// The key the grant confers or denies, exactly as its catalogue row spells it - free text, because the
+    /// column is, so a key this solution does not name still travels through the decision intact.
+    /// </param>
     /// <param name="AllowAccess"><see langword="true" /> allows, <see langword="false" /> denies.</param>
     private readonly record struct MatchedGrant(
         PermissionScope Scope,
         int ScopeId,
-        PermissionKey Key,
+        string Key,
         bool AllowAccess);
 }

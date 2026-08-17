@@ -86,6 +86,41 @@ function envelope<T>(data: T): { readonly data: T; readonly meta: null } {
   return { data, meta: null };
 }
 
+/** The page size the whole-hierarchy reader asks for. Mirrors `WHOLE_COLLECTION_PAGE_SIZE` in `TabService`. */
+const TAB_PAGE_SIZE = 100;
+
+/**
+ * Wraps rows in the PAGED envelope the portal-scoped page listing answers with.
+ *
+ * MIGRATION: THE PAGE LISTING IS NOW BOUNDED. It used to answer every page of a tenant in one response - a
+ * tenant with three thousand pages sent 764 KiB - and it now answers one page of at most a hundred rows
+ * with the total across every page. Nothing this screen renders changed: the four page selectors are still
+ * offered every page of the tenant, assembled from bounded pages by the transport, which is why these cases
+ * still publish the whole listing in a single body.
+ *
+ * @param rows The rows of this page.
+ * @returns The body to flush.
+ */
+function tabPage(rows: readonly TabListItem[]): {
+  readonly items: readonly TabListItem[];
+  readonly meta: {
+    readonly totalCount: number;
+    readonly pageIndex: number;
+    readonly pageSize: number;
+    readonly totalPages: number;
+  };
+} {
+  return {
+    items: rows,
+    meta: {
+      totalCount: rows.length,
+      pageIndex: 0,
+      pageSize: TAB_PAGE_SIZE,
+      totalPages: rows.length === 0 ? 0 : Math.ceil(rows.length / TAB_PAGE_SIZE),
+    },
+  };
+}
+
 /**
  * An empty portal listing page. Needed because the store re-reads the listing after a successful save and
  * after a successful delete, so every such case has a third request to answer.
@@ -274,7 +309,13 @@ describe('PortalSettingsComponent', () => {
   // Typed with the OPTIONAL second argument the router actually accepts, because this screen now uses it:
   // the post-delete departure replaces the address rather than pushing it, since the portal the screen
   // described no longer exists.
-  let navigate: jasmine.Spy<(url: string, extras?: { replaceUrl?: boolean }) => Promise<boolean>>;
+  // Typed for `Router.navigate`: a command array plus extras carrying the listing coordinate.
+  let navigate: jasmine.Spy<
+    (
+      commands: readonly unknown[],
+      extras?: { queryParams?: Record<string, unknown>; replaceUrl?: boolean },
+    ) => Promise<boolean>
+  >;
 
   /** Whether the caller holds the host account, under test control. */
   let holdsHostAccount: WritableSignal<boolean>;
@@ -304,6 +345,83 @@ describe('PortalSettingsComponent', () => {
   }
 
   /** The rendered host element, typed. */
+  // Reads a DECLARED value out of the component's own stylesheet. Needed wherever `getComputedStyle` reports
+  // a used value and therefore cannot show what was authored - `inline-size` resolves to a plain length, so a
+  // clamp declared as `min(100%, ...)` is invisible to it. The sheet is only in the document once the
+  // component has been instantiated, which every caller here has already done.
+  function declaredValueFor(selectorText: string, property: string): string {
+    for (const sheet of Array.from(document.styleSheets)) {
+      let rules: CSSRule[] = [];
+
+      try {
+        rules = Array.from(sheet.cssRules);
+      } catch {
+        continue;
+      }
+
+      for (const rule of rules) {
+        if (!(rule instanceof CSSStyleRule) || !rule.selectorText.includes(selectorText)) {
+          continue;
+        }
+
+        const value = rule.style.getPropertyValue(property);
+
+        if (value !== '') {
+          return value;
+        }
+      }
+    }
+
+    return '';
+  }
+
+  // Finds a declaration that only applies below a breakpoint, returning it with the query that guards it.
+  // `getComputedStyle` cannot see it: the harness renders at a single width, so a rule inside a `max-width`
+  // query either applies to everything it measures or to nothing, and either way the query itself is
+  // invisible. Reading the sheet keeps the assertion about what was authored.
+  function narrowWidthRuleFor(
+    selectorText: string,
+    property: string,
+  ): { condition: string; value: string } | null {
+    for (const sheet of Array.from(document.styleSheets)) {
+      let rules: CSSRule[] = [];
+
+      try {
+        rules = Array.from(sheet.cssRules);
+      } catch {
+        continue;
+      }
+
+      for (const rule of rules) {
+        if (!(rule instanceof CSSMediaRule)) {
+          continue;
+        }
+
+        for (const inner of Array.from(rule.cssRules)) {
+          if (!(inner instanceof CSSStyleRule) || !inner.selectorText.includes(selectorText)) {
+            continue;
+          }
+
+          const value = inner.style.getPropertyValue(property);
+
+          if (value !== '') {
+            return { condition: rule.conditionText, value };
+          }
+        }
+      }
+    }
+
+    return null;
+  }
+
+  // A rem-valued token in pixels, so a measure assertion reads the vocabulary rather than restating a number
+  // that would then have to be kept in step with it by hand.
+  function remToPx(token: string): number {
+    const root = getComputedStyle(document.documentElement);
+
+    return Number.parseFloat(root.getPropertyValue(token)) * Number.parseFloat(root.fontSize);
+  }
+
   function host(): HTMLElement {
     return fixture.nativeElement as HTMLElement;
   }
@@ -439,6 +557,14 @@ describe('PortalSettingsComponent', () => {
     return query<HTMLInputElement>(`input[formcontrolname="${name}"]`);
   }
 
+  /**
+   * One input by its rendered id rather than by a control name, for a box that is deliberately NOT a form
+   * control - the read-only home directory being the only one.
+   */
+  function inputById(name: string): HTMLInputElement | null {
+    return query<HTMLInputElement>(`input#portal-settings-${name}`);
+  }
+
   /** One multi-line input, by its control name. */
   function textArea(name: string): HTMLTextAreaElement | null {
     return query<HTMLTextAreaElement>(`textarea[formcontrolname="${name}"]`);
@@ -486,7 +612,11 @@ describe('PortalSettingsComponent', () => {
 
     http.expectOne(settingsUrl(portalId)).flush(envelope(options.settings ?? settingsBody()));
     http.expectOne(portalUrl(portalId)).flush(envelope(options.detail ?? detailBody()));
-    http.expectOne(tabsUrl(portalId)).flush(envelope(options.pages ?? pageListing()));
+    // Matched on the PATH rather than on the whole address: the page listing is bounded now, so it carries
+    // paging arguments and the string overload of the expectation compares against the query string too.
+    http
+      .expectOne((candidate) => candidate.url === tabsUrl(portalId))
+      .flush(tabPage(options.pages ?? pageListing()));
 
     const candidates =
       options.administrators === undefined ? administratorListing() : options.administrators;
@@ -633,7 +763,10 @@ describe('PortalSettingsComponent', () => {
     http = TestBed.inject(HttpTestingController);
     notifications = TestBed.inject(NotificationService);
     router = TestBed.inject(Router);
-    navigate = spyOn(router, 'navigateByUrl').and.resolveTo(true);
+    // ⚠ `navigate`, NOT `navigateByUrl`. The screen moved to the array form because only that overload
+    // accepts the listing coordinate it now has to hand back, so a spy on `navigateByUrl` would record
+    // nothing and every departure assertion would pass vacuously.
+    navigate = spyOn(router, 'navigate').and.resolveTo(true);
     fixture.detectChanges();
   });
 
@@ -673,7 +806,7 @@ describe('PortalSettingsComponent', () => {
       expect(forZero.request.url.startsWith('http')).toBeFalse();
       forZero.flush(envelope(settingsBody()));
       http.expectOne(`${API}/portals/0`).flush(envelope(detailBody()));
-      http.expectOne(`${API}/portals/0/tabs`).flush(envelope([]));
+      http.expectOne((candidate) => candidate.url === tabsUrl(0)).flush(tabPage([]));
       answerAdministrators(0);
 
       fixture.componentRef.setInput('portalId', -1);
@@ -684,7 +817,7 @@ describe('PortalSettingsComponent', () => {
       expect(forMinusOne.request.url.startsWith('http')).toBeFalse();
       forMinusOne.flush(envelope(settingsBody({ portalId: -1 })));
       http.expectOne(`${API}/portals/-1`).flush(envelope(detailBody({ portalId: -1 })));
-      http.expectOne(`${API}/portals/-1/tabs`).flush(envelope([]));
+      http.expectOne((candidate) => candidate.url === tabsUrl(-1)).flush(tabPage([]));
       answerAdministrators(-1);
 
       fixture.detectChanges();
@@ -711,7 +844,7 @@ describe('PortalSettingsComponent', () => {
       expect(component.portalId).toBe(0);
       http.expectOne(settingsUrl(0)).flush(envelope(settingsBody()));
       http.expectOne(portalUrl(0)).flush(envelope(detailBody()));
-      http.expectOne(tabsUrl(0)).flush(envelope([]));
+      http.expectOne((candidate) => candidate.url === tabsUrl(0)).flush(tabPage([]));
       answerAdministrators(0);
 
       fixture.componentRef.setInput('portalId', '-1');
@@ -719,7 +852,7 @@ describe('PortalSettingsComponent', () => {
       expect(component.portalId).toBe(-1);
       http.expectOne(settingsUrl(-1)).flush(envelope(settingsBody({ portalId: -1 })));
       http.expectOne(portalUrl(-1)).flush(envelope(detailBody({ portalId: -1 })));
-      http.expectOne(tabsUrl(-1)).flush(envelope([]));
+      http.expectOne((candidate) => candidate.url === tabsUrl(-1)).flush(tabPage([]));
       answerAdministrators(-1);
     });
 
@@ -853,12 +986,14 @@ describe('PortalSettingsComponent', () => {
     it('issues EXACTLY ONE page-listing read, counted before it is answered', () => {
       fixture.componentRef.setInput('portalId', 7);
 
-      const listings: readonly TestRequest[] = http.match(tabsUrl(7));
+      const listings: readonly TestRequest[] = http.match(
+        (candidate) => candidate.url === tabsUrl(7),
+      );
 
       expect(listings.length).toBe(1);
       expect(listings[0].request.method).toBe('GET');
 
-      listings[0].flush(envelope(pageListing()));
+      listings[0].flush(tabPage(pageListing()));
       http.expectOne(settingsUrl(7)).flush(envelope(settingsBody({ portalId: 7 })));
       http.expectOne(portalUrl(7)).flush(envelope(detailBody({ portalId: 7 })));
       answerAdministrators(7);
@@ -875,7 +1010,7 @@ describe('PortalSettingsComponent', () => {
     it('reads the page listing EXACTLY ONCE for all four selectors', () => {
       // The listing was answered by `arrive`. Nothing further may be outstanding, and nothing
       // further may be issued by rendering all four selectors.
-      expect(http.match(tabsUrl(0)).length).toBe(0);
+      expect(http.match((candidate) => candidate.url === tabsUrl(0)).length).toBe(0);
       expect(selector('splashTabId')).not.toBeNull();
       expect(selector('homeTabId')).not.toBeNull();
       expect(selector('loginTabId')).not.toBeNull();
@@ -1048,7 +1183,7 @@ describe('PortalSettingsComponent', () => {
       http.expectOne(settingsUrl(3)).flush(envelope(settingsBody({ portalId: 3, homeTabId: 0 })));
       http.expectOne(portalUrl(3)).flush(envelope(detailBody({ portalId: 3 })));
       http
-        .expectOne(tabsUrl(3))
+        .expectOne((candidate) => candidate.url === tabsUrl(3))
         .flush(problemBody(404, { code: 'portal.not_found' }), {
           status: 404,
           statusText: 'Not Found',
@@ -1657,6 +1792,10 @@ describe('PortalSettingsComponent', () => {
       expect(sectionCaptions()).toEqual([
         'Security Settings',
         'Page Management',
+        // RESTORED, and in the legacy order: `sitesettings.ascx` declares Payment (L294) between Page
+        // Management (L239) and Other Settings (L385). Neither payment member could be configured anywhere
+        // in the application while the role screen still instructs an operator to configure a processor.
+        'Payment Settings',
         'Other Settings',
         'Host Settings',
       ]);
@@ -1753,9 +1892,14 @@ describe('PortalSettingsComponent', () => {
         text(field.querySelector('.form-field__label')),
       );
 
-      // ⚠ THE ORDER IS THE MARKUP'S AND IS ASSERTED, so a field cannot drift between groups unnoticed. The
-      // currency's LEGACY home was `dshPayment`, a section this screen drops entirely; rather than
-      // resurrect a whole section for one field it sits here, beside the other site-wide non-host values.
+      // ⚠ THE ORDER IS THE MARKUP'S AND IS ASSERTED, so a field cannot drift between groups unnoticed.
+      //
+      // THE CURRENCY STAYS HERE EVEN THOUGH ITS LEGACY HOME - `dshPayment` - NOW EXISTS AGAIN, and the
+      // decision is deliberate rather than left over. The original reason for moving it was that the
+      // section had been dropped, and that reason no longer holds; but its placement was never a reported
+      // defect, both placements serve the identical workflow, and moving a field on a screen nobody
+      // complained about is churn that risks a regression for no gain. Recorded in MIGRATION_NOTES.md so
+      // the divergence is not read later as an oversight.
       expect(group.querySelectorAll('app-form-field').length).toBe(4);
       expect(captions).toEqual([
         'Administrator',
@@ -1765,7 +1909,15 @@ describe('PortalSettingsComponent', () => {
       ]);
     });
 
-    it('renders NO group for appearance, payment, usability, secure transport or the stylesheet editor', () => {
+    /**
+     * ⚠ PAYMENT IS NO LONGER ON THIS LIST, AND ITS REMOVAL IS A FIX RATHER THAN A RELAXATION. Dropping the
+     * section left `PaymentProcessor` and `ProcessorUserId` configurable NOWHERE, while the role screen
+     * still instructs an operator to configure a processor - an instruction pointing at a control that did
+     * not exist. Both members were already carried by the detail resource and already accepted by the
+     * update resource, so only the affordance was missing. The four groups below remain absent because each
+     * configures a feature the plan excludes outright.
+     */
+    it('renders NO group for appearance, usability, secure transport or the stylesheet editor', () => {
       showAdvanced();
       ensureSectionOpen('other');
       ensureSectionOpen('host');
@@ -1773,10 +1925,12 @@ describe('PortalSettingsComponent', () => {
       const captions = sectionCaptions();
 
       expect(captions).not.toContain('Appearance');
-      expect(captions).not.toContain('Payment Settings');
       expect(captions).not.toContain('Usability Settings');
       expect(captions).not.toContain('SSL Settings');
       expect(captions).not.toContain('Stylesheet Editor');
+
+      // And the one that came back is here, so this case cannot pass by the section having vanished again.
+      expect(captions).toContain('Payment Settings');
     });
 
     it('moves to the advanced tab when it is chosen, and keeps the other tab\u2019s values', () => {
@@ -1868,6 +2022,10 @@ describe('PortalSettingsComponent', () => {
         'Home Page:',
         'Login Page:',
         'User Page:',
+        // The read-only home directory, which legacy also SHOWED and also refused to let anybody edit
+        // (`sitesettings.ascx:L289-L290`, `Enabled="False"`). It sits in Page Management because that is the
+        // section legacy declared it in.
+        'Home Directory:',
         'Administrator:',
         'Portal TimeZone:',
         'Currency:',
@@ -1888,6 +2046,10 @@ describe('PortalSettingsComponent', () => {
       expect(sectionCaptions()).toEqual([
         'Security Settings',
         'Page Management',
+        // RESTORED, and in the legacy order: `sitesettings.ascx` declares Payment (L294) between Page
+        // Management (L239) and Other Settings (L385). Neither payment member could be configured anywhere
+        // in the application while the role screen still instructs an operator to configure a processor.
+        'Payment Settings',
         'Other Settings',
         'Host Settings',
       ]);
@@ -2109,7 +2271,8 @@ describe('PortalSettingsComponent', () => {
 
       const latest = required(latestNotification(), 'a notification');
 
-      expect(latest.message).toContain('Only a host account may change');
+      // The refusal opens on the denial stem every app-authored refusal shares.
+      expect(latest.message).toContain('You do not have permission to change');
       expect(latest.message).toContain('hosting fee');
       expect(latest.message).toContain('disk space');
       expect(latest.message).toContain('page quota');
@@ -2303,10 +2466,181 @@ describe('PortalSettingsComponent', () => {
       const banner = required(query('app-error-banner'), 'the failure banner');
       const rendered = text(banner);
 
-      expect(rendered).toContain('hostFee');
+      // ⚠ THE LABEL ASSERTIONS ARE INVERTED FROM WHAT THIS ONCE REQUIRED. It demanded the banner contain
+      // `hostFee` and `portalName` - the contract's own property names - which is precisely the defect:
+      // it asked an operator to map identifiers they have never seen onto fields they can see, and two of
+      // the three names a settings refusal typically carries are not even recognisable. The banner now
+      // takes the SAME label dictionary the fields use, so it names Hosting Fee and Title.
+      expect(rendered)
+        .withContext('the field is named the way the form names it')
+        .toContain('Hosting Fee:');
       expect(rendered).toContain('The hosting fee must be a currency amount.');
-      expect(rendered).toContain('portalName');
+      expect(rendered).toContain('Title:');
       expect(rendered).toContain('A title is required.');
+      expect(rendered)
+        .withContext('and the wire property name is not quoted at an operator')
+        .not.toContain('hostFee');
+      expect(rendered).not.toContain('portalName');
+    });
+
+    // ⚠ THE POINT OF THE FIX: a refusal that names fields must reach those fields, not stop at the banner.
+    it('binds a refused save onto the controls it was refused about, and reveals the first', () => {
+      submit();
+
+      takeSave(0).flush(
+        problemBody(400, {
+          code: 'validation.failed',
+          title: 'One or more validation errors occurred.',
+          detail: 'The request was not valid.',
+          errors: {
+            HostFee: ['The hosting fee must be a currency amount.'],
+            PortalName: ['A title is required.'],
+          },
+        }),
+        { status: 400, statusText: 'Bad Request' },
+      );
+      fixture.detectChanges();
+
+      const invalidControls = host().querySelectorAll('[aria-invalid="true"]');
+
+      expect(invalidControls.length)
+        .withContext('every named control states its own invalidity')
+        .toBeGreaterThan(0);
+
+      const rendered: string = text(host());
+
+      expect(rendered)
+        .withContext('and the message appears beside the field, not only in the banner')
+        .toContain('The hosting fee must be a currency amount.');
+
+      // `hostFee` lives in the host-settings disclosure, which starts collapsed on the OTHER tab - so a
+      // rendered message for it proves the reveal walked both tabs and opened the disclosure.
+      const focused: Element | null = document.activeElement;
+
+      expect(focused)
+        .withContext('focus lands on a control rather than being dropped on the body')
+        .not.toBe(document.body);
+    });
+
+    // ⚠ THE ERRORS THAT ARE NOT ON SCREEN. Runtime verification found a `400` naming three fields leaving
+    // the operator on Basic with ONE error visible, while `hostFee` and `expiryDate` sat on a tab that
+    // advertised nothing - and because the unselected panel is DESTROYED rather than hidden, those two
+    // controls had no node in the document at all, so they were absent from the accessibility tree too. The
+    // screen meanwhile said "Correct the highlighted fields and try again" with one field highlighted.
+    it('marks the tab holding fields that were refused but are not on screen', () => {
+      submit();
+
+      takeSave(0).flush(
+        problemBody(400, {
+          code: 'validation.failed',
+          errors: { ExpiryDate: ['The expiry date must be in the future.'] },
+        }),
+        { status: 400, statusText: 'Bad Request' },
+      );
+      fixture.detectChanges();
+
+      // The reveal moves to the tab owning the only offending field, so ask about that tab by name rather
+      // than by which one happens to be selected.
+      expect(invoke<boolean>('tabHasErrors', 'advanced'))
+        .withContext('the tab owning the refused field is flagged')
+        .toBeTrue();
+      expect(invoke<boolean>('tabHasErrors', 'basic'))
+        .withContext('and a tab with nothing wrong on it is not')
+        .toBeFalse();
+
+      const flagged: readonly HTMLButtonElement[] = queryAll<HTMLButtonElement>(
+        '.portal-settings__tab--errored',
+      );
+
+      expect(flagged).withContext('exactly one tab carries the marker').toHaveSize(1);
+      expect(text(flagged[0]))
+        .withContext('and the marker is a WORD, not colour alone')
+        .toContain('has fields needing attention');
+    });
+
+    it('withdraws the tab marker once the refused field is corrected', () => {
+      submit();
+
+      takeSave(0).flush(
+        problemBody(400, {
+          code: 'validation.failed',
+          errors: { ExpiryDate: ['The expiry date must be in the future.'] },
+        }),
+        { status: 400, statusText: 'Bad Request' },
+      );
+      fixture.detectChanges();
+
+      expect(invoke<boolean>('tabHasErrors', 'advanced')).toBeTrue();
+
+      form().controls.expiryDate.setValue('2099-01-01');
+      fixture.detectChanges();
+
+      expect(invoke<boolean>('tabHasErrors', 'advanced'))
+        .withContext('a marker for a value no longer in the box must not still stand')
+        .toBeFalse();
+      expect(queryAll('.portal-settings__tab--errored')).toHaveSize(0);
+    });
+
+    it('flags no tab before anything has been submitted', () => {
+      // Every mandatory-but-empty field would otherwise mark its tab on first paint, telling the operator
+      // they have made mistakes on a form they have not filled in.
+      expect(invoke<boolean>('tabHasErrors', 'basic')).toBeFalse();
+      expect(invoke<boolean>('tabHasErrors', 'advanced')).toBeFalse();
+      expect(queryAll('.portal-settings__tab--errored')).toHaveSize(0);
+    });
+
+    // The map is hand-maintained against the template's two panels, so this is the guard that a control
+    // added to a panel and forgotten in the map fails the suite instead of silently losing its marker.
+    it('assigns every control in the form to exactly one tab', () => {
+      const assigned: Readonly<Record<string, string>> = member<Readonly<Record<string, string>>>(
+        'controlTabForTesting',
+      );
+      const inForm: readonly string[] = Object.keys(form().controls).sort();
+
+      expect(Object.keys(assigned).sort())
+        .withContext('every control is assigned a tab, and no phantom control is')
+        .toEqual(inForm);
+      expect(new Set(Object.values(assigned)))
+        .withContext('and only the two real tabs are named')
+        .toEqual(new Set(['basic', 'advanced']));
+    });
+
+    it('lets a server message expire as soon as the operator edits that field', () => {
+      submit();
+
+      takeSave(0).flush(
+        problemBody(400, {
+          code: 'validation.failed',
+          errors: { PortalName: ['A title is required.'] },
+        }),
+        { status: 400, statusText: 'Bad Request' },
+      );
+      fixture.detectChanges();
+
+      const fieldMessages = (): readonly string[] =>
+        queryAll<HTMLElement>('.form-field__error').map((element) => element.textContent ?? '');
+
+      expect(fieldMessages().join('\u0000'))
+        .withContext('the refusal reaches the field it was refused about')
+        .toContain('A title is required.');
+      expect(form().controls.portalName.invalid).toBeTrue();
+
+      // Angular replaces a control's error object whenever its validators re-run, which is what makes the
+      // server's complaint expire on its own rather than needing to be remembered and cleared.
+      form().controls.portalName.setValue('A New Title');
+      fixture.detectChanges();
+
+      expect(form().controls.portalName.invalid)
+        .withContext('a rejection of a value no longer in the box must not still stand')
+        .toBeFalse();
+      expect(fieldMessages().join('\u0000'))
+        .withContext('and it must not still be quoted beside the field')
+        .not.toContain('A title is required.');
+
+      // ⚠ THE BANNER IS DELIBERATELY NOT ASSERTED CLEAR. It renders the problem document, and holding the
+      // server's report until the next submit is the legacy behaviour: `AddModuleMessage` put server
+      // errors at page level and left them there. The fault being fixed was that they reached ONLY the
+      // banner, not that they reached it at all.
     });
 
     it('carries all five members of the error contract, plus the trace identifier', () => {
@@ -2345,7 +2679,7 @@ describe('PortalSettingsComponent', () => {
           statusText: 'Not Found',
         });
       http.expectOne(portalUrl(42)).flush(envelope(detailBody({ portalId: 42 })));
-      http.expectOne(tabsUrl(42)).flush(envelope([]));
+      http.expectOne((candidate) => candidate.url === tabsUrl(42)).flush(tabPage([]));
       answerAdministrators(42);
       fixture.detectChanges();
 
@@ -2355,18 +2689,30 @@ describe('PortalSettingsComponent', () => {
       expect(navigate).not.toHaveBeenCalled();
     });
 
-    it('refuses to send a rejected form, says why once, and issues no request', () => {
+    it('refuses to send a rejected form, states the rule at the field, and raises no summary', () => {
       const control = form().controls.expiryDate;
 
       control.setValue('nonsense');
       fixture.detectChanges();
       submit();
 
-      expect(screenText()).toContain('Correct the highlighted fields and try again.');
+      // ⚠ THE ONE VALIDATION-SUMMARY CONTRACT, AND THIS SPEC ASSERTED THE OLD BEHAVIOUR. Sixteen of the
+      // eighteen forms answered a client-blocked submit with touched controls and focus on the first invalid
+      // field; this one additionally raised a summary toast AND rendered the same sentence into a
+      // `role="alert"` paragraph of its own - a second assertive owner beside the shared banner, restating
+      // the news the focused field already carries. Both restatements are gone; the FIELD's own message is
+      // what the reader is given, and it is the specific and actionable one.
+      expect(screenText()).not.toContain('Correct the highlighted fields and try again.');
+      expect(queuedMessages().filter((message) => message.includes('Correct the highlighted')))
+        .withContext('no page-level summary at all')
+        .toEqual([]);
       expect(
-        queuedMessages().filter((message) => message.includes('Correct the highlighted')).length,
-      ).toBe(1);
-      expect(required(latestNotification(), 'a notification').severity).toBe('warning');
+        Array.from(
+          (fixture.nativeElement as HTMLElement).querySelectorAll('.form-field__error'),
+        ).map((node) => (node.textContent ?? '').trim()).length,
+      )
+        .withContext('the rule is stated where it was broken')
+        .toBeGreaterThan(0);
       // The afterEach verification proves nothing was sent.
     });
 
@@ -2505,7 +2851,7 @@ describe('PortalSettingsComponent', () => {
       expect(required(latestNotification(), 'a notification').message).toContain('deleted');
       // ⚠ THE ADDRESS IS REPLACED RATHER THAN PUSHED, so the browser's Back button cannot return to a
       // settings form for a record that has been destroyed.
-      expect(navigate).toHaveBeenCalledWith('/portals', { replaceUrl: true });
+      expect(navigate).toHaveBeenCalledWith(['/portals'], { queryParams: {}, replaceUrl: true });
 
       // ⚠ AND THE CONFIRMATION SURVIVES THE NAVIGATION IT IS RAISED WITH. The shell retires notifications
       // on a completed navigation, so a confirmation announced in the same task as the departure was swept
@@ -2634,7 +2980,7 @@ describe('PortalSettingsComponent', () => {
       arrive(0);
       invoke<void>('onCancel');
 
-      expect(navigate).toHaveBeenCalledWith('/portals');
+      expect(navigate).toHaveBeenCalledWith(['/portals'], { queryParams: {} });
     });
   });
 
@@ -2652,7 +2998,7 @@ describe('PortalSettingsComponent', () => {
       fixture.componentRef.setInput('portalId', 7);
       http.expectOne(settingsUrl(7)).flush(envelope(settingsBody({ portalId: 7 })));
       http.expectOne(portalUrl(7)).flush(envelope(detailBody({ portalId: 7 })));
-      http.expectOne(tabsUrl(7)).flush(envelope([]));
+      http.expectOne((candidate) => candidate.url === tabsUrl(7)).flush(tabPage([]));
 
       const read: TestRequest = http.expectOne(administratorsUrl(7));
 
@@ -2683,6 +3029,150 @@ describe('PortalSettingsComponent', () => {
         'Ada Lovelace (ada)',
         'Grace Hopper (grace)',
       ]);
+    });
+
+    // ⚠ WHAT WAS MEASURED, AND WHY A GEOMETRIC TEST BELONGS HERE. The selector was held at a fixed 144px with
+    // roughly 110px usable once the native arrow was deducted, while its longest real option - a display name
+    // and a login name together - measured 231.77px. Every administrator therefore rendered clipped mid-word,
+    // at every viewport from 320 through 1920: no width helped, because the measure never depended on the
+    // viewport in the first place.
+    it('is wide enough for its longest real option rather than held at a fixed measure', () => {
+      arrive(0);
+      showAdvanced();
+      ensureSectionOpen('other');
+
+      const control = required(selector('administratorId'), 'the administrator selector');
+      const slot = control.parentElement;
+
+      expect(slot).withContext('the selector sits in a slot').not.toBeNull();
+      expect(slot?.classList)
+        .withContext('the widest step, not one of the two narrow ones')
+        .toContain('portal-settings__control--name');
+      expect(slot?.classList)
+        .withContext('and specifically not the fixed medium step it used to carry')
+        .not.toContain('portal-settings__control--medium');
+
+      // The control itself is held to its slot at full width by the shared control rule, which is how it
+      // grows WITH the slot rather than past it.
+      expect(getComputedStyle(control).maxInlineSize)
+        .withContext('the control fills whatever the slot is given')
+        .toBe('100%');
+
+      // THE MEASURE IS RESOLVED, not stretched, and it carries a floor and a ceiling in one declaration.
+      // Both halves are load-bearing. The floor is the widest control step, so a column with room always
+      // yields a readable measure. The ceiling is the same step, because the grid now drops to ONE column
+      // wherever two would starve the track - so a field can be 766px wide, and a stretched slot would
+      // render a 600px select for one person's name beside 96px fee fields. It is expressed through `min()`
+      // against the column so it can never overflow its track: a bare length on a grid item pushes the whole
+      // form sideways instead of being clamped by it. The computed value keeps that function rather than
+      // resolving to one length, which is what is asserted.
+      // Two assertions, because `inline-size` reports its USED value here - a plain length - so the computed
+      // style alone cannot show that the clamp was declared at all. The declaration is read from the
+      // stylesheet and the outcome from the box.
+      const declared = declaredValueFor('.portal-settings__control--name', 'inline-size');
+
+      expect(declared)
+        .withContext('clamped to the column, so the measure can never overflow its track')
+        .toContain('min(100%');
+      expect(declared)
+        .withContext('and resolved from the shared widest-step token, not a local length')
+        .toContain('--control-inline-size-lg');
+
+      const step = remToPx('--control-inline-size-lg');
+
+      // 231.77px of text plus a 20.23px native arrow is the ink the longest real option needs; the step has
+      // to clear that, with the control's own padding and border on top of it.
+      expect(step)
+        .withContext('the widest step clears the 252px of ink the longest real option measured')
+        .toBeGreaterThan(252);
+
+      const used = Number.parseFloat(getComputedStyle(required(slot, 'the slot')).inlineSize);
+
+      expect(used)
+        .withContext('the slot takes the step, or the whole column when the column is narrower')
+        .toBeLessThanOrEqual(step + 0.5);
+      expect(used)
+        .withContext('and it is a real measure rather than a collapsed one')
+        .toBeGreaterThan(0);
+    });
+
+    // ⚠ THE NARROWEST WIDTH, WHERE THE MEASURE IS GENUINELY SCARCE and the fix is therefore a reclamation
+    // rather than a resize. A 320px viewport offers the page 305px, the shell spends 32px on its own inset and
+    // this fieldset another 24px on padding, leaving 247px against the 252px of ink the longest administrator
+    // option needs. Withdrawing the fieldset's inline padding from the GRID alone hands those 24px to the
+    // controls while the group head and its prose keep their inset - measured afterwards at 253px, and the
+    // whole value painted. The declaration is asserted from the stylesheet because the harness runs at one
+    // width and cannot enter the query it lives in.
+    it('hands the section inset to the fields at the narrowest widths', () => {
+      arrive(0);
+      showAdvanced();
+      ensureSectionOpen('other');
+
+      const reclamation = narrowWidthRuleFor('.portal-settings__grid', 'margin-inline');
+
+      expect(reclamation)
+        .withContext('the grid reclaims the padding, and only below a breakpoint')
+        .not.toBeNull();
+      expect(reclamation?.value)
+        .withContext('a negative inset, sized from the fieldset padding it cancels')
+        .toContain('-1');
+      expect(reclamation?.value)
+        .withContext('and expressed in the spacing vocabulary rather than as a raw length')
+        .toContain('--space-3');
+      expect(reclamation?.condition)
+        .withContext('withdrawn above the step, so wider viewports keep the inset')
+        .toContain('max-width');
+    });
+
+    // ⚠ THE STARVED MIDDLE OF THE RANGE. The field grid used to take its second column from a viewport query,
+    // `min-width: 64rem`, which asks whether the viewport is wide rather than whether a column can hold a
+    // field. At exactly 1024px the two answers diverged: two columns of 377px, of which a two-column field
+    // spends 150px on its label and 16px on its gap, left a 211px control track - NARROWER than the 247px the
+    // same control gets on a 320px phone, and 59px short of the ink its longest option needs. The clipping was
+    // therefore WORST in the middle of the range, and a 320/768/1440 sweep passed straight over it.
+    it('never takes a second field column at the cost of starving the control track', () => {
+      arrive(0);
+      showAdvanced();
+      ensureSectionOpen('other');
+
+      const grid = required(
+        host().querySelector<HTMLElement>('.portal-settings__grid'),
+        'the field grid',
+      );
+      const columns = getComputedStyle(grid).gridTemplateColumns;
+
+      // Content-driven rather than viewport-driven: the track list is repeated from the measure a field
+      // needs, so the column count follows the space available instead of a breakpoint guess.
+      expect(columns)
+        .withContext('the grid resolves its own column count from the measure a field needs')
+        .not.toBe('none');
+
+      const widths = columns
+        .split(' ')
+        .map((value) => Number(/^(\d+(?:\.\d+)?)px$/.exec(value)?.[1] ?? Number.NaN))
+        .filter((value) => !Number.isNaN(value));
+
+      expect(widths.length).withContext('the columns resolve to lengths').toBeGreaterThan(0);
+
+      // Whatever the harness viewport is, EVERY column the grid took must still be able to hold a
+      // two-column field: label column, the field's own column gap, and the widest control step. A column
+      // narrower than that is the 1024px defect, whichever width produced it.
+      const label = 150;
+      const gap = 16;
+      const inkOfLongestOption = 252;
+
+      for (const width of widths) {
+        // A single column is the fallback the grid drops to when two will not fit, and it is allowed to be
+        // narrower than the measure - that is the honest narrow-viewport case, where the field stacks and
+        // the control takes the whole width instead of sharing it with a label column.
+        if (widths.length === 1) {
+          break;
+        }
+
+        expect(width)
+          .withContext('a column the grid took must hold a label, a gap and a readable control')
+          .toBeGreaterThanOrEqual(label + gap + inkOfLongestOption);
+      }
     });
 
     it('pre-selects the stored administrator, reproducing the legacy pre-selection', () => {
@@ -2798,7 +3288,7 @@ describe('PortalSettingsComponent', () => {
       fixture.componentRef.setInput('portalId', 5);
       http.expectOne(settingsUrl(5)).flush(envelope(settingsBody({ portalId: 5 })));
       http.expectOne(portalUrl(5)).flush(envelope(detailBody({ portalId: 5 })));
-      http.expectOne(tabsUrl(5)).flush(envelope([]));
+      http.expectOne((candidate) => candidate.url === tabsUrl(5)).flush(tabPage([]));
       fixture.detectChanges();
       showAdvanced();
       ensureSectionOpen('other');
@@ -2822,7 +3312,7 @@ describe('PortalSettingsComponent', () => {
       fixture.componentRef.setInput('portalId', 9);
       http.expectOne(settingsUrl(9)).flush(envelope(settingsBody({ portalId: 9, administratorId: 8 })));
       http.expectOne(portalUrl(9)).flush(envelope(detailBody({ portalId: 9 })));
-      http.expectOne(tabsUrl(9)).flush(envelope([]));
+      http.expectOne((candidate) => candidate.url === tabsUrl(9)).flush(tabPage([]));
       fixture.detectChanges();
       showAdvanced();
       ensureSectionOpen('other');
@@ -2901,7 +3391,7 @@ describe('PortalSettingsComponent', () => {
         .expectOne(settingsUrl(7))
         .flush(envelope({ ...settingsBody({ portalId: 7 }), concurrencyToken: null }));
       http.expectOne(portalUrl(7)).flush(envelope(detailBody({ portalId: 7 })));
-      http.expectOne(tabsUrl(7)).flush(envelope(pageListing()));
+      http.expectOne((candidate) => candidate.url === tabsUrl(7)).flush(tabPage(pageListing()));
       answerAdministrators(7);
       fixture.detectChanges();
 
@@ -2952,9 +3442,11 @@ describe('PortalSettingsComponent', () => {
         'adminSkin',
         'adminContainer',
         'styleSheet',
-        // Payment.
-        'paymentProcessor',
-        'processorUserId',
+        // Payment. ⚠ `paymentProcessor` AND `processorUserId` ARE NO LONGER IN THIS LIST, for the same
+        // reason `currency` left it: the columns are in scope, the update resource accepts them, and having
+        // no control left them configurable NOWHERE while the role screen instructed an operator to
+        // configure a processor. The credential members below stay: the settings contract carries no
+        // credential at all, so there is nothing to bind and nowhere to send it.
         'processorPassword',
         'processorCredentialReference',
         // ⚠ `currency` IS NO LONGER IN THIS LIST, and its removal is the point rather than an omission.
@@ -3213,14 +3705,319 @@ describe('PortalSettingsComponent', () => {
       const rendered = revealEverything();
 
       expect(rendered).not.toContain('Appearance');
-      expect(rendered).not.toContain('Payment');
       expect(rendered).not.toContain('Usability');
       expect(rendered).not.toContain('SSL');
       expect(rendered).not.toContain('Stylesheet');
+
+      // ⚠ PAYMENT IS ASSERTED PRESENT, NOT ABSENT. It was on the list above, which is exactly what made the
+      // processor unconfigurable; the section is restored, so this case now guards the restoration instead
+      // of the removal - and a regression that dropped it again would fail here.
+      expect(rendered).toContain('Payment Settings');
+
+      // The credential affordances legacy carried are still absent, and deliberately so.
+      expect(rendered).not.toContain('Processor Password');
+      expect(rendered).not.toContain('Go To Payment Processor Website');
     });
   });
 
   // Q. ACCESSIBILITY.
+
+  describe('S. the restored payment settings, the bounded offset and the fixed home directory', () => {
+    beforeEach(() => {
+      holdsHostAccount.set(true);
+    });
+
+    // ------------------------------------------------------------------ P3
+
+    /**
+     * Pf-P3. Neither payment member could be configured ANYWHERE in the application, while the role screen
+     * instructs an operator to configure a payment processor. Both were already carried by the detail
+     * resource, already accepted by the update resource, and already returned unchanged by this screen's own
+     * request composer - so the only thing missing was the affordance.
+     */
+    it('hydrates both payment boxes from the stored values', () => {
+      arrive(0, {
+        settings: settingsBody({ paymentProcessor: 'PayPal', processorUserId: 'merchant-77' }),
+      });
+      showAdvanced();
+      ensureSectionOpen('payment');
+
+      expect(required(input('paymentProcessor'), 'the processor box').value).toBe('PayPal');
+      expect(required(input('processorUserId'), 'the processor user box').value).toBe('merchant-77');
+    });
+
+    it('carries an edited processor and user id to the server', () => {
+      arrive(0, { settings: settingsBody({ paymentProcessor: 'PayPal', processorUserId: 'old' }) });
+      showAdvanced();
+      ensureSectionOpen('payment');
+
+      form().controls.paymentProcessor.setValue('WorldPay');
+      form().controls.processorUserId.setValue('merchant-99');
+      fixture.detectChanges();
+
+      submit();
+
+      const write = takeSave(0);
+
+      expect(bodyOf(write).paymentProcessor).toBe('WorldPay');
+      expect(bodyOf(write).processorUserId).toBe('merchant-99');
+      completeSave(write);
+    });
+
+    it('writes an emptied payment box as absence rather than as an empty string', () => {
+      arrive(0, { settings: settingsBody({ paymentProcessor: 'PayPal', processorUserId: 'x' }) });
+      showAdvanced();
+      ensureSectionOpen('payment');
+
+      form().controls.paymentProcessor.setValue('');
+      form().controls.processorUserId.setValue('   ');
+      fixture.detectChanges();
+
+      submit();
+
+      const write = takeSave(0);
+
+      expect(bodyOf(write).paymentProcessor).toBeNull();
+      expect(bodyOf(write).processorUserId).toBeNull();
+      completeSave(write);
+    });
+
+    it('caps both payment boxes at the column length', () => {
+      arrive(0);
+      showAdvanced();
+      ensureSectionOpen('payment');
+
+      // `PortalConfiguration` declares `HasMaxLength(50)` for both columns.
+      expect(required(input('paymentProcessor'), 'the processor box').getAttribute('maxlength')).toBe('50');
+      expect(required(input('processorUserId'), 'the processor user box').getAttribute('maxlength')).toBe('50');
+    });
+
+    it('opens the payment group collapsed, as the legacy section head declared', () => {
+      arrive(0);
+      showAdvanced();
+
+      // `sitesettings.ascx:L294-L295` carries `IsExpanded="False"`.
+      expect(invoke<boolean>('isSectionOpen', 'payment')).toBeFalse();
+    });
+
+    // ------------------------------------------------------------------ P4
+
+    /**
+     * Pf-P4. Replacing a closed selector with a free-text box moved the value's legality from the LIST to
+     * the VALIDATOR, and no validator was added - so any integer at all was accepted and storable. The
+     * bounds are the legacy list's own: `Website/App_GlobalResources/TimeZones.xml` runs from `key="-720"`
+     * to `key="780"`.
+     */
+    it('accepts both ends of the range the legacy zone list offered', () => {
+      arrive(0);
+      showAdvanced();
+      ensureSectionOpen('other');
+
+      for (const accepted of ['-720', '780', '-480', '0']) {
+        form().controls.timeZoneOffset.setValue(accepted);
+        fixture.detectChanges();
+
+        expect(form().controls.timeZoneOffset.valid)
+          .withContext(`${accepted} is a real offset`)
+          .toBeTrue();
+      }
+    });
+
+    it('refuses an offset outside that range and names both bounds at once', () => {
+      arrive(0);
+      showAdvanced();
+      ensureSectionOpen('other');
+
+      for (const refused of ['-721', '781', '99999', '-99999']) {
+        form().controls.timeZoneOffset.setValue(refused);
+        form().controls.timeZoneOffset.markAsTouched();
+        fixture.detectChanges();
+
+        expect(form().controls.timeZoneOffset.valid)
+          .withContext(`${refused} is not an offset any zone uses`)
+          .toBeFalse();
+      }
+
+      // ⚠ BOTH BOUNDS IN ONE SENTENCE. Naming only the one that was crossed would reveal the other bound
+      // only after the first was satisfied - the sequencing defect the alias length messages had.
+      const messages = invoke<readonly string[]>('messagesFor', 'timeZoneOffset');
+
+      expect(messages.length).toBe(1);
+      expect(messages[0]).toContain('720');
+      expect(messages[0]).toContain('780');
+    });
+
+    it('reports the shape before the range, never both and never the range alone', () => {
+      arrive(0);
+      showAdvanced();
+      ensureSectionOpen('other');
+
+      form().controls.timeZoneOffset.setValue('not a number');
+      form().controls.timeZoneOffset.markAsTouched();
+      fixture.detectChanges();
+
+      const messages = invoke<readonly string[]>('messagesFor', 'timeZoneOffset');
+
+      expect(messages.length).withContext('one rule at a time when they are nested').toBe(1);
+      expect(messages[0]).toContain('whole number');
+      expect(messages[0]).not.toContain('780');
+    });
+
+    it('still accepts an empty offset, which means the portal keeps none', () => {
+      arrive(0);
+      showAdvanced();
+      ensureSectionOpen('other');
+
+      form().controls.timeZoneOffset.setValue('');
+      fixture.detectChanges();
+
+      expect(form().controls.timeZoneOffset.valid).toBeTrue();
+
+      submit();
+
+      const write = takeSave(0);
+
+      expect(bodyOf(write).timeZoneOffset).toBeNull();
+      completeSave(write);
+    });
+
+    // ------------------------------------------------------------------ P5
+
+    /**
+     * Pf-P5. The path was neither shown nor editable. Showing it is exact legacy parity - the legacy box is
+     * declared `Enabled="False"` at `sitesettings.ascx:L289-L290` - so this restores a display and
+     * deliberately does NOT add an edit.
+     */
+    it('shows the home directory and refuses to let it be edited', () => {
+      arrive(0, { settings: settingsBody({ homeDirectory: 'Portals/7' }) });
+      showAdvanced();
+
+      const box = required(inputById('homeDirectory'), 'the home-directory box');
+
+      expect(box.value).toBe('Portals/7');
+      expect(box.readOnly).withContext('not editable, as legacy was not').toBeTrue();
+
+      // ⚠ READ-ONLY AND NOT DISABLED. A disabled control leaves the tab order and is skipped by assistive
+      // technology, which would have hidden the value from the readers most in need of it.
+      expect(box.disabled).toBeFalse();
+      expect(box.getAttribute('tabindex')).not.toBe('-1');
+    });
+
+    it('holds the home directory outside the form, so no edit can reach the payload', () => {
+      arrive(0, { settings: settingsBody({ homeDirectory: 'Portals/7' }) });
+
+      expect(Object.keys(form().controls)).not.toContain('homeDirectory');
+
+      submit();
+
+      const write = takeSave(0);
+
+      // Returned unchanged, exactly as the legacy code-behind round-tripped its disabled box.
+      expect(bodyOf(write).homeDirectory).toBe('Portals/7');
+      completeSave(write);
+    });
+
+    it('renders an unread home directory as an empty box rather than as a marker', () => {
+      arrive(0, { settings: settingsBody({ homeDirectory: null }) });
+      showAdvanced();
+
+      // A dash inside a text box would read as a stored value one character long.
+      expect(required(inputById('homeDirectory'), 'the home-directory box').value).toBe('');
+    });
+
+    it('says why the home directory cannot be changed, and where the processor password went', () => {
+      arrive(0);
+      showAdvanced();
+      ensureSectionOpen('payment');
+
+      const rendered = screenText();
+
+      expect(rendered).toContain('cannot be changed here');
+      expect(rendered).toContain('Set it with your payment provider.');
+    });
+
+    // ------------------------------------------------------------------ the 656px gap
+
+    /**
+     * Arrives with the SETTINGS read refused and every other read answered, which is the state that produced
+     * the blank region.
+     *
+     * @param portalId The portal addressed.
+     */
+    function arriveWithRefusedSettings(portalId: number): void {
+      fixture.componentRef.setInput('portalId', portalId);
+
+      http.expectOne(settingsUrl(portalId)).flush(
+        {
+          type: 'urn:dnnmigration:error:auth.not_permitted',
+          title: 'Forbidden',
+          status: 403,
+          detail: 'The caller is not permitted to read this.',
+        },
+        { status: 403, statusText: 'Forbidden' },
+      );
+      http.expectOne(portalUrl(portalId)).flush(envelope(detailBody()));
+      http.expectOne((candidate) => candidate.url === tabsUrl(portalId)).flush(tabPage(pageListing()));
+      http.expectOne(administratorsUrl(portalId)).flush(envelope(administratorListing()));
+
+      fixture.detectChanges();
+    }
+
+    /**
+     * Pf-P2. The branch chain ran `no portal id -> loading -> settings present` with NO final alternative,
+     * so a refused read painted the page chrome and then a measured 656px of nothing: no statement of what
+     * had happened and no way to try again.
+     */
+    it('says the settings could not be read instead of leaving the page empty', () => {
+      arriveWithRefusedSettings(0);
+
+      const panel = query('app-empty-state');
+
+      expect(panel).withContext('the region says what it means').not.toBeNull();
+      expect(screenText()).toContain('could not be read');
+
+      // And no form is offered against settings nobody retrieved.
+      expect(query('form')).withContext('nothing to edit, so nothing is offered').toBeNull();
+    });
+
+    it('offers a way out of the unreadable state, and retries only the read that failed', () => {
+      arriveWithRefusedSettings(0);
+
+      const retry = queryAll<HTMLButtonElement>('app-empty-state button').find(
+        (candidate) => text(candidate) === 'Try again',
+      );
+
+      expect(retry).withContext('a way out exists').not.toBeUndefined();
+
+      required(retry, 'the retry command').click();
+      fixture.detectChanges();
+
+      // ⚠ ONE REQUEST, NOT FOUR. The screen issues four reads on arrival; three of them succeeded, and
+      // re-issuing them would turn one retry into four requests for no gain.
+      http.expectOne(settingsUrl(0)).flush(envelope(settingsBody()));
+      fixture.detectChanges();
+
+      expect(http.match(() => true)).withContext('only the failed read was re-issued').toHaveSize(0);
+      expect(query('form')).withContext('and the form arrives once the read succeeds').not.toBeNull();
+    });
+
+    it('does not claim an unreadable state while the first read is still outstanding', () => {
+      fixture.componentRef.setInput('portalId', 0);
+      fixture.detectChanges();
+
+      // Nothing has been answered yet, so the screen is LOADING and must not assert a failure.
+      expect(query('app-empty-state')).toBeNull();
+      expect(screenText()).not.toContain('could not be read');
+
+      http.expectOne(settingsUrl(0)).flush(envelope(settingsBody()));
+      http.expectOne(portalUrl(0)).flush(envelope(detailBody()));
+      http.expectOne((candidate) => candidate.url === tabsUrl(0)).flush(tabPage(pageListing()));
+      http.expectOne(administratorsUrl(0)).flush(envelope(administratorListing()));
+      fixture.detectChanges();
+
+      expect(query('form')).not.toBeNull();
+    });
+  });
 
   describe('Q. accessibility', () => {
     beforeEach(() => {
@@ -3277,6 +4074,7 @@ describe('PortalSettingsComponent', () => {
       ).toBeFalse();
     });
 
+    // 5 rather than 4: Payment Settings is a fifth disclosure on the advanced tab.
     it('makes every toggle a real button, and puts NONE of them out of the tab order', () => {
       showAdvanced();
       ensureSectionOpen('other');
@@ -3284,7 +4082,7 @@ describe('PortalSettingsComponent', () => {
 
       const toggles = queryAll<HTMLButtonElement>('.portal-settings__toggle');
 
-      expect(toggles.length).toBe(4);
+      expect(toggles.length).toBe(5);
       for (const toggle of toggles) {
         expect(toggle.tagName).toBe('BUTTON');
         expect(toggle.getAttribute('type')).toBe('button');
@@ -3322,9 +4120,11 @@ describe('PortalSettingsComponent', () => {
       ensureSectionOpen('other');
       ensureSectionOpen('host');
 
+      // 15 rather than 14: the read-only home directory is a labelled field too, and being read-only is
+      // exactly why its caption association matters - a disabled control would have been skipped entirely.
       const rendered = fields();
 
-      expect(rendered.length).toBe(14);
+      expect(rendered.length).toBe(15);
 
       for (const field of rendered) {
         expect(field.label.length).toBeGreaterThan(0);
@@ -3460,7 +4260,7 @@ describe('PortalSettingsComponent', () => {
       expect(component.portalId).toBe(0);
       http.expectOne(settingsUrl(0)).flush(envelope(settingsBody()));
       http.expectOne(portalUrl(0)).flush(envelope(detailBody()));
-      http.expectOne(tabsUrl(0)).flush(envelope([]));
+      http.expectOne((candidate) => candidate.url === tabsUrl(0)).flush(tabPage([]));
       answerAdministrators(0);
       fixture.detectChanges();
     });
@@ -3494,7 +4294,8 @@ describe('PortalSettingsComponent', () => {
 
       const raw = form().getRawValue();
 
-      expect(Object.keys(raw).length).toBe(19);
+      // 21, not 19: the two payment members are edited on this screen now rather than preserved unshown.
+      expect(Object.keys(raw).length).toBe(21);
       for (const value of Object.values(raw)) {
         expect(value).not.toBeNull();
         expect(value).not.toBeUndefined();
@@ -3543,7 +4344,7 @@ describe('PortalSettingsComponent', () => {
 
       http.expectOne(settingsUrl(0)).flush(envelope(settingsBody()));
       http.expectOne(portalUrl(0)).flush(envelope(detailBody()));
-      http.expectOne(tabsUrl(0)).flush(envelope(pageListing()));
+      http.expectOne((candidate) => candidate.url === tabsUrl(0)).flush(tabPage(pageListing()));
       answerAdministrators(0);
       fixture.detectChanges();
 
@@ -3590,6 +4391,143 @@ describe('PortalSettingsComponent', () => {
       for (const radio of queryAll<HTMLInputElement>('input[type="radio"]')) {
         expect(radio.name.length).toBeGreaterThan(0);
       }
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // THE TIME-ZONE UNIT NOTE — QA-11 (discovered while re-verifying it)
+  // -------------------------------------------------------------------------
+
+  /**
+   * The note explaining that the offset is in minutes used to be a SIBLING of its field, which made it its
+   * own item in this screen's two-column settings grid: measured at 1024, the note was laid out at x=214 in
+   * the left column while the input it describes sat at x=769 in the right one, so a sighted reader saw it
+   * attached to whichever field happened to be above or below. The wiring was never wrong — the input's
+   * `aria-describedby` always named it — so only sighted readers were misled.
+   */
+  describe('time-zone unit note', () => {
+    /** The note, reached by the identifier the input's description reference names. */
+    function note(): HTMLElement {
+      return required(
+        query<HTMLElement>('#portal-settings-timeZoneOffset-unit'),
+        'the time-zone unit note',
+      );
+    }
+
+    beforeEach(() => {
+      arrive(0);
+      showAdvanced();
+      ensureSectionOpen('other');
+    });
+
+    it('renders inside the field it describes, so a grid can no longer place it elsewhere', () => {
+      const field = required(
+        note().closest('app-form-field'),
+        'the field enclosing the time-zone unit note',
+      );
+
+      // The SAME field as the input, not merely some field: containment in a neighbouring one would satisfy
+      // a `closest` check while reproducing the defect exactly.
+      const input = required(
+        field.querySelector<HTMLInputElement>('input[formcontrolname="timeZoneOffset"]'),
+        'the offset input inside that field',
+      );
+
+      expect(input).not.toBeNull();
+    });
+
+    it('is still the target of the offset input\u2019s description reference', () => {
+      const input = required(
+        query<HTMLInputElement>('input[formcontrolname="timeZoneOffset"]'),
+        'the offset input',
+      );
+
+      expect(input.getAttribute('aria-describedby')).toBe('portal-settings-timeZoneOffset-unit');
+    });
+
+    it('carries the shared note class rather than this screen\u2019s notice class', () => {
+      // The shared class is what gives the note its own line inside the field's wrapping control row. This
+      // screen's own notice class would look identical and would NOT do that.
+      expect(note().classList.contains('form-note')).toBeTrue();
+      expect(note().classList.contains('portal-settings__notice')).toBeFalse();
+    });
+
+    it('sits outside the width-capped control wrapper, which is sized for a numeric offset', () => {
+      // 9rem is right for an offset in minutes and far too narrow for two sentences of prose.
+      expect(note().closest('.portal-settings__control')).toBeNull();
+    });
+  });
+  // ---------------------------------------------------------------------------------------------------
+  // EXPANDING A GROUP MOVES ONLY WHAT IT REVEALS
+  // ---------------------------------------------------------------------------------------------------
+
+  // ⚠ THE MEASURED DEFECT THIS PROVES CLOSED. The collapsed modifier used to zero the group's padding
+  // outright, so opening a group restored 12px on all four sides and moved the group's own HEAD down and to
+  // the right - out from under the pointer that had just clicked it - and moved everything below it by more
+  // than the panel that had appeared. Reported as a layout shift on disclosure expansion.
+  describe('expanding a group does not move the group head', () => {
+    it('keeps the block-start and inline padding identical in both states', () => {
+      arrive(0);
+      showAdvanced();
+
+      const closed = required(sectionFieldset('Other Settings'), 'the closed group');
+      expect(closed.classList).toContain('portal-settings__section--collapsed');
+
+      const closedStyle = getComputedStyle(closed);
+      const closedPadding = {
+        blockStart: closedStyle.paddingTop,
+        inlineStart: closedStyle.paddingLeft,
+        inlineEnd: closedStyle.paddingRight,
+      };
+      const closedHeadOffset = required(
+        closed.querySelector<HTMLElement>('.portal-settings__toggle'),
+        'the closed group head',
+      ).offsetTop;
+
+      // The padding this asserts about must actually exist, or the comparison below would pass on two
+      // zeroes. It comes from the global `fieldset` rule, which the test bundle loads.
+      expect(closedPadding.blockStart)
+        .withContext('the precondition: a group is padded, so a change to its padding would move its head')
+        .not.toBe('0px');
+
+      ensureSectionOpen('other');
+
+      const opened = required(sectionFieldset('Other Settings'), 'the open group');
+      expect(opened.classList).not.toContain('portal-settings__section--collapsed');
+
+      const openedStyle = getComputedStyle(opened);
+
+      expect(openedStyle.paddingTop)
+        .withContext('a head that moves down at the moment of expansion is the shift itself')
+        .toBe(closedPadding.blockStart);
+      expect(openedStyle.paddingLeft)
+        .withContext('and a head that moves sideways is the same defect on the other axis')
+        .toBe(closedPadding.inlineStart);
+      expect(openedStyle.paddingRight).toBe(closedPadding.inlineEnd);
+
+      expect(
+        required(opened.querySelector<HTMLElement>('.portal-settings__toggle'), 'the open group head')
+          .offsetTop,
+      )
+        .withContext('the head sits at the same offset inside its group in both states')
+        .toBe(closedHeadOffset);
+    });
+
+    it('keeps the trailing margin identical in both states, so nothing below moves twice', () => {
+      arrive(0);
+      showAdvanced();
+
+      const closedMargin = getComputedStyle(
+        required(sectionFieldset('Other Settings'), 'the closed group'),
+      ).marginBottom;
+
+      ensureSectionOpen('other');
+
+      expect(
+        getComputedStyle(required(sectionFieldset('Other Settings'), 'the open group')).marginBottom,
+      )
+        .withContext('the collapsed state used to shorten this, so expanding moved the rest of the screen')
+        .toBe(closedMargin);
     });
   });
 });
@@ -3679,4 +4617,6 @@ describe('PortalSettingsComponent selector and change-detection contract', () =>
 
     expect(rendered).toContain('This address does not identify a portal to configure.');
   });
+
+
 });

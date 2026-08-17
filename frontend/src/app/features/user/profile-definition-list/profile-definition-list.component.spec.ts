@@ -293,7 +293,21 @@ describe('ProfileDefinitionListComponent', () => {
   /** Mounts the screen and answers its one read with the supplied catalogue. */
   function arrive(rows: readonly ProfilePropertyDefinition[] = catalogue()): void {
     create();
-    expectRequest('GET', DEFINITIONS_URL, 'the catalogue read').flush(envelope(rows));
+
+    // ⚠ THE CATALOGUE READ IS OPTIONAL ON ARRIVAL, AND THAT IS THE BEHAVIOUR UNDER TEST ELSEWHERE. The
+    // declarations are a tenant-wide catalogue that changes only when an operator edits it, and re-asking for
+    // them on every arrival was measured as a defect. The store outlives the component, so a case that
+    // arrives more than once - the pattern probes below arrive once per candidate - sees the read on the
+    // first arrival only. Where a case needs the catalogue to change, it drives the explicit refresh.
+    const reads = httpMock.match(
+      (candidate) => candidate.method === 'GET' && candidate.url === DEFINITIONS_URL,
+    );
+
+    expect(reads.length)
+      .withContext('at most one catalogue read per arrival, and none once it is already held')
+      .toBeLessThanOrEqual(1);
+
+    reads.at(0)?.flush(envelope(rows));
     fixture.detectChanges();
   }
 
@@ -1233,6 +1247,45 @@ describe('ProfileDefinitionListComponent', () => {
         .toBeFalse();
     });
 
+    // ⚠ A CLOSED EDITOR IS NOT THE ONLY WAY THIS SCREEN HOLDS UNSAVED ENTRY, and the probe above is
+    // satisfied by a screen that still loses work. Measured on this screen: staging visibility changes with
+    // the bulk toggles and then leaving - by Cancel, by the sidebar, or by the browser's Back button - left
+    // immediately and discarded every staged row in silence, while the six other dirty editing routes all
+    // refused. The staged rows live in `pendingRows`, not in the create form, so a probe reading only
+    // `form.dirty` cannot see them however dirty the screen looks to the operator.
+    it('reports staged visibility changes as unsaved entry, with the editor closed', () => {
+      const tracker = TestBed.inject(UnsavedChangesTracker);
+
+      // One row short of all-required, so the first bulk toggle stages exactly that row - the same
+      // arrangement the bulk specification above uses, for the same reason: a toggle that changes nothing
+      // stages nothing.
+      arrive([
+        definition({ propertyDefinitionId: 121, propertyName: 'A', viewOrder: 0, required: true }),
+        definition({ propertyDefinitionId: 122, propertyName: 'B', viewOrder: 1, required: false }),
+      ]);
+
+      expect(tracker.isDirty())
+        .withContext('the control: nothing is staged yet, and the editor was never opened')
+        .toBeFalse();
+
+      toggle(bulkToggles().at(0));
+
+      expect(text())
+        .withContext('the screen itself reports the staged row, so the guard must see it too')
+        .toContain('1 unapplied change(s)');
+      expect(tracker.isDirty())
+        .withContext('a staged row with no write in flight is exactly what the guard must catch')
+        .toBeTrue();
+
+      press(APPLY_LABEL);
+      settleBatch(1);
+      settleReReads();
+
+      expect(tracker.isDirty())
+        .withContext('applied work is not unsaved work, so later departures must not be challenged')
+        .toBeFalse();
+    });
+
     it('is closed on arrival and opens in place without navigating', () => {
       arrive();
 
@@ -1654,7 +1707,22 @@ describe('ProfileDefinitionListComponent', () => {
       fixture.detectChanges();
 
       expect(query('app-confirm-dialog').length).toBe(1);
-      expect(text()).toContain(REMOVAL_MESSAGE);
+
+      // ⚠ THE QUESTION AND THE RECORD, BOTH. The body used to be the bare legacy sentence and named nothing
+      // at all, while the dialog is a real modal that covers the grid behind it - so an operator had no way
+      // to check which declaration was about to be destroyed. The sentence is still asserted verbatim, and
+      // the property's own name is asserted beside it.
+      const body: string = (query('.confirm-dialog__message')[0]?.textContent ?? '').trim();
+
+      expect(body.startsWith(REMOVAL_MESSAGE))
+        .withContext(`the measured question, verbatim, at the front of: ${body}`)
+        .toBeTrue();
+      // Self-validating: the name is taken from the catalogue's first declaration in position order rather
+      // than restated, so a fixture reordering cannot make this pass against the wrong record.
+      const firstDeclaration: string = catalogue()[0].propertyName;
+
+      expect(firstDeclaration).withContext('the row whose Delete was pressed').toBe('Nickname');
+      expect(body).toContain(firstDeclaration);
       // The confirmation must carry a real accessible name: the legacy overwrote its own "Delete" text with
       // a resource key that does not exist, leaving it empty.
       expect(dialogButton('Delete').textContent ?? '').toContain('Delete');
@@ -1817,9 +1885,17 @@ describe('ProfileDefinitionListComponent', () => {
       );
       fixture.detectChanges();
 
-      expect(query('app-empty-state').length).withContext('nothing was unwrapped').toBe(1);
-      expect(text()).not.toContain('Nickname');
+      // ⚠ THE PLACEHOLDER CHANGED, AND THE OLD ONE ASSERTED A FALSEHOOD. A paged body where a bare list
+      // belongs is a response this client cannot read, and it used to fall through to the shared empty
+      // state - which asserts that the site declares no profile properties. That exact conflation was
+      // measured on a real refusal: a `403` on an account's own profile rendered as "This site declares no
+      // profile properties, so there is nothing to show." while thirteen were declared.
+      expect(query('app-empty-state').length)
+        .withContext('a failure is never presented as an empty catalogue')
+        .toBe(0);
+      expect(text()).withContext('nothing was unwrapped').not.toContain('Nickname');
       expect(text()).not.toContain('Biography');
+      expect(text()).toContain('could not be read');
     });
   });
 

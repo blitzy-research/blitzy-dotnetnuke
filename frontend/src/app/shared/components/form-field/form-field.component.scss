@@ -53,16 +53,28 @@
   gap: var(--space-1);
 }
 
-// The label and its help affordance share one line, so the affordance sits beside the label text where the
-// legacy composite put it.
+// The caption's own row. ⚠ IT NO LONGER SHARES THE LINE WITH THE HELP AFFORDANCE, and that is why the
+// shrink workaround below is gone rather than merely unused. The affordance moved to the control wrapper for
+// the focus-order reason set out on it in the template, which hands this row's single remaining child the
+// whole measured label column back: the previous arrangement let flex resolve the column's shortfall by
+// SHRINKING both items before it would break a line, so a field with help handed its label text roughly
+// 99px of the 150px column and a two-word caption reflowed onto two lines. With one child there is no
+// shortfall to resolve, so `flex-wrap` had nothing left to wrap and is removed rather than left to read as
+// though it were still holding that line.
 .form-field__label-row {
   display: flex;
 
-  // WRAPPING, AND THE HELP AFFORDANCE IS WHAT MOVES. The row shares the measured 150px label column with
-  // the help button, and flex resolves a shortfall by SHRINKING items before it will break a line — so on a
-  // field with help the label text was handed roughly 99px of the column and a two-word label reflowed onto
-  // two lines.
-  flex-wrap: wrap;
+  // ⚠ THE ROW NO LONGER WRAPS, AND THIS REVERSES A DELIBERATE EARLIER CHOICE — QA-11. Wrapping was chosen so
+  // that a shortfall in the label column moved the HELP AFFORDANCE to its own line and left the label text
+  // the full width, rather than shrinking the label to roughly 99px of a 150px column and reflowing a
+  // two-word caption. Measured, that trade turned out to be the wrong way round: 43 of 60 role cells put
+  // Help on a line of its own, and on several rows it landed BELOW the control it was explaining — an
+  // explanation orphaned from the thing it explains, which is worse than a caption on two lines.
+  //
+  // With `nowrap` the shortfall is absorbed by the label instead: the caption is a block, so its TEXT wraps
+  // inside its own box while the affordance stays beside it, aligned to the caption's first baseline. A
+  // two-line label with its Help attached at the top right is exactly the arrangement the finding asks for.
+  flex-wrap: nowrap;
 
   align-items: baseline;
   gap: var(--space-2);
@@ -81,6 +93,24 @@
   font-weight: var(--font-weight-bold);
   line-height: var(--line-height-base);
   overflow-wrap: anywhere;
+}
+
+// ⚠ THE POINTER-TARGET FLOOR FOR A LABEL THAT DOES NOT WRAP ITS CONTROL. The global choice-control rules in
+// `_forms.scss` reach a label two ways - `label:has(input)` when the label CONTAINS the box, and `input +
+// label` when the label FOLLOWS it - and this component's arrangement is neither: the label is rendered
+// BEFORE the control and in a different element, associated only by `for`. So a checkbox field's label had
+// no floor at all and stood at its line height, measured well under the 24 that WCAG 2.2 SC 2.5.8 binds -
+// even though pressing the words toggles the control, which is exactly what makes the label part of the
+// activation target. Applied to a label that addresses a control (`for` is present) so a caption naming a
+// whole region, which activates nothing, is not padded for no reason.
+.form-field__label[for] {
+  // ⚠ THE FLOOR IS A MINIMUM HEIGHT AND NOT A FLEX BOX, AND THE DIFFERENCE IS MEASURABLE. Laying the caption
+  // out as a flex container turns its text into an anonymous flex item, which stops the caption breaking into
+  // line boxes of its own - so at a narrow measure the caption stopped wrapping and the help affordance was
+  // pushed BELOW the whole caption instead of staying beside its first line, which is the arrangement the
+  // label row's `nowrap` exists to produce. A minimum block size satisfies the activation target on its own:
+  // the target is the label's box, and pressing anywhere in it toggles the control it addresses.
+  min-block-size: var(--target-size-min);
 }
 
 .form-field__required {
@@ -157,10 +187,27 @@
   margin: 0;
   padding: var(--space-1);
 
-  border: var(--border-width) var(--border-style) currentColor;
+  // ⚠ THE BORDER NAMES A TOKEN AND NO LONGER INHERITS `currentColor`. Inherited, it computed BLACK — a value
+  // outside the closed colour vocabulary entirely — because this panel opens inside ordinary body text rather
+  // than beside a muted or branded run.
+  //
+  // THE STRONG BORDER TOKEN, NOT THE ORDINARY ONE, AND THAT IS A MEASURED CORRECTION. This panel is filled
+  // with the secondary surface, and so is the role form's Advanced section — so inside that section the panel
+  // was drawn on a fill identical to its own container, leaving a 1px #DCDCDC edge and a 12%-black shadow as
+  // the only things separating them. Measured at runtime it read as barely raised. #CCCCCC is the next step in
+  // the same closed vocabulary and separates the panel on either surface, so the panel is legible whether it
+  // opens on the page background or inside a filled section.
+  border: var(--border-width) var(--border-style) var(--color-border-strong);
   border-radius: var(--radius-sm);
   background-color: var(--color-surface);
   color: inherit;
+
+  // THE MIDDLE STEP OF THE ELEVATION SCALE, AND ITS CONSUMER. A help panel is a transient disclosure
+  // surface: it opens over the form it explains, so it belongs above the inline surfaces that carry step one
+  // (the error banner and the notifications) and below the modal dialog that carries step three. Naming it
+  // here is what makes the declared three-step scale a real three-step scale rather than two steps and a
+  // spare, and it costs no layout: a shadow paints outside the border box without displacing anything.
+  box-shadow: var(--elevation-2);
 
   font-size: var(--font-size-md);
   font-weight: var(--font-weight-normal);
@@ -188,10 +235,6 @@
   line-height: var(--line-height-base);
   overflow-wrap: break-word;
   white-space: pre-line;
-}
-
-:host(.form-field--inline) {
-  @include two-column-field;
 }
 
 // MIGRATION: the multi-line variant, for the 19 `TextMode="MultiLine"` controls across the in-scope
@@ -232,5 +275,62 @@
     flex-direction: column;
     align-items: stretch;
     gap: var(--space-1);
+  }
+}
+
+// ⚠ THIS BLOCK MUST STAY LAST IN THE FILE. The `md` media query above re-applies the shared two-column
+// arrangement to every field, and the choice layout below has to win over it at every width — that is the
+// whole point of the variant. It wins on specificity too, but source order is what makes it unarguable, so
+// nothing may be appended after this point.
+// THE ALWAYS-BESIDE VARIANT — and every one of its thirteen call sites wraps a CHECKBOX. Measured across the
+// application: `form-field--inline` appears on six membership settings, five module settings and two role
+// settings, and in all thirteen the projected control is `input type="checkbox"`. It is, in practice, the
+// CHOICE-FIELD layout, and it is defined here as one.
+//
+// ⚠ IT NO LONGER USES THE FIXED LABEL TRACK, AND THAT TRACK WAS THE ROOT CAUSE OF TWO SEPARATE FINDINGS.
+//
+//  · QA-06: the membership screen widens the shared label track to 300px for its long captions, and these
+//    switches sat in a two- or three-column grid whose cells are around 350px. A 300px label track inside a
+//    350px cell leaves the box roughly 30px from the NEXT setting's caption and about 300px from its own, so
+//    4 to 6 of the 14 switches read as belonging to the wrong label, and at 1024px three of them sat in the
+//    fieldset's right padding entirely.
+//  · QA-13: the same fixed `150px 128px` grid was kept at 375px, where the checkbox was measured stranded at
+//    x=199 while its own caption began at x=33.
+//
+// The track is now sized to the CAPTION, so the box always sits one spacing step after the words it belongs
+// to — at every width, in every cell, and regardless of what the screen sets the shared label track to. This
+// is the wrapping-label arrangement the profile-definitions bulk switches already use, expressed through the
+// shared field so that the label association, the help affordance and the error region all still come from
+// one place.
+//
+// GRID RATHER THAN FLEX, and that is the guarantee: a flex row would resolve a shortfall by wrapping the box
+// onto the next line, which is the separation this exists to prevent. A grid row cannot wrap, so the caption
+// absorbs the shortfall by reflowing inside its own `minmax(0, max-content)` track and the box stays put.
+:host(.form-field--inline) {
+  .form-field {
+    display: grid;
+    grid-template-columns: minmax(0, max-content) minmax(0, auto);
+    justify-content: start;
+    column-gap: var(--space-2);
+    row-gap: var(--space-1);
+    align-items: baseline;
+  }
+
+  .form-field__label-row {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .form-field__control {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  // Both span the full width rather than sitting under the control, because here the control column is one
+  // checkbox wide: a help panel or an error indented to start after the caption would have almost no measure
+  // to render in.
+  .form-field__help,
+  .form-field__errors {
+    grid-column: 1 / -1;
   }
 }

@@ -133,6 +133,26 @@ public sealed class AuthorizationCancellationTests(ApiTestFixture fixture)
                         });
                     });
 
+                // THE HOST-ACCOUNT QUESTION IS ANSWERED BY ITS OWN PROJECTION, and this stub is what keeps
+                // the suite measuring the authorisation path rather than a path the pipeline no longer takes.
+                // A performance review found the pipeline composing a whole account - membership join and
+                // credential-store read included - to read one flag, and the flag now has a member of its
+                // own. Both members are recorded here because the property under test is that NOTHING on
+                // this path opts out of cancellation, which is a claim about every read rather than one.
+                accounts
+                    .Setup(repository => repository.GetHostAccountFlagAsync(
+                        It.IsAny<int>(),
+                        It.IsAny<CancellationToken>()))
+                    .Returns((int _, CancellationToken cancellationToken) =>
+                    {
+                        lock (observed)
+                        {
+                            observed.Add(cancellationToken);
+                        }
+
+                        return Task.FromResult<bool?>(true);
+                    });
+
                 services.RemoveAll<IUserRepository>();
                 services.AddScoped(_ => accounts.Object);
             });

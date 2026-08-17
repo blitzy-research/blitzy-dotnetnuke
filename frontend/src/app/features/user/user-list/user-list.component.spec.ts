@@ -162,8 +162,24 @@ const COMMAND_HEADINGS: readonly string[] = Object.freeze([
 const AFFIRMATIVE_TEXT = 'Yes';
 const NEGATIVE_TEXT = 'No';
 
-/** The shared empty state's own default wording; this screen passes it no message. */
-const EMPTY_STATE_MESSAGE = 'No records found.';
+/**
+ * ⚠ THIS SCREEN NOW PASSES THE EMPTY STATE ITS OWN WORDING, AND THE CONSTANT MOVED WITH IT — QA-28. The
+ * shared default, "No records found.", is accurate and useless on this listing: the table opens EMPTY by
+ * design, before any query has been issued, so the first thing a reader met was a sentence that reported the
+ * outcome of a read that had never happened, above a table whose only affordances were outside it.
+ *
+ * There are two reasons the table can be empty and they need different sentences, so the component chooses
+ * between them. This is the one for a narrowing that matched nothing; {@link NO_QUERY_STATE_MESSAGE} is the
+ * one for a screen that has asked for nothing yet.
+ */
+const EMPTY_STATE_MESSAGE = 'No accounts match the current filter.';
+
+/** The wording shown while the tenant's opening-view policy has issued no query at all. */
+const NO_QUERY_STATE_MESSAGE =
+  'No accounts have been requested yet. Choose a letter, or select All, to list this site’s accounts.';
+
+/** The affordance that fills an empty table by listing every account. */
+const SHOW_ALL_ACCOUNTS_LABEL = 'List all accounts';
 
 const EDIT_PERMISSION = 'EDIT';
 
@@ -1740,9 +1756,18 @@ describe('UserListComponent', () => {
       // dialogue replaces it with a focus trap, escape handling and an accessible name the prompt had none
       // of.
       expect(dialog()).not.toBeNull();
-      expect(textIn(queryOrFail<Element>(openDialog(), 'p.confirm-dialog__message'))).toBe(
-        REMOVAL_CONFIRM_MESSAGE,
-      );
+      // ⚠ THE QUESTION IS ASSERTED AS A PREFIX AND THE RECORD BY NAME, WHICH IS STRONGER THAN THE EQUALITY
+      // THIS REPLACES. The body used to be the bare legacy sentence and named nothing - searched against
+      // every identifier on the page it matched none of them - while the dialog is a real modal that covers
+      // the grid, including the row being destroyed. Keeping the sentence as a PREFIX is what still proves
+      // the measured wording survives verbatim; asserting the name is what proves the operator can tell
+      // which record is at risk without seeing the row.
+      const body: string = textIn(queryOrFail<Element>(openDialog(), 'p.confirm-dialog__message'));
+
+      expect(body.startsWith(REMOVAL_CONFIRM_MESSAGE))
+        .withContext(`the measured question, verbatim, at the front of: ${body}`)
+        .toBeTrue();
+      expect(body).toContain('jbloggs');
       httpMock.expectNone(userUrl(7));
     });
 
@@ -2667,10 +2692,16 @@ describe('UserListComponent', () => {
 
       // The mark is hidden from assistive technology and the sentence beside it is hidden from sight, so
       // each cell carries exactly one of the two for each kind of reader.
+      //
+      // ⚠ THE TWO SPANS THIS SCREEN COMPOSED ITSELF ARE NOW THE SHARED ABSENT-VALUE COMPONENT — QA-15. The
+      // rendering is unchanged in every respect a reader can perceive; what changed is that the mark, its
+      // colour and the wording are now emitted from ONE place for all four listings, which is the defect a
+      // per-screen pair could not fix however correct each copy was.
       for (const heading of [ADDRESS_HEADING, TELEPHONE_HEADING]) {
         const cell = cellUnder(heading);
-        const mark = queryOrFail<HTMLElement>(cell, 'span.user-list__absent-value');
-        const description = queryOrFail<HTMLElement>(cell, 'span.user-list__row-mark-description');
+        const absent = queryOrFail<HTMLElement>(cell, 'app-absent-value');
+        const mark = queryOrFail<HTMLElement>(absent, 'span.absent-value__mark');
+        const description = queryOrFail<HTMLElement>(absent, 'span.absent-value__description');
 
         expect(mark.textContent).withContext('an em dash, not a word').toBe('\u2014');
         expect(mark.getAttribute('aria-hidden')).toBe('true');
@@ -2686,15 +2717,15 @@ describe('UserListComponent', () => {
 
       expect(textIn(cellUnder(ADDRESS_HEADING))).toBe('12 Example Street');
       expect(textIn(cellUnder(TELEPHONE_HEADING))).toBe('555-0100');
-      expect(cellUnder(ADDRESS_HEADING).querySelector('span.user-list__absent-value')).toBeNull();
-      expect(cellUnder(TELEPHONE_HEADING).querySelector('span.user-list__absent-value')).toBeNull();
+      expect(cellUnder(ADDRESS_HEADING).querySelector('app-absent-value')).toBeNull();
+      expect(cellUnder(TELEPHONE_HEADING).querySelector('app-absent-value')).toBeNull();
     });
 
     it('marks a whitespace-only profile value as absent, because nothing would be painted', () => {
       arrive(pageOf([userRow(7, { address: '   ', telephone: '' })]));
 
       for (const heading of [ADDRESS_HEADING, TELEPHONE_HEADING]) {
-        expect(cellUnder(heading).querySelector('span.user-list__absent-value')).not.toBeNull();
+        expect(cellUnder(heading).querySelector('app-absent-value')).not.toBeNull();
       }
     });
   });
@@ -2760,9 +2791,17 @@ describe('UserListComponent', () => {
       );
       fixture.detectChanges();
 
+      // ⚠ THE PLACEHOLDER CHANGED, AND THE OLD ONE ASSERTED A FALSEHOOD. A response this client could not
+      // decode used to fall through to the shared empty state, which reads "Nothing to Display / No records
+      // found." - so a contract violation was presented to an operator as a tenant with no accounts in it.
+      // The grid is now told the read FAILED and says only that the records could not be read, leaving the
+      // reason to the banner above it.
       expect(rows()).toHaveSize(0);
       expect(host().textContent ?? '').not.toContain('not-a-date');
-      expect(query('app-empty-state')).not.toBeNull();
+      expect(query('app-empty-state'))
+        .withContext('a failure is never presented as an empty database')
+        .toBeNull();
+      expect(host().textContent ?? '').toContain('could not be read');
     });
 
     it('renders a real instant, and renders it with its time as well as its date', () => {
@@ -3415,10 +3454,73 @@ describe('UserListComponent', () => {
       // authorised" from "not known".
       arrive(pageOf([userRow(7, { isApproved: false })]));
 
-      const painted: string = textIn(cellUnder(AUTHORIZED_HEADING));
+      const cell = cellUnder(AUTHORIZED_HEADING);
 
-      expect(painted).toBe(NEGATIVE_TEXT);
-      expect(painted).not.toBe('');
+      // ⚠ THE VISIBLE WORD IS STILL EXACTLY THE LEGACY WORD, AND THAT IS THE HALF OF THIS FACT THAT MUST NOT
+      // MOVE — QA-19. `users.ascx` L74-L79 bound the `Authorized` column through a yes/no formatter, so the
+      // painted text is `No` and nothing else. What is ADDED is the state treatment around it and a sentence
+      // beside it, because this column distinguished an account that can be used from one that cannot by a
+      // single character in identical colour, weight and slant, while the three listings beside it had each
+      // grown a deliberate non-colour vocabulary for exactly this shape of fact.
+      const state = queryOrFail<HTMLElement>(cell, 'span.user-list__row-state');
+      expect(textIn(state)).toBe(NEGATIVE_TEXT);
+
+      // The value stays atomic so it can never be broken across lines, and the sentence is exposed only to
+      // assistive technology.
+      expect(state.hasAttribute('data-atomic-value')).toBeTrue();
+      expect(textIn(queryOrFail<Element>(cell, 'span.user-list__row-mark-description'))).toBe(
+        'not authorised, cannot sign in',
+      );
+      expect(textIn(cell)).not.toBe('');
+    });
+
+    // The counterpart, and it is the reason the treatment is applied to the NEGATIVE value only: an
+    // authorised account is the ordinary state and must read as ordinary text, with no state span and no
+    // sentence beside it.
+    it('leaves an authorised account as plain text, with no state treatment', () => {
+      arrive(pageOf([userRow(7, { isApproved: true })]));
+
+      const cell = cellUnder(AUTHORIZED_HEADING);
+
+      expect(textIn(cell)).toBe(AFFIRMATIVE_TEXT);
+      expect(cell.querySelector('span.user-list__row-state')).toBeNull();
+      expect(cell.querySelector('span.user-list__row-mark-description')).toBeNull();
+    });
+
+    // ⚠ EXACTLY ONE COLUMN TRACK IS LEFT FLEXIBLE, AND THAT IS A REQUIREMENT RATHER THAN AN OMISSION — QA-09.
+    //
+    // Under `table-layout: fixed` the percentage tracks resolve against the table width and whatever is LEFT
+    // OVER goes to the columns that declared something else. With every column weighted, that leftover went to
+    // the command columns: each of the three asked for 3.25rem and painted 119.797px, wider than the account name beside them. One unweighted column absorbs the slack instead, so every
+    // other track resolves to exactly the share it declares.
+    it('leaves exactly one column track flexible so the declared tracks resolve as written', () => {
+      arrive();
+
+      const tracks = queryAll<HTMLTableColElement>('colgroup col');
+
+      expect(tracks.length).withContext('one track per rendered column').toBeGreaterThan(0);
+      expect(tracks.length).toBe(queryAll<Element>('thead th').length);
+
+      const flexible: readonly number[] = tracks
+        .map((track, index) => ({ index, declared: track.style.inlineSize }))
+        .filter((entry) => entry.declared === '')
+        .map((entry) => entry.index);
+
+      expect(flexible.length).withContext('one and only one flexible track').toBe(1);
+
+      // The command tracks declare their own token rather than inheriting the slack.
+      for (let index = 0; index < 3; index += 1) {
+        expect(tracks[index]?.style.inlineSize).toContain('--table-command-column-inline-size');
+      }
+
+      // Every remaining track declares a percentage, so nothing else can quietly become flexible.
+      tracks.forEach((track, index) => {
+        if (index < 3 || flexible.includes(index)) {
+          return;
+        }
+
+        expect(track.style.inlineSize).withContext(`track ${index}`).toMatch(/%$/);
+      });
     });
 
     it('names the table for a screen reader without painting a heading', () => {
@@ -3567,6 +3669,33 @@ describe('UserListComponent', () => {
 
       // The headings survive, so a reader can still see which columns the absent rows would have filled.
       expect(queryAll(HEADER_SELECTOR)).toHaveSize(13);
+
+      // ⚠ THE ZERO-RESULT SURFACE OFFERS A WAY FORWARD, AND IT HAD NONE — QA-28. The shared grid projects an
+      // action slot into its empty state and this screen left it unfilled, so a reader who narrowed to a
+      // letter that matched nothing met a sentence and nothing else. Two affordances now sit inside the table:
+      // list every account, and add one.
+      const actions = queryAll<HTMLElement>('app-empty-state .user-list__filter-action');
+      expect(actions.map((node) => textIn(node))).toEqual([
+        SHOW_ALL_ACCOUNTS_LABEL,
+        ADD_USER_LABEL,
+      ]);
+    });
+
+    // The other reason this table is empty, and it needs the OTHER sentence: a screen that has issued no
+    // query at all has not "matched nothing", and telling a reader it did is simply false.
+    it('explains an empty table that no query has been issued for', () => {
+      // The tenant view that issues nothing at all, which is the state the shared default sentence was
+      // most wrong about: nothing had been read, so nothing could have "matched nothing".
+      create();
+      answerSettings(membershipSettings({ displayMode: 2 }));
+      answerDefinitions();
+      httpMock.expectNone(USERS_URL);
+      fixture.detectChanges();
+
+      const placeholder = queryOrFail<Element>(host(), PLACEHOLDER_SELECTOR);
+
+      expect(textIn(placeholder)).toContain(NO_QUERY_STATE_MESSAGE);
+      expect(queryAll<HTMLElement>('app-empty-state .user-list__filter-action')).toHaveSize(2);
     });
 
     it('spans the empty and waiting messages across every rendered column', () => {
@@ -3843,7 +3972,7 @@ describe('UserListComponent', () => {
 
       // The catalogue is re-read without that property, exactly as it would be after a removal on the
       // neighbouring screen.
-      TestBed.inject(UserStore).loadProfileDefinitions();
+      TestBed.inject(UserStore).refreshProfileDefinitions();
       expectRequest('GET', PROFILE_DEFINITIONS_URL, 'the re-read declarations').flush(
         envelope([profileDefinition(SECOND_PROPERTY_NAME, 12)]),
       );
@@ -3868,7 +3997,7 @@ describe('UserListComponent', () => {
       arrive();
       chooseAxis(ODD_PROPERTY_NAME);
 
-      TestBed.inject(UserStore).loadProfileDefinitions();
+      TestBed.inject(UserStore).refreshProfileDefinitions();
       expectRequest('GET', PROFILE_DEFINITIONS_URL, 'the re-read declarations').flush(
         envelope([profileDefinition(SECOND_PROPERTY_NAME, 12)]),
       );
@@ -3890,7 +4019,7 @@ describe('UserListComponent', () => {
       arrive();
       chooseAxis(ODD_PROPERTY_NAME);
 
-      TestBed.inject(UserStore).loadProfileDefinitions();
+      TestBed.inject(UserStore).refreshProfileDefinitions();
       expectRequest('GET', PROFILE_DEFINITIONS_URL, 'the re-read declarations').flush(
         envelope(PROFILE_DEFINITIONS),
       );
@@ -4151,9 +4280,11 @@ describe('UserListComponent', () => {
 
       await enterAt('/users');
       create();
-      answerSettings();
-      answerDefinitions();
 
+      // ⚠ NEITHER TENANT-WIDE READ IS RE-ISSUED, AND THAT IS THE POINT. The store outlives the route, so on a
+      // fresh arrival the account policy and the declaration catalogue are already in hand; re-asking for
+      // them was measured as a defect. What must still start clean is the QUERY, which is what this
+      // specification goes on to assert.
       const read: TestRequest = expectListRead('the fresh read');
 
       expect(read.request.params.has(USER_NAME_PARAM))
@@ -4165,4 +4296,179 @@ describe('UserListComponent', () => {
       fixture.detectChanges();
     });
   });
+
+  // ---------------------------------------------------------------------------------------------------
+  // THE EMPTY-TABLE FLASH
+  // ---------------------------------------------------------------------------------------------------
+
+  // ⚠ THE MEASURED DEFECT THESE PROVE CLOSED, AND THIS SCREEN HELD ITS WORST INSTANCE. Arriving here clears
+  // the criteria and empties the page, and the accounts read is not issued until the tenant's POLICY has been
+  // read - so for a whole round trip the grid held no rows with no request in flight, and painted its
+  // zero-result surface over a tenant whose accounts had simply not been requested yet.
+  describe('an un-asked listing waits rather than claiming to be empty', () => {
+    it('shows the waiting placeholder, and NO zero-result surface, for the whole policy round trip', () => {
+      create();
+
+      // The policy and the declarations are outstanding; the accounts read does not exist yet.
+      expect(queryAll('td[data-placeholder] app-loading-spinner').length)
+        .withContext('the listing has not been asked about, so the grid is waiting')
+        .toBe(1);
+      expect(queryAll('app-empty-state').length)
+        .withContext('nothing may assert that this tenant has no accounts before one has been read')
+        .toBe(0);
+      expect(queryAll('.user-list__notice').length)
+        .withContext('and the no-query notice must not claim nothing was asked for while it is being decided')
+        .toBe(0);
+
+      answerSettings();
+      answerDefinitions();
+      answerListing(pageOf([userRow()]));
+
+      expect(queryAll('td[data-placeholder] app-loading-spinner').length).toBe(0);
+    });
+
+    it('shows the zero-result surface once a read has genuinely answered with nothing', () => {
+      create();
+      answerSettings();
+      answerDefinitions();
+      answerListing(pageOf([]));
+
+      expect(queryAll('td[data-placeholder] app-loading-spinner').length).toBe(0);
+      expect(queryAll('app-empty-state').length)
+        .withContext('a settled read that matched nothing IS the empty state')
+        .toBe(1);
+    });
+
+    it('shows the no-query notice, and no waiting placeholder, when the policy asks for nothing', () => {
+      create();
+      answerSettings(membershipSettings({ displayMode: 2 }));
+      answerDefinitions();
+
+      // No accounts read is issued at all, so nothing is outstanding to wait for.
+      expect(queryAll('.user-list__notice').length)
+        .withContext('the policy has answered, and its answer is that nothing is listed until asked')
+        .toBe(1);
+      expect(queryAll('td[data-placeholder] app-loading-spinner').length)
+        .withContext('a request that will never be made must not be waited for')
+        .toBe(0);
+    });
+  });
+
+  // =========================================================================
+  // ABSENT AND WHITESPACE-PADDED NAME VALUES
+  // =========================================================================
+
+  describe('absent and whitespace-padded name values', () => {
+    // The address and telephone cells already reported an absent value as a painted mark plus a hidden
+    // explanation, while the three NAME cells rendered a bare interpolation - so one row could report
+    // "not recorded" for its address and simply nothing for its name, leaving the reader to interpret an
+    // empty cell. These cases pin the two annotations and, just as importantly, pin that a cell never
+    // carries both at once.
+
+    /** Enables all three name columns, which the legacy defaults hide. */
+    function withNameColumns(): MembershipSettings {
+      return membershipSettings({
+        columnFirstName: true,
+        columnLastName: true,
+        columnDisplayName: true,
+      });
+    }
+
+    it('reports an absent display name with the SAME mark and description the address cell uses', () => {
+      arrive(pageOf([userRow(7, { displayName: '', address: '' })]), withNameColumns());
+
+      const name = cellUnder(DISPLAY_NAME_HEADING);
+      const address = cellUnder(ADDRESS_HEADING);
+
+      // The painted mark, hidden from assistive technology. Rendered by the SHARED absent-value component,
+      // which is the same element the address cell renders - two local spans beside one shared component in
+      // the same row is precisely how a listing comes to report absence two different ways.
+      expect(name.querySelector('app-absent-value .absent-value__mark')?.textContent).toBe('\u2014');
+      expect(name.querySelector('app-absent-value .absent-value__mark')?.getAttribute('aria-hidden'))
+        .toBe('true');
+
+      // The exposed description, hidden from the painted page.
+      expect(name.querySelector('app-absent-value .absent-value__description')?.textContent)
+        .toBe('not recorded');
+
+      // ⚠ THE CONVERGENCE ASSERTION. The two cells must be indistinguishable in how they report absence,
+      // because a row that reports absence two different ways disagrees with itself.
+      expect(name.innerHTML).toBe(address.innerHTML);
+    });
+
+    it('treats a name of nothing but whitespace as absent, not as padded', () => {
+      // The column is not nullable, so a name typed as spaces and a name never given both paint as nothing.
+      arrive(pageOf([userRow(7, { displayName: '    ' })]), withNameColumns());
+
+      const name = cellUnder(DISPLAY_NAME_HEADING);
+
+      expect(name.querySelector('app-absent-value')).not.toBeNull();
+      expect(name.querySelector('.user-list__padded-value'))
+        .withContext('one annotation per cell, never two')
+        .toBeNull();
+      expect(name.textContent).toContain('not recorded');
+    });
+
+    it('annotates a value stored with stray padding, and paints the trimmed text', () => {
+      arrive(pageOf([userRow(7, { displayName: '   Padded Jones   ' })]), withNameColumns());
+
+      const name = cellUnder(DISPLAY_NAME_HEADING);
+
+      expect(name.querySelector('.user-list__padded-value')?.getAttribute('aria-hidden')).toBe('true');
+      expect(name.querySelector('.user-list__row-mark-description')?.textContent)
+        .toBe('stored with leading or trailing spaces');
+      // Painted text is the trimmed form - which is what the browser would have shown anyway, the
+      // difference being that the padding is now declared rather than silently swallowed.
+      expect(name.textContent).toContain('Padded Jones');
+      expect(name.querySelector('app-absent-value'))
+        .withContext('padded is not absent')
+        .toBeNull();
+    });
+
+    it('annotates padding on either side independently', () => {
+      arrive(
+        pageOf([userRow(7, { firstName: '  Leading', lastName: 'Trailing  ', displayName: 'Clean Value' })]),
+        withNameColumns(),
+      );
+
+      expect(cellUnder(FIRST_NAME_HEADING).querySelector('.user-list__padded-value')).not.toBeNull();
+      expect(cellUnder(LAST_NAME_HEADING).querySelector('.user-list__padded-value')).not.toBeNull();
+      expect(cellUnder(DISPLAY_NAME_HEADING).querySelector('.user-list__padded-value'))
+        .withContext('an unpadded value carries no remark')
+        .toBeNull();
+    });
+
+    it('leaves an ordinary name completely unannotated', () => {
+      // The negative control. A remark on every row would be noise, and would make the remark meaningless.
+      arrive(pageOf([userRow(7, { firstName: 'Ada', lastName: 'Lovelace', displayName: 'Ada Lovelace' })]),
+        withNameColumns());
+
+      for (const heading of [FIRST_NAME_HEADING, LAST_NAME_HEADING, DISPLAY_NAME_HEADING]) {
+        const cell = cellUnder(heading);
+
+        expect(cell.querySelector('app-absent-value')).withContext(heading).toBeNull();
+        expect(cell.querySelector('.user-list__padded-value')).withContext(heading).toBeNull();
+        expect(cell.querySelector('.user-list__row-mark-description')).withContext(heading).toBeNull();
+      }
+
+      expect(cellUnder(DISPLAY_NAME_HEADING).textContent?.trim()).toBe('Ada Lovelace');
+    });
+
+    it('keeps the three name columns sortable after the change of column kind', () => {
+      // Converting a field column to a template column must not cost the column its ordering, which is
+      // exactly the kind of thing such a conversion silently drops.
+      arrive(pageOf([userRow()]), withNameColumns());
+
+      for (const heading of [FIRST_NAME_HEADING, LAST_NAME_HEADING, DISPLAY_NAME_HEADING]) {
+        const header = Array.from(host().querySelectorAll<HTMLElement>(HEADER_SELECTOR)).find(
+          (candidate) => (candidate.textContent ?? '').trim() === heading,
+        );
+
+        expect(header?.querySelector('button'))
+          .withContext(`${heading} is still orderable`)
+          .not.toBeNull();
+      }
+    });
+  });
+
 });

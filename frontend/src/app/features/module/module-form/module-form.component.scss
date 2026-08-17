@@ -100,16 +100,14 @@
 
 // THE TWO REPORTED STATES
 // An address that names no module, or a module that no longer exists.
-.module-form__notice {
-  max-inline-size: mx.breakpoint('md');
-  color: var(--color-text-muted);
-  line-height: var(--line-height-base);
-  overflow-wrap: break-word;
-}
-
 // COMMANDS — TYPE ONLY, NEVER PLACEMENT
-.module-form__action--primary {
-  font-weight: var(--font-weight-bold);
+// THE RELOCATED ACTION BAR. Laid out exactly as the three sibling forms lay theirs out: a wrapping row with
+// the shared inline gap, so the commands stack on a narrow viewport without a breakpoint of their own.
+.module-form__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
 }
 
 // The accessible danger colour, not the raw danger token. The raw token is the measured legacy red and

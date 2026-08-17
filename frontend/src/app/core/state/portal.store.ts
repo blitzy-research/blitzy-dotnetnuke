@@ -9,6 +9,7 @@ import { emptyPagedResult } from '../models/paged-result.model';
 import { isProblemDetails } from '../models/problem-details.model';
 import { PortalService } from '../services/portal.service';
 import {
+  contractProblem,
   failureCode,
   isConflictCode,
   isValidationProblemDetails,
@@ -16,6 +17,7 @@ import {
   problemSupportReference,
   transportProblem,
 } from '../utils/form-errors.util';
+import { isContractViolation } from '../utils/decode.util';
 
 import type { ApiMeta, SortDirection } from '../models/paged-result.model';
 import type {
@@ -172,6 +174,27 @@ function readProblem(cause: unknown, status: number | null): ProblemDetails | nu
  * @returns The classified failure.
  */
 function classifyFailure(cause: unknown): PortalFailure {
+  // ⚠ A RESPONSE THIS CLIENT COULD NOT READ IS ITS OWN CLASS, and it is tested first because it carries
+  // neither a status nor a body. Without this arm it fell through to `transportProblem(null)`, which words
+  // itself "the server could not be reached. Check your connection and try again." - measured on a listing
+  // whose member names had drifted, where that sentence appeared over a perfectly reachable server, beside
+  // an empty state claiming nothing matched the filter and a Try-again control that could never succeed.
+  // Reporting a decode failure as a connectivity failure also destroys the connectivity sentence's meaning
+  // everywhere else it is used.
+  if (isContractViolation(cause)) {
+    const document: ProblemDetails = contractProblem(cause.path);
+
+    return {
+      problem: document,
+      synthesised: true,
+      status: null,
+      severity: problemSeverity(null),
+      conflictCode: null,
+      validation: null,
+      supportReference: null,
+    };
+  }
+
   const status: number | null = readStatus(cause);
   const problem: ProblemDetails | null = readProblem(cause, status);
 
@@ -286,8 +309,20 @@ export class PortalStore implements OnDestroy {
   /** The last listing failure, classified, or `null` when the last attempt succeeded. */
   private readonly _listFailure = signal<PortalFailure | null>(null);
 
-  /** Whether a listing read has ever COMPLETED for this store instance. */
-  private listingRead = false;
+  /**
+   * Whether a listing read has ever SETTLED for this store instance - succeeded or failed.
+   *
+   * ⚠ A SIGNAL, AND PUBLISHED, BECAUSE A LISTING CANNOT OTHERWISE TELL "NOT ASKED YET" FROM "ASKED AND
+   * EMPTY". Held as a plain field it served only `refreshListingIfRead`, so a freshly created listing
+   * component had no way to know a read had not happened: for the change-detection pass between mounting and
+   * the request being issued, `listLoading` is still false and the held page is still empty, which every
+   * listing template read as a genuine zero-result and painted as "No records found." - the empty-table
+   * flash on every post-save return.
+   *
+   * Set on BOTH the success and the failure path, because a failure has also settled the question of whether
+   * a read happened; what to show for a failure is the failure's own concern.
+   */
+  private readonly _listSettled = signal<boolean>(false);
 
   // -------------------------------------------------------------------------
   // SELECTED PORTAL
@@ -410,6 +445,12 @@ export class PortalStore implements OnDestroy {
 
   /** Whether a listing request is in flight. */
   readonly listLoading = this._listLoading.asReadonly();
+
+  /**
+   * Whether a listing read has settled at least once, so a screen can tell an un-asked listing from an
+   * empty one. See {@link PortalStore._listSettled} for why this is published rather than private.
+   */
+  readonly listSettled = this._listSettled.asReadonly();
 
   /** The last listing failure, classified, or `null` when the last attempt succeeded. */
   readonly listFailure = this._listFailure.asReadonly();
@@ -675,11 +716,12 @@ export class PortalStore implements OnDestroy {
         next: (received: PortalListPage) => {
           this._page.set(received);
           this._listLoading.set(false);
-          this.listingRead = true;
+          this._listSettled.set(true);
         },
         error: (cause: unknown) => {
           this._listFailure.set(classifyFailure(cause));
           this._listLoading.set(false);
+          this._listSettled.set(true);
         },
       });
   }
@@ -698,7 +740,7 @@ export class PortalStore implements OnDestroy {
    * `GET /api/v1/portals?pageIndex=0` - measured six times for six saves, an exact one-for-one pairing.
    */
   refreshListingIfRead(): void {
-    if (!this.listingRead) {
+    if (!this._listSettled()) {
       return;
     }
     this.loadPortals();
@@ -1329,7 +1371,7 @@ export class PortalStore implements OnDestroy {
     // ALREADY CLOSED ONCE. It records that a listing read COMPLETED, and every other member of the listing
     // slice above is cleared here - so a latch that survived said "a listing is in hand" about a page that
     // had just been emptied, for a session that no longer existed.
-    this.listingRead = false;
+    this._listSettled.set(false);
 
     this._selectedPortalId.set(undefined);
     this._selectedPortal.set(null);

@@ -2,8 +2,6 @@
 
 @use '../../../../styles/mixins' as mx;
 
-$control-medium: calc(var(--space-8) + var(--space-8) + var(--space-8) + var(--space-6));
-$control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
 
 //  ROOT
 :host {
@@ -40,11 +38,6 @@ $control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
   background-color: transparent;
   border-color: transparent;
   font-size: var(--font-size-lg);
-  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE, and suppression without
-  // replacement is what leaves a control with no visible response at all.
-  &:active {
-    background-color: var(--color-selected);
-  }
 }
 
 .portal-settings__tab:enabled {
@@ -54,6 +47,23 @@ $control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
   }
 }
 
+// A tab holding fields the server rejected. Marked with a glyph AND a word, never with colour alone: the
+// whole point of the marker is to be perceivable, and a tint that carried the meaning by itself would fail
+// the operators most likely to need it. The sentence the glyph stands for is hidden with the global
+// `data-visually-hidden` attribute this application already uses for exactly that, rather than a rule of its
+// own here - the same treatment, declared once, and this stylesheet is against a size budget.
+.portal-settings__tab--errored,
+.portal-settings__tab-error-marker {
+  color: var(--color-danger);
+}
+
+// ⚠ THE WEIGHT IS ON THE GLYPH AND NOT ON THE LABEL, deliberately. Bold is already this strip's SELECTED
+// treatment, so bolding an errored tab's label made two different states look alike.
+.portal-settings__tab-error-marker {
+  margin-inline-start: var(--space-1);
+  font-weight: var(--font-weight-bold);
+}
+
 // Selected state, keyed on the ARIA attribute rather than on a presentational class. That satisfies the
 // --color-selected consumption contract structurally: the tint can never be painted without the state also
 // being exposed to assistive technology, because the attribute IS the selector.
@@ -61,11 +71,6 @@ $control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
   font-weight: var(--font-weight-bold);
   background-color: var(--color-selected);
   border-block-end-color: var(--color-primary);
-}
-
-// Press.
-.portal-settings__tab:enabled:active {
-  background-color: var(--color-selected);
 }
 
 .portal-settings__tab:disabled {
@@ -86,8 +91,11 @@ $control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
 .portal-settings__tab,
 .portal-settings__toggle {
   @include mx.focus-ring;
-  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE, and suppression without
-  // replacement is what leaves a control with no visible response at all.
+  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE BOTH RULES ABOVE SUPPRESS THE GLOBAL ONE by painting their
+  // background transparent, and suppression without replacement is what leaves a control with no visible
+  // response at all. This is the ONLY press declaration for either control: it is declared after the
+  // selected-state rule and paints the same tint, so restating it at heavier specificity - which this file
+  // did twice for the tab alone - changed nothing it did not already do.
   &:active {
     background-color: var(--color-selected);
   }
@@ -114,11 +122,18 @@ $control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
   gap: var(--space-3);
 }
 
+// ⚠ ONLY THE FRAME AND THE TRAILING PADDING GO, AND THE MEASURED DEFECT THIS CLOSES IS THE JUMP AT THE
+// MOMENT OF EXPANSION. This used to zero the padding outright and shorten the trailing margin, so opening a
+// section restored 12px of padding on all four sides and lengthened its margin - which moved the section's own
+// HEAD down and to the right, out from under the pointer that had just clicked it, and moved everything below
+// it by more than the panel that had appeared. Keeping the block-start and inline padding identical in both
+// states means expanding a section changes exactly one thing: the panel now occupying the space beneath its
+// head. The frame still goes, which is what the note below is about - a closed group must not read as an
+// empty box.
 .portal-settings__section--collapsed {
   border-color: transparent;
   border-radius: 0;
-  padding: 0;
-  margin-block-end: var(--space-3);
+  padding-block-end: 0;
 }
 
 .portal-settings__toggle {
@@ -199,14 +214,42 @@ $control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
   min-inline-size: 0;
 }
 
-// ⚠ #24 — THE TWO-COLUMN ARRANGEMENT, declared in ONE media block for both rules.
-@include mx.respond-above('lg') {
-  .portal-settings__grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
+// ⚠ #24 / #08 — THE TWO-COLUMN ARRANGEMENT IS DRIVEN BY THE MEASURE A FIELD NEEDS, NOT BY THE VIEWPORT.
+// This was a plain `respond-above('lg')` media block, and it asked the wrong question: whether the viewport
+// is wide, rather than whether a column can actually hold a field. At exactly 1024px the two answers
+// diverged badly. The grid took two columns of 377px, a two-column field spends
+// `--field-label-inline-size` (150px) on its label and `--space-4` (16px) on its gap, so the control track
+// collapsed to 211px - NARROWER than the 247px the same control gets at 320px, and 59px short of the
+// 252px of ink the longest administrator option needs. The clipping was therefore WORST in the middle of
+// the range and a 320/768/1440 sweep passed straight over it.
+//
+// Sizing the columns from `--field-two-column-measure` - label column plus gap plus the widest control step
+// - makes a starved track impossible by construction: the grid takes two columns only where two genuinely
+// fit and otherwise drops to one, so the control track never falls below the widest step while the layout
+// has room for it. `min(100%, ...)` keeps the floor from exceeding the grid itself, which would push the
+// columns past the panel and turn a clipped name into a sideways-scrolling form.
+// `--field-two-column-measure` is the label column plus the shared field's column gap plus the widest
+// control step, composed once in _tokens.scss so this screen and any other cannot disagree about it.
+.portal-settings__grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--field-two-column-measure)), 1fr));
+}
 
-  .portal-settings__field--wide {
-    grid-column: 1 / -1;
+// Spans whatever the grid resolved to, so this holds in the one-column arrangement as well as the two.
+.portal-settings__field--wide {
+  grid-column: 1 / -1;
+}
+
+// ⚠ #08 — AT THE NARROWEST WIDTHS THE FIELDS TAKE THE SECTION'S WHOLE MEASURE. Below `sm` every field is
+// stacked, so a control's width IS the grid's width, and the measure is genuinely scarce: at a 320px
+// viewport the page offers 305px, the shell spends 32px on its own inset and this fieldset another 24px on
+// padding, leaving 247px - against the 252px of ink (231.77px of text plus a 20.23px native arrow) that the
+// longest administrator option needs. Withdrawing the fieldset's inline padding from the grid alone, rather
+// than from the section, hands those 24px to the controls while the group head and its prose keep their
+// inset. The grid stops at the border edge, so nothing overflows and no sideways scrollbar appears: the
+// page still measures 305px against a 320px viewport.
+@include mx.respond-below('sm') {
+  .portal-settings__grid {
+    margin-inline: calc(-1 * var(--space-3));
   }
 }
 
@@ -224,11 +267,28 @@ $control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
 // The two narrow steps. Applied to the wrapper, so whichever control it holds is
 // capped with it. Everything else fills the track.
 .portal-settings__control--medium {
-  max-inline-size: $control-medium;
+  max-inline-size: var(--control-inline-size-md);
 }
 
 .portal-settings__control--narrow {
-  max-inline-size: $control-narrow;
+  max-inline-size: var(--control-inline-size-sm);
+}
+
+// ⚠ THE WIDEST STEP, and the only one expressed as a resolved measure rather than as a ceiling over a
+// stretched slot. The administrator selector's options carry a display name and a login name together, and
+// a fixed measure cannot fit them: the longest real option measured 231.77px of text against a 144px slot,
+// so the selected administrator was clipped mid-word at EVERY viewport - no width made it readable, because
+// the measure never depended on the viewport in the first place.
+//
+// `inline-size: min(100%, ...)` gives the slot a floor AND a ceiling in one declaration, which a lone
+// `min-inline-size` could not. The ceiling matters as much as the floor: with the grid now dropping to one
+// column wherever two would starve the track, a field can be 766px wide, and a stretched slot would have
+// rendered a 600px select for one person's name beside 96px fee fields. The `min(100%, ...)` form also
+// keeps the slot inside the column that holds it, because a bare length on a grid item overflows its track
+// rather than being clamped by it - which would trade a clipped name for a sideways-scrolling form. The
+// resolved measure is the legacy control cell, `width="325"` at Website/admin/Portal/SiteSettings.ascx.
+.portal-settings__control--name {
+  inline-size: min(100%, var(--control-inline-size-lg));
 }
 
 .portal-settings__control > :is([type='checkbox'], [type='radio']) {

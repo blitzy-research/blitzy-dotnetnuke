@@ -158,6 +158,32 @@ public interface IPortalService
         int? portalId,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Reports whether one leading path segment names a configured tenant beneath a host, so that a
+    /// single-page application can tell a child-portal prefix from a mistyped address.
+    /// </summary>
+    /// <param name="hostAuthority">
+    /// The authority the document was served from, INCLUDING its port when one is present, because that is
+    /// how an alias is stored. Supplied by the caller rather than read from ambient request state, so this
+    /// member is a function of its arguments and can be exercised without a request at all.
+    /// </param>
+    /// <param name="segment">The first path segment of the address being resolved, without separators.</param>
+    /// <param name="cancellationToken">Propagates notification that the work should be abandoned.</param>
+    /// <returns>
+    /// A successful outcome carrying the segment and whether it is addressable as a tenant. The outcome is
+    /// successful even when the segment names nothing: "this is not a tenant path" is an ANSWER, and the
+    /// caller acts on it by matching the segment as a route instead.
+    /// </returns>
+    /// <remarks>
+    /// A segment the topology could never have stored is answered without reading the store at all, because
+    /// such a value can match nothing. See <see cref="Dtos.Portal.TenantPathPrefixDto"/> for why a client
+    /// cannot settle this question for itself and why answering it discloses nothing an address does not.
+    /// </remarks>
+    Task<Result<TenantPathPrefixDto>> ResolveTenantPathPrefixAsync(
+        string hostAuthority,
+        string segment,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Reads one alias of one portal.</summary>
     /// <param name="portalId">Identifier of the portal the alias must belong to.</param>
     /// <param name="portalAliasId">Identifier of the alias to read.</param>

@@ -311,6 +311,15 @@ export class MemberServicesComponent implements OnInit {
   );
 
   /**
+   * Whether the CATALOGUE READ failed, so an empty grid means "nothing is known" rather than "this tenant
+   * offers no member services". Narrowed to the read, because a refused subscription says nothing about
+   * whether the catalogue on screen is trustworthy.
+   */
+  protected readonly listFailed: Signal<boolean> = computed(
+    () => this.store.failure()?.operation === 'loadMemberServices',
+  );
+
+  /**
    * The failure the banner renders, in the server's own words - and ONLY a failure of this panel's own
    * five operations. ⚠ THE OPERATION FILTER IS LOAD-BEARING NOW THAT THIS PANEL IS MOUNTED INSIDE ANOTHER
    * SCREEN. The store holds ONE failure slot shared by every account command, and the host screen renders

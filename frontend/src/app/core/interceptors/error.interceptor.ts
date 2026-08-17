@@ -2,7 +2,7 @@
 // One functional interceptor and three helpers.
 
 import { HttpErrorResponse } from '@angular/common/http';
-import type { HttpInterceptorFn } from '@angular/common/http';
+import type { HttpInterceptorFn, HttpRequest } from '@angular/common/http';
 import { inject } from '@angular/core';
 import { catchError, throwError } from 'rxjs';
 
@@ -30,12 +30,18 @@ import type { ProblemSummary } from '../utils/form-errors.util';
 /** Shown when no response arrived at all. */
 const NETWORK_UNAVAILABLE = 'The server could not be reached. Check your connection and try again.';
 
-/**
- * The statuses at which the server is REFUSING rather than FAILING. Used for one decision only - whether
- * to quote the trace identifier - and it is a different question from wording or severity, which is why
- * it is answered here rather than delegated.
+/*
+ * ⚠ A `REFUSAL_STATUSES` LIST USED TO LIVE HERE, AND ITS REMOVAL IS THE FIX RATHER THAN A TIDY-UP.
+ * It held [400, 403, 404, 409, 422, 429] and gated one decision: whether to quote the server's trace
+ * identifier. The reasoning was that a refusal is the system working as configured and so needs no
+ * diagnostic. That reasoning is wrong in exactly the cases that matter. The failures an operator most
+ * often needs help with ARE the refusals - a `404` on a record they were sent a link to, a `403` they
+ * believe they should have passed, a `409` whose other party they cannot see - so this withheld the only
+ * join key between what they saw and the request as the server recorded it, precisely where it was most
+ * needed. Worse, it made the two surfaces disagree: the banner rendered `Reference:` from the same
+ * document while the notification beside it showed none. Availability is now the only test - see
+ * {@link resolveReference}.
  */
-const REFUSAL_STATUSES: readonly number[] = Object.freeze([400, 403, 404, 409, 422, 429]);
 
 // ---------------------------------------------------------------------------
 // THE INTERCEPTOR
@@ -55,7 +61,9 @@ export const errorInterceptor: HttpInterceptorFn = (req, next) => {
     catchError((error: unknown) => {
       // Narrowed rather than assumed.
       if (error instanceof HttpErrorResponse && !presentedByCaller) {
-        announce(notifications, error);
+        // The OUTBOUND correlation identifier is handed over as well, because it is the only reference that
+        // survives a failure where no response arrives at all - see the status-zero branch of `announce`.
+        announce(notifications, error, outboundCorrelationId(req));
       }
 
       return throwError(() => error);
@@ -72,8 +80,13 @@ export const errorInterceptor: HttpInterceptorFn = (req, next) => {
  *
  * @param notifications The queue to report through.
  * @param error The failed response.
+ * @param requestCorrelationId The identifier this application put on the outbound request, or null.
  */
-function announce(notifications: NotificationService, error: HttpErrorResponse): void {
+function announce(
+  notifications: NotificationService,
+  error: HttpErrorResponse,
+  requestCorrelationId: string | null,
+): void {
   const status: number = error.status;
 
   if (status === 401) {
@@ -86,8 +99,12 @@ function announce(notifications: NotificationService, error: HttpErrorResponse):
   // or it was aborted. Resolved BEFORE the body is read, and that ordering is load-bearing rather than
   // tidy.
   if (status === 0) {
-    // No response arrived, so there is no server-side reference to quote.
-    notifications.notify(severity, NETWORK_UNAVAILABLE, null);
+    // No response arrived, so there is no server-supplied reference - but the identifier this application
+    // generated for the request still exists, and it is the ONLY thing a support request can be searched
+    // on for a failure of this kind. If the request did reach the API before the connection broke, the
+    // server logged this very value; if it never left the browser, quoting it costs nothing. Passing null
+    // here, which is what this branch used to do, discarded the one reference available.
+    notifications.notify(severity, NETWORK_UNAVAILABLE, requestCorrelationId);
 
     return;
   }
@@ -102,13 +119,35 @@ function announce(notifications: NotificationService, error: HttpErrorResponse):
   notifications.notify(
     severity,
     summary.message,
-    resolveReference(summary.supportReference ?? headerCorrelationId(error), status),
+    resolveReference(summary.supportReference ?? headerCorrelationId(error)),
   );
 
   // RETENTION IS ALREADY CALLER-OWNED, WHICH IS WHY REMOVING IT LOSES NOTHING. Every path that actually
   // redirects or ejects asks for it explicitly and at the point it knows a departure is coming: the
   // permission guard in three places, the authentication store, the session-teardown service, and the
   // module-import, portal-settings, role-form and membership-settings screens.
+}
+
+/**
+ * Reads back the correlation identifier this application put on the OUTBOUND request.
+ *
+ * ⚠ THIS IS THE ONLY REFERENCE THAT SURVIVES A FAILURE WITH NO RESPONSE. Every other route to a
+ * reference reads the answer - the problem document's `correlationId`, or the response header - and a
+ * request that was aborted, blocked or sent while the network was down has no answer to read. The value is
+ * still validated for canonical shape, so a header injected by a caller cannot put arbitrary text in front
+ * of an operator.
+ *
+ * @param req The outbound request, after the correlation-id interceptor has run.
+ * @returns The identifier, or null when the header is absent or not canonical.
+ */
+function outboundCorrelationId(req: HttpRequest<unknown>): string | null {
+  const header: string | null = req.headers.get(CORRELATION_ID_HEADER);
+
+  if (header === null) {
+    return null;
+  }
+
+  return isCanonicalCorrelationId(header) ? header : null;
 }
 
 /**
@@ -168,16 +207,21 @@ function readProblem(error: HttpErrorResponse): ProblemDetails | null {
 // ---------------------------------------------------------------------------
 
 /**
- * Decides whether the server's trace identifier should be quoted, and normalises it. The identifier is
- * the only join key between what an operator saw in the browser and the request as the server recorded
- * it.
+ * Normalises the server's trace identifier for quoting. The identifier is the only join key between what
+ * an operator saw in the browser and the request as the server recorded it.
+ *
+ * ⚠ THE STATUS NO LONGER PARTICIPATES, WHICH IS THE FIX. This returned null for every status in
+ * {@link REFUSAL_STATUSES}, so a `404` on a record an operator had been sent a link to - the single most
+ * commonly reported failure there is - produced a notification with nothing to quote, while the banner
+ * beside it showed the reference perfectly well from the same document. The two surfaces disagreed about
+ * the same failure. Availability is now the only test: if the server supplied an identifier, it is
+ * quoted.
  *
  * @param reference The support identifier from the problem document, or null when absent.
- * @param status The transport status of the failed response.
- * @returns The normalised identifier, or null when none should be quoted.
+ * @returns The normalised identifier, or null when the server supplied none.
  */
-function resolveReference(reference: string | null, status: number): string | null {
-  if (reference === null || isRefusal(status)) {
+function resolveReference(reference: string | null): string | null {
+  if (reference === null) {
     return null;
   }
 
@@ -186,12 +230,3 @@ function resolveReference(reference: string | null, status: number): string | nu
   return quoted.length > 0 ? quoted : null;
 }
 
-/**
- * Whether a status means the server refused the request rather than failed it.
- *
- * @param status The transport status of the failed response.
- * @returns True for a refusal, false for a fault or an unanticipated status.
- */
-function isRefusal(status: number): boolean {
-  return REFUSAL_STATUSES.includes(status);
-}

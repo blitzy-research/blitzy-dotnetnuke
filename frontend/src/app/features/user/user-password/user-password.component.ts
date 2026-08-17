@@ -11,6 +11,7 @@ import {
 import type { Signal } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import type { AbstractControl, ValidationErrors, ValidatorFn } from '@angular/forms';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { Router } from '@angular/router';
 
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
@@ -90,6 +91,15 @@ const EXPIRES_HELP = 'Date password will expire';
 
 /** `plOldPassword.Text` — note that the markup fallback said 'Old Password:'. */
 const CURRENT_PASSWORD_LABEL = 'Current Password:';
+
+/**
+ * The label on the read-only account field - #25.
+ *
+ * MIGRATION: a net addition. `Password.ascx` showed no account field at all, because a legacy postback form
+ * had no password manager to inform. The wording is the one the user listing and the user editor already use
+ * for the same fact, so one account is called one thing across the three screens that show it.
+ */
+const USERNAME_LABEL = 'User Name:';
 
 /** `plOldPassword.Help`. */
 const CURRENT_PASSWORD_HELP = 'Enter your current Password';
@@ -213,6 +223,30 @@ export interface ChangePasswordFormModel {
  * evaluation.
  * @returns A validator reporting at most the two group-level codes.
  */
+/**
+ * Reports the confirming control invalid while it differs from the replacement.
+ *
+ * Reads its sibling through the parent rather than being handed both values, so it can live ON the control
+ * whose box the reader has to be taken to. It mutates nothing - the group validator still owns the same
+ * comparison for the message and its ordering - so the two can never disagree: they evaluate identical
+ * expressions over identical values.
+ *
+ * @param control The confirming control.
+ * @returns The mismatch code, or `null` while the two agree or the replacement is not yet readable.
+ */
+function confirmationMatchesValidator(control: AbstractControl): ValidationErrors | null {
+  const parent: AbstractControl | null = control.parent;
+
+  if (parent === null) {
+    return null;
+  }
+
+  const replacement: string = readControlValue(parent, 'newPassword');
+  const confirmation: string = typeof control.value === 'string' ? control.value : '';
+
+  return replacement === confirmation ? null : { passwordMismatch: true };
+}
+
 function credentialGroupValidator(requiresCurrentPassword: () => boolean): ValidatorFn {
   return (group: AbstractControl): ValidationErrors | null => {
     const currentPassword = readControlValue(group, 'currentPassword');
@@ -276,10 +310,29 @@ function parseRouteUserId(value: unknown): number {
 // ---------------------------------------------------------------------------
 
 /**
+ * Why the caller is on this screen when they did not choose to be.
+ *
+ * It does not speculate about the cause - an administrator may have required the change, or the credential
+ * may be a shipped default - because the session carries the obligation without carrying its reason, and a
+ * guess presented as a fact would be worse than none.
+ */
+export const CREDENTIAL_REMEDIATION_EXPLANATION =
+  'Your password must be changed before you can use the rest of this site. Choose a new one and save;'
+  + ' everything else becomes available straight away.';
+
+/**
  * The Manage Password screen. ⚠ THE EXPORTED NAME IS PART OF THE ROUTING CONTRACT. The account feature's
  * route table reaches this class by name through a dynamic import, and a route that resolves to no export
  * renders nothing at all — a blank screen with no compilation error and no console message.
  */
+/**
+ * THE SUBTITLE, UNDER THE APPLICATION'S ONE SUBTITLE RULE: exactly one per screen, stating that screen's
+ * SCOPE - the record it acts on when the title does not already name it, otherwise what the screen is for
+ * in one line - and never a status, a count or a progress readout.
+ */
+const PAGE_SUBTITLE =
+  'Change the password on this account.';
+
 @Component({
   selector: 'app-user-password',
   standalone: true,
@@ -385,6 +438,21 @@ export class UserPasswordComponent {
    * absent current identity resolves to false here for the same reason. ⚠ Compared with strict equality
    * against an explicitly resolved key.
    */
+  /**
+   * Whether this screen is being shown BECAUSE the caller's own session cannot proceed without it.
+   *
+   * ⚠ THE SAME SILENT LANDING AS ITS PROFILE COUNTERPART, and with one extra consequence: this obligation
+   * was measured to be UNENFORCED as well as unexplained - an in-page navigation probe survived a click away
+   * from this screen. The enforcement now lives in the session gate, which sends a restricted caller back
+   * here from any other address; what belongs on the screen is the reason.
+   */
+  protected readonly landedForRemediation: Signal<boolean> = computed(
+    () => this.auth.mustChangePassword() && this.isSelf(),
+  );
+
+  /** The sentence that explains the landing. */
+  protected readonly remediationExplanation = CREDENTIAL_REMEDIATION_EXPLANATION;
+
   readonly isSelf: Signal<boolean> = computed(() => {
     const key = this.accountKey();
     const caller = this.auth.currentUser();
@@ -457,12 +525,24 @@ export class UserPasswordComponent {
   private currentCredentialRuleApplies = false;
 
   /**
-   * Reports this screen's unsaved entry to the tracker that guards both ways of leaving it. ⚠ THE ROUTE
-   * DECLARES `unsavedChangesGuard` AND THIS SCREEN USED TO REGISTER NOTHING, so the gate was answered by
-   * a reflective sweep over this component's fields.
+   * Registers this screen's unsaved-entry probe with the application's tracker. ⚠ WHY A REGISTRATION
+   * RATHER THAN A ROUTE-LEVEL READ. Leaving a screen happens two ways and only one of them is a router
+   * navigation: Cancel, an in-application link and the browser's Back button are navigations a route
+   * guard can refuse, while closing or reloading the tab is not, and only the browser's own unload prompt
+   * covers that - which needs the dirty state at an arbitrary moment rather than at a navigation.
+   *
+   * ⚠ THE BUSY EXCLUSION WAS REMOVED, AND ITS REMOVAL CLOSES A MEASURED HOLE. This predicate used to read
+   * `dirty && busy === false`, which reported the screen CLEAN for exactly as long as a write was in flight -
+   * so navigating away mid-save was admitted in silence, the departure destroyed the component, and
+   * `takeUntilDestroyed` cancelled the request. The operator lost the write and was told nothing. A form
+   * holding an unfinished write is the LEAST safe moment to leave, not the safest.
+   *
+   * The exclusion was written to stop the application's OWN post-save navigation being challenged, and that
+   * case is already covered properly: every success path replaces the address imperatively, which
+   * `unsavedChangesGuard` admits explicitly. Nothing here has to approximate it a second time.
    */
   private readonly unsavedEntry = inject(UnsavedChangesTracker).watch(
-    () => this.form.dirty && this.saving() === false,
+    () => this.form.dirty,
   );
 
   /**
@@ -479,9 +559,18 @@ export class UserPasswordComponent {
         // for an empty credential and for a short one, so there was one outcome and one message.
         validators: [Validators.required, Validators.minLength(MINIMUM_PASSWORD_LENGTH)],
       }),
-      // No validator of its own. Its only rule is the comparison with the replacement,
-      // which needs both values and therefore belongs to the group.
-      confirmPassword: new FormControl('', { nonNullable: true }),
+      // ⚠ #25 — IT CARRIES ITS OWN RULES, AND THAT IS WHAT MAKES THE REFUSAL REACHABLE. This control used to
+      // declare no validator at all, on the reasoning that the comparison needs both values and therefore
+      // belongs to the group - true of where the comparison is EVALUATED, and wrong about where its outcome
+      // has to appear. A group-only error leaves every control valid, so the confirming box was never
+      // `.ng-invalid`: it got no `aria-invalid`, the shared "focus the first invalid control" directive found
+      // nothing to focus, and a mismatch left focus sitting on the submit button while the message it had
+      // just produced was rendered somewhere the reader had not been taken to. A required rule of its own
+      // additionally makes an EMPTY confirmation report as the omission it is.
+      confirmPassword: new FormControl('', {
+        nonNullable: true,
+        validators: [Validators.required, confirmationMatchesValidator],
+      }),
     },
     { validators: [credentialGroupValidator(() => this.currentCredentialRuleApplies)] },
   );
@@ -579,6 +668,9 @@ export class UserPasswordComponent {
   // DERIVED WORDING
   // -------------------------------------------------------------------------
 
+  /** The one-line scope statement shown beneath the title. */
+  protected readonly pageSubtitle = PAGE_SUBTITLE;
+
   readonly pageTitle: Signal<string> = computed(() => {
     const account = this.user();
 
@@ -606,6 +698,16 @@ export class UserPasswordComponent {
   readonly resetHelpText: Signal<string> = computed(() =>
     this.isAdmin() && !this.isSelf() ? ADMIN_RESET_HELP : '',
   );
+
+  /**
+   * The wording of the safe exit.
+   *
+   * ⚠ MIGRATION: AN ADDED AFFORDANCE, NOT A PORTED ONE. `Website/admin/Users/Password.ascx` declares
+   * `cmdUpdate`, `cmdReset` and `cmdUpdateQA` and no cancel, while the portal, signup and role editors all
+   * declare `cmdCancel` - so this screen was reproduced faithfully and ended up as one of the two that an
+   * operator could not back out of. Recorded in MIGRATION_NOTES.md.
+   */
+  readonly cancelLabel: string = 'Cancel';
 
   /** The label for the submit affordance. */
   readonly submitLabel: Signal<string> = computed(() =>
@@ -694,6 +796,8 @@ export class UserPasswordComponent {
    * `plOldPassword.Text`. D9 — THE ONE LEGACY DEFECT THIS SCREEN CORRECTS is a label association, and it
    * is corrected because accessibility parity demands a working label.
    */
+  readonly usernameLabel = USERNAME_LABEL;
+
   readonly currentPasswordLabel = CURRENT_PASSWORD_LABEL;
 
   /** `plOldPassword.Help`. */
@@ -752,46 +856,85 @@ export class UserPasswordComponent {
   }
 
   /**
-   * The single pre-flight failure, resolved in the LEGACY ORDER. ⚠ THE ORDER IS L272 → L278 → L284 → L290
-   * AND IS REPRODUCED EXACTLY. Each arm of `cmdUpdate_Click` exited immediately, so the first failure won
-   * and the later checks never ran.
+   * EVERY unmet pre-flight rule, in the LEGACY ORDER (L272 -> L278 -> L284 -> L290).
    *
-   * @returns The failure, or null when nothing is wrong.
+   * ⚠ THE LEGACY ORDER IS STILL REPRODUCED EXACTLY, AND STILL DECIDES THE OUTCOME. What is no longer
+   * reproduced is the legacy screen's ONE-AT-A-TIME DISCLOSURE, and the distinction matters. Legacy
+   * `cmdUpdate_Click` was a chain of `If ... Exit Sub` arms, so the first unmet rule was the only one a
+   * person ever saw. That was an ARTIFACT OF EARLY EXIT, not a validation rule: a six-character
+   * replacement that also failed to match its confirmation was rejected for the mismatch, the operator
+   * corrected the mismatch, and the screen then rejected it again for a length requirement it had never
+   * stated. Disclosing a rule only once another is satisfied is the same defect class as reporting a
+   * weaker limit before the binding one, and it is fixed here by stating every unmet rule at once.
+   *
+   * WHAT IS PRESERVED, PROVABLY:
+   * - `firstFailure()` is `unmetRules()[0]`, so the PRIMARY message is byte-identical to the message the
+   *   legacy chain would have chosen for the same input.
+   * - This list is non-empty for exactly the inputs on which the legacy chain exited, so the ACCEPT/REJECT
+   *   decision is unchanged. The one suppression below cannot alter that, because it only withholds a rule
+   *   in a state where an earlier rule has already contributed an entry.
+   * - Every message is the measured legacy wording, unchanged.
+   *
+   * Each rule belongs to its own control, so the messages render beside the field each concerns rather
+   * than accumulating in one list.
+   *
+   * @returns Every unmet rule, legacy-ordered; empty when the form may be submitted.
    */
-  firstFailure(): CredentialFailure | null {
+  unmetRules(): readonly CredentialFailure[] {
     const controls = this.form.controls;
     const requiresCurrent = this.revisionDependentGate();
+    const failures: CredentialFailure[] = [];
 
-    // 1. L272 — the replacement and its confirmation must match.
+    // Read once: it both contributes a rule and gates the must-differ rule below.
+    const policyBreached = controls.newPassword.invalid;
+
+    // 1. L272 - the replacement and its confirmation must match.
     if (this.form.hasError('passwordMismatch')) {
-      return {
+      failures.push({
         field: 'confirmPassword',
         message: PASSWORD_UPDATE_MESSAGE['user.password.mismatch'],
-      };
+      });
     }
 
-    // 2. L278 — the replacement must satisfy the policy.
-    if (controls.newPassword.invalid) {
-      return { field: 'newPassword', message: this.policyMessage() };
+    // 2. L278 - the replacement must satisfy the policy. THIS IS THE RULE THAT USED TO BE HIDDEN
+    //    whenever the confirmation also failed to match.
+    if (policyBreached) {
+      failures.push({ field: 'newPassword', message: this.policyMessage() });
     }
 
-    // 3. L284 — the credential in force must be supplied, when the gate says it applies.
+    // 3. L284 - the credential in force must be supplied, when the gate says it applies.
     if (requiresCurrent && controls.currentPassword.value === '') {
-      return {
+      failures.push({
         field: 'currentPassword',
         message: PASSWORD_UPDATE_MESSAGE['user.password.missing'],
-      };
+      });
     }
 
-    // 4. L290 — the replacement must differ from the credential in force.
-    if (this.form.hasError('passwordNotDifferent')) {
-      return {
+    // 4. L290 - the replacement must differ from the credential in force. ⚠ WITHHELD WHILE THE POLICY IS
+    //    BREACHED, for two reasons: legacy could never surface both (L278 exited first), and a replacement
+    //    that must change to satisfy the policy cannot usefully also be told it must change to differ.
+    //    Because L278 has already contributed an entry in that state, withholding this one cannot turn a
+    //    rejection into an acceptance, and it cannot change which message leads.
+    if (!policyBreached && this.form.hasError('passwordNotDifferent')) {
+      failures.push({
         field: 'newPassword',
         message: PASSWORD_UPDATE_MESSAGE['user.password.not_different'],
-      };
+      });
     }
 
-    return null;
+    return failures;
+  }
+
+  /**
+   * The pre-flight failure that DECIDES the outcome, and the one a reader should treat as primary.
+   *
+   * Derived from {@link unmetRules} rather than resolved separately, so the two can never disagree about
+   * whether the form may be submitted.
+   *
+   * @returns The leading failure, or null when nothing is wrong.
+   */
+  firstFailure(): CredentialFailure | null {
+    return this.unmetRules()[0] ?? null;
   }
 
   /**
@@ -804,9 +947,12 @@ export class UserPasswordComponent {
     const control: AbstractControl = this.form.controls[field];
 
     if (this._submitAttempted() || control.touched) {
-      const failure = this.firstFailure();
+      // The rule for THIS control, drawn from the full set rather than from the leading failure alone -
+      // which is what lets a length requirement and a mismatch be stated at the same time, each beside
+      // the field it concerns. At most one rule can resolve per control.
+      const failure = this.unmetRules().find((candidate) => candidate.field === field);
 
-      if (failure !== null && failure.field === field) {
+      if (failure !== undefined) {
         return failure.message;
       }
     }
@@ -841,6 +987,16 @@ export class UserPasswordComponent {
     return this.fieldError('confirmPassword');
   }
 
+  /**
+   * The account the credential belongs to, or `null` before it has been read.
+   *
+   * ⚠ #25 — Rendered as a read-only field so a password manager can attribute what it saves. @see the
+   * template note beside the field.
+   */
+  accountUsername(): string | null {
+    return this.user()?.username ?? null;
+  }
+
   /** @returns Whether to disable the affordance. */
   submitDisabled(): boolean {
     return this.saving() || this.accountKey() === null || !this.operationPermitted();
@@ -860,6 +1016,17 @@ export class UserPasswordComponent {
    * loop that no test with a stubbed transport would ever reveal.
    */
   constructor() {
+    // 0. ⚠ #25 — THE CONFIRMING CONTROL IS RE-EVALUATED WHEN THE REPLACEMENT CHANGES. A control's validators
+    //    run when THAT control changes and at no other time, so without this the confirming box would keep a
+    //    mismatch error after the replacement had been corrected to agree with it - the reader fixes the
+    //    field the message pointed at and the message stays. `emitEvent: false` stops the re-evaluation from
+    //    raising a further change event, which is what keeps this from feeding itself.
+    this.form.controls.newPassword.valueChanges
+      .pipe(takeUntilDestroyed())
+      .subscribe(() => {
+        this.form.controls.confirmPassword.updateValueAndValidity({ emitEvent: false });
+      });
+
     // 1. THE ROUTE DRIVES THE READ. Re-runs when the route names a different account,
     //    which is what makes an in-place navigation from one account to another correct.
     effect(() => {
@@ -986,6 +1153,21 @@ export class UserPasswordComponent {
   // -------------------------------------------------------------------------
   // ACTIONS
   // -------------------------------------------------------------------------
+
+  /**
+   * Abandons the credential form and returns to the account this screen administers.
+   *
+   * ⚠ WHERE IT GOES DEPENDS ON WHO IS HERE, and both destinations are the screen the operator came from. An
+   * administrator reached this form from the account editor, so that is where cancelling returns them; a
+   * caller changing their own credential reached it from the application root. The departure runs through the
+   * router WITHOUT replacing the address, so the unsaved-entry gate sees it and asks before anything typed is
+   * discarded.
+   */
+  onCancel(): void {
+    const destination = this.isSelf() ? '/' : `/users/${String(this.userId())}`;
+
+    void this.router.navigateByUrl(destination).catch(() => false);
+  }
 
   /**
    * Handles the form's submission. Reproduces `cmdUpdate_Click`: the four pre-flight rules are resolved

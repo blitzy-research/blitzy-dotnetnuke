@@ -121,8 +121,15 @@
   flex: none;
   align-items: center;
   justify-content: center;
-  min-inline-size: var(--space-6);
-  min-block-size: var(--space-6);
+  // ⚠ THE MINIMUM IS THE TARGET TOKEN, NOT A SPACING STEP — QA-18. This used to read `var(--space-6)`, which
+  // is 24px, and 24×24 was exactly what the control measured: the AA floor for a control with no inline
+  // exemption, met and not exceeded, on a transient control that disappears on its own and therefore gives
+  // an operator one attempt at it. A dismissal that is missed re-triggers the toast's own hover-hold, so the
+  // cost of a mis-tap here is a notification that will not go away.
+  //
+  // Nothing else changes: the glyph is centred by the flex rules above, so the box grows around it.
+  min-inline-size: var(--target-size-min);
+  min-block-size: var(--target-size-min);
   padding: 0;
   border: none;
   border-radius: var(--radius-sm);

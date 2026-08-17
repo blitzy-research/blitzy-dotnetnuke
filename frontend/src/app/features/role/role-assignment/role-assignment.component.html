@@ -1,4 +1,4 @@
-<app-page-header [title]="title()">
+<app-page-header [title]="title()" [subtitle]="pageSubtitle">
   <a class="page-action role-assignment__module-action" [routerLink]="['/roles']">{{ text.cancel }}</a>
 </app-page-header>
 
@@ -58,6 +58,12 @@
             <app-loading-spinner size="small" [label]="text.accountChoicesLoading" />
           } @else if (accountChoicesEmpty()) {
             <p class="role-assignment__lookup-note">{{ text.accountChoicesEmpty }}</p>
+          } @else if (choiceAnnotationIncomplete()) {
+            <!--
+              U21 - The marking is bounded by what has been read, so the bound is stated rather than left
+              to be discovered. The same principle the credential and search screens apply.
+            -->
+            <p class="role-assignment__lookup-note">{{ text.accountChoicesAnnotationPartial }}</p>
           }
         </app-form-field>
       } @else {
@@ -226,8 +232,11 @@
     <app-data-table
       [columns]="columns()"
       [rows]="assignments()"
+      [totalCount]="totalCount()"
+      [rowOffset]="pageIndex() * pageSize()"
       [rowKey]="assignmentRowKey"
       [loading]="assignmentsLoading()"
+      [failed]="assignmentsFailed()"
       [sortBy]="sortColumnKey()"
       [sortDir]="sortDirection()"
       (sortChange)="onSortChange($event)"
@@ -260,7 +269,7 @@
   -->
   @if (pendingRemoval() !== null) {
     <app-confirm-dialog
-      [message]="text.confirmRemoval"
+      [message]="removalMessage()"
       [confirmLabel]="text.delete"
       [danger]="true"
       (confirm)="confirmRemoval()"
@@ -303,16 +312,50 @@
   years ago, one that begins years hence and one in force today were drawn identically same colour, same
   weight, no other mark - on the one screen whose purpose is administering who holds a role.
 -->
+<!--
+  ⚠ THE `&nbsp;` IS LOAD-BEARING, AND THE CHARACTER ITSELF IS THE FIX - R7. Two separate mechanisms had to
+  be defeated here, and the second was only found by measuring the ACCESSIBILITY TREE rather than the DOM.
+
+  FIRST: Angular compiles with `preserveWhitespaces` disabled, and the interpolation below is bound TIGHT to
+  the block that follows it (`}}@if`), so there was no whitespace between the date and its qualifier for the
+  compiler to collapse - it had none to begin with. The cell announced one run-together token, measured as
+  "8/28/2026Pending".
+
+  SECOND, AND THE REASON THIS IS `&nbsp;` RATHER THAN `&ngsp;`: an ordinary space does reach the DOM, but it
+  does NOT always reach the accessibility tree. On the `@else if` branch Angular emits the preceding branch's
+  anchor comment between the date text node and the separator, leaving the separator an ISOLATED
+  whitespace-only text node; Blink builds no text box for such a node, so it never becomes a StaticText node
+  and name-from-contents concatenates with nothing in between. That was MEASURED through the CDP
+  Accessibility domain, in two independent browsers: with `&ngsp;` the `--pending` and `--expired` cells
+  computed "9/20/2027 Pending" and "1/1/2020 Expired" correctly, while `--current` computed
+  "9/20/2027Active" - the exact defect, surviving in the only layer that matters, behind a DOM that looked
+  correct and a spec that read `textContent` and therefore could not see it.
+
+  U+00A0 is not collapsible whitespace, so it always produces a text box and always reaches the tree,
+  wherever Angular chooses to place its anchor comments. It also keeps a date and its qualifier on one line,
+  which is what `white-space: nowrap` on the span already intends.
+-->
+<!--
+  R6: THREE STATES, THREE WORDS, THREE TREATMENTS. Both qualifiers previously shared one class, so the danger
+  colour was applied to a membership that had merely not started yet as well as to one that had lapsed, and
+  colour carried nothing that told them apart. Each word now has its own treatment - and each treatment is
+  accompanied by its own WORD, so the distinction never rests on colour alone.
+-->
 <ng-template #roleAssignmentEffectiveDateCell let-row="row"
   >{{ row.effectiveDate | dateDisplay
-  }}@if (membershipState(row) === 'pending') {
-    <span class="role-assignment__lifecycle">{{ text.pending }}</span>
+  }}@if (membershipState(row) === 'pending') {&nbsp;<span class="role-assignment__lifecycle role-assignment__lifecycle--pending">{{
+      text.pending
+    }}</span>
   }</ng-template
 >
 
 <ng-template #roleAssignmentExpiryDateCell let-row="row"
   >{{ row.expiryDate | dateDisplay
-  }}@if (membershipState(row) === 'expired') {
-    <span class="role-assignment__lifecycle">{{ text.expired }}</span>
+  }}@if (membershipState(row) === 'expired') {&nbsp;<span class="role-assignment__lifecycle role-assignment__lifecycle--expired">{{
+      text.expired
+    }}</span>
+  } @else if (showsInForceQualifier(row)) {&nbsp;<span class="role-assignment__lifecycle role-assignment__lifecycle--current">{{
+      text.current
+    }}</span>
   }</ng-template
 >

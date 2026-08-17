@@ -4,13 +4,14 @@
  */
 
 import {
+  arrayOf,
   decodeBoolean,
   decodeDateString,
   decodeInteger,
+  decodeNumericCode,
   decodeString,
   nullable,
   objectOf,
-  oneOfNumber,
   recordOf,
   type Decoder,
 } from '../utils/decode.util';
@@ -34,6 +35,47 @@ export enum ModuleVisibility {
   /** The placement renders without its container chrome. */
   None = 2,
 }
+
+/**
+ * The three visibility codes this console publishes wording for, in the order the legacy radio group
+ * listed them. Exported so the decoder, the presentation layer and the write forms all read one set.
+ */
+export const PUBLISHED_MODULE_VISIBILITY: readonly ModuleVisibility[] = Object.freeze([
+  ModuleVisibility.Maximized,
+  ModuleVisibility.Minimized,
+  ModuleVisibility.None,
+]);
+
+/**
+ * Whether a stored visibility code is one this console can name.
+ *
+ * A type predicate rather than a boolean, so a successful test narrows the widened `number` the wire
+ * carries back to {@link ModuleVisibility} and a label table can then be indexed exhaustively.
+ *
+ * @param code The code exactly as the server sent it.
+ * @returns True when the code is one of the three published codes, narrowing `code` on success.
+ */
+export function isPublishedModuleVisibility(code: number): code is ModuleVisibility {
+  return (PUBLISHED_MODULE_VISIBILITY as readonly number[]).includes(code);
+}
+
+/** The validation error key an editing form reports for a stored code it cannot offer. */
+export const UNPUBLISHED_VISIBILITY_ERROR = 'unpublishedVisibility';
+
+/**
+ * The wording an editing form shows when the stored visibility code is not one it can offer.
+ *
+ * ⚠ WHY THIS IS AN INLINE FIELD MESSAGE AND NOT A SILENT COERCION. The two editing screens bind the stored
+ * code straight into a three-member radio group, so a code outside the published three simply matched no
+ * radio: nothing was selected, nothing said why, and a save of any OTHER field sent the unrecognised code
+ * back - which the API's `IsInEnum` rule then refused with a per-field `400` naming a field the operator had
+ * never touched. Coercing to a published code instead would silently rewrite stored data, and zero is
+ * `Maximized`, the most visible state of the three. Reporting it on the field is the only option that
+ * neither hides the state nor rewrites it.
+ */
+export const UNPUBLISHED_VISIBILITY_MESSAGE =
+  'The stored visibility of this module is a value this screen cannot offer. Choose one of the options ' +
+  'above before saving; saving will replace the stored value.';
 
 /** The visibility codes keyed by their lower-case names. */
 export const MODULE_VISIBILITY = {
@@ -94,6 +136,22 @@ export interface ModuleListItem {
   /** The installed package's version, projected read-only from `dbo.DesktopModules.Version`. */
   readonly version: string | null;
 
+  /**
+   * Whether this module was created from an ADMINISTRATION package, from `dbo.DesktopModules.IsAdmin`.
+   *
+   * ⚠ ONLY AN EXPLICIT `true` MEANS ADMINISTRATIVE, AND `null` IS NOT `false`. The column is `bit NOT NULL`,
+   * so a resolved package always answers one way or the other; `null` means the definition or its package
+   * could not be resolved and the server is claiming nothing. Reading `null` as "ordinary" is how a screen
+   * comes to offer the generic settings surface for a module that surface refuses outright.
+   *
+   * WHAT IT IS FOR: the generic module settings screen answers `module.settings_protected` for an
+   * administrative module, because such a module's settings belong to the screen that administers them - the
+   * User Accounts package's settings ARE the portal's membership settings. Administrative definitions are
+   * also withheld from the portal-placeable definition catalogue, so their nature cannot be inferred from a
+   * second read.
+   */
+  readonly isAdmin: boolean | null;
+
   /** The placement's position within its pane on the page, from `dbo.TabModules.ModuleOrder`. */
   readonly moduleOrder: number;
 
@@ -103,8 +161,18 @@ export interface ModuleListItem {
    */
   readonly allTabs: boolean;
 
-  /** How this placement is presented on its page, from `dbo.TabModules.Visibility`. */
-  readonly visibility: ModuleVisibility;
+  /**
+   * How this placement is presented on its page, from `dbo.TabModules.Visibility`.
+   *
+   * ⚠ DECLARED `number` AND NOT THE ENUMERATION, AND THE WIDTH IS THE POINT. The column is `int` with no
+   * check constraint (03.00.01.SqlDataProvider line 31), so a real installation whose modules registered
+   * their own presentation codes holds values this console publishes no wording for. Narrowing the member
+   * to the three published codes made the decoder REFUSE such a row and - because a row is decoded inside
+   * its page - refusing one row blanked the entire listing while the response was a perfectly good HTTP
+   * 200. Narrow with {@link isPublishedModuleVisibility} before naming a code, and mark one you cannot
+   * name.
+   */
+  readonly visibility: number;
 
   /**
    * Whether the module is in the soft-deleted state the legacy recycle bin represented, from
@@ -239,8 +307,40 @@ export interface ModuleDetail {
   /** The icon displayed with the module's title for this placement, or `null` for none. */
   readonly iconFile: string | null;
 
-  /** How this placement is presented on its page, from `dbo.TabModules.Visibility`. */
-  readonly visibility: ModuleVisibility;
+  /**
+   * How this placement is aligned within its pane, from `TabModules.Alignment`, or `null` when none is
+   * stored.
+   *
+   * ⚠ THIS MEMBER AND THE TWO BELOW WERE ABSENT, AND THE THREE COLUMNS THEY CARRY WERE UNREACHABLE. The
+   * legacy settings screen edited all three (`modulesettings.ascx:L120-L139`, saved at
+   * `ModuleSettings.ascx.vb:L345-L347`); the first port modelled none of them, so an installation's stored
+   * container appearance was invisible and could not be changed — while the screen's own settings section
+   * asserted the module had no stored settings of its own.
+   *
+   * The values `left`, `center`, `right` and the empty string are the legacy radio list's own and are
+   * LOAD-BEARING DATA: they are what the column contains, so they are never re-spelled.
+   */
+  readonly alignment: string | null;
+
+  /**
+   * The container background colour, from `TabModules.Color`, or `null` when none is stored. An opaque
+   * legacy token, bounded at twenty characters and carried through unparsed.
+   */
+  readonly color: string | null;
+
+  /**
+   * The container border width, from `TabModules.Border`, or `null` when none is stored. One character
+   * wide, and a digit: the legacy box carried `MaxLength="1"` and an integer validator reading "must be a
+   * number between 0 and 9".
+   */
+  readonly border: string | null;
+
+  /**
+   * How this placement is presented on its page, from `dbo.TabModules.Visibility`. Declared `number` for
+   * the reason recorded on {@link ModuleListItem.visibility}: the column admits codes this console
+   * publishes no wording for, and one such row must not cost the reader the record.
+   */
+  readonly visibility: number;
 
   /**
    * Whether the module's CONTAINER chrome is displayed around this placement. as on the listing, the
@@ -276,6 +376,22 @@ export interface ModuleDetail {
    * way as {@link ModuleDetail.moduleName} when handing a document between installations.
    */
   readonly version: string | null;
+
+  /**
+   * Whether this module was created from an ADMINISTRATION package, from `dbo.DesktopModules.IsAdmin`.
+   *
+   * ⚠ ONLY AN EXPLICIT `true` MEANS ADMINISTRATIVE, AND `null` IS NOT `false`. The column is `bit NOT NULL`,
+   * so a resolved package always answers one way or the other; `null` means the definition or its package
+   * could not be resolved and the server is claiming nothing. Reading `null` as "ordinary" is how a screen
+   * comes to offer the generic settings surface for a module that surface refuses outright.
+   *
+   * WHAT IT IS FOR: the generic module settings screen answers `module.settings_protected` for an
+   * administrative module, because such a module's settings belong to the screen that administers them - the
+   * User Accounts package's settings ARE the portal's membership settings. Administrative definitions are
+   * also withheld from the portal-placeable definition catalogue, so their nature cannot be inferred from a
+   * second read.
+   */
+  readonly isAdmin: boolean | null;
 }
 
 /** The body of `POST /api/v1/modules`, which places a new module on a page. */
@@ -395,6 +511,18 @@ export interface UpdateModuleRequest {
   /** The icon displayed with the module's title, or `null` for none. */
   readonly iconFile: string | null;
 
+  /**
+   * How the placement is aligned within its pane — `left`, `center`, `right`, or the empty string for
+   * Not Specified — or `null` to leave nothing stored.
+   */
+  readonly alignment: string | null;
+
+  /** The container background colour, or `null` for none. Bounded at twenty characters. */
+  readonly color: string | null;
+
+  /** The container border width, a single digit, or `null` for none. */
+  readonly border: string | null;
+
   /** How the module is presented on the page. */
   readonly visibility: ModuleVisibility;
 
@@ -444,6 +572,149 @@ export interface ModuleSettingsBag {
    * the module on a single page, from `dbo.TabModuleSettings`.
    */
   readonly tabModuleSettings: Readonly<Record<string, string>>;
+}
+
+/**
+ * One column of a module's grant grid: a permission the module's definition declares. Mirrors
+ * `Dtos/Module/ModulePermissionDefinitionDto.cs`.
+ */
+export interface ModulePermissionColumn {
+  /** Identifier of the definition, from `Permission.PermissionID`, which is `IDENTITY(1, 1)`. */
+  readonly permissionId: number;
+
+  /**
+   * The key itself — `VIEW`, `EDIT`, `READ` or `WRITE`. DELIBERATELY A PLAIN `string`, exactly as {@link
+   * Permission.permissionKey} is: the column stores whatever an installation seeded, so a value outside
+   * the four-member vocabulary is data rather than a contract violation, and it must not discard the row.
+   */
+  readonly permissionKey: string;
+
+  /** Display name of the definition, from `Permission.PermissionName`, used as the column header. */
+  readonly permissionName: string;
+}
+
+/**
+ * One cell of a module's grant grid: whether the grant is in force, and whether it may be changed.
+ *
+ * BOTH FACTS TRAVEL BECAUSE NEITHER IMPLIES THE OTHER. An administrator cell is granted and locked; a
+ * view cell under inheritance is refused and locked; an ordinary cell is either and unlocked. The rules
+ * that produce them live in the server — they depend on `Portals.AdministratorRoleId` and
+ * `Modules.InheritViewPermissions` — so re-deriving them here would let two clients disagree.
+ */
+export interface ModulePermissionCell {
+  /** The column this cell belongs to. */
+  readonly permissionId: number;
+
+  /** The key of the column this cell belongs to, repeated so a row can be read without a lookup. */
+  readonly permissionKey: string;
+
+  /** Whether the grant is currently in force. */
+  readonly allowAccess: boolean;
+
+  /** Whether the cell may be changed. */
+  readonly editable: boolean;
+}
+
+/**
+ * One role row of a module's grant grid. Mirrors `Dtos/Module/ModulePermissionRoleDto.cs`.
+ */
+export interface ModulePermissionRoleRow {
+  /**
+   * Identifier of the role, from `Roles.RoleID`, or one of the built-in negative pseudo-role identifiers
+   * (`-1` All Users, `-3` Unauthenticated Users). `0` IS A REAL ROLE — the column is `IDENTITY(0, 1)` and
+   * on a default installation zero is the Administrators role — so a falsiness test on this member is
+   * never a valid presence check.
+   */
+  readonly roleId: number;
+
+  /** Display name of the role, from `Roles.RoleName`. */
+  readonly roleName: string;
+
+  /** Whether this row is the portal's administrator role, whose grants are implicit and not editable. */
+  readonly isAdministrator: boolean;
+
+  /** Whether this row is one of the two built-in pseudo-roles rather than a row in `dbo.Roles`. */
+  readonly isPseudoRole: boolean;
+
+  /** The state of every cell in this row, one entry per declared column. */
+  readonly cells: readonly ModulePermissionCell[];
+}
+
+/**
+ * One account row of a module's grant grid — an account that holds a grant of its own rather than one
+ * inherited through a role. Mirrors `Dtos/Module/ModulePermissionUserDto.cs`.
+ */
+export interface ModulePermissionUserRow {
+  /** Identifier of the account, from `Users.UserID`. */
+  readonly userId: number;
+
+  /** The account's display name, or its user name when the display name is blank. */
+  readonly displayName: string;
+
+  /** The state of every cell in this row, one entry per declared column. */
+  readonly cells: readonly ModulePermissionCell[];
+}
+
+/**
+ * The complete grant grid of one module. Mirrors `Dtos/Module/ModulePermissionsDto.cs`.
+ *
+ * MIGRATION: this is the client half of the `<dnn:modulepermissionsgrid id="dgPermissions">` server
+ * control declared at `Website/admin/Modules/modulesettings.ascx:L42`. The first port of the module
+ * settings screen carried no equivalent at all, so a portal administrator could see the four declared
+ * permission keys but no roles and no cells, and could not grant or withdraw module access.
+ */
+export interface ModulePermissionGrid {
+  /** The module whose grants these are. `0` is a legitimate module. */
+  readonly moduleId: number;
+
+  /** Whether the module currently takes its view rights from the page it is placed on. */
+  readonly inheritViewPermissions: boolean;
+
+  /**
+   * The key of the column the inheritance switch collapses — `VIEW` — or `null` when this module's
+   * definition declares no such column.
+   */
+  readonly inheritedPermissionKey: string | null;
+
+  /** The columns, in render order. */
+  readonly definitions: readonly ModulePermissionColumn[];
+
+  /** The role rows, already ordered case-insensitively by name by the server. */
+  readonly roles: readonly ModulePermissionRoleRow[];
+
+  /** The account rows, present only for accounts a grant already names. */
+  readonly users: readonly ModulePermissionUserRow[];
+}
+
+/** One grant in a replacement set: who it is for, which permission, and whether it allows. */
+export interface ModulePermissionGrantInput {
+  /** The definition being granted. */
+  readonly permissionId: number;
+
+  /** The role the grant is for, or `null` when the grant is for one named account. */
+  readonly roleId: number | null;
+
+  /** The account the grant is for, or `null` when the grant is for a role. */
+  readonly userId: number | null;
+
+  /** `true` to allow, `false` to deny. */
+  readonly allowAccess: boolean;
+}
+
+/**
+ * The body of `PUT /modules/{moduleId}/permissions`. Mirrors
+ * `Dtos/Module/ReplaceModulePermissionsRequest.cs`.
+ *
+ * ⚠ A REPLACE, NOT A MERGE. A grant absent from {@link ModulePermissionReplacement.grants} is withdrawn,
+ * matching `ModuleSettings.ascx.vb:L378-L379`, which assigned the grid's whole collection onto the module
+ * and saved the inheritance switch in the same operation.
+ */
+export interface ModulePermissionReplacement {
+  /** Whether the module should take its view rights from the page it is placed on. */
+  readonly inheritViewPermissions: boolean;
+
+  /** Every grant the module should hold. An empty array withdraws all of them. */
+  readonly grants: readonly ModulePermissionGrantInput[];
 }
 
 /**
@@ -545,17 +816,18 @@ export interface ModuleImportRequest {
   readonly fileName: string | null;
 }
 
-/** The three published visibility codes, as an array the decoder can close over. */
-const VISIBILITY_CODES: readonly ModuleVisibility[] = [
-  ModuleVisibility.Maximized,
-  ModuleVisibility.Minimized,
-  ModuleVisibility.None,
-];
-
 /**
- * Decodes one listed module row. ⚠ `visibility` IS REFUSED WHEN THE CODE IS UNRECOGNISED RATHER THAN
- * COERCED. Zero is `Maximized`, so coercing an unknown code would silently present a module as fully
- * expanded — the most visible of the three states — on the strength of a code this client did not know.
+ * Decodes one listed module row.
+ *
+ * ⚠ `visibility` IS TOLERATED WHEN THE CODE IS UNRECOGNISED, AND NEITHER REFUSED NOR COERCED. The
+ * distinction between those three is the whole of this decision. REFUSING was what shipped, and it cost
+ * the reader the page: `objectOf` propagates out of `pageOf`, so one row holding `Visibility = 9` — a
+ * value the `int` column admits and a real installation's own modules can register — turned a successful
+ * HTTP 200 carrying every module into an empty listing that announced "No records found." COERCING to
+ * zero would be worse still, because zero is `Maximized`, the most visible of the three states, so a code
+ * this client never published would be presented as a confident fact. TOLERATING keeps the integer
+ * exactly as stored, and the listing marks a code it cannot name the way the profile-definition screen
+ * already marks an unnameable data type.
  */
 export const decodeModuleListItem: Decoder<ModuleListItem> = objectOf<ModuleListItem>({
   moduleId: decodeInteger,
@@ -568,9 +840,10 @@ export const decodeModuleListItem: Decoder<ModuleListItem> = objectOf<ModuleList
   moduleName: nullable(decodeString),
   description: nullable(decodeString),
   version: nullable(decodeString),
+  isAdmin: nullable(decodeBoolean),
   moduleOrder: decodeInteger,
   allTabs: decodeBoolean,
-  visibility: oneOfNumber(VISIBILITY_CODES),
+  visibility: decodeNumericCode(PUBLISHED_MODULE_VISIBILITY),
   isDeleted: decodeBoolean,
   displayTitle: decodeBoolean,
   startDate: nullable(decodeDateString),
@@ -596,12 +869,16 @@ export const decodeModuleDetail: Decoder<ModuleDetail> = objectOf<ModuleDetail>(
   moduleOrder: decodeInteger,
   cacheTime: decodeInteger,
   iconFile: nullable(decodeString),
-  visibility: oneOfNumber(VISIBILITY_CODES),
+  alignment: nullable(decodeString),
+  color: nullable(decodeString),
+  border: nullable(decodeString),
+  visibility: decodeNumericCode(PUBLISHED_MODULE_VISIBILITY),
   displayTitle: decodeBoolean,
   friendlyName: nullable(decodeString),
   moduleName: nullable(decodeString),
   description: nullable(decodeString),
   version: nullable(decodeString),
+  isAdmin: nullable(decodeBoolean),
 });
 
 export const decodeModuleSettingsBag: Decoder<ModuleSettingsBag> = objectOf<ModuleSettingsBag>({
@@ -610,6 +887,46 @@ export const decodeModuleSettingsBag: Decoder<ModuleSettingsBag> = objectOf<Modu
   moduleSettings: recordOf(decodeString),
   tabModuleSettings: recordOf(decodeString),
 });
+
+const decodeModulePermissionColumn: Decoder<ModulePermissionColumn> =
+  objectOf<ModulePermissionColumn>({
+    permissionId: decodeInteger,
+    permissionKey: decodeString,
+    permissionName: decodeString,
+  });
+
+const decodeModulePermissionCell: Decoder<ModulePermissionCell> = objectOf<ModulePermissionCell>({
+  permissionId: decodeInteger,
+  permissionKey: decodeString,
+  allowAccess: decodeBoolean,
+  editable: decodeBoolean,
+});
+
+const decodeModulePermissionRoleRow: Decoder<ModulePermissionRoleRow> =
+  objectOf<ModulePermissionRoleRow>({
+    roleId: decodeInteger,
+    roleName: decodeString,
+    isAdministrator: decodeBoolean,
+    isPseudoRole: decodeBoolean,
+    cells: arrayOf(decodeModulePermissionCell),
+  });
+
+const decodeModulePermissionUserRow: Decoder<ModulePermissionUserRow> =
+  objectOf<ModulePermissionUserRow>({
+    userId: decodeInteger,
+    displayName: decodeString,
+    cells: arrayOf(decodeModulePermissionCell),
+  });
+
+export const decodeModulePermissionGrid: Decoder<ModulePermissionGrid> =
+  objectOf<ModulePermissionGrid>({
+    moduleId: decodeInteger,
+    inheritViewPermissions: decodeBoolean,
+    inheritedPermissionKey: nullable(decodeString),
+    definitions: arrayOf(decodeModulePermissionColumn),
+    roles: arrayOf(decodeModulePermissionRoleRow),
+    users: arrayOf(decodeModulePermissionUserRow),
+  });
 
 export const decodeModuleDefinition: Decoder<ModuleDefinition> = objectOf<ModuleDefinition>({
   moduleDefId: decodeInteger,

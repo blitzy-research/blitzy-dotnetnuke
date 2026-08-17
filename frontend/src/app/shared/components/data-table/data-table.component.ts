@@ -20,7 +20,7 @@ import {
   signal,
 } from '@angular/core';
 
-import type { OnInit } from '@angular/core';
+import type { OnChanges, OnInit, SimpleChanges } from '@angular/core';
 
 // The ONE standalone directive imported here, and the only import that is not a composed sibling.
 import { NgTemplateOutlet } from '@angular/common';
@@ -122,8 +122,47 @@ export interface DataTableColumnCommon {
    * Track width of the column, applied through a `col` element in the table's `colgroup` so that no cell
    * rule carries a size. Closed at the four forms {@link DataTableWidth} admits, each of which is valid
    * CSS for `inline-size` on a `col` element.
+   *
+   * ⚠ A WIDTH MUST HOLD ITS OWN HEADING, AND THE ARITHMETIC IS NOT OBVIOUS. A heading cell spends a fixed
+   * 24px before any text is drawn — 8px of cell padding, the 4px gap of the sort control, and the 12px the
+   * sort indicator reserves whether or not the column is the sorted one — so the text of a heading only
+   * ever receives `columnWidth - 24`. Because the table is `table-layout: fixed` and floors at
+   * `--table-min-inline-size`, a percentage column is at its NARROWEST when the table is at that floor, so
+   * that floor is the only width a declaration has to be checked against: satisfy it there and every wider
+   * viewport follows, since a percentage of a larger table is larger.
+   *
+   * WHAT MUST FIT IS THE WIDEST UNBREAKABLE RUN, NOT THE LABEL. Measurement of the shipped grids established
+   * two distinct ways a heading is lost, and word count predicts neither:
+   *   • a column marked {@link atomic} computes `white-space: nowrap`, which makes the WHOLE label one
+   *     unbreakable run — this is why the two-word "Portal Id" and "Disk Space" were being clipped;
+   *   • otherwise the label may wrap between words but never inside one, so its LONGEST WORD is the run that
+   *     must fit — this is why the single-word "Public", "Auto" and "Authorized" were clipped, and why the
+   *     two-word "Billing Period" was clipped on BOTH of its wrapped lines.
+   * A heading that does not fit is ELLIPSISED, and an ellipsised heading loses information outright: the
+   * accessible name survives, the visible name does not. A body value in the same position merely wraps and
+   * stays wholly readable, which is why width is taken from a value column to pay for a heading rather than
+   * the other way round.
+   *
+   * Headings are also two type steps larger than the body — the section carries `--font-size-lg` while the
+   * table carries `--font-size-sm` — so a heading needs materially more room than its character count
+   * suggests against body text. Sizing every heading to fit at the floor with a few pixels to spare is the
+   * whole of the rule; there is no truncation hook to reach for instead, by the deliberate decision the
+   * shared table partial records.
    */
   readonly width?: DataTableWidth;
+
+  /**
+   * Whether this column's value is INDIVISIBLE — a figure, a date, an identifier — and must never be broken
+   * across lines.
+   *
+   * ⚠ THE DEFAULT WRAPPING IS WRONG FOR SUCH A VALUE, WHICH IS WHY THIS EXISTS. The shared table breaks body
+   * text anywhere so an unbreakable run cannot escape its column and overprint its neighbour; applied to a
+   * number that is exactly what must not happen. Measured at 375px, `1234567.89` broke after the decimal
+   * point and painted `1234567.` on its own line — a complete, plausible and WRONG amount — and `6/30/2021`
+   * broke into `6/30/202` and `1`. Declaring the column atomic keeps the value whole and, if the column is
+   * too narrow for it, clips with an ellipsis, which a reader can see is a truncation rather than a value.
+   */
+  readonly atomic?: boolean;
 }
 
 /** The heading policy of a column: whether it offers sorting, and whether its label is painted. */
@@ -324,6 +363,12 @@ interface DataTableHeaderCell<TRow> {
 
   /** Resolved {@link DataTableColumnCommon.headerAlign}. */
   readonly align: DataTableAlign;
+
+  /**
+   * Resolved {@link DataTableColumnCommon.atomic}. A heading carries it too, so that an atomic column's own
+   * label cannot be the thing that widens the track the value was sized for.
+   */
+  readonly atomic: boolean;
 }
 
 /**
@@ -352,6 +397,9 @@ export interface DataTableBodyCell<TRow> {
 
   /** Resolved {@link DataTableColumnCommon.bodyAlign}. */
   readonly align: DataTableAlign;
+
+  /** Resolved {@link DataTableColumnCommon.atomic}, published to the cell as `data-atomic`. */
+  readonly atomic: boolean;
 
   readonly rowHeader: boolean;
 }
@@ -390,6 +438,39 @@ export interface DataTableColumnWidth {
   readonly width: string | null;
 }
 
+/**
+ * Hidden width, in pixels, above which the container is treated as genuinely scrollable. One pixel rather
+ * than zero because a fixed table layout resolving fractional track widths leaves sub-pixel differences
+ * between the content and the box on widths where nothing is actually clipped, and a region that announces
+ * itself as scrollable when it is not is worse than none: it puts a permanent, unusable focus stop in the
+ * tab order of every listing.
+ */
+const OVERFLOW_TOLERANCE_PX = 1;
+
+/**
+ * How many focusable controls the body must hold before a skip affordance is offered.
+ *
+ * ⚠ A THRESHOLD RATHER THAN ALWAYS, BECAUSE THE AFFORDANCE COSTS A STOP OF ITS OWN. Below this the run being
+ * skipped is short enough that the skip is not worth what it costs, and on a listing whose rows carry no
+ * controls at all - a read-only lookup table - it would cost a stop and save nothing. Six is two rows of
+ * three commands, which is where a measured account listing's run began to dominate its traversal: thirty
+ * consecutive row-command stops out of eighty-two, uninterrupted, because a row's own identifier is plain
+ * text rather than a link.
+ */
+const ROW_SKIP_THRESHOLD = 6;
+
+/** The controls a projected cell may put in the tab order, for counting what a skip would pass over. */
+const FOCUSABLE_IN_BODY = 'a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])';
+
+/** The wording of the affordance that passes over a run of row commands. */
+const ROW_SKIP_LABEL = 'Skip past the record commands';
+
+/** The wording of the landing point the affordance moves focus to. */
+const ROW_SKIP_TARGET_LABEL = 'End of table';
+
+/** Instance counter behind the ids this component publishes, so two tables on one screen cannot collide. */
+let nextInstanceId = 0;
+
 /** The ascending member of the wire sort vocabulary. */
 const ASCENDING: SortDirection = 'Ascending';
 
@@ -417,6 +498,12 @@ const SORT_LABEL_PREFIX = 'Sort by ';
 const MINIMUM_COLUMN_SPAN = 1;
 
 /**
+ * What the progress indicator says when a caller names no collection. The shared indicator's own default,
+ * restated here so that passing an empty string falls back to it rather than to a bare glyph.
+ */
+const DEFAULT_LOADING_LABEL = 'Loading…';
+
+/**
  * Rows the body contributes while it is waiting or empty. The waiting and empty branches each render
  * exactly ONE spanning row.
  */
@@ -427,6 +514,19 @@ const ENTER_KEY = 'Enter';
 
 /** Activation key whose default action scrolls the page and must be suppressed. */
 const SPACE_KEY = ' ';
+
+/**
+ * What the polite live region announces when a read failed and left nothing on screen. Deliberately states
+ * that nothing is KNOWN rather than that nothing EXISTS.
+ */
+const RECORDS_UNREAD_ANNOUNCEMENT = 'The records could not be read.';
+
+/** What the polite live region announces when a read failed while rows were already on screen. */
+const RECORDS_STALE_ANNOUNCEMENT =
+  'The records could not be refreshed. What is shown may be out of date.';
+
+/** The sentence rendered in the table body in place of the empty state when a read failed. */
+const RECORDS_UNREAD_MESSAGE = 'The records could not be read.';
 
 /**
  * The sortable, keyboard-operable record grid. Both the `track` expression of the row loop and the
@@ -442,7 +542,7 @@ const SPACE_KEY = ' ';
   styleUrl: './data-table.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class DataTableComponent<TRow extends object> implements OnInit {
+export class DataTableComponent<TRow extends object> implements OnInit, OnChanges {
   private readonly columnsSignal = signal<readonly DataTableColumn<TRow>[]>([]);
 
   private readonly rowsSignal = signal<readonly TRow[]>([]);
@@ -452,9 +552,78 @@ export class DataTableComponent<TRow extends object> implements OnInit {
 
   private readonly sortBySignal = signal<string | undefined>(undefined);
 
+  /**
+   * The sort the rows ON SCREEN are actually in, as distinct from the sort most recently REQUESTED.
+   *
+   * ⚠ #32 — THE INDICATOR USED TO REPORT THE REQUEST, WHICH IS NOT THE SAME CLAIM. A screen binds this table
+   * from its own query state, and that state changes the instant a heading is pressed - before the read it
+   * triggers has returned anything. When the read then FAILED, the rows stayed exactly as they were while the
+   * heading arrow and `aria-sort` had already moved to the new column, so the table asserted an order its
+   * contents did not have, in the one situation where a reader most needs to trust it. Latching the reported
+   * sort to the arrival of rows makes the indicator a statement about what is displayed: it moves when the
+   * new order does, and a failed read leaves both alone.
+   */
+  private readonly displayedSortBySignal = signal<string | undefined>(undefined);
+
+  /** The direction {@link displayedSortBySignal} is displayed in. @see displayedSortBySignal */
+  private readonly displayedSortDirSignal = signal<SortDirection>(ASCENDING);
+
+  /** Whether any rows have been bound yet, so the first binding can adopt its sort immediately. */
+  private rowsEverBound = false;
+
   private readonly sortDirSignal = signal<SortDirection>(ASCENDING);
 
   private readonly loadingSignal = signal(false);
+
+  private readonly loadingLabelSignal = signal(DEFAULT_LOADING_LABEL);
+
+  private readonly emptyMessageSignal = signal('');
+
+  /** Whether the read that should have produced {@link rowsSignal} failed. */
+  private readonly failedSignal = signal(false);
+
+  /** The match-set size a paging consumer stated, or null when it stated none. */
+  private readonly totalCountSignal = signal<number | null>(null);
+
+  /** Where in the match set the rendered body begins. Zero for a listing that does not page. */
+  private readonly rowOffsetSignal = signal(0);
+
+  /**
+   * The caption's identifier, published so the scrolling region can borrow it as its accessible name.
+   * Per instance, because two tables on one screen would otherwise name each other.
+   */
+  protected readonly captionId = `app-data-table-${++nextInstanceId}-caption`;
+
+  /**
+   * Whether the container is currently clipping content horizontally. MEASURED, not assumed from the
+   * viewport width, because whether a table overflows depends on its own columns.
+   */
+  private readonly horizontallyScrollableSignal = signal(false);
+
+  /**
+   * The scrollport's visible inline size in pixels, or null before it has been measured.
+   *
+   * It exists for the message row and nothing else - see {@link messageViewportInlineSize}.
+   */
+  private readonly visibleInlineSizeSignal = signal<number | null>(null);
+
+  /** Whether the container is a scrollable region right now, for the template's conditional attributes. */
+  protected readonly isHorizontallyScrollable = this.horizontallyScrollableSignal.asReadonly();
+
+  /** Whether the body currently holds enough controls to be worth passing over. MEASURED, not estimated. */
+  private readonly offersRowSkipSignal = signal(false);
+
+  /** Whether the skip affordance is offered right now. */
+  protected readonly offersRowSkip = this.offersRowSkipSignal.asReadonly();
+
+  /** The landing point the skip affordance moves focus to, published so the affordance can name it. */
+  protected readonly skipTargetId = `app-data-table-${nextInstanceId}-end`;
+
+  /** The skip affordance's own wording. */
+  protected readonly rowSkipLabel = ROW_SKIP_LABEL;
+
+  /** The landing point's wording, so focus arrives somewhere that says where it is. */
+  protected readonly rowSkipTargetLabel = ROW_SKIP_TARGET_LABEL;
 
   private readonly selectedRowSignal = signal<TRow | null>(null);
 
@@ -554,6 +723,39 @@ export class DataTableComponent<TRow extends object> implements OnInit {
   }
 
   /**
+   * Decides, once per change pass, whether the reported sort may move up to the requested one.
+   *
+   * ⚠ THE DECISION BELONGS HERE AND NOT IN THE SETTERS. Within one pass Angular writes inputs in the order
+   * the template lists them, so a setter reading `loading` may run before `loading` has been written for that
+   * pass - and the answer would then depend on the order of two attributes in a caller's markup. This hook
+   * runs after every input for the pass has been written, so the decision sees a consistent picture.
+   *
+   * Two things commit a sort. ROWS ARRIVING commits it, because a screen re-binds its collection on a settled
+   * read and on nothing else. A SORT CHANGING WHILE NOTHING IS IN FLIGHT commits it too: a table that is not
+   * waiting for anything holds the rows that answer the sort it is being told about, which is the ordinary
+   * case of a caller binding a restored sort alongside rows it already has.
+   *
+   * What is deliberately NOT committed is a sort that changes while a read is outstanding. That is the
+   * failure case: the heading would otherwise move to the new column immediately and stay there when the read
+   * failed, leaving the table asserting an order its rows do not have.
+   *
+   * @param changes The inputs written in this pass.
+   */
+  ngOnChanges(changes: SimpleChanges): void {
+    const rowsArrived = changes['rows'] !== undefined;
+    const sortChanged = changes['sortBy'] !== undefined || changes['sortDir'] !== undefined;
+
+    if (rowsArrived) {
+      this.rowsEverBound = true;
+    }
+
+    if (rowsArrived || !this.rowsEverBound || (sortChanged && this.loadingSignal() === false)) {
+      this.displayedSortBySignal.set(this.sortBySignal());
+      this.displayedSortDirSignal.set(this.sortDirSignal());
+    }
+  }
+
+  /**
    * Sets whether the table is waiting for data. While waiting, the body shows the shared progress
    * indicator instead of the previous page, so nobody reads stale rows that are about to be replaced, and
    * sort activation is refused so a second request cannot be queued behind the first.
@@ -567,6 +769,126 @@ export class DataTableComponent<TRow extends object> implements OnInit {
 
   public get loading(): boolean {
     return this.loadingSignal();
+  }
+
+  /**
+   * What the progress indicator says while a read is in flight, both in the placeholder that replaces the
+   * rows on a first read and in the strip that reports a refetch over rows already on screen.
+   *
+   * ⚠ IT IS THE CALLER'S NOUN, NOT A DEFAULT. Measured across the four listings, three of them announced a
+   * bare "Loading…" while one named its collection, so a screen reader heard a different sentence on
+   * otherwise identical screens and, on three of the four, was not told WHAT was loading. The default below
+   * keeps a caller that passes nothing working exactly as before.
+   */
+  @Input()
+  public set loadingLabel(value: string | null | undefined) {
+    const trimmed = (value ?? '').trim();
+
+    this.loadingLabelSignal.set(trimmed.length === 0 ? DEFAULT_LOADING_LABEL : trimmed);
+  }
+
+  public get loadingLabel(): string {
+    return this.loadingLabelSignal();
+  }
+
+  /**
+   * The sentence the zero-result surface explains itself with. Left blank, the shared empty state falls back to
+   * its own generic default, which is what every listing whose empty state comes from this grid was getting.
+   *
+   * ⚠ IT EXISTS SO A CONSUMER NO LONGER HAS TO DESTROY THE TABLE TO SAY SOMETHING SPECIFIC. Screens with their
+   * own empty wording rendered a panel in place of the table, which took the polite status region down with it
+   * and left the narrowing-to-nothing transition silent.
+   */
+  @Input()
+  public set emptyMessage(value: string | null | undefined) {
+    this.emptyMessageSignal.set((value ?? '').trim());
+  }
+
+  public get emptyMessage(): string {
+    return this.emptyMessageSignal();
+  }
+
+  /**
+   * Sets whether the LAST READ OF THESE ROWS FAILED, which is a different fact from having no rows and
+   * must be presented differently.
+   *
+   * ⚠ THE ONE INPUT THAT STOPS A FAILURE READING AS AN EMPTY DATABASE. Zero rows has two causes that look
+   * identical from inside this component — nothing matched, or nothing is known — and it used to present
+   * both as "Nothing to Display / No records found." Measured consequences of that conflation, all on real
+   * screens: a swallowed HTTP 500 rendered pixel-identically to a legitimately empty permission list; a
+   * Forbidden banner sat above "No records found." on a portal's aliases, asserting the portal has no
+   * aliases when none had been retrieved; a 403 on an account's own profile read as "This site declares no
+   * profile properties"; and the polite live region announced "No records found." while thirty roles
+   * existed. When this is set, the empty state is NOT rendered and the live region reports that the records
+   * could not be read, leaving the caller's own error banner to carry the reason.
+   *
+   * @param value Whether the read that should have produced these rows failed.
+   */
+  @Input()
+  public set failed(value: boolean | null | undefined) {
+    this.failedSignal.set(value === true);
+  }
+
+  public get failed(): boolean {
+    return this.failedSignal();
+  }
+
+  /**
+   * The size of the whole match set, for the announcement only. Absent for a listing that does not page.
+   *
+   * ⚠ IT IS NOW READ IN TWO PLACES, AND THE SECOND ONE IS THE CORRECTION THIS NOTE USED TO DENY. It was
+   * written here that the total is used for the polite summary and "never for `aria-rowcount`, row indices
+   * or rendering", on the ground that the table must not claim rows it was not handed. That ground was
+   * right about RENDERING and wrong about the two ARIA attributes, which exist precisely so a table can
+   * describe a set larger than its own body - and reporting only the page made them state something untrue:
+   * measured on the second page of a seventeen-record listing, the first body row announced as "row 2 of 8"
+   * while the pager beside it called the same record 11 of 17.
+   *
+   * It is still never used for rendering, and never for the row count while a message row stands in for the
+   * records, so an empty or waiting table describes exactly itself.
+   *
+   * The summary reading exists because this component's status region became the SINGLE announcing region:
+   * the pager used to announce the total from a live region of its own, which meant one action produced two
+   * polite announcements with a blank between them.
+   *
+   * @param value The match-set size, or nothing when the consumer does not page.
+   */
+  @Input()
+  public set totalCount(value: number | null | undefined) {
+    this.totalCountSignal.set(typeof value === 'number' ? value : null);
+  }
+
+  /**
+   * The zero-based position, within the whole match set, of the first row in {@link rows}. Zero for a
+   * listing that does not page, and `pageIndex * pageSize` for one that does.
+   *
+   * ⚠ IT EXISTS BECAUSE `aria-rowindex` CANNOT BE DERIVED FROM ANYTHING ELSE THIS COMPONENT RECEIVES.
+   * The total says how large the set is; only the offset says where in that set the body begins, and
+   * without it the indices restart at two on every page - which was measured, and which tells a screen
+   * reader the position of a row within the window instead of within the set.
+   *
+   * A NEW PUBLIC INPUT IS A COST, AND IT IS RECORDED RATHER THAN GLOSSED. The frozen contract for this
+   * component closes its surface at five inputs; this is the eleventh, and the divergence is already
+   * documented for `virtualizeThreshold`. The alternative was to accept indices that contradict the pager
+   * on every screen that pages, which the accessibility requirement does not allow, or to publish
+   * `aria-rowcount="-1"` for an unknown total when the total is in fact known.
+   *
+   * A value that is not a finite whole number of at least zero is treated as zero rather than raising:
+   * the only way one can arrive is a page coordinate that has not resolved yet, and a first page is the
+   * truthful reading of "not yet known".
+   *
+   * @param value The dataset position of the first rendered row.
+   */
+  @Input()
+  public set rowOffset(value: number | null | undefined) {
+    const usable =
+      typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.trunc(value) : 0;
+
+    this.rowOffsetSignal.set(usable);
+  }
+
+  public get totalCount(): number | null {
+    return this.totalCountSignal();
   }
 
   @Output() public readonly sortChange = new EventEmitter<DataTableSortChange>();
@@ -600,21 +922,145 @@ export class DataTableComponent<TRow extends object> implements OnInit {
 
     const count: number = this.rowsSignal().length;
 
-    if (count === 0) {
-      return 'No records found.';
+    // ⚠ THE FAILED READING COMES FIRST, and it is what keeps this region truthful. Announcing "No records
+    // found." after a read that failed states as fact something nobody knows, and it is the announcement a
+    // screen-reader user hears INSTEAD of the failure - the banner carrying the reason is not in a live
+    // region on every screen.
+    if (this.failedSignal()) {
+      return count === 0 ? RECORDS_UNREAD_ANNOUNCEMENT : RECORDS_STALE_ANNOUNCEMENT;
     }
 
-    return count === 1 ? '1 record.' : `${count} records.`;
+    if (count === 0) {
+      return `No records found.${this.sortClause()}`;
+    }
+
+    // ⚠ THE DATASET TOTAL IS STATED HERE BECAUSE THIS IS NOW THE ONLY ANNOUNCING REGION. It used to report
+    // the current page while the total lived in the pager's own live region, so one action produced TWO
+    // polite announcements with a blank between them, and a screen reader read the page count and the total
+    // as if they were unrelated events. The pager's region is now visible-only and this one carries both
+    // facts in a single announcement.
+    const total: number | null = this.resolvedTotalCount();
+
+    const records: string =
+      total !== null && total > count
+        ? `Showing ${count} of ${total} records.`
+        : count === 1
+          ? '1 record.'
+          : `${count} records.`;
+
+    // ⚠ THE ORDER IS STATED HERE RATHER THAN FROM A REGION OF ITS OWN, and that placement is the decision.
+    // Activating a column heading reordered the rows and announced NOTHING: measured across two sort toggles
+    // with an observer over every live region on the page, the only region that changed was this one, and it
+    // changed to text byte-identical to what it already held - because sorting moves rows without changing how
+    // many there are, and an unchanged live region announces nothing. A second live region for the order was
+    // rejected on the evidence that produced this one: the pager used to announce from a region of its own, so
+    // one action yielded two polite announcements with a blank between them, and this region became the single
+    // announcer precisely to end that.
+    return `${records}${this.sortClause()}`;
+  });
+
+  /**
+   * The ordering, as a sentence fragment appended to the row count, or an empty string when the listing
+   * carries no sort.
+   *
+   * ⚠ #26 — WITHOUT THIS, SORTING IS THE ONE INTERACTION THAT ANNOUNCES NOTHING. Paging and filtering both
+   * change the numbers in the status above, so the live region re-reads and a screen-reader user hears the
+   * result. Sorting changes the ORDER and never the count, so the text it produced was identical to the text
+   * already there - and a live region whose contents do not change says nothing at all. Naming the column and
+   * the direction makes the one silent interaction audible, using the column's own visible heading so what is
+   * heard matches what is seen. `aria-sort` on the heading reports the same fact, but only to a reader who
+   * goes looking for the heading; this reports it where the reader already is.
+   *
+   * Silent unless the ordered column is one this table actually offers: a consumer may hold a sort name the
+   * current column set does not publish - a saved query, or a name the wire accepts and the screen does not
+   * show - and naming a column that is not on screen would describe something a person cannot see or change.
+   */
+  private readonly sortClause = computed<string>(() => {
+    const key: string | undefined = this.displayedSortBySignal();
+
+    if (key === undefined) {
+      return '';
+    }
+
+    // SILENT UNLESS THE ORDERED COLUMN IS ONE THIS TABLE OFFERS AS SORTABLE. A consumer may hold a sort name
+    // the current column set does not publish - a saved query, or a name the wire accepts and the screen does
+    // not show - and a column that exists but carries no sort control is the same case: naming either would
+    // describe an order a person can neither see stated on a heading nor change.
+    const column = this.columnsSignal().find(
+      (candidate) => candidate.key === key && candidate.sortable === true,
+    );
+
+    if (column === undefined) {
+      return '';
+    }
+
+    return ` Sorted by ${column.label}, ${describeDirection(this.displayedSortDirSignal())}.`;
+  });
+
+  /**
+   * The size of the whole match set, when the consumer stated one and it is usable.
+   *
+   * A consumer that pages supplies this; one that does not leaves it absent, and the summary then speaks
+   * only of the rows it was handed. A negative or non-finite value is treated as absent rather than
+   * rendered, so a sentinel cannot reach the sentence.
+   */
+  private readonly resolvedTotalCount = computed<number | null>(() => {
+    const stated: number | null = this.totalCountSignal();
+
+    if (stated === null || !Number.isFinite(stated) || stated < 0) {
+      return null;
+    }
+
+    return Math.trunc(stated);
   });
 
   protected readonly isEmpty = computed(
-    () => this.loadingSignal() === false && this.rowsSignal().length === 0,
+    () =>
+      this.loadingSignal() === false &&
+      this.failedSignal() === false &&
+      this.rowsSignal().length === 0,
   );
+
+  /**
+   * Whether the body should say the rows could not be read, in place of the empty state.
+   *
+   * Rendered only when there is genuinely nothing on screen: a failure that arrives while rows are still
+   * shown leaves them alone, exactly as a read in flight does, because withdrawing readable rows in favour
+   * of a message loses information the reader already had.
+   */
+  protected readonly showFailurePlaceholder = computed(
+    () =>
+      this.loadingSignal() === false &&
+      this.failedSignal() &&
+      this.rowsSignal().length === 0,
+  );
+
+  /** The sentence rendered in place of the empty state when the read failed. */
+  protected readonly recordsUnreadMessage = RECORDS_UNREAD_MESSAGE;
 
   /** Whether the waiting placeholder should REPLACE the rows. */
   protected readonly showWaitingPlaceholder = computed(
     () => this.loadingSignal() && this.rowsSignal().length === 0,
   );
+
+  /**
+   * Whether to report a read that is running WHILE rows are on screen. The complement of
+   * {@link showWaitingPlaceholder} within the loading state: exactly one of the two is ever true, so the
+   * screen shows one indicator and never both.
+   *
+   * The strip it drives is `aria-hidden`, deliberately: the table's own `aria-busy` already reports the same
+   * fact to assistive technology, and announcing it twice would be worse than announcing it once.
+   */
+  protected readonly showRefetchIndicator = computed(
+    () => this.loadingSignal() && this.rowsSignal().length > 0,
+  );
+
+  /**
+   * Whether ordering is currently unavailable. True while a read is in flight, and ALSO over a settled empty
+   * result: a sort control above no rows can reorder nothing, so leaving it live invited an operator to press
+   * a control that could not answer.
+   */
+  protected readonly sortUnavailable = computed(() => this.loadingSignal() || this.isEmpty());
 
   /** The value bound to the table's `aria-busy` attribute, or `null` when it is idle. */
   protected readonly ariaBusy = computed<'true' | null>(() =>
@@ -719,8 +1165,110 @@ export class DataTableComponent<TRow extends object> implements OnInit {
 
     window.requestAnimationFrame(() => {
       this.windowUpdateQueued = false;
+      this.measureHorizontalOverflow();
+      this.measureRowSkip();
       this.updateWindow();
     });
+  }
+
+  /**
+   * Settles whether the container is clipping content horizontally.
+   *
+   * ⚠ THE MEASUREMENT IS WHAT MAKES THE FOCUS STOP CONDITIONAL, AND CONDITIONAL IS THE WHOLE POINT. A
+   * scrollable region needs to be focusable so a keyboard user can scroll it, but this container is only
+   * scrollable at some widths: measured on the account listing, 1280 gave a scroll width of 1046 against a
+   * client width of 1046 - nothing hidden at all - while 375 gave 648 against 326, hiding 322 pixels and
+   * four whole columns. Making the container permanently focusable would therefore add an unusable stop to
+   * every listing at every width to serve the narrow ones, which is a regression rather than a fix.
+   *
+   * It runs on the same frame as the row-window measurement rather than on an observer of its own: both
+   * read layout, both are already driven by the scroll and resize listeners plus every `rows` change, and
+   * sharing the frame keeps them from reading a box the other has just invalidated.
+   */
+  private measureHorizontalOverflow(): void {
+    const container = this.host.nativeElement.querySelector('.data-table__container');
+
+    if (container === null) {
+      return;
+    }
+
+    const hidden = container.scrollWidth - container.clientWidth;
+
+    this.horizontallyScrollableSignal.set(hidden > OVERFLOW_TOLERANCE_PX);
+
+    // ⚠ THE CONTENT WIDTH, NOT `clientWidth`, AND A MEASUREMENT CAUGHT THE DIFFERENCE. `clientWidth`
+    // INCLUDES the container's own inline padding, while the message wrapper begins after it - so handing the
+    // wrapper the raw value overhung the visible padding box by exactly 4 pixels at each edge when measured at
+    // 320 and 375. Nothing readable was lost, because the overhang was the wrapper's own padding, but a box
+    // asked to be exactly as wide as the visible area should be exactly that.
+    const padding = getComputedStyle(container);
+    const inlinePadding =
+      Number.parseFloat(padding.paddingLeft) + Number.parseFloat(padding.paddingRight);
+
+    this.visibleInlineSizeSignal.set(
+      container.clientWidth - (Number.isFinite(inlinePadding) ? inlinePadding : 0),
+    );
+  }
+
+  /**
+   * The width to give the message row's content, or null to leave it to the cell.
+   *
+   * ⚠ THE DEFECT THIS CLOSES IS THAT AN EMPTY LISTING WAS UNREADABLE ON A PHONE, and the cause is a
+   * deliberate decision elsewhere in this file rather than a mistake. The table is floored at
+   * `--table-min-inline-size` so that columns SCROLL rather than crush, which is right for rows of data - but
+   * a message row has no data and no columns, and it inherited the floor anyway. Measured at 320 and 375: the
+   * stand-in panel was laid out 608 pixels wide inside a scrollport of 271 and 326, and because the panel
+   * centres its own contents the heading began beyond the right edge and rendered as "Nothin" and "No". The
+   * operator was told nothing at all, on the one screen state that exists purely to tell them something.
+   *
+   * Pinning the content to the scrollport fixes it without touching the floor, so nothing about how rows of
+   * data lay out changes. The width is only imposed while the container is ACTUALLY clipping: at 1280 the
+   * scrollport and the table are the same width, so returning null there leaves the cell to size its own
+   * content exactly as before and the wide-viewport rendering is untouched.
+   *
+   * @returns The pixel width to apply, or null to impose none.
+   */
+  protected readonly messageViewportInlineSize = computed<number | null>(() =>
+    this.horizontallyScrollableSignal() ? this.visibleInlineSizeSignal() : null,
+  );
+
+  /**
+   * Settles whether a skip affordance is worth offering, by counting the controls a person would otherwise
+   * have to pass through.
+   *
+   * ⚠ COUNTED FROM THE RENDERED BODY RATHER THAN INFERRED FROM THE ROW COUNT, because this component does
+   * not know what its consumers project into a cell: one listing puts three commands in every row, another
+   * puts none, and a third makes the row's own title a link. Measured on the account listing, the run was
+   * THIRTY consecutive stops - ten rows of three - with nothing between them, because the username is plain
+   * text rather than a link, and the first stop after them was the pager.
+   *
+   * It shares the row-window measurement's frame for the same reason the overflow measurement does.
+   */
+  private measureRowSkip(): void {
+    const body = this.host.nativeElement.querySelector('tbody.data-table__body');
+
+    if (body === null) {
+      return;
+    }
+
+    const controls = body.querySelectorAll(FOCUSABLE_IN_BODY).length;
+
+    this.offersRowSkipSignal.set(controls > ROW_SKIP_THRESHOLD);
+  }
+
+  /**
+   * Moves focus past the table's rows, to the landing point rendered after it.
+   *
+   * The landing point carries its own wording rather than being an empty marker, so a reader who uses the
+   * affordance is told where they arrived instead of hearing nothing; the next press of Tab then continues
+   * into whatever follows the table, which is the pager on every listing that offers one.
+   */
+  protected skipPastRows(): void {
+    const target = this.host.nativeElement.querySelector(`#${this.skipTargetId}`);
+
+    if (target instanceof HTMLElement) {
+      target.focus();
+    }
   }
 
   /** Measures the rendered rows and settles which slice belongs on screen. */
@@ -772,13 +1320,28 @@ export class DataTableComponent<TRow extends object> implements OnInit {
     this.rowWindowSignal.set({ start, end });
   }
 
+  /**
+   * Recomputes whether the container overflows, and publishes the answer.
+   *
+   * ⚠ ONE MEASUREMENT SERVES BOTH CONSUMERS, and this method is the viewport listeners' entry point into it.
+   * The scroll region's conditional focus stop and the message row's viewport width are two readings of the
+   * same geometry, so they are taken together in {@link measureHorizontalOverflow} rather than by two
+   * observers that could read a box the other has just invalidated.
+   */
+  private measureScrollable(): void {
+    this.measureHorizontalOverflow();
+  }
+
   /** Registers the scroll and resize listeners the window depends on. */
   private observeViewport(): void {
     if (typeof window === 'undefined') {
       return;
     }
 
-    const onViewportChange = (): void => this.scheduleWindowUpdate();
+    const onViewportChange = (): void => {
+      this.scheduleWindowUpdate();
+      this.measureScrollable();
+    };
 
     window.addEventListener('scroll', onViewportChange, { passive: true });
     window.addEventListener('resize', onViewportChange, { passive: true });
@@ -786,6 +1349,33 @@ export class DataTableComponent<TRow extends object> implements OnInit {
     this.destroyRef.onDestroy(() => {
       window.removeEventListener('scroll', onViewportChange);
       window.removeEventListener('resize', onViewportChange);
+    });
+
+    // A window resize is not the only thing that changes the answer: a column set arriving, rows arriving,
+    // a sort indicator appearing or the sidebar collapsing all change the table's width or its container's
+    // without the window moving at all. The observer covers every one of those; the listeners above remain
+    // because a scroll can bring a windowed row into view and change the rendered width.
+    if (typeof ResizeObserver === 'undefined') {
+      return;
+    }
+
+    const observer = new ResizeObserver(() => {
+      this.measureScrollable();
+    });
+
+    const container = this.host.nativeElement.querySelector<HTMLElement>('.data-table__container');
+    const table = this.host.nativeElement.querySelector<HTMLElement>('table.data-table');
+
+    if (container !== null) {
+      observer.observe(container);
+    }
+
+    if (table !== null) {
+      observer.observe(table);
+    }
+
+    this.destroyRef.onDestroy(() => {
+      observer.disconnect();
     });
   }
 
@@ -795,15 +1385,33 @@ export class DataTableComponent<TRow extends object> implements OnInit {
   );
 
   /**
-   * Total rows the table actually renders, including the heading row, for `aria-rowcount`. The count of
-   * the CURRENT PAGE, not of the match set: this component is handed one page and must not claim
-   * knowledge of the rest.
+   * The size of the row set this table describes, including the heading row, for `aria-rowcount`.
+   *
+   * ⚠ THE MATCH SET, NOT THE PAGE, AND THE REVERSAL IS DELIBERATE. This reported the current page on the
+   * stated ground that the component is handed one page and must not claim knowledge of the rest. That
+   * reasoning holds for rendering and fails for this attribute: `aria-rowcount` exists so that a table
+   * whose body holds a WINDOW onto a larger set can state the size of the set, and a page is such a window.
+   * Reporting the page made it restate a number assistive technology can already count, and made it
+   * actively wrong on any page but the first - measured on the second page of a seventeen-record listing,
+   * where it reported eight while the pager beside it reported seventeen.
+   *
+   * TWO CASES STILL REPORT THE BODY, and both are cases where the body is not a window at all. A listing
+   * that states no total is not paging, so its page IS the set. And a table standing a message row in
+   * place of records describes exactly that row, because announcing a set size beside "no records found"
+   * would offer a total with nothing to index into.
    */
   protected readonly ariaRowCount = computed(() => {
     const records = this.rowsSignal();
     const rendersMessage = this.showWaitingPlaceholder() || records.length === 0;
 
-    return (rendersMessage ? MESSAGE_ROW_COUNT : records.length) + HEADER_ROW_COUNT;
+    if (rendersMessage) {
+      return MESSAGE_ROW_COUNT + HEADER_ROW_COUNT;
+    }
+
+    const stated: number | null = this.resolvedTotalCount();
+    const described = stated !== null && stated >= records.length ? stated : records.length;
+
+    return described + HEADER_ROW_COUNT;
   });
 
   /**
@@ -828,8 +1436,9 @@ export class DataTableComponent<TRow extends object> implements OnInit {
 
   /** The heading cells, fully derived. */
   protected readonly headerCells = computed<readonly DataTableHeaderCell<TRow>[]>(() => {
-    const activeKey = this.sortBySignal();
-    const activeDirection = this.sortDirSignal();
+    // The DISPLAYED pair, not the requested one: a heading reports the order of the rows beneath it.
+    const activeKey = this.displayedSortBySignal();
+    const activeDirection = this.displayedSortDirSignal();
 
     return this.columnsSignal().map((column) => {
       const sortable = column.sortable === true;
@@ -845,6 +1454,7 @@ export class DataTableComponent<TRow extends object> implements OnInit {
         ariaSort: resolveAriaSort(sortable, sorted, activeDirection),
         sortLabel: sortable ? `${SORT_LABEL_PREFIX}${column.label}` : null,
         align: column.headerAlign ?? DEFAULT_ALIGN,
+        atomic: column.atomic === true,
       };
     });
   });
@@ -867,11 +1477,18 @@ export class DataTableComponent<TRow extends object> implements OnInit {
   /** The body rows with every cell projected. */
   protected readonly bodyRows = computed<readonly DataTableBodyRow<TRow>[]>(() => {
     const columns = this.columnsSignal();
+    // ⚠ THE OFFSET IS WHAT MAKES THE INDEX A POSITION IN THE SET RATHER THAN IN THE WINDOW. Without it
+    // the indices restart at two on every page, so the eleventh record of seventeen announced as row two -
+    // a number that contradicts both the pager and the row count above.
+    //
+    // `rowIndex` stays window-relative on purpose and is a different quantity: it addresses the projected
+    // cell templates and the selection state, both of which are indexed by position within the body.
+    const offset = this.rowOffsetSignal();
 
     return this.rowsSignal().map((row, rowIndex) => ({
       row,
       rowIndex,
-      ariaRowIndex: rowIndex + HEADER_ROW_COUNT + 1,
+      ariaRowIndex: offset + rowIndex + HEADER_ROW_COUNT + 1,
       cells: columns.map((column) => projectCell(column, row, rowIndex)),
     }));
   });
@@ -883,11 +1500,16 @@ export class DataTableComponent<TRow extends object> implements OnInit {
    * @param cell The heading that was activated.
    */
   protected activateSort(cell: DataTableHeaderCell<TRow>): void {
-    if (cell.sortable === false || this.loadingSignal() === true) {
+    // The guard follows the announced state exactly, so what the control says about itself and what it does
+    // cannot diverge: `aria-disabled` is bound to the same expression.
+    if (cell.sortable === false || this.sortUnavailable()) {
       return;
     }
 
-    this.sortChange.emit({ key: cell.key, direction: nextDirection(cell.sorted, this.sortDirSignal()) });
+    this.sortChange.emit({
+      key: cell.key,
+      direction: nextDirection(cell.sorted, this.displayedSortDirSignal()),
+    });
   }
 
   /**
@@ -916,6 +1538,7 @@ export class DataTableComponent<TRow extends object> implements OnInit {
     this.rowsSelectableSignal.set(this.rowSelect.observed);
     this.observeViewport();
     this.scheduleWindowUpdate();
+    this.measureScrollable();
   }
 
   /**
@@ -1083,6 +1706,16 @@ function assertColumnsAreValid<TRow extends object>(
 }
 
 /**
+ * The direction, in the words a person hears rather than the wire's.
+ *
+ * @param direction The direction the listing is sorted in.
+ * @returns `ascending` or `descending`.
+ */
+function describeDirection(direction: SortDirection): string {
+  return direction === DESCENDING ? 'descending' : 'ascending';
+}
+
+/**
  * Resolves a column's declared track width into the value bound to its `col` element.
  *
  * @param width The declared width, if any.
@@ -1228,6 +1861,7 @@ function projectCell<TRow extends object>(
     template: rendersTemplate ? declaredTemplate : null,
     context: rendersTemplate ? { $implicit: row, row, column, rowIndex } : null,
     align: column.bodyAlign ?? DEFAULT_ALIGN,
+    atomic: column.atomic === true,
     // An actions column can never be the row's name - see the note on the column member. The kind is tested
     // here rather than trusted from the declaration so a caller that marks a commands column cannot produce
     // rows named "Edit".

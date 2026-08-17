@@ -182,8 +182,14 @@ public sealed class AuthApiTests
         issued.User.Username.Should().Be(IntegrationSeed.AdminUserName);
         issued.User.PortalName.Should().Be(IntegrationSeed.PortalName);
         issued.User.IsSuperUser.Should().BeFalse();
-        issued.User.Roles.Should().BeEmpty(
-            "the token response carries stable identity only; mutable authority is loaded through /auth/me");
+        // ⚠ REVERSED DELIBERATELY. This used to require an EMPTY collection, which is the behaviour a runtime
+        // audit reported: signing in understated the caller's authority while the current-user read, issued
+        // moments later by the same client, reported it in full. The claim assertions immediately below are
+        // the ones that keep authority OUT OF THE TOKEN, and they are unchanged - that property is separate
+        // from what the response body says, and a response body is not a credential.
+        issued.User.Roles.Should().Contain(
+            IntegrationSeed.AdministratorsRoleName,
+            "the sign-in answer states the authority the caller holds, agreeing with /auth/me");
 
         JwtSecurityToken accessToken = new JwtSecurityTokenHandler().ReadJwtToken(issued.AccessToken);
         HashSet<string> allowedClaimTypes =
@@ -408,15 +414,52 @@ public sealed class AuthApiTests
         body.Should().Contain("A password is required.");
     }
 
-    /// <summary>A locked account is refused generically when the caller is not entitled to the reason.</summary>
+    /// <summary>
+    /// A locked account is refused generically when the submitted credential is WRONG, which is what keeps
+    /// the lock from becoming an account-name oracle.
+    /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The migration discipline says to annotate a discovered defect rather than to fix it. This is the
-    /// documented exception, on the same ground as the tenant-alias match: reproducing it would carry an
-    /// AUTHENTICATION BYPASS into new code, and a lockout that admits the caller is not a lockout at all.
+    /// ⚠ THIS TEST USED TO SUBMIT THE CORRECT PASSWORD AND REQUIRE THE GENERIC REFUSAL, WHICH IS THE DEFECT
+    /// ITS SIBLING BELOW NOW PROVES CLOSED. Withholding the lock from the account's own holder told somebody
+    /// who had typed their correct password that it was wrong, with no wait, no counter and no recovery
+    /// route. Uniformity is preserved exactly where it does any work: for a caller who cannot prove the
+    /// credential, which is the only caller an enumeration attempt has.
     /// </remarks>
     [Fact]
-    public async Task Login_ForALockedAccount_IsGenericToAnAnonymousCaller()
+    public async Task Login_ForALockedAccount_IsGenericWhenTheCredentialIsWrong()
+    {
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
+        UserDetailDto account = await CreateUserAsync(administrator);
+        await LockAsync(account.Username);
+
+        using HttpClient client = _fixture.CreateAnonymousClient();
+
+        using HttpResponseMessage response = await client.PostAsJsonAsync(
+            LoginRoute(_fixture.Seed.PortalId),
+            new LoginRequest { Username = account.Username, Password = "not-this-accounts-password" },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+
+        string body = await response.Content.ReadAsStringAsync();
+        body.Should().Contain("urn:dnnmigration:error:auth.invalid_credentials");
+        body.Should().NotContain("locked");
+    }
+
+    /// <summary>
+    /// The same locked account states the lock, a wait and a recovery route to the caller who PROVED the
+    /// credential — its own holder — even though that caller is anonymous.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The wait is not asserted as a literal: it is read from the installation's own automatic-unlock window,
+    /// so a fixed number here would be a second source of truth. What is asserted is that the sentence names
+    /// the state, offers a route out, and is NOT the operator-facing sentence reserved for a caller who is
+    /// entitled to the detail without holding the credential.
+    /// </remarks>
+    [Fact]
+    public async Task Login_ForALockedAccount_IsExplicitToItsOwnHolder()
     {
         using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
         UserDetailDto account = await CreateUserAsync(administrator);
@@ -432,13 +475,20 @@ public sealed class AuthApiTests
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
 
         string body = await response.Content.ReadAsStringAsync();
-        body.Should().Contain("urn:dnnmigration:error:auth.invalid_credentials");
-        body.Should().NotContain("locked");
+        body.Should().Contain("urn:dnnmigration:error:auth.locked_out");
+        body.Should().Contain("locked");
+        body.Should().Contain("administrator");
+        body.Should().NotContain(
+            "The account name or credential is not correct.",
+            "which is the false statement this replaces");
+        body.Should().NotContain(
+            "is locked and must be unlocked",
+            "that sentence is addressed to an operator diagnosing somebody else's account");
     }
 
     /// <summary>
-    /// The same locked account reports the specific reason when the caller signing it in is the host, which
-    /// is the case that makes an administrative diagnosis possible without creating an oracle.
+    /// The same locked account reports the operator-facing reason to an entitled caller who does NOT hold the
+    /// credential, which is what makes an administrative diagnosis possible without creating an oracle.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -449,12 +499,14 @@ public sealed class AuthApiTests
         await LockAsync(account.Username);
 
         // Sign-in is anonymous, but it does not refuse a caller that presents a token, and the entitlement
-        // test reads that caller. A host-authenticated sign-in attempt is therefore told why.
+        // test reads that caller. A host-authenticated sign-in attempt is therefore told why. The credential
+        // is deliberately wrong: a caller who PROVES it is treated as the account's holder and receives the
+        // reader-facing advisory instead, which the sibling test above covers.
         using HttpClient host = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await host.PostAsJsonAsync(
             LoginRoute(_fixture.Seed.PortalId),
-            new LoginRequest { Username = account.Username, Password = ApiTestFixture.KnownPassword },
+            new LoginRequest { Username = account.Username, Password = "not-this-accounts-password" },
             ApiTestFixture.Json);
 
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);

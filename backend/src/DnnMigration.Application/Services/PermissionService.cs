@@ -1,5 +1,6 @@
 using System.Globalization;
 using DnnMigration.Application.Abstractions;
+using DnnMigration.Application.Dtos.Module;
 using DnnMigration.Application.Options;
 using DnnMigration.Domain.Abstractions.Repositories;
 using DnnMigration.Domain.Abstractions.Services;
@@ -60,6 +61,36 @@ public sealed class PermissionService : IPermissionService
     private const string KeyInvalidCode = "permission.key_invalid";
 
     /// <summary>
+    /// Reported when a grant replacement is malformed in a way no individual reference explains - a missing
+    /// body, a principal named twice, or a cell naming neither a role nor an account.
+    /// </summary>
+    /// <remarks>
+    /// A code of its own rather than a reuse of <see cref="KeyInvalidCode"/>, which says "this permission
+    /// does not apply here" and is corrected by choosing a different column. This one says "the shape of
+    /// what you sent is wrong" and is corrected by rebuilding the request.
+    /// </remarks>
+    private const string RequestInvalidCode = "permission.request_invalid";
+
+    /// <summary>Largest number of grants one module may carry in a single replacement.</summary>
+    /// <remarks>
+    /// A net-new bound with no legacy counterpart, and generous by construction: the grid that submits it
+    /// has one row per portal role plus two pseudo-roles, times at most four declared columns, so a portal
+    /// would need more than two hundred roles to approach it. It is stated to bound the row count of one
+    /// transaction, not to constrain any real configuration.
+    /// </remarks>
+    private const int GrantsPerModuleMaximum = 1000;
+
+    /// <summary>
+    /// The value the grant readers treat as "every permission" in their permission argument, so that one
+    /// module's whole grid can be read in a single query.
+    /// </summary>
+    /// <remarks>
+    /// <c>Permission.PermissionID</c> is <c>IDENTITY (1, 1)</c>, so no catalogue entry can ever carry it and
+    /// the wildcard can never collide with a real definition.
+    /// </remarks>
+    private const int AnyPermissionId = -1;
+
+    /// <summary>
     /// Lowest value <c>dbo.ModuleDefinitions.ModuleDefID</c> can take, the column being <c>IDENTITY (1,
     /// 1)</c>, so a smaller value cannot name a row.
     /// </summary>
@@ -106,12 +137,25 @@ public sealed class PermissionService : IPermissionService
     /// </remarks>
     private const string TabDefinitionsCacheKey = "PermissionDefinitionsByTab|all";
 
-    /// <summary>Every permission key the schema can hold, which is the enumeration itself.</summary>
+    /// <summary>Every permission key THIS SOLUTION names, which is the enumeration itself.</summary>
     /// <remarks>
-    /// <c>Permission.PermissionKey</c> is a closed enumeration whose member names are the stored
-    /// <c>varchar(50)</c> values, so this sequence is the complete key vocabulary by construction rather
-    /// than by observation - no catalogue row can carry a key outside it. That is what lets the unfiltered
-    /// catalogue question and the host-account answer be settled without a round trip.
+    /// <para>
+    /// This is emphatically NOT a claim about what the column can hold. <c>Permission.PermissionKey</c> is
+    /// free-text <c>varchar(50)</c> with no check constraint, and an installation carrying a third-party
+    /// module can already hold a key outside this set; the entity models it as a plain string precisely so
+    /// that such a row materialises intact. What this sequence bounds is the set of keys the target can
+    /// ASK ABOUT - the ones its authorisation policies are written against.
+    /// </para>
+    /// <para>
+    /// It is used in exactly two places, and each is bounded for its own reason. The host-account answer is
+    /// settled from it because a host holds every right by definition and reading rows to prove that would
+    /// be a round trip with a foregone conclusion. The catalogue question uses it as the PROBE CANDIDATE
+    /// LIST wherever the caller has not named a module definition, because the legacy catalogue exposes no
+    /// all-rows reader at all - <c>DataProvider.vb</c> lines 280-288 declare readers by identifier, by
+    /// module definition, by module, by folder path, by scope-code-and-key and by page, and nothing else -
+    /// so a scope can only be interrogated one candidate key at a time. Naming a module definition takes
+    /// the store-backed path instead, and that path reports the stored spellings whatever they are.
+    /// </para>
     /// </remarks>
     private static readonly IReadOnlyList<PermissionKey> AllPermissionKeys = Enum.GetValues<PermissionKey>();
 
@@ -368,10 +412,19 @@ public sealed class PermissionService : IPermissionService
 
     /// <inheritdoc />
     /// <remarks>
+    /// <para>
     /// The two filters compose conjunctively, so supplying neither returns the whole catalogue. The scope
     /// code is deliberately matched as free text rather than against an enumeration, because the column it
     /// lives in is free text and an installation carrying a code this codebase has never seen must still
     /// round-trip intact.
+    /// </para>
+    /// <para>
+    /// The KEY column is free text on exactly the same footing, and naming a module definition is how a
+    /// caller reaches a key outside the four this solution enumerates: that path reads the catalogue and
+    /// reports the stored spellings verbatim. The key FILTER remains typed, so a spelling outside the
+    /// enumeration is refused at the boundary with a bad request rather than silently matching nothing - see
+    /// <c>AllPermissionKeys</c> for why the unnamed-definition paths can only probe a candidate list.
+    /// </para>
     /// </remarks>
     public async Task<Result<IReadOnlyList<string>>> GetPermissionKeysAsync(
         string? permissionCode = null,
@@ -862,10 +915,18 @@ public sealed class PermissionService : IPermissionService
 
             if (permissionKey is PermissionKey wantedWithinDefinition)
             {
-                matching = matching.Where(entry => entry.PermissionKey == wantedWithinDefinition);
+                string wantedSpelling = wantedWithinDefinition.ToString();
+
+                matching = matching.Where(entry => string.Equals(
+                    entry.PermissionKey,
+                    wantedSpelling,
+                    StringComparison.OrdinalIgnoreCase));
             }
 
-            return matching.Select(entry => entry.PermissionKey.ToString()).ToList();
+            // The STORED spellings, not enumeration members: this branch reads the catalogue itself, so a
+            // definition declaring a key this solution does not name reports that key rather than omitting
+            // it. Normalisation of the returned sequence is the caller's, and is applied uniformly there.
+            return matching.Select(entry => entry.PermissionKey).ToList();
         }
 
         if (wantedCode is not null)
@@ -1318,6 +1379,502 @@ public sealed class PermissionService : IPermissionService
         return Result<IReadOnlyList<PermissionDto>>.Success(definitions);
     }
 
+    /// <inheritdoc />
+    public async Task<Result<ModulePermissionsDto>> GetModulePermissionsAsync(
+        int portalId,
+        int moduleId,
+        CancellationToken cancellationToken = default)
+    {
+        Module? module = await _modules
+            .GetByIdAsync(moduleId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (module is null || !BelongsToPortal(module.PortalId, portalId))
+        {
+            return Result<ModulePermissionsDto>.Failure(
+                ModuleNotFoundCode,
+                FormattableString.Invariant($"Module {moduleId} does not exist in portal {portalId}."));
+        }
+
+        // The columns. Read through the same cache the definition catalogue read uses, so the grid and the
+        // chip list above it can never disagree about which keys this definition declares.
+        string cacheKey = string.Format(
+            CultureInfo.InvariantCulture,
+            ModuleDefinitionsCacheKeyFormat,
+            module.ModuleDefinitionId);
+
+        IReadOnlyList<PermissionDto> catalogue = await ReadThroughCacheAsync(
+                cacheKey,
+                async token => Project(
+                    await _permissions.GetByModuleIdAsync(moduleId, token).ConfigureAwait(false)),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        List<ModulePermissionDefinitionDto> definitions = catalogue
+            .Select(entry => new ModulePermissionDefinitionDto
+            {
+                PermissionId = entry.PermissionId,
+                PermissionKey = entry.PermissionKey,
+                PermissionName = entry.PermissionName,
+            })
+            .ToList();
+
+        IReadOnlyList<ModulePermission> grants = await _permissions
+            .GetModulePermissionsByModuleIdAsync(moduleId, AnyPermissionId, cancellationToken)
+            .ConfigureAwait(false);
+
+        // The administrator row is identified from the PORTAL, never from a role name: RoleName is data an
+        // installation may rename, whereas Portals.AdministratorRoleId is the column the legacy grid itself
+        // compared against.
+        Portal? portal = await _portals
+            .GetByIdAsync(portalId, includeAliases: false, cancellationToken)
+            .ConfigureAwait(false);
+
+        int? administratorRoleId = portal?.AdministratorRoleId;
+
+        // Modules.InheritViewPermissions is bit NULL, and an unset column is NOT inheritance: the legacy
+        // reader mapped DBNull to Null.NullBoolean, which is False. Resolved once here so the row builders
+        // cannot each answer it differently.
+        bool inheritsView = module.InheritViewPermissions ?? false;
+
+        List<ModulePermissionRoleDto> roles = await BuildPermissionRoleRowsAsync(
+                portalId,
+                inheritsView,
+                definitions,
+                grants,
+                administratorRoleId,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        List<ModulePermissionUserDto> users = await BuildPermissionUserRowsAsync(
+                portalId,
+                inheritsView,
+                definitions,
+                grants,
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return Result<ModulePermissionsDto>.Success(new ModulePermissionsDto
+        {
+            ModuleId = module.ModuleId,
+            InheritViewPermissions = inheritsView,
+            InheritedPermissionKey = definitions
+                .Any(definition => IsViewKey(definition.PermissionKey))
+                    ? ViewPermissionKey
+                    : null,
+            Definitions = definitions,
+            Roles = roles,
+            Users = users,
+        });
+    }
+
+    /// <inheritdoc />
+    public async Task<Result> ReplaceModulePermissionsAsync(
+        int portalId,
+        int moduleId,
+        ReplaceModulePermissionsRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        if (request is null)
+        {
+            return Result.Failure(
+                RequestInvalidCode,
+                "A permission replacement request is required and was not supplied.");
+        }
+
+        IReadOnlyList<ModulePermissionGrantRequest> submitted =
+            request.Grants ?? Array.Empty<ModulePermissionGrantRequest>();
+
+        if (submitted.Count > GrantsPerModuleMaximum)
+        {
+            return Result.Failure(
+                RequestInvalidCode,
+                FormattableString.Invariant(
+                    $"A module may carry no more than {GrantsPerModuleMaximum} grants."));
+        }
+
+        Module? module = await _modules
+            .GetByIdAsync(moduleId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (module is null || !BelongsToPortal(module.PortalId, portalId))
+        {
+            return Result.Failure(
+                ModuleNotFoundCode,
+                FormattableString.Invariant($"Module {moduleId} does not exist in portal {portalId}."));
+        }
+
+        // EVERY REFERENCE IS RESOLVED BEFORE ANY STATEMENT IS ISSUED. The write is a delete-then-insert, so
+        // a reference discovered to be invalid halfway through would leave the module with no grants at all
+        // - which is precisely the failure mode a permission surface must not have.
+        IReadOnlyList<Permission> declared = await _permissions
+            .GetByModuleIdAsync(moduleId, cancellationToken)
+            .ConfigureAwait(false);
+
+        HashSet<int> declaredIds = declared.Select(entry => entry.PermissionId).ToHashSet();
+
+        // The stored key is FREE TEXT, not a member of the closed vocabulary - the column is `varchar(50)`
+        // and a site may hold a key this application has never heard of - so the lookup carries the text and
+        // the comparison goes through IsViewKey, exactly as every other view-inheritance decision here does.
+        Dictionary<int, string> declaredKeys = declared
+            .GroupBy(entry => entry.PermissionId)
+            .ToDictionary(group => group.Key, group => group.First().PermissionKey);
+
+        IReadOnlyList<Role> portalRoles = await _roles
+            .GetByPortalIdAsync(portalId, cancellationToken)
+            .ConfigureAwait(false);
+
+        HashSet<int> assignableRoleIds = portalRoles.Select(role => role.RoleId).ToHashSet();
+        assignableRoleIds.Add(SpecialRoleIds.AllUsers);
+        assignableRoleIds.Add(SpecialRoleIds.Unauthenticated);
+
+        var accepted = new List<ModulePermission>(submitted.Count);
+        var seen = new HashSet<(int PermissionId, int? RoleId, int? UserId)>();
+
+        foreach (ModulePermissionGrantRequest grant in submitted)
+        {
+            if (!declaredIds.Contains(grant.PermissionId))
+            {
+                return Result.Failure(
+                    KeyInvalidCode,
+                    FormattableString.Invariant(
+                        $"Permission {grant.PermissionId} is not declared by module {moduleId}."));
+            }
+
+            bool namesRole = grant.RoleId is not null;
+            bool namesUser = grant.UserId is not null;
+
+            if (namesRole == namesUser)
+            {
+                return Result.Failure(
+                    RequestInvalidCode,
+                    "Each grant must name exactly one of a role or an account.");
+            }
+
+            if (grant.RoleId is int roleId)
+            {
+                if (roleId == SpecialRoleIds.SuperUser)
+                {
+                    // Refused rather than silently dropped. The host pseudo-role matches nobody during
+                    // evaluation, so storing a grant against it would be a row that can never take effect,
+                    // and an operator who ticked it would be told nothing.
+                    return Result.Failure(
+                        RoleNotFoundCode,
+                        "The host pseudo-role cannot hold a module grant.");
+                }
+
+                if (!assignableRoleIds.Contains(roleId))
+                {
+                    return Result.Failure(
+                        RoleNotFoundCode,
+                        FormattableString.Invariant(
+                            $"Portal {portalId} has no role bearing identifier {roleId}."));
+                }
+            }
+
+            if (grant.UserId is int userId)
+            {
+                User? account = await _users
+                    .GetAsync(portalId, userId, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (account is null)
+                {
+                    return Result.Failure(
+                        UserNotFoundCode,
+                        FormattableString.Invariant(
+                            $"Account {userId} does not exist in portal {portalId}."));
+                }
+            }
+
+            // A repeated cell is a contradiction rather than a duplicate: the same principal cannot both
+            // hold and not hold one permission, and the stored table has no ordering that would let a
+            // "last one wins" rule be defensible.
+            if (!seen.Add((grant.PermissionId, grant.RoleId, grant.UserId)))
+            {
+                return Result.Failure(
+                    RequestInvalidCode,
+                    FormattableString.Invariant(
+                        $"Permission {grant.PermissionId} is named more than once for the same principal."));
+            }
+
+            // WITHHELD, NOT REFUSED. The legacy grid rendered a view cell as cleared and disabled while
+            // inheritance was on, and its save path then removed the row - so a submission that carries a
+            // view grant alongside inheritance is describing a state the legacy screen could not express.
+            // Dropping the grant reproduces the legacy outcome exactly; refusing the request would make the
+            // screen unusable, because the operator's tick and the switch are saved together.
+            if (request.InheritViewPermissions
+                && declaredKeys.TryGetValue(grant.PermissionId, out string? declaredKey)
+                && IsViewKey(declaredKey))
+            {
+                continue;
+            }
+
+            accepted.Add(new ModulePermission
+            {
+                ModuleId = moduleId,
+                PermissionId = grant.PermissionId,
+                RoleId = grant.RoleId,
+                UserId = grant.UserId,
+                AllowAccess = grant.AllowAccess,
+            });
+        }
+
+        await using (ITransactionScope transaction = await _unitOfWork
+            .BeginTransactionAsync(TransactionIsolation.Default, cancellationToken)
+            .ConfigureAwait(false))
+        {
+            await _permissions.DeleteModulePermissionsByModuleIdAsync(moduleId, cancellationToken)
+                .ConfigureAwait(false);
+
+            foreach (ModulePermission grant in accepted)
+            {
+                await _permissions.AddModulePermissionAsync(grant, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            // Saved in the SAME commit as the grants, because the legacy screen saved them together and
+            // because the switch decides whether the view grants above mean anything: a partial outcome
+            // here is a module whose stored rights contradict its stored inheritance.
+            if ((module.InheritViewPermissions ?? false) != request.InheritViewPermissions)
+            {
+                module.InheritViewPermissions = request.InheritViewPermissions;
+                await _modules.UpdateAsync(module, cancellationToken).ConfigureAwait(false);
+            }
+
+            await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        // Ordered after the commit. A grant change alters what every caller may do, so the evaluator's
+        // cached answers are evicted through the same member every other grant-changing path uses.
+        InvalidateUserPermissionCaches();
+
+        return Result.Success();
+    }
+
+    /// <summary>Builds the role rows of a module's grant grid.</summary>
+    /// <param name="portalId">The portal whose roles form the rows.</param>
+    /// <param name="inheritsView">
+    /// Whether the module currently inherits its view rights from its page, which collapses the view column.
+    /// </param>
+    /// <param name="definitions">The columns, in render order.</param>
+    /// <param name="grants">Every grant recorded against the module.</param>
+    /// <param name="administratorRoleId">
+    /// The portal's administrator role, or <see langword="null"/> when the portal declares none.
+    /// </param>
+    /// <param name="cancellationToken">Token observed for cancellation.</param>
+    /// <returns>The role rows, ordered case-insensitively by name.</returns>
+    /// <remarks>
+    /// MIGRATION: reproduces <c>PermissionsGrid.GetRoles</c> at
+    /// <c>Library/Controls/DataGrids/Permissions Grids/PermissionsGrid.vb:L450-L475</c>. That method
+    /// defaulted its group filter to <c>-2</c>, which took every portal role and, because the filter was
+    /// negative, appended the two built-in pseudo-roles before sorting by name through <c>RoleComparer</c>.
+    /// The group selector itself is not reproduced - this screen shows one module, and a filter that hides
+    /// rows on a grid whose save is a REPLACE would let an operator withdraw grants they could not see.
+    /// </remarks>
+    private async Task<List<ModulePermissionRoleDto>> BuildPermissionRoleRowsAsync(
+        int portalId,
+        bool inheritsView,
+        IReadOnlyList<ModulePermissionDefinitionDto> definitions,
+        IReadOnlyList<ModulePermission> grants,
+        int? administratorRoleId,
+        CancellationToken cancellationToken)
+    {
+        IReadOnlyList<Role> portalRoles = await _roles
+            .GetByPortalIdAsync(portalId, cancellationToken)
+            .ConfigureAwait(false);
+
+        var rows = new List<ModulePermissionRoleDto>(portalRoles.Count + 2);
+
+        foreach (Role role in portalRoles)
+        {
+            rows.Add(BuildRoleRow(
+                role.RoleId,
+                role.RoleName,
+                isPseudoRole: false,
+                isAdministrator: administratorRoleId is int adminId && adminId == role.RoleId,
+                inheritsView,
+                definitions,
+                grants));
+        }
+
+        rows.Add(BuildRoleRow(
+            SpecialRoleIds.Unauthenticated,
+            SpecialRoleNames.Unauthenticated,
+            isPseudoRole: true,
+            isAdministrator: false,
+            inheritsView,
+            definitions,
+            grants));
+
+        rows.Add(BuildRoleRow(
+            SpecialRoleIds.AllUsers,
+            SpecialRoleNames.AllUsers,
+            isPseudoRole: true,
+            isAdministrator: false,
+            inheritsView,
+            definitions,
+            grants));
+
+        rows.Sort(static (left, right) =>
+            string.Compare(left.RoleName, right.RoleName, StringComparison.OrdinalIgnoreCase));
+
+        return rows;
+    }
+
+    /// <summary>Builds one role row of a module's grant grid.</summary>
+    /// <param name="roleId">The role identifier.</param>
+    /// <param name="roleName">The role's display name.</param>
+    /// <param name="isPseudoRole">Whether the row is one of the two built-in pseudo-roles.</param>
+    /// <param name="isAdministrator">Whether the row is the portal's administrator role.</param>
+    /// <param name="inheritsView">Whether the module inherits its view rights from its page.</param>
+    /// <param name="definitions">The columns, in render order.</param>
+    /// <param name="grants">Every grant recorded against the module.</param>
+    /// <returns>The row.</returns>
+    private static ModulePermissionRoleDto BuildRoleRow(
+        int roleId,
+        string roleName,
+        bool isPseudoRole,
+        bool isAdministrator,
+        bool inheritsView,
+        IReadOnlyList<ModulePermissionDefinitionDto> definitions,
+        IReadOnlyList<ModulePermission> grants)
+    {
+        var cells = new List<ModulePermissionCellDto>(definitions.Count);
+
+        foreach (ModulePermissionDefinitionDto definition in definitions)
+        {
+            bool inheritedColumn = inheritsView && IsViewKey(definition.PermissionKey);
+
+            bool allowAccess;
+            bool editable;
+
+            if (inheritedColumn)
+            {
+                // ModulePermissionsGrid.vb:L296-L300 and :L241-L243 - cleared AND disabled.
+                allowAccess = false;
+                editable = false;
+            }
+            else if (isAdministrator)
+            {
+                // ModulePermissionsGrid.vb:L303-L305 and :L243-L247 - always granted, never editable.
+                allowAccess = true;
+                editable = false;
+            }
+            else
+            {
+                ModulePermission? recorded = grants.FirstOrDefault(grant =>
+                    grant.PermissionId == definition.PermissionId
+                    && grant.UserId is null
+                    && grant.RoleId == roleId);
+
+                allowAccess = recorded?.AllowAccess ?? false;
+                editable = true;
+            }
+
+            cells.Add(new ModulePermissionCellDto
+            {
+                PermissionId = definition.PermissionId,
+                PermissionKey = definition.PermissionKey,
+                AllowAccess = allowAccess,
+                Editable = editable,
+            });
+        }
+
+        return new ModulePermissionRoleDto
+        {
+            RoleId = roleId,
+            RoleName = roleName,
+            IsAdministrator = isAdministrator,
+            IsPseudoRole = isPseudoRole,
+            Cells = cells,
+        };
+    }
+
+    /// <summary>Builds the account rows of a module's grant grid.</summary>
+    /// <param name="portalId">The portal the accounts must belong to.</param>
+    /// <param name="inheritsView">Whether the module inherits its view rights from its page.</param>
+    /// <param name="definitions">The columns, in render order.</param>
+    /// <param name="grants">Every grant recorded against the module.</param>
+    /// <param name="cancellationToken">Token observed for cancellation.</param>
+    /// <returns>The account rows, ordered case-insensitively by display name.</returns>
+    /// <remarks>
+    /// Only accounts a grant already names appear. An account whose row cannot be resolved - deleted since
+    /// the grant was made - is omitted rather than rendered nameless, and its grants are still carried back
+    /// by a subsequent read of the same module, so nothing is silently destroyed by omitting the row: the
+    /// grid's replace only withdraws what the caller was shown, because the caller resubmits what it saw.
+    /// </remarks>
+    private async Task<List<ModulePermissionUserDto>> BuildPermissionUserRowsAsync(
+        int portalId,
+        bool inheritsView,
+        IReadOnlyList<ModulePermissionDefinitionDto> definitions,
+        IReadOnlyList<ModulePermission> grants,
+        CancellationToken cancellationToken)
+    {
+        var rows = new List<ModulePermissionUserDto>();
+
+        IEnumerable<int> namedAccounts = grants
+            .Where(grant => grant.UserId is not null)
+            .Select(grant => grant.UserId!.Value)
+            .Distinct();
+
+        foreach (int userId in namedAccounts)
+        {
+            User? account = await _users
+                .GetAsync(portalId, userId, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (account is null)
+            {
+                continue;
+            }
+
+            var cells = new List<ModulePermissionCellDto>(definitions.Count);
+
+            foreach (ModulePermissionDefinitionDto definition in definitions)
+            {
+                bool inheritedColumn = inheritsView && IsViewKey(definition.PermissionKey);
+
+                ModulePermission? recorded = grants.FirstOrDefault(grant =>
+                    grant.PermissionId == definition.PermissionId
+                    && grant.UserId == userId);
+
+                cells.Add(new ModulePermissionCellDto
+                {
+                    PermissionId = definition.PermissionId,
+                    PermissionKey = definition.PermissionKey,
+
+                    // ModulePermissionsGrid.vb:L331-L340 - the account overload carries no administrator
+                    // special case, so inheritance is the only thing that collapses a cell here.
+                    AllowAccess = !inheritedColumn && (recorded?.AllowAccess ?? false),
+                    Editable = !inheritedColumn,
+                });
+            }
+
+            rows.Add(new ModulePermissionUserDto
+            {
+                UserId = account.UserId,
+                DisplayName = string.IsNullOrWhiteSpace(account.DisplayName)
+                    ? account.Username
+                    : account.DisplayName,
+                Cells = cells,
+            });
+        }
+
+        rows.Sort(static (left, right) =>
+            string.Compare(left.DisplayName, right.DisplayName, StringComparison.OrdinalIgnoreCase));
+
+        return rows;
+    }
+
+    /// <summary>Determines whether a catalogue key is the view key whose inheritance is special-cased.</summary>
+    /// <param name="permissionKey">The key as it travels across the boundary.</param>
+    /// <returns><see langword="true"/> when the key is <c>VIEW</c>; otherwise <see langword="false"/>.</returns>
+    private static bool IsViewKey(string permissionKey) =>
+        string.Equals(permissionKey, ViewPermissionKey, StringComparison.OrdinalIgnoreCase);
+
     /// <summary>
     /// Reads a catalogue projection through the cache, or straight from the store when caching is off.
     /// </summary>
@@ -1366,16 +1923,17 @@ public sealed class PermissionService : IPermissionService
     /// <param name="definition">The row to project.</param>
     /// <returns>The projection.</returns>
     /// <remarks>
-    /// The key travels as the enumeration member's NAME, which is both what the column stores and what
-    /// every other permission-shaped value in this API carries - the token's claims and the catalogue
-    /// listing use the same spellings - so one concept never travels two ways.
+    /// The key travels VERBATIM - exactly the spelling the column holds, neither re-cased nor validated
+    /// against the enumeration this solution writes its own policies against. That is what lets a
+    /// definition registered by a third-party module be read back as itself, and it is the same treatment
+    /// the neighbouring scope code has always had.
     /// </remarks>
     private static PermissionDto ToDto(Permission definition) => new()
     {
         PermissionId = definition.PermissionId,
         PermissionCode = definition.PermissionCode,
         ModuleDefId = definition.ModuleDefinitionId,
-        PermissionKey = definition.PermissionKey.ToString(),
+        PermissionKey = definition.PermissionKey,
         PermissionName = definition.PermissionName,
     };
 

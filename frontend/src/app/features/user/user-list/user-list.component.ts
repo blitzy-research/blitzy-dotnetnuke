@@ -14,6 +14,8 @@ import {
   type Signal,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { USER_LIST_ROUTE } from '../../../core/config/app-routes.config';
+import { ListReturnStore } from '../../../core/state/list-return.store';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 
 import {
@@ -32,8 +34,11 @@ import type { ParamMap, Params } from '@angular/router';
 
 import { NotificationService } from '../../../core/services/notification.service';
 import { AuthStore } from '../../../core/state/auth.store';
+import { USER_DELETED_MESSAGE } from '../user-messages';
 import { UserStore } from '../../../core/state/user.store';
+import { AbsentValueComponent } from '../../../shared/components/absent-value/absent-value.component';
 import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialog/confirm-dialog.component';
+import { RovingFocusDirective } from '../../../shared/directives/roving-focus.directive';
 import { DataTableComponent } from '../../../shared/components/data-table/data-table.component';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
 import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
@@ -93,7 +98,7 @@ const MANAGE_ROLES_COMMAND_LABEL = 'Manage Roles';
 
 const DELETE_CONFIRM_MESSAGE = 'Are You Sure You Wish To Delete This Item?';
 
-const USER_DELETED_MESSAGE = 'User Deleted Successfully';
+
 
 const USER_DELETE_ERROR_MESSAGE = 'Error Deleting User';
 
@@ -113,6 +118,16 @@ const NO_QUERY_NOTICE =
  * punctuation beyond the separators.
  */
 const LETTER_FILTER_LIST = 'A,B,C,D,E,F,G,H,I,J,K,L,M,N,O,P,Q,R,S,T,U,V,W,X,Y,Z';
+
+/**
+ * The affordance offered on the zero-result surface. It applies the same unfiltered query the letter strip's
+ * own "All" entry does — the wording is longer only because, standing alone inside an empty table, "All" names
+ * nothing.
+ */
+const SHOW_ALL_ACCOUNTS_LABEL = 'List all accounts';
+
+/** Why the table is empty when a narrowing WAS applied and matched nothing. */
+const NO_MATCHING_ACCOUNTS_MESSAGE = 'No accounts match the current filter.';
 
 const LETTER_FILTER_SEPARATOR = ',';
 
@@ -160,6 +175,17 @@ const SEARCH_PLACEHOLDER = 'Begins with';
  */
 const FILTER_DISCLOSURE_TEMPLATE = 'Filtered: {field} begins with \u201c{text}\u201d.';
 
+/**
+ * What is said when the text entered carries nothing to match on.
+ *
+ * ⚠ #36 — A TERM OF NOTHING BUT SPACES LOOKED HONOURED AND WAS NOT. Entering spaces returned the whole
+ * listing, unfiltered, with the spaces still sitting in the box and no statement anywhere on the screen - so
+ * the grid appeared to be a filtered result that happened to contain everything. The term is not sent, which
+ * matches what the server did with it in any case, and the screen now says which of the two happened.
+ */
+const IGNORED_TERM_NOTICE =
+  'The text entered contained no characters to match on, so the listing is unfiltered.';
+
 /** The axis wording for {@link FILTER_DISCLOSURE_TEMPLATE} when the search is on the account name. */
 const USERNAME_AXIS_WORDING = 'user name';
 
@@ -174,10 +200,33 @@ const EMAIL_AXIS_WORDING = 'email';
  * one — on the detail endpoint as well as on the listing, so nothing is being dropped in projection and
  * there is no server-side value to recover.
  */
-const ABSENT_PROFILE_VALUE_MARK = '\u2014';
+// The mark itself is `ABSENT_VALUE_MARK`, rendered by the shared absent-value component - see below.
 
-/** What the mark above MEANS, for a reader who cannot see it. */
-const ABSENT_PROFILE_VALUE_DESCRIPTION = 'not recorded';
+/**
+ * What the mark above MEANS, for a reader who cannot see it.
+ *
+ * ⚠ BOTH VALUES NOW COME FROM THE SHARED ABSENT-VALUE COMPONENT rather than being declared here. They were
+ * identical to the portal listing's own pair and different from a third listing's, which is precisely the
+ * divergence that made an absent value unreadable across screens; the cells render the shared component and
+ * these two remain only so the paired specification can assert what that component paints on THIS screen.
+ */
+// The wording itself is `ABSENT_VALUE_DESCRIPTION`, rendered by that same shared component.
+
+/**
+ * The description attached to a name value that is STORED with leading or trailing whitespace.
+ *
+ * ⚠ WHY THIS EXISTS AT ALL. HTML collapses runs of whitespace, so a value stored as `'   Padded Jones   '`
+ * paints identically to `'Padded Jones'`. Sorting, however, is performed on the STORED value, where the
+ * leading spaces sort ahead of every letter. The consequence measured on the live listing was a row that
+ * appeared to be filed under the wrong letter for no visible reason - the ordering was correct and the
+ * evidence for it was invisible. Annotating the value makes the ordering legible and simultaneously
+ * surfaces what is almost certainly a data-entry fault, without altering the stored value.
+ */
+const PADDED_VALUE_DESCRIPTION = 'stored with leading or trailing spaces';
+
+/** The painted mark for a value carrying stray whitespace. Hidden from assistive technology, which is
+ * given {@link PADDED_VALUE_DESCRIPTION} instead. */
+const PADDED_VALUE_MARK = '\u00b7';
 
 /**
  * The qualifier shown beside the approval word when an account is LOCKED OUT — U-M1. ⚠ THE APPROVAL WORD
@@ -194,6 +243,25 @@ const LOCKED_OUT_QUALIFIER = 'Locked';
  * and the sentence is what makes it unambiguous.
  */
 const LOCKED_OUT_DESCRIPTION = 'locked out, cannot sign in';
+
+/**
+ * What an UNAUTHORISED account's approval cell says beside the word, spelled out for a reader who meets
+ * the cell without its column heading — QA-19.
+ *
+ * ⚠ WHY THE WORD ALONE WAS NOT ENOUGH, and it is a consistency correction rather than a preference. This
+ * grid told an authorised account from an unauthorised one by the single character difference between
+ * `Yes` and `No`, in identical colour, weight and slant — while the three listings beside it had by then
+ * each grown a deliberate state vocabulary for exactly this shape of fact: an expired portal term, an
+ * expired module term and a free role are all named as states, muted and slanted, with the underlying
+ * value still announced. An account that cannot be used is the same kind of fact, and it was the one
+ * carrying no treatment at all.
+ *
+ * The visible word is UNCHANGED — `users.ascx` L74-L79 bound the legacy `Authorized` column through a
+ * yes/no formatter and that wording is preserved verbatim. What is added is the state treatment around
+ * it and this sentence beside it, so the distinction survives for a reader who perceives no colour and
+ * reaches the cell out of context.
+ */
+const UNAUTHORISED_DESCRIPTION = 'not authorised, cannot sign in';
 
 /** Accessible name for the alphabet strip's navigation landmark. AUTHORED, and invisible. */
 const FILTER_STRIP_LABEL = 'Filter accounts by first letter';
@@ -689,6 +757,17 @@ function isSafeMailtoTarget(target: string): boolean {
  * `users.ascx` L28 but no select command and no selection handler, so the style never
  * rendered. The shared table's row-activation output is accordingly not handled.
  */
+/**
+ * THE SUBTITLE, UNDER THE APPLICATION'S ONE SUBTITLE RULE. Every screen's header carries exactly one
+ * subtitle stating that screen's SCOPE: the record it acts on when the title does not already name it,
+ * and otherwise what the screen is for, in one line. It never carries a status, a count or a progress
+ * readout - those belong to the live region that owns them, and a count in two places is two owners of
+ * one fact. Measured finding: subtitles appeared on ten of the twenty screens and carried three
+ * different kinds of thing, so a reader could not tell what the slot was for.
+ */
+const PAGE_SUBTITLE =
+  'The accounts registered on this site.';
+
 @Component({
   selector: 'app-user-list',
   standalone: true,
@@ -719,12 +798,15 @@ function isSafeMailtoTarget(target: string): boolean {
     ConfirmDialogComponent,
     // Inline surface for a listing, policy or declaration read that failed.
     ErrorBannerComponent,
+    // The ONE rendering of an absent value, shared with every other listing.
+    AbsentValueComponent,
     // Renders the authorisation flag as announced text rather than as one of a pair of
     // untitled images.
     YesNoPipe,
     // Renders the two instants. Both cells ask for the date-and-time shape explicitly; see
     // the column set.
     DateDisplayPipe,
+    RovingFocusDirective,
   ],
   templateUrl: './user-list.component.html',
   styleUrl: './user-list.component.scss',
@@ -748,6 +830,9 @@ export class UserListComponent implements OnInit {
 
   /** Used to write the listing coordinates into the address rather than holding them privately. */
   private readonly router = inject(Router);
+
+  /** Where this listing stands, so a form returning to it restores the same place. */
+  private readonly listReturn = inject(ListReturnStore);
 
   /** Ties the address subscription to this component's lifetime. */
   private readonly destroyRef = inject(DestroyRef);
@@ -808,6 +893,15 @@ export class UserListComponent implements OnInit {
    * needed: a formatted-text column emits one string, and this cell has to emit a painted mark and
    * a hidden explanation of it as two separate elements when the value is absent.
    */
+  @ViewChild('firstNameCell', { static: true })
+  private firstNameCell?: TemplateRef<DataTableCellContext<UserListItem>>;
+
+  @ViewChild('lastNameCell', { static: true })
+  private lastNameCell?: TemplateRef<DataTableCellContext<UserListItem>>;
+
+  @ViewChild('displayNameCell', { static: true })
+  private displayNameCell?: TemplateRef<DataTableCellContext<UserListItem>>;
+
   @ViewChild('addressCell', { static: true })
   private addressCellTemplate?: TemplateRef<DataTableCellContext<UserListItem>>;
 
@@ -836,7 +930,17 @@ export class UserListComponent implements OnInit {
   // -------------------------------------------------------------------------
 
   /** `ControlTitle_.Text`. */
+  /** The one-line scope statement shown beneath the title. */
+  protected readonly pageSubtitle = PAGE_SUBTITLE;
+
   protected readonly pageTitle = PAGE_TITLE;
+
+  /**
+   * What the grid's progress indicator says while a read is in flight. Names the collection rather than
+   * saying "Loading…", so the announcement identifies WHAT is loading; the same label serves the first-read
+   * placeholder and the refetch strip, so this screen has one loading vocabulary.
+   */
+  protected readonly loadingLabel = 'Loading accounts…';
 
   /** `AddContent.Action`. */
   protected readonly addUserLabel = ADD_USER_LABEL;
@@ -847,17 +951,70 @@ export class UserListComponent implements OnInit {
   /** {@link POLICY_DEGRADED_NOTICE}. Rendered only while {@link policyDegraded} holds. */
   protected readonly policyDegradedNotice = POLICY_DEGRADED_NOTICE;
 
-  /** {@link ABSENT_PROFILE_VALUE_MARK} — U-M2. Painted, and hidden from assistive technology. */
-  protected readonly absentProfileValueMark = ABSENT_PROFILE_VALUE_MARK;
+  // THE ABSENT MARK AND ITS WORDING ARE NO LONGER EXPOSED TO THIS TEMPLATE. Every cell that reports absence
+  // renders the shared absent-value component instead, which paints the same mark and exposes the same
+  // sentence from one place - `ABSENT_VALUE_MARK` and `ABSENT_VALUE_DESCRIPTION`. Two local
+  // spans and one shared component both rendering absence in the same ROW is how a listing comes to report
+  // absence two different ways, which is a defect the shared vocabulary exists to prevent.
 
-  /** {@link ABSENT_PROFILE_VALUE_DESCRIPTION} — U-M2. Exposed, and hidden from the painted page. */
-  protected readonly absentProfileValueDescription = ABSENT_PROFILE_VALUE_DESCRIPTION;
+  /** {@link PADDED_VALUE_MARK} — painted, and hidden from assistive technology. */
+  protected readonly paddedValueMark = PADDED_VALUE_MARK;
+
+  /** {@link PADDED_VALUE_DESCRIPTION} — exposed, and hidden from the painted page. */
+  protected readonly paddedValueDescription = PADDED_VALUE_DESCRIPTION;
+
+  /**
+   * Whether a name value is absent.
+   *
+   * ⚠ A VALUE OF NOTHING BUT WHITESPACE COUNTS AS ABSENT. The stored column is not nullable, so an
+   * unrecorded name arrives as an empty string, and a name typed as spaces is indistinguishable from one
+   * never given - both paint as nothing at all, so both are reported as nothing at all rather than as an
+   * empty cell whose emptiness the reader has to interpret.
+   *
+   * @param value The stored value.
+   * @returns Whether to render the absent-value mark instead.
+   */
+  protected isNameAbsent(value: string | null | undefined): boolean {
+    return value === null || value === undefined || value.trim() === '';
+  }
+
+  /**
+   * Whether a name value carries whitespace that HTML will collapse away.
+   *
+   * @param value The stored value.
+   * @returns Whether the stored value differs from its trimmed form.
+   */
+  protected isNamePadded(value: string | null | undefined): boolean {
+    if (value === null || value === undefined || value.trim() === '') {
+      // An absent value is reported as absent, not as padded: one annotation per cell.
+      return false;
+    }
+
+    return value !== value.trim();
+  }
+
+  /**
+   * The text to paint for a name value.
+   *
+   * ⚠ TRIMMED FOR PAINTING ONLY. The stored value is never modified, and it is still what the endpoint
+   * sorts on; trimming here removes only the whitespace the browser would have collapsed anyway, so the
+   * painted text is unchanged while the accompanying mark carries the fact that padding exists.
+   *
+   * @param value The stored value.
+   * @returns The text to paint.
+   */
+  protected nameText(value: string | null | undefined): string {
+    return (value ?? '').trim();
+  }
 
   /** {@link LOCKED_OUT_QUALIFIER} — U-M1. Painted beside the approval word. */
   protected readonly lockedOutQualifier = LOCKED_OUT_QUALIFIER;
 
   /** {@link LOCKED_OUT_DESCRIPTION} — U-M1. Exposed beside the painted qualifier. */
   protected readonly lockedOutDescription = LOCKED_OUT_DESCRIPTION;
+
+  /** {@link UNAUTHORISED_DESCRIPTION} — QA-19. Exposed beside the unchanged approval word. */
+  protected readonly unauthorisedDescription = UNAUTHORISED_DESCRIPTION;
 
   /** `ManageProfile.Action`. */
   protected readonly profileDefinitionsLabel = PROFILE_DEFINITIONS_LABEL;
@@ -894,7 +1051,32 @@ export class UserListComponent implements OnInit {
   protected readonly manageRolesCommandLabel = MANAGE_ROLES_COMMAND_LABEL;
 
   /** `SharedResources.resx` `DeleteItem.Text`. */
-  protected readonly deleteConfirmMessage = DELETE_CONFIRM_MESSAGE;
+  /**
+   * The confirmation body: the legacy question verbatim, then WHICH record it means.
+   *
+   * ⚠ THE MEASURED DEFECT. The dialog read only "Are You Sure You Wish To Delete This Item?" and named nothing at
+   * all - searched against every identifier on the page it matched none of them - while being a real modal
+   * that PHYSICALLY COVERS the grid behind it. Measured with the sixth row targeted, it overlaid the three
+   * rows above it and the top of the target itself, so an operator had no way to check what was about to be
+   * destroyed: the record's identity existed only on the triggering control's accessible name, which is
+   * unreachable once the modal holds focus.
+   *
+   * The wording is APPENDED rather than rewritten, so the measured legacy sentence survives unchanged and
+   * this reads as the same question with the answer to "which one" added. The account is named through {@link UserListComponent.nameText}, so a stored value carrying
+   * leading or trailing whitespace reads here exactly as it reads in the grid rather than smuggling padding
+   * the browser would have collapsed into the sentence.
+   */
+  protected readonly deleteConfirmMessage: Signal<string> = computed<string>(() => {
+    const target: UserListItem | null = this.pendingRemoval();
+
+    if (target === null) {
+      return DELETE_CONFIRM_MESSAGE;
+    }
+
+    const named: string = this.nameText(target.username);
+
+    return named.length === 0 ? DELETE_CONFIRM_MESSAGE : `${DELETE_CONFIRM_MESSAGE} ${named}`;
+  });
 
   /** The create-account route. */
   protected readonly addUserLink = ADD_USER_LINK;
@@ -1042,6 +1224,29 @@ export class UserListComponent implements OnInit {
    */
   protected readonly loading: Signal<boolean> = this.store.usersLoading;
 
+  /**
+   * What the GRID is told about waiting, which is broader than "a request is in flight".
+   *
+   * ⚠ AN UN-ASKED LISTING IS A WAITING LISTING, NOT AN EMPTY ONE, and on THIS screen conflating the two
+   * left the grid asserting that the tenant has no accounts for a WHOLE ROUND TRIP: arriving here clears the
+   * criteria and empties the page, and the opening sequence reads the tenant's membership policy before it
+   * knows what listing to ask for, so the accounts request is only dispatched once that response lands. The
+   * shared grid prefers its waiting placeholder over its empty one, so handing it this closes the window.
+   * The store's latch is raised on a read's success, on its failure AND on the policy's decision to ask for
+   * nothing, so this can neither hide a reportable failure nor leave a spinner standing over the no-query
+   * notice.
+   */
+  protected readonly listWaiting: Signal<boolean> = computed(
+    () => this.loading() || !this.store.listSettled(),
+  );
+
+  /**
+   * Whether the listing question has been answered - a read settled, or the policy decided nothing is to be
+   * listed. Gates the no-query notice, which would otherwise be painted during the policy read on every
+   * arrival, claiming nothing had been asked for while the opening read was being decided.
+   */
+  protected readonly listSettled: Signal<boolean> = this.store.listSettled;
+
   /** Whether a write is in flight. Used to keep a second removal from being dispatched. */
   protected readonly saving: Signal<boolean> = this.store.saving;
 
@@ -1119,6 +1324,18 @@ export class UserListComponent implements OnInit {
 
   /** The notice shown while no query has been issued. */
   protected readonly noQueryNotice: string = NO_QUERY_NOTICE;
+
+  /** The wording of the affordance that lists every account, offered on the zero-result surface. */
+  protected readonly showAllAccountsLabel = SHOW_ALL_ACCOUNTS_LABEL;
+
+  /**
+   * The sentence the zero-result surface explains itself with, which depends on WHY the table is empty.
+   *
+   * @returns The wording for the current state.
+   */
+  protected emptyMessage(): string {
+    return this.noQueryIssued() ? NO_QUERY_NOTICE : NO_MATCHING_ACCOUNTS_MESSAGE;
+  }
 
   /** Whether the requested page lies beyond a match set that is not itself empty. */
   protected readonly isPastEnd: Signal<boolean> = this.store.isPastEnd;
@@ -1228,6 +1445,13 @@ export class UserListComponent implements OnInit {
     // `undefined` off the row and render an empty cell with no error anywhere.
     set.push({
       key: 'userName',
+      // ⚠ EVERY COLUMN OF THIS GRID DECLARES A WIDTH, AND DECLARING NONE WAS A MEASURED DEFECT. A fixed table
+      // layout gives every undeclared track the same share, so a Yes/No column was as wide as an address and
+      // names broke mid-word at 1440 while tracks resolved near 49px at 375. The percentages weight each track
+      // by what its content needs, and they are weights rather than a budget: this grid's visible column set
+      // varies with the operator's own choices, so the browser distributes whatever is left over in the same
+      // proportions.
+      width: '14%',
       // The row's NAME. Emitted as `<th scope="row">` so a screen reader announces which record
       // each cell belongs to - without it, traversing a row gives the column name and the value
       // and never the record's identity. This column is the one a person would read aloud to say
@@ -1247,11 +1471,18 @@ export class UserListComponent implements OnInit {
     if (visible.firstName === true) {
       set.push({
         key: 'firstName',
+        width: '9%',
         sortable: true,
         label: FIRST_NAME_HEADING,
         headerAlign: 'center',
         bodyAlign: 'start',
-        field: 'firstName',
+        // A TEMPLATE COLUMN rather than a plain field column, for the same reason the address column is
+        // one: an absent value has to paint a mark AND expose a hidden explanation of it, which is two
+        // elements, and a field column emits one string. Converting this column is what stops a row
+        // disagreeing with itself - the address and telephone cells already reported an absent value
+        // properly while the name cells rendered nothing at all and left the emptiness to be interpreted.
+        kind: 'template',
+        cellTemplate: this.requireTemplate(this.firstNameCell, 'firstNameCell'),
       });
     }
 
@@ -1259,11 +1490,18 @@ export class UserListComponent implements OnInit {
     if (visible.lastName === true) {
       set.push({
         key: 'lastName',
+        width: '9%',
         sortable: true,
         label: LAST_NAME_HEADING,
         headerAlign: 'center',
         bodyAlign: 'start',
-        field: 'lastName',
+        // A TEMPLATE COLUMN rather than a plain field column, for the same reason the address column is
+        // one: an absent value has to paint a mark AND expose a hidden explanation of it, which is two
+        // elements, and a field column emits one string. Converting this column is what stops a row
+        // disagreeing with itself - the address and telephone cells already reported an absent value
+        // properly while the name cells rendered nothing at all and left the emptiness to be interpreted.
+        kind: 'template',
+        cellTemplate: this.requireTemplate(this.lastNameCell, 'lastNameCell'),
       });
     }
 
@@ -1275,7 +1513,22 @@ export class UserListComponent implements OnInit {
         label: DISPLAY_NAME_HEADING,
         headerAlign: 'center',
         bodyAlign: 'start',
-        field: 'displayName',
+        // ⚠ THE ONE COLUMN ON THIS GRID THAT DECLARES NO WIDTH, AND ONE MUST NOT.
+        //
+        // Under `table-layout: fixed` the leftover after the percentage tracks is handed to whichever columns
+        // declared something other than a percentage. With every column weighted, that leftover went to the
+        // three icon command columns: each asked for 3.25rem and painted 119.797px, wider than the account
+        // name beside them, and the "Manage Roles" command then still overflowed its own cell by 4.98px into
+        // the username column. The display name is the right column to absorb it — the widest identity value
+        // a reader scans for, and the one that benefits from every pixel the others do not need.
+        //
+        // A TEMPLATE COLUMN rather than a plain field column, for the same reason the address column is
+        // one: an absent value has to paint a mark AND expose a hidden explanation of it, which is two
+        // elements, and a field column emits one string. Converting this column is what stops a row
+        // disagreeing with itself - the address and telephone cells already reported an absent value
+        // properly while the name cells rendered nothing at all and left the emptiness to be interpreted.
+        kind: 'template',
+        cellTemplate: this.requireTemplate(this.displayNameCell, 'displayNameCell'),
       });
     }
 
@@ -1292,6 +1545,7 @@ export class UserListComponent implements OnInit {
     if (visible.address === true) {
       set.push({
         key: 'address',
+        width: '13%',
         label: ADDRESS_HEADING,
         headerAlign: 'center',
         bodyAlign: 'start',
@@ -1313,6 +1567,8 @@ export class UserListComponent implements OnInit {
     if (visible.telephone === true) {
       set.push({
         key: 'telephone',
+        width: '10%',
+        atomic: true,
         label: TELEPHONE_HEADING,
         headerAlign: 'center',
         bodyAlign: 'start',
@@ -1326,6 +1582,7 @@ export class UserListComponent implements OnInit {
     if (visible.email === true) {
       set.push({
         key: 'email',
+        width: '15%',
         // Ordered on the STORED address, not on the anchor the cell template builds from it.
         sortable: true,
         label: EMAIL_HEADING,
@@ -1343,8 +1600,19 @@ export class UserListComponent implements OnInit {
     // plain general format — a short date AND a long time — whereas the shared date pipe defaults
     // to a short date alone, so this cell and the next ask for the date-and-time shape by name.
     if (visible.createdDate === true) {
+      // ⚠ THIS WIDTH IS SET BY THE VALUE, NOT BY THE HEADING, which is the opposite of every other column
+      // here and is why it looks over-generous. The column is atomic, so its cells compute
+      // `white-space: nowrap` and a value that does not fit is ELLIPSISED rather than wrapped — and the value
+      // is a date AND a time, "8/14/2026 4:56:10 PM", which measures 136px. At the 12% it previously declared
+      // it had 126px of cell at the table's floor, so every row rendered "8/14/2026 4:56:1…": the seconds and
+      // the meridiem were both cut, which leaves a reader unable to tell morning from evening. The full text
+      // node survives in the accessibility tree, so this was a loss to SIGHTED readers only, and that is
+      // still a loss. Widened to hold the whole value at the floor with a few pixels to spare, paid for out
+      // of the address column beside it, which WRAPS and therefore loses nothing by being narrower.
       set.push({
         key: 'createdDate',
+        width: '15.5%',
+        atomic: true,
         label: CREATED_DATE_HEADING,
         headerAlign: 'center',
         bodyAlign: 'start',
@@ -1357,6 +1625,8 @@ export class UserListComponent implements OnInit {
     if (visible.lastLogin === true) {
       set.push({
         key: 'lastLoginDate',
+        width: '12%',
+        atomic: true,
         label: LAST_LOGIN_HEADING,
         headerAlign: 'center',
         bodyAlign: 'start',
@@ -1381,6 +1651,7 @@ export class UserListComponent implements OnInit {
     if (visible.authorized === true) {
       set.push({
         key: 'approved',
+        width: '11.5%',
         label: AUTHORIZED_HEADING,
         headerAlign: 'center',
         bodyAlign: 'start',
@@ -1464,6 +1735,16 @@ export class UserListComponent implements OnInit {
    * and because a refusal must be presented at WARNING severity rather than as an error, which
    * the notification path and the shared summariser between them already arrange.
    */
+  /**
+   * Whether the ACCOUNT LISTING READ failed, so zero rows describes a failure rather than a tenant with no
+   * accounts. Narrowed to the listing read alone, for the reason {@link readFailure} gives at length: the
+   * profile-property read is an enhancement of this screen and its failure must not withdraw the grid's
+   * own empty state, and a failed write says nothing about the rows.
+   */
+  protected readonly listFailed: Signal<boolean> = computed(
+    () => this.store.failure()?.operation === 'loadUsers',
+  );
+
   protected readonly readFailure: Signal<ProblemDetails | null> = computed(() => {
     const held: UserFailure | null = this.store.failure();
 
@@ -1478,39 +1759,13 @@ export class UserListComponent implements OnInit {
     return held.problem;
   });
 
-  /**
-   * The sentence to show when a read of this screen's failed WITHOUT a problem document.
-   *
-   * ⚠ THIS CLOSES A CLASS OF FAILURE THAT WAS COMPLETELY SILENT, AND SILENCE WAS THE WHOLE DEFECT.
-   * The runtime decoders that check each response against its published contract run inside the
-   * service's own mapping, which is DOWNSTREAM of the interceptor's error handling — so a `200`
-   * whose body does not match its contract throws a plain error carrying no document, no status and
-   * no support reference. {@link readFailure} is therefore `null` for it, the banner rendered
-   * nothing, the grid stayed empty because no rows were committed, and no surface on the screen said
-   * why. An operator saw an account listing that had simply stopped having accounts in it.
-   *
-   * The store's own authored summary is used rather than a sentence invented here: the shared
-   * summariser already words a failure with no document, and the store already holds that wording on
-   * the failure it recorded, so this reads it out instead of composing a second vocabulary. The
-   * retry path is the screen's existing search and paging affordances, which re-dispatch the read —
-   * nothing is disabled by a failed read, so they remain reachable.
-   *
-   * Null whenever a document IS present, so the banner shows the server's own explanation in
-   * preference to this and the two can never both speak.
-   */
-  protected readonly readFailureSummary: Signal<string | null> = computed(() => {
-    const held: UserFailure | null = this.store.failure();
-
-    if (held === null || held.problem !== null) {
-      return null;
-    }
-
-    if (held.operation !== 'loadUsers' && held.operation !== 'loadProfileDefinitions') {
-      return null;
-    }
-
-    return held.summary.message;
-  });
+  // A FALLBACK SENTENCE USED TO BE COMPOSED HERE, AND IT IS GONE BECAUSE THE FAILURE IT COVERED CANNOT
+  // OCCUR ANY MORE. It existed for the one class of failure that carried no problem document: a response
+  // this client could not decode, which reaches a subscriber as a plain error with no status, no body and
+  // no support reference. The store now synthesises a document for exactly that case - `contractProblem`,
+  // titled "Unexpected response" - so `readFailure` above is never null for it and the banner has real
+  // wording, a real severity and a real support reference to render. Keeping the fallback would have left a
+  // computed that can only ever return null and a gate that can only ever agree with its sibling.
 
   /**
    * Whether this screen has a read failure to present at all.
@@ -1529,7 +1784,7 @@ export class UserListComponent implements OnInit {
    * place instead of restating it a third time.
    */
   protected readonly hasReadFailure: Signal<boolean> = computed(
-    () => this.readFailure() !== null || this.readFailureSummary() !== null,
+    () => this.readFailure() !== null,
   );
 
   /**
@@ -1597,8 +1852,25 @@ export class UserListComponent implements OnInit {
    * decorated — because a disclosure that tidied the term would describe a query the server is not
    * running. It is interpolated as plain text, so no markup can reach the document through it.
    */
+  /**
+   * The text most recently entered that carried nothing to match on, or `null` when the last search was a
+   * real one. Held here rather than in the address because it describes an entry that was NOT made into a
+   * request, and an address records requests.
+   */
+  private readonly _ignoredTerm = signal<string | null>(null);
+
+  /** @see _ignoredTerm */
+  private readonly ignoredTerm: Signal<string | null> = this._ignoredTerm.asReadonly();
+
   protected readonly filterDisclosure: Signal<string | null> = computed(() => {
     const search = this.store.search();
+
+    // ⚠ #36 — REPORTED FIRST, because it explains an UNFILTERED listing and every branch below explains a
+    // filtered one. It is cleared by the next search of any kind, so it can never outlive the entry it
+    // describes.
+    if (this.ignoredTerm() !== null) {
+      return IGNORED_TERM_NOTICE;
+    }
 
     if (search.mode === 'none' || search.mode === 'all') {
       return null;
@@ -1859,6 +2131,10 @@ export class UserListComponent implements OnInit {
           });
           return;
         }
+
+        // Remembered at the single point where the coordinate is settled and canonical, so every route
+        // into a changed coordinate is covered without each handler having to say so.
+        this.listReturn.remember(USER_LIST_ROUTE, serialiseUserListQuery(query));
         // The selector is restored too, so an operator returning to a bookmarked search finds the axis it was
         // made on rather than the default. Set directly rather than through the change handler, which exists
         // to read a real control's value.
@@ -2199,8 +2475,12 @@ export class UserListComponent implements OnInit {
    */
   protected reload(): void {
     this.store.clearFailure();
-    this.store.initialise();
-    this.store.loadProfileDefinitions();
+
+    // ⚠ THE REFRESH PAIR, NOT THE ARRIVAL PAIR. A retry recovers from a state in which a read failed, so
+    // both tenant-wide reads are re-issued rather than reused; `ngOnInit` uses the arrival commands, which
+    // reuse what is already held.
+    this.store.refreshMembershipSettings();
+    this.store.refreshProfileDefinitions();
   }
 
   // -------------------------------------------------------------------------
@@ -2340,7 +2620,10 @@ export class UserListComponent implements OnInit {
         headerHidden: true,
         headerAlign: 'center',
         bodyAlign: 'start',
-        width: 'min-content',
+        // The command track: a LENGTH sized for one interactive target plus the cell's padding. `min-content`
+        // is not a length, so a fixed table layout could not use it and fell back to the automatic share -
+        // which made an icon-only column as wide as a name column.
+        width: 'var(--table-command-column-inline-size)',
         kind: 'actions',
         cellTemplate: this.requireTemplate(this.editCommandTemplate, 'editCommand'),
       },
@@ -2350,7 +2633,10 @@ export class UserListComponent implements OnInit {
         headerHidden: true,
         headerAlign: 'center',
         bodyAlign: 'start',
-        width: 'min-content',
+        // The command track: a LENGTH sized for one interactive target plus the cell's padding. `min-content`
+        // is not a length, so a fixed table layout could not use it and fell back to the automatic share -
+        // which made an icon-only column as wide as a name column.
+        width: 'var(--table-command-column-inline-size)',
         kind: 'actions',
         cellTemplate: this.requireTemplate(this.deleteCommandTemplate, 'deleteCommand'),
       },
@@ -2360,7 +2646,10 @@ export class UserListComponent implements OnInit {
         headerHidden: true,
         headerAlign: 'center',
         bodyAlign: 'start',
-        width: 'min-content',
+        // The command track: a LENGTH sized for one interactive target plus the cell's padding. `min-content`
+        // is not a length, so a fixed table layout could not use it and fell back to the automatic share -
+        // which made an icon-only column as wide as a name column.
+        width: 'var(--table-command-column-inline-size)',
         kind: 'actions',
         cellTemplate: this.requireTemplate(this.manageRolesCommandTemplate, 'manageRolesCommand'),
       },
@@ -2423,6 +2712,16 @@ export class UserListComponent implements OnInit {
    * @param text The reader's text, raw and exactly as typed.
    */
   private dispatchSearch(text: string): void {
+    // ⚠ #36 — THE ONE NORMALISATION THIS SCREEN PERFORMS, and it is deliberately narrow. Text with any
+    // matchable character is still passed RAW for the reasons recorded on `onSearch`: the server appends the
+    // wildcard and a leading space is a legitimate prefix. Text with NO matchable character is a different
+    // thing - there is nothing for the server to match, it answered such a request with the whole listing, and
+    // sending it only made the screen look filtered when it was not.
+    const blankButTyped: boolean = text.length > 0 && text.trim().length === 0;
+
+    this._ignoredTerm.set(blankButTyped ? text : null);
+
+    const term: string = blankButTyped ? '' : text;
     // ⚠ THE ADDRESS IS WRITTEN AND THE STORE IS NOT TOUCHED. The subscription in `ngOnInit` applies the search
     // and issues the read, so writing the address is the whole of the change: the navigation emits, the
     // emission applies, and the operator's browser history records that they searched. Calling the store as
@@ -2440,7 +2739,7 @@ export class UserListComponent implements OnInit {
     void this.router.navigate([], {
       relativeTo: this.route,
       queryParams: {
-        ...searchParameters(this.searchFor(text), this._searchField()),
+        ...searchParameters(this.searchFor(term), this._searchField()),
         [PAGE_PARAM]: null,
       },
       queryParamsHandling: 'merge',

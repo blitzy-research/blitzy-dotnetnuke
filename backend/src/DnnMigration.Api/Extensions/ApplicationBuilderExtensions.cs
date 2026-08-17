@@ -122,6 +122,18 @@ public static class ApplicationBuilderExtensions
         // scope.
         app.UseExceptionHandler();
 
+        // ⚠ THIS EARLY, BECAUSE COMPRESSION HAS TO WRAP THE STAGES THAT WRITE BODIES. Response compression is
+        // outer to everything registered after it and inert for everything registered before it, so the only
+        // position from which it can compress this API's responses at all is above the routing and endpoint
+        // stages that produce them. It is inside the exception handler rather than outside it, so a fault the
+        // handler answers is written by the handler itself and observed uncompressed while diagnosing.
+        //
+        // It changes no response a caller did not ask to have changed: a request that advertises no acceptable
+        // encoding is served exactly the bytes it was served before. On the documented topology the reverse
+        // proxy compresses and this stage never fires; on the direct-to-Kestrel path - the container network,
+        // or any deployment terminating transport elsewhere - it is the only thing that does.
+        app.UseResponseCompression();
+
         // SEC: FORWARDED HEADERS ARE PROCESSED HERE, AS EARLY AS POSSIBLE, AND ONLY WHEN A DEPLOYMENT HAS
         // NAMED THE PROXIES IT RUNS. Three later decisions read what this stage promotes and are wrong
         // without it: strict transport security and the redirect below both test the request's SCHEME,

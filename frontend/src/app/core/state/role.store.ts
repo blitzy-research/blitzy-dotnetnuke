@@ -8,7 +8,14 @@ import {
 } from '../models/paged-result.model';
 import { isProblemDetails } from '../models/problem-details.model';
 import { RoleService } from '../services/role.service';
-import { failureCode, isConflictCode, summarizeProblem } from '../utils/form-errors.util';
+import {
+  contractProblem,
+  failureCode,
+  isConflictCode,
+  summarizeProblem,
+  transportProblem,
+} from '../utils/form-errors.util';
+import { isContractViolation } from '../utils/decode.util';
 
 import type { OnDestroy } from '@angular/core';
 import type { Subscription } from 'rxjs';
@@ -154,10 +161,14 @@ export interface RoleStoreFailure {
   readonly summary: ProblemSummary;
 
   /**
-   * The server's RFC 7807 document verbatim, or `null` when the failure carried none. Only ever a genuine
-   * document.
+   * The RFC 7807 document for this failure.
+   *
+   * ⚠ NEVER `null`, AND IT USED TO BE. The server's own document is carried verbatim whenever it sent one;
+   * a failure that carried none — one that never reached the server, or a response this client could not
+   * decode — is given a document synthesised from what IS known, because every consumer binds this member
+   * to the shared error banner and the banner renders nothing at all from `null`.
    */
-  readonly problem: ProblemDetails | null;
+  readonly problem: ProblemDetails;
 
   /** The server's conflict code verbatim, or `null` when the failure was not a recognised conflict. */
   readonly conflict: ConflictCode | null;
@@ -418,6 +429,21 @@ export class RoleStore implements OnDestroy {
   private readonly _rolesLoading = signal<boolean>(false);
 
   /**
+   * Whether a role-listing read has ever SETTLED for this store instance - succeeded or failed.
+   *
+   * ⚠ PUBLISHED, BECAUSE A LISTING CANNOT OTHERWISE TELL "NOT ASKED YET" FROM "ASKED AND EMPTY". Both
+   * states hold an empty page with nothing in flight, and the grid reads that as a genuine zero-result and
+   * paints "No records found." - the empty-table flash. Every route into the listing that does NOT issue a
+   * read on the spot opens that window: the address subscription's non-canonical-address arm rewrites the
+   * address and returns WITHOUT reading, and the replacement navigation is a task later.
+   *
+   * Set on BOTH the success and the failure path, because a failure has also settled the question of
+   * whether a read happened. NOT set when a past-the-end answer issues its corrective read, because that
+   * read is still outstanding and the coordinate on screen has not been answered yet.
+   */
+  private readonly _rolesSettled = signal<boolean>(false);
+
+  /**
    * The roles ONE ACCOUNT holds, when the listing has been narrowed to an account. ⚠ HELD APART FROM
    * {@link RoleStore._roles}, NOT WRITTEN OVER IT. The browsable listing is paged, ordered and filterable
    * and a screen may be showing it; this is an unpaged answer to a different question.
@@ -498,6 +524,12 @@ export class RoleStore implements OnDestroy {
 
   readonly rolesLoading = this._rolesLoading.asReadonly();
 
+  /**
+   * Whether a role-listing read has settled at least once, so a screen can tell an un-asked listing from
+   * an empty one. See {@link RoleStore._rolesSettled} for why this is published.
+   */
+  readonly listSettled = this._rolesSettled.asReadonly();
+
   /** The roles one account holds, or `null` when no account is the subject. */
   readonly rolesHeldByUser = this._rolesHeldByUser.asReadonly();
 
@@ -540,6 +572,25 @@ export class RoleStore implements OnDestroy {
 
   /** The role listing's paging metadata, including the total across every page. */
   readonly rolesMeta = computed<ApiMeta>(() => this._roles().meta);
+
+  /**
+   * Whether the coordinate in force addresses a page beyond the end of the result set: the server reports a
+   * non-zero total and returned no rows for it.
+   *
+   * ⚠ THIS IS NOT THE SAME FACT AS AN EMPTY RESULT SET, AND CONFLATING THE TWO IS THE DEFECT IT CLOSES. A
+   * page past the end has a real total, so a listing that mounts its pager on the total alone paints a range
+   * - measured as "21-30 of 30" - beside a grid showing nothing, describing records it cannot show and
+   * offering no route back. The portal and module listings publish exactly this computation for exactly this
+   * reason; the role listing was the remaining one that did not.
+   *
+   * The store's own past-the-end CORRECTION does not make this redundant. That correction re-reads the last
+   * page that exists, and it is deliberately allowed only once per dispatch, so the uncorrected answer is
+   * still what the grid renders whenever a second correction would be needed or the total and the page
+   * disagree - which is precisely the state that was observed.
+   */
+  readonly isPastEnd = computed<boolean>(
+    () => this._roles().meta.totalCount > 0 && this._roles().items.length === 0,
+  );
 
   /** The assignments on the current page. */
   readonly assignmentItems = computed<readonly UserRole[]>(() => this._assignments().items);
@@ -719,17 +770,37 @@ export class RoleStore implements OnDestroy {
    * @param error Whatever the observable's failure path delivered.
    */
   private recordFailure(operation: RoleStoreOperation, error: unknown): RoleStoreFailure {
+    // ⚠ A RESPONSE THIS CLIENT COULD NOT READ IS ITS OWN CLASS, tested first because it carries neither a
+    // status nor a body and would otherwise be described as a request that never arrived.
+    if (isContractViolation(error)) {
+      const unreadable: ProblemDetails = contractProblem(error.path);
+
+      const contractFailure: RoleStoreFailure = {
+        operation,
+        status: null,
+        summary: summarizeProblem(unreadable),
+        problem: unreadable,
+        conflict: null,
+      };
+
+      this._failure.set(contractFailure);
+
+      return contractFailure;
+    }
+
     const problem: ProblemDetails | null = readProblem(error);
     const status: number | null = readStatus(error);
-    const described: ProblemDetails | null =
-      problem ?? (status === null ? null : { status });
+
+    // A synthesised document rather than a bare `{ status }`: a document carrying only a status has no
+    // title and no sentence, so the shared banner rendered an empty title anchor where the heading belongs.
+    const described: ProblemDetails = problem ?? transportProblem(status);
     const code: string | null = failureCode(problem);
 
     const failure: RoleStoreFailure = {
       operation,
       status,
       summary: summarizeProblem(described),
-      problem,
+      problem: described,
       conflict: isConflictCode(code) ? code : null,
     };
 
@@ -798,8 +869,10 @@ export class RoleStore implements OnDestroy {
       .subscribe({
         next: (response) => {
           this._roles.set(toPagedResult<RoleListItem>(response));
+          this._rolesSettled.set(true);
         },
         error: (error: unknown) => {
+          this._rolesSettled.set(true);
           this.recordFailure(this._roleGroups().length === 0 ? 'loadRoleGroups' : 'loadRoles', error);
         },
       });
@@ -866,9 +939,11 @@ export class RoleStore implements OnDestroy {
 
           this._roles.set(page);
           this._rolesLoading.set(false);
+          this._rolesSettled.set(true);
         },
         error: (error: unknown) => {
           this._rolesLoading.set(false);
+          this._rolesSettled.set(true);
           this.recordFailure('loadRoles', error);
         },
       });
@@ -1611,6 +1686,10 @@ export class RoleStore implements OnDestroy {
     this._probedAssignment.set(null);
     this._probedAssignmentKey.set(null);
     this._rolesLoading.set(false);
+    // ⚠ THE LATCH GOES WITH THE SLICE IT DESCRIBES. It records that a listing read COMPLETED, and the page
+    // it described has just been emptied - so a latch left standing would tell the next session's first
+    // arrival that a listing is in hand when none is, which is the very state it exists to distinguish.
+    this._rolesSettled.set(false);
     this._roleGroupsLoading.set(false);
     this._selectedRoleLoading.set(false);
     this._assignmentsLoading.set(false);

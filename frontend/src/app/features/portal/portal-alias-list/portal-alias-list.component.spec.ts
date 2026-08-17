@@ -14,11 +14,15 @@ import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guar
 import { NotificationService } from '../../../core/services/notification.service';
 import { PortalStore } from '../../../core/state/portal.store';
 import { CONFLICT_MESSAGE } from '../../../core/utils/form-errors.util';
+import {
+  BannerAdvertisingMode,
+  UserRegistrationMode,
+} from '../../../core/models/portal.model';
 import { PortalAliasListComponent } from './portal-alias-list.component';
 
 import type { ComponentFixture } from '@angular/core/testing';
 import type { TestRequest } from '@angular/common/http/testing';
-import type { PortalAlias } from '../../../core/models/portal.model';
+import type { PortalAlias, PortalDetail } from '../../../core/models/portal.model';
 import type {
   ProblemDetails,
   ProblemDetailsErrors,
@@ -39,6 +43,66 @@ function aliasesUrl(portalId: number): string {
  */
 function aliasUrl(portalId: number, portalAliasId: number): string {
   return `${aliasesUrl(portalId)}/${portalAliasId}`;
+}
+
+/**
+ * The portal itself. ⚠ THIS SCREEN READS IT NOW, AND ONLY FOR ITS NAME. The heading is the constant
+ * "Portal Aliases" and the rows are bare host names, so without this read the screen states nothing about
+ * WHICH tenant an operator is about to add a host name to - the defect the subtitle closes.
+ */
+function portalDetailUrl(portalId: number): string {
+  return `/api/v1/portals/${portalId}`;
+}
+
+/**
+ * A complete portal, since the transport decodes the whole contract and a partial body would be refused -
+ * which would leave the name unheld and quietly hide whether the subtitle works at all.
+ *
+ * @param overrides The fields a case cares about.
+ * @returns The body to answer the detail read with.
+ */
+function portalDetailBody(overrides: Partial<PortalDetail> = {}): PortalDetail {
+  return {
+    portalId: -1,
+    portalName: 'DotNetNuke Setup Portal',
+    description: null,
+    keyWords: null,
+    footerText: null,
+    logoFile: null,
+    backgroundFile: null,
+    expiryDate: null,
+    userRegistration: UserRegistrationMode.PublicRegistration,
+    bannerAdvertising: BannerAdvertisingMode.Site,
+    currency: 'USD',
+    administratorId: 2,
+    email: 'admin@example.test',
+    hostFee: 0,
+    hostSpace: 0,
+    pageQuota: 0,
+    userQuota: 0,
+    users: 3,
+    pages: 7,
+    administratorRoleId: 0,
+    administratorRoleName: 'Administrators',
+    registeredRoleId: 1,
+    registeredRoleName: 'Registered Users',
+    guid: 'a2f9c1d4-5b6e-4a70-8c91-0d3e2f4b6a80',
+    paymentProcessor: null,
+    processorUserId: null,
+    siteLogHistory: -1,
+    adminTabId: 90,
+    superTabId: null,
+    splashTabId: null,
+    homeTabId: 0,
+    loginTabId: null,
+    userTabId: null,
+    defaultLanguage: 'en-US',
+    timeZoneOffset: -480,
+    homeDirectory: 'Portals/0',
+    aliases: null,
+    concurrencyToken: 'revision-1',
+    ...overrides,
+  };
 }
 
 // THE WORDING THIS SCREEN PUBLISHES
@@ -75,6 +139,14 @@ const DELETED_MESSAGE = 'The Portal Alias has been deleted.';
 
 /** `DuplicateAlias.Text` in `EditPortalAlias.ascx.resx` — THIS screen's own, terser wording. */
 const DUPLICATE_ALIAS_MESSAGE = 'The Portal Alias already exists.';
+
+/**
+ * The BANNER wording for the same refusal, from the shared legacy conflict vocabulary. Deliberately a
+ * second constant: the field says the short sentence and the banner says the legacy resource sentence, and
+ * conflating them would hide which surface is being asserted.
+ */
+const DUPLICATE_ALIAS_BANNER_MESSAGE =
+  'The Portal Alias Name You Specified Already Exists. Please Choose A Different Portal Alias.';
 
 const VIEW_DENIED_MESSAGE = 'You do not have access to view this Portal Alias.';
 
@@ -379,6 +451,38 @@ describe('PortalAliasListComponent', () => {
     fixture = TestBed.createComponent(PortalAliasListComponent);
     fixture.componentRef.setInput('portalId', portalId);
     fixture.detectChanges();
+    answerPortalDetail(Number(portalId));
+  }
+
+  /**
+   * Answers the portal read the screen issues for its subtitle, when it issued one.
+   *
+   * ⚠ MATCHED RATHER THAN EXPECTED, and that is deliberate. An address carrying no usable identifier -
+   * `create('abc')` - never reaches the read at all, and a case that re-points the screen at a portal
+   * already held gets its name from state instead of the wire. Demanding the request would make those
+   * cases fail for the wrong reason.
+   *
+   * @param portalId The portal being read.
+   * @param overrides The detail fields a case cares about.
+   * @returns The number of reads answered, so a case may assert on it.
+   */
+  function answerPortalDetail(portalId: number, overrides: Partial<PortalDetail> = {}): number {
+    if (Number.isNaN(portalId)) {
+      return 0;
+    }
+
+    const pending: readonly TestRequest[] = httpMock.match(
+      (candidate) =>
+        candidate.method === 'GET' && candidate.url === portalDetailUrl(portalId),
+    );
+
+    for (const call of pending) {
+      call.flush(envelope(portalDetailBody({ portalId, ...overrides })));
+    }
+
+    settle();
+
+    return pending.length;
   }
 
   /**
@@ -693,6 +797,7 @@ describe('PortalAliasListComponent', () => {
       fixture.detectChanges();
 
       answerAliases([alias(7, 'localhost')]);
+      answerPortalDetail(-1);
 
       expect(fixture.componentInstance.portalId).toBe(-1);
     });
@@ -726,6 +831,7 @@ describe('PortalAliasListComponent', () => {
       fixture.componentRef.setInput('portalId', '0');
       settle();
       answerAliases([alias(11, 'example.com', 0)], 0);
+      answerPortalDetail(0, { portalName: 'The Other Tenant' });
 
       expect(textOf('td.data-table__cell,th.data-table__cell')).toContain('example.com');
       expect(textOf('td.data-table__cell,th.data-table__cell')).not.toContain('localhost');
@@ -940,17 +1046,23 @@ describe('PortalAliasListComponent', () => {
       httpMock.expectNone((candidate) => candidate.method === 'POST');
     });
 
-    it('caps the entry at the legacy control own length, in the document and in the rule', () => {
+    it('keeps the legacy cap on the box while reporting the limit that governs', () => {
       arrive([alias(7, 'localhost')]);
       press(ADD_ACTION_LABEL);
 
+      // The ATTRIBUTE is measured legacy parity - `MaxLength="255"` at
+      // `Website/admin/Portal/editportalalias.ascx:L7` - and is deliberately unchanged.
       expect(entryField().getAttribute('maxlength')).toBe(String(ALIAS_ENTRY_MAX_LENGTH));
 
-      // And the rule behind it holds for a programmatic write that the attribute cannot bound.
+      // ⚠ AND THE SENTENCE NAMES 200, NOT 255. The screen used to answer an over-255 entry with "may not
+      // exceed 255 characters", which is not a limit anything enforces: the column is `[nvarchar] (200)`.
+      // An operator trimmed to 240 and was then told, for the first time, that the real limit was 200.
       type(hostNameOfLength(ALIAS_ENTRY_MAX_LENGTH + 1));
       submit();
 
-      expect(fieldMessages()).toContain(ALIAS_ENTRY_TOO_LONG_MESSAGE);
+      expect(fieldMessages())
+        .withContext('the binding limit, stated the first time')
+        .toEqual([ALIAS_TOO_LONG_MESSAGE]);
       httpMock.expectNone((candidate) => candidate.method === 'POST');
     });
 
@@ -964,8 +1076,7 @@ describe('PortalAliasListComponent', () => {
       type(hostNameOfLength(ALIAS_MAX_LENGTH + 1));
       submit();
 
-      expect(fieldMessages()).toContain(ALIAS_TOO_LONG_MESSAGE);
-      expect(fieldMessages()).not.toContain(ALIAS_ENTRY_TOO_LONG_MESSAGE);
+      expect(fieldMessages()).toEqual([ALIAS_TOO_LONG_MESSAGE]);
       httpMock.expectNone((candidate) => candidate.method === 'POST');
     });
 
@@ -1070,7 +1181,12 @@ describe('PortalAliasListComponent', () => {
       submit();
 
       expect(fieldMessages()).not.toHaveSize(0);
-      expect(entryField().value).toBe('\\\\MYSERVER');
+
+      // ⚠ WHAT THIS ASSERTION IS FOR: the legacy screen SILENTLY STRIPPED this prefix at
+      // `Website/admin/Portal/EditPortalAlias.ascx.vb:L214-L215` and then accepted what was left. The
+      // backslashes are still here, which is the whole point - only the case was canonicalised, which is
+      // the legacy controller's own rule and strips nothing.
+      expect(entryField().value).toBe('\\\\myserver');
       httpMock.expectNone((candidate) => candidate.method === 'POST');
     });
 
@@ -1381,7 +1497,8 @@ describe('PortalAliasListComponent', () => {
     it('reports a duplicate host name beside the field on a creation, in this screen own wording', () => {
       arrive([alias(7, 'localhost')]);
       press(ADD_ACTION_LABEL);
-      type('localhost');
+      // Claimed by another tenant - see the note on the case above.
+      type('claimed-elsewhere.example.test');
       submit();
 
       expectRequest('POST', aliasesUrl(-1)).flush(
@@ -1409,17 +1526,29 @@ describe('PortalAliasListComponent', () => {
       );
     });
 
-    it('keeps the server sentence and the support reference for a duplicate host name', () => {
+    // ⚠ THE BANNER ASSERTION IS INVERTED, AND THE INVERSION IS THE FIX. This screen was the ONLY conflict
+    // surface that showed the server's own sentence: every other one - the portal form, the role listing,
+    // the module transfer screens - words a recognised refusal from the shared legacy vocabulary, so the
+    // same class of refusal read differently depending on which screen provoked it. The server's text is
+    // also the worse of the two for an operator, being written as a diagnostic for a log reader: "The host
+    // name 'localhost' is already bound to a portal." against the legacy resource's "The Portal Alias Name
+    // You Specified Already Exists. Please Choose A Different Portal Alias."
+    it('words a duplicate host name from the legacy vocabulary, keeping the support reference', () => {
       arrive([alias(7, 'localhost')]);
       press(ADD_ACTION_LABEL);
-      type('localhost');
+
+      // ⚠ A HOST NAME THIS PORTAL DOES NOT LIST, DELIBERATELY. Alias uniqueness is GLOBAL, so the case the
+      // server's 409 exists for is a name claimed by ANOTHER tenant - invisible to this screen. Re-entering
+      // a name listed on this very screen is now refused at the field without a round trip, so typing
+      // `localhost` here would prove nothing about the server path.
+      type('claimed-elsewhere.example.test');
       submit();
 
       expectRequest('POST', aliasesUrl(-1)).flush(
         problemDocument(
           DUPLICATE_ALIAS_CODE,
           409,
-          "The host name 'localhost' is already bound to a portal.",
+          "The host name 'claimed-elsewhere.example.test' is already bound to a portal.",
         ),
         { status: 409, statusText: 'Conflict' },
       );
@@ -1428,17 +1557,39 @@ describe('PortalAliasListComponent', () => {
       // The field attribution is unchanged - this is an addition, not a replacement.
       expect(fieldMessages()).toEqual([DUPLICATE_ALIAS_MESSAGE]);
 
-      expect(bannerText()).toContain("The host name 'localhost' is already bound to a portal.");
+      expect(bannerText())
+        .withContext('the banner says what every other conflict surface says')
+        .toContain(DUPLICATE_ALIAS_BANNER_MESSAGE);
+      expect(bannerText())
+        .withContext("and the server's log-facing diagnostic is not quoted at an operator")
+        .not.toContain("The host name 'localhost' is already bound to a portal.");
 
-      // And the reference survives, exactly as it does for every failure with no field to sit beside.
+      // And the reference survives, exactly as it does for every failure with no field to sit beside -
+      // only `detail` is re-worded, so nothing quotable is lost.
       expect(textOf('.error-banner__trace').join(' ')).toContain(CORRELATION_ID);
+    });
+
+    it('passes through a refusal whose code it does not recognise, rather than inventing wording', () => {
+      arrive([alias(7, 'localhost')]);
+      press(ADD_ACTION_LABEL);
+      type('claimed-elsewhere.example.test');
+      submit();
+
+      expectRequest('POST', aliasesUrl(-1)).flush(
+        problemDocument('portal.something_unforeseen', 409, 'A refusal this client has no wording for.'),
+        { status: 409, statusText: 'Conflict' },
+      );
+      settle();
+
+      expect(bannerText()).toContain('A refusal this client has no wording for.');
     });
 
     it('reports a duplicate host name beside the field on a replacement as well', () => {
       arrive([alias(7, 'localhost'), alias(8, 'localhost:4200')]);
 
       editRow(0);
-      type('localhost:4200');
+      // Claimed by another tenant: `localhost:4200` is listed on this screen and is now refused locally.
+      type('claimed-elsewhere.example.test');
       submit();
 
       // THE BARE, BROAD `Catch` IS GONE. The legacy replacement path wrapped its write in `Try … Catch`
@@ -1925,6 +2076,269 @@ describe('PortalAliasListComponent', () => {
   // ---------------------------------------------------------------------------------------------------
   // PROOF 8 — THE STORE COUPLING
   // ---------------------------------------------------------------------------------------------------
+
+  describe('naming the portal, and announcing an empty one', () => {
+    /**
+     * Pf-P7. The screen used to name NO portal at all: a constant heading over bare host names. Both
+     * sibling screens under `/portals/:portalId` state it in the shared header's subtitle slot, and this
+     * screen now does the same rather than inventing an affordance of its own.
+     */
+    it('names the portal whose host names are on screen', () => {
+      create('-1');
+      answerAliases([alias(7, 'localhost')]);
+      answerPortalDetail(-1, { portalName: 'DotNetNuke Setup Portal' });
+
+      expect(textOf('p.page-header__subtitle'))
+        .withContext('the tenant an operator is about to change is stated')
+        .toEqual(['DotNetNuke Setup Portal']);
+    });
+
+    /**
+     * ⚠ THE WORSE DEFECT THIS PREVENTS. The store holds ONE selected portal, so a detail left behind by a
+     * sibling screen would let this screen caption portal 0's host names with portal -1's name. Naming the
+     * wrong tenant is worse than naming none, because it reads as fact - and the act on offer here is
+     * deleting the only thing that resolves a request to a tenant.
+     */
+    it('never captions one portal with another portal\u2019s name', () => {
+      // Arrive at -1 and let its name be held.
+      create('-1');
+      answerAliases([alias(7, 'localhost')]);
+      answerPortalDetail(-1, { portalName: 'DotNetNuke Setup Portal' });
+      expect(textOf('p.page-header__subtitle')).toEqual(['DotNetNuke Setup Portal']);
+
+      // Re-point at a DIFFERENT portal and answer only its host names, leaving its name unread.
+      fixture.componentRef.setInput('portalId', '0');
+      settle();
+      answerAliases([alias(11, 'example.com', 0)], 0);
+
+      expect(textOf('p.page-header__subtitle'))
+        .withContext('the previous tenant\u2019s name is not carried over')
+        .toEqual([]);
+
+      // And once the right one arrives, it is stated.
+      answerPortalDetail(0, { portalName: 'The Other Tenant' });
+      expect(textOf('p.page-header__subtitle')).toEqual(['The Other Tenant']);
+    });
+
+    it('states no name when the portal read is refused, and raises nothing about it', () => {
+      // Mounted by hand rather than through `create`, which answers the portal read for every other case:
+      // this one has to be the thing that refuses it.
+      fixture = TestBed.createComponent(PortalAliasListComponent);
+      fixture.componentRef.setInput('portalId', '-1');
+      fixture.detectChanges();
+      answerAliases([alias(7, 'localhost')]);
+
+      expectRequest('GET', portalDetailUrl(-1)).flush(problemDocument(NOT_PERMITTED_CODE, 403, 'The caller is not permitted to read this.'), {
+        status: 403,
+        statusText: 'Forbidden',
+      });
+      settle();
+
+      expect(textOf('p.page-header__subtitle'))
+        .withContext('nothing is claimed about a name nobody retrieved')
+        .toEqual([]);
+
+      // The host names READ fine, so this must not become a failure of the listing.
+      expect(bannerText()).withContext('no banner, because the listing is intact').toBe('');
+      expect(notifications()).withContext('and no transient message either').toEqual([]);
+      expect(paintedRows().length).withContext('the rows are still shown').toBe(1);
+    });
+
+    /**
+     * Pf-P8. The genuinely-empty state used to be a panel rendered INSTEAD of the grid, which destroyed the
+     * grid's polite result region along with it - so a listing narrowing to nothing announced NOTHING, the
+     * one transition most in need of a report.
+     */
+    it('announces a genuinely empty portal instead of silently emptying', () => {
+      create('-1');
+      answerAliases([]);
+      answerPortalDetail(-1);
+
+      const grid = query('app-data-table');
+      expect(grid).withContext('the grid survives, because the region lives inside it').not.toBeNull();
+
+      const region = query('p.data-table__result-status');
+      expect(region).withContext('the polite region is present').not.toBeNull();
+      expect(region?.getAttribute('role')).toBe('status');
+      expect(region?.getAttribute('aria-live')).toBe('polite');
+      expect(region?.textContent?.trim()).toBe('No records found.');
+    });
+
+    it('keeps this screen\u2019s own wording and its recovery command inside the empty grid', () => {
+      create('-1');
+      answerAliases([]);
+      answerPortalDetail(-1);
+
+      expect(textOf('p.empty-state__message'))
+        .withContext('the screen states what is empty, not the shared default')
+        .toEqual(['This portal has no HTTP aliases.']);
+
+      // ⚠ SCOPED TO THE MESSAGE ROW, NOT FOUND BY LABEL. The page header carries a command with this same
+      // wording, so a document-wide lookup returns THAT one and would pass even if the projected command
+      // were missing entirely - which is the whole of what this case exists to prove.
+      const messageCell = query<HTMLTableCellElement>('td.data-table__message');
+      expect(messageCell).withContext('the grid renders its own message row').not.toBeNull();
+
+      const recovery: readonly HTMLButtonElement[] = Array.from(
+        messageCell?.querySelectorAll('button') ?? [],
+      ).filter((candidate) => candidate.textContent?.trim() === 'Add New HTTP Alias');
+
+      expect(recovery.length)
+        .withContext('the way out is projected into the empty grid itself')
+        .toBe(1);
+    });
+
+    /**
+     * ⚠ THE TWO STATES MUST NOT CONVERGE. A refused read leaves nothing on screen too, but "No records
+     * found." is a claim nobody is entitled to make about records that were never retrieved - and it is
+     * what a screen reader hears INSTEAD of the failure.
+     */
+    it('says the records could not be read after a refusal, never that none exist', () => {
+      create('-1');
+
+      expectRequest('GET', aliasesUrl(-1)).flush(problemDocument(NOT_PERMITTED_CODE, 403, 'The caller is not permitted to read this.'), {
+        status: 403,
+        statusText: 'Forbidden',
+      });
+      settle();
+      answerPortalDetail(-1);
+
+      const region = query('p.data-table__result-status');
+      expect(region?.textContent?.trim())
+        .withContext('what is true, rather than what is convenient')
+        .toBe('The records could not be read.');
+
+      expect(host().textContent)
+        .withContext('the empty-state assertion is withheld entirely')
+        .not.toContain('No records found.');
+      expect(host().textContent).not.toContain('This portal has no HTTP aliases.');
+
+      // And the reason is still stated where it belongs.
+      expect(bannerText().length).withContext('the banner carries the refusal').toBeGreaterThan(0);
+    });
+  });
+
+  describe('the canonical form, and a name already on this screen', () => {
+    /**
+     * Pf-P9. `Library/Components/Portal/PortalAliasController.vb` applied `.ToLower` on every path that
+     * touched an alias, so a DotNetNuke installation never held a mixed-case one. Case was neither
+     * normalised nor rejected here, and an alias is the ONLY thing that resolves a request to a tenant.
+     */
+    it('canonicalises the entry to the form that will be stored, in the box', () => {
+      arrive([alias(7, 'localhost')]);
+      press(ADD_ACTION_LABEL);
+
+      type('WWW.Example.Test');
+      entryField().dispatchEvent(new Event('blur'));
+      settle();
+
+      expect(entryField().value)
+        .withContext('the operator sees what the portal will actually be reachable by')
+        .toBe('www.example.test');
+    });
+
+    it('transmits the canonical form even when the box was never blurred', () => {
+      arrive([alias(7, 'localhost')]);
+      press(ADD_ACTION_LABEL);
+
+      // Submitting by keyboard never blurs the field, so the wire must not depend on a blur having happened.
+      type('  WWW.Example.Test  ');
+      submit();
+
+      const call = expectRequest('POST', aliasesUrl(-1));
+
+      expect(transmittedAlias(call)).toBe('www.example.test');
+
+      call.flush(envelope(alias(9, 'www.example.test')), { status: 201, statusText: 'Created' });
+      settle();
+      settleWriteReread([alias(7, 'localhost'), alias(9, 'www.example.test')]);
+    });
+
+    it('leaves an already-canonical entry exactly as typed', () => {
+      arrive([alias(7, 'localhost')]);
+      press(ADD_ACTION_LABEL);
+
+      type('www.example.test');
+      entryField().dispatchEvent(new Event('blur'));
+      settle();
+
+      expect(entryField().value).toBe('www.example.test');
+    });
+
+    /**
+     * Pf-P10. Re-entering a host name listed on the very screen the operator is looking at cost a round
+     * trip to be told so. The server's refusal is still what covers a name claimed by another tenant,
+     * because alias uniqueness is global and this screen holds only one portal's names.
+     */
+    it('refuses a host name already listed on this screen without asking the server', () => {
+      arrive([alias(7, 'localhost'), alias(8, 'localhost:4200')]);
+      press(ADD_ACTION_LABEL);
+
+      type('localhost:4200');
+      submit();
+
+      expect(fieldMessages())
+        .withContext('and in the same wording the server refusal carries')
+        .toEqual([DUPLICATE_ALIAS_MESSAGE]);
+      httpMock.expectNone((candidate) => candidate.method === 'POST');
+    });
+
+    it('recognises a name already listed whatever case it is typed in', () => {
+      arrive([alias(7, 'localhost'), alias(8, 'Mixed.Case.Test')]);
+      press(ADD_ACTION_LABEL);
+
+      type('MIXED.case.TEST');
+      submit();
+
+      expect(fieldMessages()).toEqual([DUPLICATE_ALIAS_MESSAGE]);
+      httpMock.expectNone((candidate) => candidate.method === 'POST');
+    });
+
+    /**
+     * ⚠ THE ROW BEING EDITED IS NOT ITS OWN DUPLICATE. Without excluding it, opening a row and pressing
+     * Update without changing anything - which the legacy screen allowed - would be refused as a collision
+     * with itself.
+     */
+    it('does not call the row being edited a duplicate of itself', () => {
+      arrive([alias(7, 'localhost'), alias(8, 'localhost:4200')]);
+
+      editRow(0);
+      submit();
+
+      expect(fieldMessages()).toHaveSize(0);
+
+      const call = expectRequest('PUT', aliasUrl(-1, 7));
+
+      expect(transmittedAlias(call)).toBe('localhost');
+
+      // The replacement answers with the stored row, exactly as the other update cases here do.
+      call.flush(envelope(alias(7, 'localhost')));
+      settle();
+      settleWriteReread([alias(7, 'localhost'), alias(8, 'localhost:4200')]);
+    });
+
+    it('still asks the server about a name this portal does not list', () => {
+      arrive([alias(7, 'localhost')]);
+      press(ADD_ACTION_LABEL);
+
+      type('claimed-elsewhere.example.test');
+      submit();
+
+      expect(fieldMessages())
+        .withContext('nothing is claimed locally about a name only the server can judge')
+        .toHaveSize(0);
+      const call = expectRequest('POST', aliasesUrl(-1));
+
+      expect(transmittedAlias(call)).toBe('claimed-elsewhere.example.test');
+
+      call.flush(envelope(alias(9, 'claimed-elsewhere.example.test')), {
+        status: 201,
+        statusText: 'Created',
+      });
+      settle();
+      settleWriteReread([alias(7, 'localhost'), alias(9, 'claimed-elsewhere.example.test')]);
+    });
+  });
 
   describe('the store coupling', () => {
     it('exposes the alias slices as readonly signals the screen cannot write', () => {

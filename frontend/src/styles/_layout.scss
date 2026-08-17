@@ -66,10 +66,48 @@
   padding: var(--space-2) var(--space-3);
   background-color: var(--color-primary);
   color: var(--color-background);
+
+  // THE FIRST CONTROL IN THE TAB ORDER IS ALSO A POINTER TARGET — QA-18. It is reached by keyboard by design,
+  // but once revealed it is a real on-screen control that can be clicked, and it was under the 44px minimum
+  // in the block axis.
+  //
+  // ⚠ SCOPED TO THE REVEALED STATE ON PURPOSE. The collapse above is `block-size: 1px`, and a bare
+  // `min-block-size` here would beat it — `min-block-size` clamps `block-size` regardless of specificity —
+  // giving the *hidden* link a 44px box. It is fixed-positioned and clip-pathed so nothing would have been
+  // visible, but a 44px clipped box sitting over the top-left corner of the page is not a thing to leave
+  // behind. Growing only `:focus-visible` leaves the hidden geometry exactly as the mixin wrote it.
+  //
+  // `inline-block` rather than `flex`, so a long label still wraps inside the box instead of forcing the
+  // panel wider — verified by probe at 320px.
+  &:focus-visible {
+    display: inline-block;
+    min-block-size: var(--target-size-min);
+    align-content: center;
+  }
 }
 
 .shell__header {
   grid-area: header;
+
+  // ⚠ STICKY AT THE SIDE-BY-SIDE STEP ONLY, AND THE GATE IS A MEASUREMENT RATHER THAN A PREFERENCE. Nothing
+  // in this application was sticky, on documents measured at 1487 pixels against a 900-pixel viewport and at
+  // 2871 against 800 - so the product's identity, its primary navigation disclosure and the sign-out control
+  // all scrolled away and stayed away. `--z-index-sticky` has existed in the token scale from the start for
+  // exactly this and had no user until now.
+  //
+  // The gate exists because the header's height is not constant: it measures 69 pixels at 1280 but 177 at 375,
+  // where the user-links cluster wraps onto further lines. Pinning 177 pixels to the top of an 800-pixel
+  // viewport would spend 22% of the screen on chrome on the very devices with the least of it, so below the
+  // step the header keeps scrolling away and the content keeps the room.
+  //
+  // Opacity is not declared here and does not need to be: the header component paints
+  // `background-color: var(--color-surface)` on its own inner element, which fills this grid item - so rows
+  // cannot scroll through it. Verified rather than assumed, and this comment is the record of that check.
+  @include mx.respond-above('md') {
+    position: sticky;
+    inset-block-start: 0;
+    z-index: var(--z-index-sticky);
+  }
 }
 
 .shell__sidebar {
@@ -86,6 +124,28 @@
   position: relative;
 
   padding: var(--space-6) var(--space-4);
+
+  // ⚠ A MEASURE, BECAUSE FULL-BLEED WAS MEASURABLY WORSE AT THE WIDEST STEP. Measured at 1920 with no cap
+  // in force: a two-character value sat in a 167.8-pixel column and a single-line text input stretched to
+  // 1498 pixels, so the wider the display the further a label sat from its own control and the harder a row
+  // was to track across. The cap is the SAME step `.layout-container` below already declares for content
+  // that opts in - it is stated in both places rather than shared, because a grid area cannot be nested
+  // inside a container class without adding an element to every screen's template.
+  //
+  // It bites only above the step: at 1280 and below the main track is already narrower than this (the rail
+  // and this rule's own inline padding come off first), so every viewport the census covered up to 1280 is
+  // byte-for-byte unchanged and only 1920 moves.
+  max-inline-size: mx.breakpoint('xl');
+  margin-inline: auto;
+}
+
+// ⚠ SPACE FOR THE TRANSIENT-MESSAGE SURFACE, RESERVED ONLY WHILE ONE IS ON SCREEN. That surface is
+// fixed-positioned in the bottom corner and outside the flow, so it sat ON TOP of the last row of a grid -
+// after a save or a delete, exactly the record the operator had just acted on and wanted to check. The
+// reservation is conditional so no screen carries dead space at rest, and it is applied here rather than in
+// the message component's own stylesheet because a fixed element cannot make room for itself.
+.shell__main--message-reserved {
+  padding-block-end: var(--notification-reserved-block-size);
 }
 
 .shell__footer {

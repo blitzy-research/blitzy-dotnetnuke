@@ -1,3 +1,4 @@
+using DnnMigration.Application.Dtos.Module;
 using DnnMigration.Domain.Common;
 using DnnMigration.Domain.Enums;
 
@@ -309,6 +310,63 @@ public interface IPermissionService
     Task<Result<IReadOnlyList<PermissionDto>>> GetTabPermissionDefinitionsAsync(
         int portalId,
         int tabId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Reads the complete grant grid of one module: its columns, its rows and every cell.</summary>
+    /// <param name="portalId">The portal whose module is being administered.</param>
+    /// <param name="moduleId">The module whose grants are wanted.</param>
+    /// <param name="cancellationToken">Token that cancels the read.</param>
+    /// <returns>
+    /// A task producing a successful <see cref="Result{T}"/> carrying the grid, or
+    /// <c>permission.module_not_found</c> when the module does not exist in <paramref name="portalId"/>.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION: this is the read half of the <c>&lt;dnn:modulepermissionsgrid&gt;</c> server control that
+    /// <c>Website/admin/Modules/modulesettings.ascx:L42</c> declared and that the first port of this screen
+    /// omitted entirely, leaving a portal administrator unable to grant or withdraw module access to any
+    /// role. The grid's two computed facts - the administrator row being implicitly and immutably granted,
+    /// and the view column collapsing under inheritance - are resolved here rather than at the client,
+    /// because they depend on <c>Portals.AdministratorRoleId</c> and <c>Modules.InheritViewPermissions</c>
+    /// and would otherwise be re-derived, differently, by every caller.
+    /// </para>
+    /// <para>
+    /// A module that does not exist and one owned by another portal report the same failure, so this read
+    /// cannot be used as a cross-tenant identifier oracle.
+    /// </para>
+    /// </remarks>
+    Task<Result<ModulePermissionsDto>> GetModulePermissionsAsync(
+        int portalId,
+        int moduleId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Replaces every grant on one module, and the state of its view-inheritance switch, in one commit.
+    /// </summary>
+    /// <param name="portalId">The portal whose module is being administered.</param>
+    /// <param name="moduleId">The module whose grants are being replaced.</param>
+    /// <param name="request">The complete set of grants the module should hold afterwards.</param>
+    /// <param name="cancellationToken">Token that cancels the write.</param>
+    /// <returns>
+    /// A task producing a successful <see cref="Result"/>, or <c>permission.module_not_found</c>,
+    /// <c>permission.role_not_found</c>, <c>permission.user_not_found</c> or
+    /// <c>permission.request_invalid</c>.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ A REPLACE, NOT A MERGE. A grant absent from <see cref="ReplaceModulePermissionsRequest.Grants"/> is
+    /// withdrawn, matching <c>ModuleSettings.ascx.vb:L378-L379</c>, which assigned the grid's whole
+    /// collection onto the module and saved the inheritance switch in the same operation.
+    /// </para>
+    /// <para>
+    /// Every referenced role, account and catalogue definition is validated against the addressed portal and
+    /// module BEFORE any statement is issued, so a refusal leaves the stored grants exactly as they were.
+    /// </para>
+    /// </remarks>
+    Task<Result> ReplaceModulePermissionsAsync(
+        int portalId,
+        int moduleId,
+        ReplaceModulePermissionsRequest request,
         CancellationToken cancellationToken = default);
 }
 

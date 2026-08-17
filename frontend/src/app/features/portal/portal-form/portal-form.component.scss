@@ -87,13 +87,6 @@
   margin-block: 0;
 }
 
-.portal-form__notice {
-  max-inline-size: mx.breakpoint('md');
-  margin-block: 0;
-  color: var(--color-text-muted);
-  font-size: var(--font-size-sm);
-}
-
 // MIGRATION - THE REMAINING DIVERGENCES, RECORDED RATHER THAN ABSORBED
 // 3: THE HELP PANEL IS REPRODUCED THROUGH TOKENS, AND NOT BY THIS FILE. The legacy help panel
 // (default.css:L424-L439) is a hairline box on all FOUR sides right, top, left and bottom, the last at L436

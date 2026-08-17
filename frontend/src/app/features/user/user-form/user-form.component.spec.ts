@@ -16,8 +16,12 @@ import type {
   UserListItem,
 } from '../../../core/models/user.model';
 import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
+import { SessionTeardownService } from '../../../core/state/session-teardown.service';
 import { NotificationService } from '../../../core/services/notification.service';
 import { TokenStorageService } from '../../../core/services/token-storage.service';
+import { ListReturnStore } from '../../../core/state/list-return.store';
+import { USER_LIST_ROUTE } from '../../../core/config/app-routes.config';
+import { USER_DELETED_MESSAGE } from '../user-messages';
 import { UserStore } from '../../../core/state/user.store';
 import { USER_CREATE_MESSAGE, stripLegacyBreakTags } from '../../../core/utils/form-errors.util';
 import {
@@ -36,11 +40,45 @@ import {
  * Specification for the account editor. One screen, two modes, and SEVEN write paths that reach four
  * different endpoints — which is why the cases below are grouped by path rather than by member.
  */
+/**
+ * The tenant policy this screen reads on arrival. The default composes NO display name, which is the
+ * ordinary case and the one every pre-existing case in this suite was written against.
+ */
+const TENANT_POLICY = Object.freeze({
+  isStored: true,
+  columnFirstName: false,
+  columnLastName: false,
+  columnDisplayName: true,
+  columnAddress: true,
+  columnTelephone: true,
+  columnEmail: false,
+  columnCreatedDate: true,
+  columnLastLogin: false,
+  columnAuthorized: true,
+  displayMode: 0,
+  displaySuppressPager: false,
+  recordsPerPage: 10,
+  profileDefaultVisibility: 2,
+  profileDisplayVisibility: true,
+  profileManageServices: true,
+  redirectAfterLogin: null,
+  redirectAfterRegistration: null,
+  redirectAfterLogout: null,
+  securityEmailValidation: '',
+  securityRequireValidProfile: false,
+  securityRequireValidProfileAtLogin: false,
+  securityUsersControl: 0,
+  securityDisplayNameFormat: '',
+  displayNameFormatChanged: false,
+  displayNamesRewritten: 0,
+});
+
 describe('UserFormComponent', () => {
   let fixture: ComponentFixture<UserFormComponent>;
   let reference: ComponentRef<UserFormComponent>;
   let httpMock: HttpTestingController;
   let notifySpy: jasmine.Spy;
+  let infoSpy: jasmine.Spy;
   let successSpy: jasmine.Spy;
   let warningSpy: jasmine.Spy;
   let errorSpy: jasmine.Spy;
@@ -95,8 +133,12 @@ describe('UserFormComponent', () => {
    * `Website/admin/Users/App_LocalResources/*.resx` nor `Website/App_GlobalResources/*.resx`.
    */
   const USER_UNLOCKED_MESSAGE = 'User successfully Unlocked';
+  const USER_LOCKED_OUT_MESSAGE =
+    'This account is currently locked out due to too many unsuccessful login attempts.';
   const PASSWORD_CHANGE_REQUIRED_MESSAGE = 'This user must change their password at next login';
   const USER_UPDATED_MESSAGE = 'User account updated';
+  // Stated as a literal rather than imported, on this file's own convention: the wording IS the assertion.
+  const NO_CHANGES_MESSAGE = 'There are no changes to save.';
 
   /** The creation confirmation, with the placeholder the component substitutes. */
   const USER_CREATED_MESSAGE = 'User account {name} created';
@@ -223,6 +265,7 @@ describe('UserFormComponent', () => {
 
     notifySpy = spyOn(notifications, 'notify').and.callThrough();
     successSpy = spyOn(notifications, 'success').and.callThrough();
+    infoSpy = spyOn(notifications, 'info').and.callThrough();
     warningSpy = spyOn(notifications, 'warning').and.callThrough();
     errorSpy = spyOn(notifications, 'error').and.callThrough();
     navigateSpy = spyOn(TestBed.inject(Router), 'navigate').and.resolveTo(true);
@@ -243,12 +286,40 @@ describe('UserFormComponent', () => {
    * Mounts the screen. ⚠ THE IDENTIFIER IS DELIVERED AS TEXT, because the router binds a route parameter
    * as a string.
    */
-  function create(userId?: string): void {
+  function create(userId?: string, policy: Record<string, unknown> = {}): void {
     fixture = TestBed.createComponent(UserFormComponent);
     reference = fixture.componentRef;
 
     if (userId !== undefined) {
       reference.setInput('userId', userId);
+    }
+
+    fixture.detectChanges();
+    // ⚠ ANSWERED HERE, WITH THE OVERRIDE, AND NOT LATER. The component reads the policy once on arrival and
+    // guards against reading it again, so a policy supplied after this point has no request left to answer
+    // and is silently ignored - which is how a case asking for a composed display name would pass while
+    // testing the default one.
+    answerTenantPolicy(policy);
+  }
+
+  /**
+   * Answers the tenant-policy read this screen issues on arrival.
+   *
+   * ⚠ MATCHED RATHER THAN EXPECTED, AND THE DIFFERENCE MATTERS HERE. `expectOne` fails when the request is
+   * absent, and it is legitimately absent whenever the policy is already held - which is exactly what the
+   * component's own guard arranges. Matching leaves those cases alone instead of failing them for the wrong
+   * reason.
+   *
+   * The default policy composes NO display name, so every pre-existing case keeps the behaviour it was
+   * written against; the cases that need a composed name state it themselves.
+   *
+   * @param overrides Members to vary from the default policy.
+   */
+  function answerTenantPolicy(overrides: Record<string, unknown> = {}): void {
+    for (const pending of httpMock.match(
+      (candidate) => candidate.method === 'GET' && candidate.url === '/api/v1/users/settings',
+    )) {
+      pending.flush({ data: { ...TENANT_POLICY, ...overrides }, meta: null });
     }
 
     fixture.detectChanges();
@@ -537,15 +608,29 @@ describe('UserFormComponent', () => {
       );
       fixture.detectChanges();
 
-      expect(host().textContent ?? '').toContain(NO_USER_MESSAGE);
+      // ⚠ STATED BY THE BANNER, AND ONLY BY THE BANNER. Measured at runtime after the banner was given this
+      // state: the banner said "This account doesn't exist" while a persistent warning TOAST beside it said
+      // the SERVER's own "The requested resource does not exist." and quoted the request's correlation
+      // identifier - two owners for one piece of news, in two politeness levels, one of them sending the
+      // reader to support for an occurrence support cannot look up.
+      expect((query('.error-banner')?.textContent ?? '')).toContain(NO_USER_MESSAGE);
       expect(query('form.user-form')).withContext('no form for an account that does not exist').toBeNull();
 
-      expect(notifySpy.calls.allArgs().map((args) => [String(args[0]), String(args[1])])).toEqual([
-        ['warning', 'The requested resource does not exist.'],
-      ]);
+      expect(notifySpy.calls.allArgs().map((args) => [String(args[0]), String(args[1])]))
+        .withContext('no toast at all for a record that was never there')
+        .toEqual([]);
       expect(warningSpy)
         .withContext('no second announcement of the same state')
         .not.toHaveBeenCalled();
+
+      // And the one way out, in the slot the three withheld actions vacated.
+      const headerActions = Array.from(
+        host().querySelectorAll<HTMLAnchorElement>('app-page-header a.page-action'),
+      );
+
+      expect(headerActions.map((anchor) => anchor.textContent?.trim())).toEqual([
+        'Back to User Accounts',
+      ]);
     });
 
     it('withholds the create-only controls while editing and offers them while creating', () => {
@@ -601,6 +686,26 @@ describe('UserFormComponent', () => {
       // legacy one is used and its measured wording travels with the failure.
       expect(fieldErrors()).toContain(EMAIL_PATTERN_MESSAGE);
       expect(httpMock.match(() => true)).toHaveSize(0);
+    });
+
+    it('refuses the addresses the SERVER refuses, from one shared grammar', () => {
+      // ⚠ MEASURED DEFECT: this screen and the portal form each declared an address pattern of their own and
+      // the two disagreed - with each other and with the server. This screen's pattern admitted a final
+      // domain label of ONE character, admitted digits and hyphens in it, and imposed no length bound, so
+      // `a@b.c` and `a@b.c1` passed here and were then refused by the server. Both screens now use the one
+      // client grammar in `core/utils/email-grammar.util.ts`, which mirrors the server's single definition
+      // in `Domain/ValueObjects/EmailAddress` class for class.
+      for (const refused of ['a@b.c', 'grace@example.c1', 'grace@example', 'grace@.test']) {
+        create();
+        fillCreationForm();
+        type(CONTROL_ID.email, refused);
+        press(CREATE_SUBMIT_LABEL);
+
+        expect(fieldErrors())
+          .withContext(`${refused} is refused by the server, so it must be refused here`)
+          .toContain(EMAIL_PATTERN_MESSAGE);
+        expect(httpMock.match(() => true)).toHaveSize(0);
+      }
     });
 
     it('accepts an address carrying a plus-addressed mailbox', () => {
@@ -894,7 +999,79 @@ describe('UserFormComponent', () => {
       expectNoListingReRead();
 
       // Measured as a redirect to the return address, whose equivalent here is a navigation.
-      expect(navigateSpy).toHaveBeenCalledOnceWith(['/users'], { replaceUrl: true });
+      expect(navigateSpy).toHaveBeenCalledOnceWith(['/users'], {
+        queryParams: {},
+        replaceUrl: true,
+      });
+    });
+
+    // ⚠ THE SAFE EXIT, WHICH THIS SCREEN DID NOT HAVE. Measured across the four record editors: the portal, the
+    // signup and the role editors all offered a way to abandon a half-filled form and this one did not, so the
+    // only way out was the browser's own controls. It is an ADDED affordance rather than a ported one - the
+    // legacy command panel carried remove and save and nothing else - and it is recorded as such.
+    it('offers a way to abandon the form, and it departs rather than resetting', () => {
+      create();
+
+      fillCreationForm();
+
+      const cancel = button('Cancel');
+
+      expect(cancel).withContext('the screen offers an abandon command').not.toBeUndefined();
+      expect(cancel?.type)
+        .withContext('it cannot submit, so no validator runs and an invalid form cannot disable the way out')
+        .toBe('button');
+
+      press('Cancel');
+
+      // A DEPARTURE, and specifically not a replacing one: only a navigation the application itself makes
+      // after a successful write is exempt from the unsaved-entry question, and abandoning a form is the
+      // operator's decision. The gate is what asks; this screen only has to leave through the router so the
+      // gate can see it.
+      expect(navigateSpy).toHaveBeenCalledOnceWith(['/users']);
+      expect(httpMock.match(() => true))
+        .withContext('and nothing is written on the way out')
+        .toHaveSize(0);
+    });
+
+    // ⚠ #22 — THE SHARED PLACEMENT. This bar centred its commands with a wider gap while the portal, module,
+    // role and password forms all start-align theirs with `--space-2`, so the primary action moved
+    // horizontally as an operator walked between screens - one of the three placements the review counted
+    // across four create screens.
+    it('places its commands where every sibling form places them', () => {
+      create();
+
+      const bar = query('.user-form__actions');
+
+      expect(bar).withContext('the commands sit in a bar of their own').not.toBeNull();
+
+      const style = getComputedStyle(bar as HTMLElement);
+
+      expect(style.display).withContext('a flex row, as the siblings are').toBe('flex');
+      expect(style.flexWrap).withContext('wrapping rather than overflowing').toBe('wrap');
+      expect(['normal', 'flex-start', 'start'])
+        .withContext('start-aligned, not centred')
+        .toContain(style.justifyContent);
+      // The gap is compared against the token itself rather than a restated number, so the assertion moves
+      // with the vocabulary instead of having to be kept in step with it by hand.
+      const root = getComputedStyle(document.documentElement);
+      const step = `${Number.parseFloat(root.getPropertyValue('--space-2')) * Number.parseFloat(root.fontSize)}px`;
+
+      expect(style.columnGap)
+        .withContext('and spaced by the same step the siblings use')
+        .toBe(step);
+    });
+
+    it('marks the saving command as the primary one, as its three sibling editors do', () => {
+      create();
+
+      const submit = button(CREATE_SUBMIT_LABEL);
+
+      expect(submit?.classList)
+        .withContext('the shared primary treatment, so the operator can see which command saves')
+        .toContain('form-action--primary');
+      expect(button('Cancel')?.classList)
+        .withContext('and the safe exit is deliberately not primary')
+        .not.toContain('form-action--primary');
     });
 
     it('leaves the form settled at the instant it navigates, so the guard cannot question a stored account', () => {
@@ -922,7 +1099,10 @@ describe('UserFormComponent', () => {
       fixture.detectChanges();
       expectNoListingReRead();
 
-      expect(navigateSpy).toHaveBeenCalledOnceWith(['/users'], { replaceUrl: true });
+      expect(navigateSpy).toHaveBeenCalledOnceWith(['/users'], {
+        queryParams: {},
+        replaceUrl: true,
+      });
       expect(dirtyAtNavigation)
         .withContext('the guard must see a settled form on the navigation the creation itself triggered')
         .toBeFalse();
@@ -1106,7 +1286,10 @@ describe('UserFormComponent', () => {
       expectRequest('GET', USERS_URL, 'the listing re-read').flush(emptyPage());
       fixture.detectChanges();
 
-      expect(navigateSpy).toHaveBeenCalledOnceWith(['/users'], { replaceUrl: true });
+      expect(navigateSpy).toHaveBeenCalledOnceWith(['/users'], {
+        queryParams: {},
+        replaceUrl: true,
+      });
     });
 
     it('states the notification gap BESIDE the box, while there is still a decision to make', () => {
@@ -1334,6 +1517,21 @@ describe('UserFormComponent', () => {
       // Reproduces the legacy guard on the editor's own dirty flag. A save that changed nothing
       // still cost a round trip and still touched the record's audit trail.
       expect(httpMock.match(() => true)).withContext('nothing to write').toHaveSize(0);
+    });
+
+    it('ANSWERS a pristine press instead of ignoring it', () => {
+      // ⚠ THE MEASURED DEFECT THIS CLOSES. Skipping the write is right; doing it in silence is not. Runtime
+      // testing pressed Update on an untouched form and got no request, no navigation, no message and no
+      // change anywhere on screen - indistinguishable from a broken button. The legacy screen had a reload to
+      // stand in for the acknowledgement (`ManageUsers.ascx.vb` L918 redirected to the same address); a
+      // single-page application has to say it.
+      arriveEditing(account(7));
+
+      press(UPDATE_SUBMIT_LABEL);
+
+      expect(httpMock.match(() => true)).withContext('still no write').toHaveSize(0);
+      expect(infoSpy).toHaveBeenCalledWith(NO_CHANGES_MESSAGE);
+      expect(navigateSpy).withContext('and the operator is not moved anywhere').not.toHaveBeenCalled();
     });
 
     it('announces the measured wording and stays on the screen', () => {
@@ -1717,6 +1915,40 @@ describe('UserFormComponent', () => {
       expect(button(FORCE_PASSWORD_LABEL)).not.toBeUndefined();
     });
 
+    /**
+     * ⚠ THE LEGACY SENTENCE, WHICH SHIPPED IN THE BUNDLE AND RENDERED NOWHERE. `UserLockedOut.Text` was
+     * carried across with its three siblings from the same resource family and then never bound: it appeared
+     * exactly once in the whole source tree, as an export nothing imported. Dead copy reads like a delivered
+     * feature while being unexercisable, which is how it survived unnoticed.
+     *
+     * It is bound HERE, next to the command that clears the condition, rather than on the sign-in screen -
+     * this is the administrator's statement of the account's state, and the advisory the locked-out person
+     * reads is produced by the server, where the installation's real unlock window is known.
+     */
+    it('states the locked-out condition in words, beside the command that clears it', () => {
+      arriveEditing(account(7, { isLockedOut: true }));
+
+      const stated: HTMLElement | null = fixture.nativeElement.querySelector('.user-form__locked-out');
+
+      expect(stated).withContext('the condition is stated, not merely tabulated as Yes').not.toBeNull();
+      expect((stated?.textContent ?? '').replace(/\s+/g, ' ').trim()).toBe(USER_LOCKED_OUT_MESSAGE);
+      expect(stated?.getAttribute('role'))
+        .withContext('polite: it describes a standing condition rather than an outcome just produced')
+        .toBe('status');
+      expect(button(UNLOCK_LABEL))
+        .withContext('read together with its remedy')
+        .not.toBeUndefined();
+    });
+
+    it('states nothing about locking for an account that is not locked', () => {
+      arriveEditing(account(7, { isLockedOut: false }));
+
+      expect(fixture.nativeElement.querySelector('.user-form__locked-out'))
+        .withContext('no condition, no sentence')
+        .toBeNull();
+      expect(button(UNLOCK_LABEL)).toBeUndefined();
+    });
+
     it('offers none of the four while creating, because there is no account to act on', () => {
       create();
 
@@ -1778,7 +2010,10 @@ describe('UserFormComponent', () => {
       fixture.detectChanges();
       expectNoListingReRead();
 
-      expect(navigateSpy).toHaveBeenCalledOnceWith(['/users'], { replaceUrl: true });
+      expect(navigateSpy).toHaveBeenCalledOnceWith(['/users'], {
+        queryParams: {},
+        replaceUrl: true,
+      });
     });
 
     it('leaves the form settled at the instant a removal navigates, because deleted entry cannot be saved', () => {
@@ -1805,7 +2040,10 @@ describe('UserFormComponent', () => {
       fixture.detectChanges();
       expectNoListingReRead();
 
-      expect(navigateSpy).toHaveBeenCalledOnceWith(['/users'], { replaceUrl: true });
+      expect(navigateSpy).toHaveBeenCalledOnceWith(['/users'], {
+        queryParams: {},
+        replaceUrl: true,
+      });
       expect(dirtyAtNavigation)
         .withContext('there is nothing left to save once the account is gone')
         .toBeFalse();
@@ -1904,6 +2142,132 @@ describe('UserFormComponent', () => {
         .withContext('another screen cannot withhold this form')
         .toBeFalse();
       expect(query('app-error-banner .error-banner__title')).toBeNull();
+    });
+
+    // ⚠ THE FAILED-RE-READ CASE, WHICH HAD NO TREATMENT AT ALL. Only `403` and `404` withheld the form, so
+    // a read that failed any other way - a dropped connection, an aborted request, a `500` - left the
+    // PREVIOUS read's values on screen with Update, Delete, UnAuthorize and Force Password Change all live,
+    // and offered no way to re-read and no way forward.
+    it('withholds every action and offers recovery when the account could not be re-read', () => {
+      arriveEditing(account(7));
+
+      // Provoke a fresh read of the same account, then fail it at the transport - no status, no document.
+      // ⚠ THE FORCED RE-READ, BECAUSE SELECTION IS IDEMPOTENT. `selectUser` treats an account already held as
+      // nothing left to do - three screens select the same account from their own route effects and the detail
+      // read was measured being issued twice - so provoking a re-read through it would send no request and this
+      // case would be measuring a screen that had never re-read anything.
+      TestBed.inject(UserStore).rereadUser(7);
+      fixture.detectChanges();
+      expectRequest('GET', userUrl(7), 'the re-read').error(new ProgressEvent('error'));
+      fixture.detectChanges();
+
+      const notice: HTMLElement | null = query<HTMLElement>('.user-form__unconfirmed');
+
+      expect(notice).withContext('the screen says the record is unconfirmed').not.toBeNull();
+      expect(notice?.getAttribute('role')).toBe('status');
+      expect(notice?.textContent ?? '')
+        .withContext('and says so as a RE-read, because values are still on screen')
+        .toContain('could not be re-read');
+
+      const recovery: readonly HTMLButtonElement[] = queryAll<HTMLButtonElement>(
+        '.user-form__recovery',
+      );
+
+      expect(recovery.map((button) => (button.textContent ?? '').trim())).toEqual([
+        'Try again',
+        'Dismiss',
+      ]);
+      expect(recovery.every((button) => !button.disabled))
+        .withContext('the way out must itself be reachable')
+        .toBeTrue();
+
+      // Every mutation is withheld: a stale record is not a basis for a write.
+      const commands: readonly HTMLButtonElement[] = queryAll<HTMLButtonElement>('button').filter(
+        (button) => !button.classList.contains('user-form__recovery'),
+      );
+
+      expect(commands.some((button) => button.disabled))
+        .withContext('the account actions are unavailable')
+        .toBeTrue();
+    });
+
+    // ⚠ THE DEFECT THIS PAIR OF SPECS EXISTS TO PREVENT IS A SILENT OVERWRITE, and it was introduced by the
+    // very fix that added the recovery controls. Runtime verification found that dismissing a FIRST-read
+    // failure removed the banner, removed the disclaimer, removed the retry, re-enabled four of five inputs
+    // and enabled Update - with no network traffic and therefore no re-read. The end state was an empty but
+    // fully editable account form with a live submit, so an operator who filled the required fields would
+    // overwrite stored values they had never seen. Dismissing is legitimate only when a record is on screen
+    // to proceed with.
+    it('does not offer to proceed when the FIRST read failed and there is nothing on screen', () => {
+      create('7');
+      expectRequest('GET', userUrl(7), 'the first account read').error(new ProgressEvent('error'));
+      fixture.detectChanges();
+
+      const notice: HTMLElement | null = query<HTMLElement>('.user-form__unconfirmed');
+
+      expect(notice).withContext('the screen still says the record is unread').not.toBeNull();
+      expect(notice?.textContent ?? '')
+        .withContext('worded as a first read, not a re-read - nothing is on screen')
+        .toContain('could not be read');
+
+      const labels: readonly string[] = queryAll<HTMLElement>('.user-form__recovery').map((node) =>
+        (node.textContent ?? '').trim(),
+      );
+
+      expect(labels)
+        .withContext('retry and a way out, but NOT an offer to proceed without reading')
+        .toEqual(['Try again', 'Back to user accounts']);
+      expect(labels).not.toContain('Dismiss');
+    });
+
+    it('refuses to clear the write lock while nothing has been read', () => {
+      create('7');
+      expectRequest('GET', userUrl(7), 'the first account read').error(new ProgressEvent('error'));
+      fixture.detectChanges();
+
+      const submitBefore: HTMLButtonElement | null = query<HTMLButtonElement>(
+        'button[type="submit"]',
+      );
+
+      expect(submitBefore?.disabled).withContext('the submit starts withheld').toBeTrue();
+
+      // Reach past the template and call the handler directly, so the guard is proven in the method rather
+      // than only in the markup that currently hides its trigger. A future template change that re-exposed
+      // the control must not be able to resurrect the overwrite.
+      (
+        fixture.componentInstance as unknown as { onDismissDetailFailure(): void }
+      ).onDismissDetailFailure();
+      fixture.detectChanges();
+
+      expect(query('.user-form__unconfirmed'))
+        .withContext('the disclaimer survives')
+        .not.toBeNull();
+      expect(query<HTMLButtonElement>('button[type="submit"]')?.disabled)
+        .withContext('and so does the write lock')
+        .toBeTrue();
+      expect(httpMock.match(() => true))
+        .withContext('nothing was re-read, so nothing may be trusted')
+        .toHaveSize(0);
+    });
+
+    it('re-issues the account read from the recovery control', () => {
+      arriveEditing(account(7));
+
+      TestBed.inject(UserStore).rereadUser(7);
+      fixture.detectChanges();
+      expectRequest('GET', userUrl(7), 'the re-read').error(new ProgressEvent('error'));
+      fixture.detectChanges();
+
+      const retry: HTMLButtonElement | null = query<HTMLButtonElement>('.user-form__recovery');
+      retry?.click();
+      fixture.detectChanges();
+
+      expectRequest('GET', userUrl(7), 'the retried read').flush(envelope(account(7)));
+      fixture.detectChanges();
+
+      expect(query('.user-form__unconfirmed'))
+        .withContext('a successful re-read clears the notice')
+        .toBeNull();
     });
 
     it('shows an error-severity refusal in the banner rather than announcing it twice', () => {
@@ -2069,10 +2433,23 @@ describe('UserFormComponent', () => {
         .toBeNull();
     });
 
-    it('records the required-field legend once, as measured', () => {
+    // ⚠ #20 — THE LEGEND DESCRIBES THE MARKER THIS BUILD DRAWS. The legacy sentence said "red arrow", which was
+    // accurate against a skin that drew the marker as a red arrow image; no image asset ships here, the shared
+    // field draws an asterisk, and a legend naming the wrong marker sends a reader looking for something that
+    // does not exist. Both halves are asserted: the new wording is present AND the old wording is gone, so the
+    // sentence cannot quietly revert.
+    it('describes the required marker the form actually draws', () => {
       create();
 
-      expect(host().textContent ?? '').toContain('All fields marked with a red arrow are required.');
+      expect(host().textContent ?? '').toContain('All fields marked with an asterisk are required.');
+      expect(host().textContent ?? '').not.toContain('red arrow');
+
+      const marker = host().querySelector('.form-field__required');
+
+      expect(marker).withContext('and the marker it describes is on the page').not.toBeNull();
+      expect((marker?.textContent ?? '').trim())
+        .withContext('as an asterisk, which is what the legend now names')
+        .toContain('*');
     });
   });
 
@@ -2862,4 +3239,429 @@ describe('UserFormComponent', () => {
       expectNoListingReRead();
     });
   });
+  // =========================================================================
+  // THE RECORD IDENTIFIER IN THE HEADING
+  // =========================================================================
+
+  describe('the record identifier in the heading', () => {
+    // `ManageUsers.ascx.vb` chose its heading in three arms, and the middle one was
+    // `If IsUser And IsProfile Then trTitle.Visible = False`: when the caller WAS the account owner the
+    // legacy screen hid the whole title row, so a member was never shown the internal record key. Only the
+    // administrative arm reached `String.Format(UserTitle, User.Username, User.UserID)`.
+
+    it('discloses the identifier to an administrator editing someone else', () => {
+      signedInAs(1);
+      arriveEditing(account(16, { displayName: 'Ada Lovelace' }));
+
+      const heading = query<HTMLHeadingElement>('h1');
+
+      expect(heading?.textContent?.trim()).toBe('Edit User - Ada Lovelace (Id: 16)');
+    });
+
+    it('WITHHOLDS the identifier from the account\u2019s own owner', () => {
+      // The caller and the subject are the same account, which is the legacy `IsUser` predicate.
+      signedInAs(16);
+      arriveEditing(account(16, { displayName: 'Ada Lovelace' }));
+
+      const heading = query<HTMLHeadingElement>('h1');
+      const shown = heading?.textContent?.trim() ?? '';
+
+      expect(shown).toBe('Edit User - Ada Lovelace');
+      expect(shown).withContext('no identifier disclosed to the owner').not.toContain('Id:');
+      expect(shown).withContext('no bare record number anywhere in the heading').not.toMatch(/\d/);
+    });
+
+    it('still renders a heading for the owner rather than removing it', () => {
+      // The one detail deliberately NOT reproduced. Legacy hid the entire title row; a routed screen with
+      // no `h1` leaves its main region with no accessible name, so the heading stays and only the
+      // identifier goes.
+      signedInAs(16);
+      arriveEditing(account(16, { displayName: 'Ada Lovelace' }));
+
+      expect(queryAll('h1')).withContext('exactly one heading, still present').toHaveSize(1);
+      expect(query<HTMLHeadingElement>('h1')?.textContent?.trim().length ?? 0).toBeGreaterThan(0);
+    });
+
+    it('falls back to the user name when the owner has no display name, still without the identifier', () => {
+      signedInAs(16);
+      arriveEditing(account(16, { displayName: '', username: 'ada.lovelace' }));
+
+      const shown = query<HTMLHeadingElement>('h1')?.textContent?.trim() ?? '';
+
+      expect(shown).toBe('Edit User - ada.lovelace');
+      expect(shown).not.toContain('Id:');
+    });
+
+    it('does not withhold the identifier merely because the subject id is zero', () => {
+      // Account key zero is a real key. A truthiness test on the resolved id would make the owner check
+      // misfire here and hide the identifier from an administrator.
+      signedInAs(1);
+      arriveEditing(account(0, { displayName: 'Ada Lovelace' }));
+
+      expect(query<HTMLHeadingElement>('h1')?.textContent?.trim()).toBe(
+        'Edit User - Ada Lovelace (Id: 0)',
+      );
+    });
+  });
+
+  // =========================================================================
+  // THE TIME COMPONENT OF THE MEMBERSHIP DATES
+  // =========================================================================
+
+  describe('the membership dates', () => {
+    // ⚠ THE LEGACY AUTHORITY, TRACED RATHER THAN ASSUMED, BECAUSE IT DECIDES WHETHER THIS IS A FIX OR A
+    // REGRESSION. `Membership.ascx` bound a `dnn:propertyeditorcontrol` in `editmode="View"` to
+    // `UserMembership`, whose date members are declared plainly `As Date` with no `Editor` attribute - so
+    // the editor was chosen by TYPE. `EditControlFactory.CreateEditControl` L62-L64 maps
+    // `System.DateTime` to `DateTimeEditControl`, and that control's `DefaultFormat` L69-L73 returns `"g"`,
+    // the general date-and-time pattern. THE LEGACY SCREEN SHOWED THE TIME.
+    //
+    // Rendering date-only was therefore a divergence, and a consequential one: a password reset performed
+    // the same day appeared not to have happened, because the only evidence of it was a date that had not
+    // changed. The listing already showed a time for the same class of value, so the application also
+    // disagreed with itself.
+
+    it('shows the TIME for every membership date the server supplies one for', () => {
+      arriveEditing(
+        account(16, {
+          createdDate: '2026-08-14T16:56:10.183',
+          lastActivityDate: '2026-08-14T16:56:10.183',
+          lastLoginDate: '2026-08-14T17:30:00.000',
+          lastPasswordChangeDate: '2026-08-14T16:56:10.183',
+          lastLockoutDate: '2026-08-14T18:05:42.000',
+        }),
+      );
+
+      const panel = host().textContent ?? '';
+
+      // A clock time must appear for each. Asserted as a count of time-bearing renderings rather than by
+      // hunting individual cells, because the cells are a definition list and the assertion should not
+      // depend on their order.
+      const times = panel.match(/\d{1,2}:\d{2}:\d{2}\s?(AM|PM)/g) ?? [];
+
+      expect(times.length)
+        .withContext('five dates supplied, five times rendered')
+        .toBeGreaterThanOrEqual(5);
+      expect(panel).toContain('4:56:10 PM');
+      expect(panel).toContain('5:30:00 PM');
+      expect(panel).toContain('6:05:42 PM');
+    });
+
+    it('distinguishes two same-day password changes, which date-only rendering could not', () => {
+      // THE DEFECT RESTATED AS A TEST. Two resets on the same day differ only in their time, so a date-only
+      // rendering makes a reset that DID happen look like one that did not.
+      arriveEditing(account(16, { lastPasswordChangeDate: '2026-08-14T09:15:00.000' }));
+
+      expect(host().textContent).toContain('9:15:00 AM');
+      expect(host().textContent).not.toContain('8/14/2026 8/14/2026');
+    });
+
+    it('still renders an absent date as empty rather than inventing a time', () => {
+      // The server genuinely sends null for an account that has never signed in or been locked out. An
+      // absent value must stay absent - adding a time to nothing would be worse than showing nothing.
+      arriveEditing(account(16, { lastLoginDate: null, lastLockoutDate: null }));
+
+      const panel = host().textContent ?? '';
+
+      expect(panel).not.toContain('1/1/1');
+      expect(panel).not.toContain('12:00:00 AM');
+    });
+  });
+
+  // =========================================================================
+  // A TENANT THAT COMPOSES DISPLAY NAMES ITSELF
+  // =========================================================================
+
+  describe('a tenant that composes display names itself', () => {
+    // ⚠ THE LEGACY RULE HAS TWO ARMS AND THEY DIFFER. `UserEditorCreated` (`User.ascx.vb` L397-L406):
+    //   Case "displayname"
+    //     setting = GetSetting(UserPortalID, "Security_DisplayNameFormat")
+    //     If setting is not Nothing AndAlso not empty Then
+    //       If AddUser Then e.Editor.Visible = False        <- HIDDEN while creating
+    //       Else e.Editor.EditMode = PropertyEditorMode.View <- READ-ONLY while editing
+    //
+    // Before this, the field was fully editable in both cases while the help line told the operator to
+    // "Provide a Display Name" - so a name they typed was silently replaced by the composed one on save.
+
+    const COMPOSED = { securityDisplayNameFormat: '[FIRSTNAME] [LASTNAME]' };
+
+    /** Mounts in edit mode with a tenant policy that composes display names. */
+    function arriveEditingComposed(held: UserDetail = account(7)): void {
+      create(String(held.userId), COMPOSED);
+      expectRequest('GET', userUrl(held.userId), 'the account read').flush(envelope(held));
+      fixture.detectChanges();
+    }
+
+    /**
+     * Reveals a field's help line, which the shared field control renders only while its disclosure is
+     * expanded, and returns the text.
+     */
+    function helpTextFor(controlId: string): string {
+      const wrapper = field<HTMLElement>(controlId).closest('app-form-field');
+      const toggle = wrapper?.querySelector<HTMLButtonElement>('.form-field__help-toggle');
+
+      toggle?.click();
+      fixture.detectChanges();
+
+      return (wrapper?.querySelector('.form-field__help')?.textContent ?? '').trim();
+    }
+
+    it('presents the display name for READING ONLY while editing', () => {
+      arriveEditingComposed();
+
+      const input = field<HTMLInputElement>(CONTROL_ID.displayName);
+
+      expect(input.readOnly).withContext('read-only, so the composed value is visible').toBeTrue();
+      expect(input.getAttribute('aria-readonly')).toBe('true');
+    });
+
+    it('keeps the read-only field in the tab order rather than disabling it', () => {
+      // `readonly` rather than `disabled` deliberately: a disabled control leaves the tab order and is
+      // skipped by assistive technology, so a keyboard operator would never learn the value exists.
+      arriveEditingComposed();
+
+      const input = field<HTMLInputElement>(CONTROL_ID.displayName);
+
+      expect(input.disabled).withContext('not disabled').toBeFalse();
+      expect(input.tabIndex).withContext('still reachable by Tab').toBe(0);
+    });
+
+    it('replaces the help line that contradicted a field the operator cannot change', () => {
+      arriveEditingComposed();
+
+      const shown = helpTextFor(CONTROL_ID.displayName);
+
+      expect(shown).toBe(
+        'This site composes display names from a set format, so this value cannot be changed here.',
+      );
+      expect(shown)
+        .withContext('the instruction to supply one is withdrawn')
+        .not.toContain('Provide a Display Name');
+    });
+
+    it('WITHHOLDS the field entirely while creating', () => {
+      create(undefined, COMPOSED);
+
+      expect(query(`#${CONTROL_ID.displayName}`))
+        .withContext('nothing to show: the name will be composed from parts not yet supplied')
+        .toBeNull();
+    });
+
+    it('still allows the creation form to be submitted with the field withheld', () => {
+      // ⚠ THE TRAP THIS PINS. A required control that is not rendered leaves the form invalid with nothing
+      // on screen to correct, which would be a worse defect than the one being fixed. Dropping the rule is
+      // safe because the server composes the value in exactly this case.
+      create(undefined, COMPOSED);
+
+      // Filled field by field rather than through the shared helper, because the helper fills the display
+      // name and this case is precisely the one where that field is not rendered.
+      type(CONTROL_ID.username, 'ada.lovelace');
+      type(CONTROL_ID.firstName, 'Ada');
+      type(CONTROL_ID.lastName, 'Lovelace');
+      type(CONTROL_ID.email, 'ada@example.test');
+      type(CONTROL_ID.password, 'Str0ngPass');
+      type(CONTROL_ID.confirmPassword, 'Str0ngPass');
+      press(CREATE_SUBMIT_LABEL);
+
+      const written = httpMock.match(
+        (candidate) => candidate.method === 'POST' && candidate.url === USERS_URL,
+      );
+
+      expect(written).withContext('the form was submitted, not blocked').toHaveSize(1);
+      written[0]?.flush(envelope(account(21)));
+      fixture.detectChanges();
+    });
+
+    it('leaves the field editable and required for a tenant that composes nothing', () => {
+      // The negative control. The rule must apply only when a format is actually stored - a tenant that has
+      // never configured one stores the empty string, and treating that as configured would lock the field
+      // on every ordinary site.
+      arriveEditing(account(7));
+
+      const input = field<HTMLInputElement>(CONTROL_ID.displayName);
+
+      expect(input.readOnly).toBeFalse();
+      expect(input.disabled).toBeFalse();
+      expect(helpTextFor(CONTROL_ID.displayName)).toBe('Provide a Display Name');
+    });
+
+    it('treats a format of only whitespace as no format at all', () => {
+      create(String(7), { securityDisplayNameFormat: '   ' });
+      expectRequest('GET', userUrl(7), 'the account read').flush(envelope(account(7)));
+      fixture.detectChanges();
+
+      expect(field<HTMLInputElement>(CONTROL_ID.displayName).readOnly).toBeFalse();
+    });
+  });
+
+  // =========================================================================
+  // CONFIRMING A REMOVAL, AND RETURNING WHERE THE OPERATOR CAME FROM
+  // =========================================================================
+
+  describe('removing an account', () => {
+    it('CONFIRMS the removal, which was the only mutation this screen performed silently', () => {
+      // Creating announced, updating announced, authorising and forcing a credential change announced - and
+      // the single most destructive action said nothing at all. The operator was returned to the listing and
+      // left to infer from an absence that the account was gone, which is indistinguishable from a removal
+      // that silently failed.
+      arriveEditing(account(7));
+      press(DELETE_LABEL);
+      pressDialogue(DELETE_LABEL);
+      expectRequest('DELETE', userUrl(7), 'the removal').flush(null, {
+        status: 204,
+        statusText: 'No Content',
+      });
+      fixture.detectChanges();
+
+      expect(notifications()).toContain(
+        jasmine.objectContaining({ severity: 'success', message: 'User Deleted Successfully' }),
+      );
+    });
+
+    it('publishes the confirmation so that it OUTLIVES the departure this same handler performs', () => {
+      // ⚠ THIS CASE EXISTS BECAUSE THE PREVIOUS ONE PASSED WHILE THE BROWSER SHOWED NOTHING. Asserting that
+      // `notify` was CALLED cannot distinguish an announcement that renders from one that is published and
+      // then destroyed: `survivesNavigation` defaults to false, the handler navigates immediately, and the
+      // router's `clearOnNavigation()` sweep discards every unflagged entry before a frame is painted. The
+      // navigation is stubbed in this suite, so the sweep is invoked explicitly here - that call is exactly
+      // what the router would have done, and it is the input that DISCRIMINATES between the two
+      // implementations.
+      const service = TestBed.inject(NotificationService);
+
+      arriveEditing(account(7));
+      press(DELETE_LABEL);
+      pressDialogue(DELETE_LABEL);
+      expectRequest('DELETE', userUrl(7), 'the removal').flush(null, {
+        status: 204,
+        statusText: 'No Content',
+      });
+      fixture.detectChanges();
+
+      service.clearOnNavigation();
+
+      expect(service.notifications().map((entry) => entry.message)).toContain(USER_DELETED_MESSAGE);
+    });
+
+    it('uses the SAME sentence the listing uses for the same event', () => {
+      // Imported from the shared wording module rather than restated, so the confirmation cannot depend on
+      // which screen the operator started from.
+      expect(USER_DELETED_MESSAGE).toBe('User Deleted Successfully');
+    });
+
+    it('says nothing when the removal was refused', () => {
+      // A confirmation announced unconditionally would be worse than none: it would assert that a record was
+      // removed when it is still there.
+      arriveEditing(account(7));
+      press(DELETE_LABEL);
+      pressDialogue(DELETE_LABEL);
+      expectRequest('DELETE', userUrl(7), 'the removal').flush(
+        problem('auth.not_permitted', 403, 'The authenticated caller is not permitted to perform this operation.'),
+        { status: 403, statusText: 'Forbidden' },
+      );
+      fixture.detectChanges();
+
+      expect(notifications()).not.toContain(
+        jasmine.objectContaining({ message: 'User Deleted Successfully' }),
+      );
+    });
+
+    it('returns to the listing state the operator came from, not the bare address', () => {
+      // U8. The listing opens on no query at all, so returning to `/users` with nothing attached resets the
+      // operator to an empty screen and hides the result of their own action. The legacy screen returned to
+      // `NavigateURL(TabId, "", UserFilter)` - the FILTERED listing - which is what the shared return-state
+      // store now supplies.
+      const remembered = TestBed.inject(ListReturnStore);
+      remembered.remember(USER_LIST_ROUTE, { searchby: 'all', currentpage: '2' });
+
+      arriveEditing(account(7));
+      press(DELETE_LABEL);
+      pressDialogue(DELETE_LABEL);
+      expectRequest('DELETE', userUrl(7), 'the removal').flush(null, {
+        status: 204,
+        statusText: 'No Content',
+      });
+      fixture.detectChanges();
+
+      const navigated = TestBed.inject(Router).navigate as jasmine.Spy;
+
+      expect(navigated).toHaveBeenCalled();
+      const [commands, options] = navigated.calls.mostRecent().args as [
+        readonly unknown[],
+        { queryParams?: Record<string, unknown>; replaceUrl?: boolean },
+      ];
+
+      expect(commands).toEqual([USER_LIST_ROUTE]);
+      expect(options.queryParams)
+        .withContext('the remembered coordinate travels with the return')
+        .toEqual(jasmine.objectContaining({ searchby: 'all', currentpage: '2' }));
+      expect(options.replaceUrl)
+        .withContext('BACK must not return to a form for a record that no longer exists')
+        .toBeTrue();
+    });
+  });
+
+
+  // ---------------------------------------------------------------------------------------------------
+  // A WRITE WHOSE SESSION ENDED UNDERNEATH IT
+  // ---------------------------------------------------------------------------------------------------
+
+  describe('a write the session outlived', () => {
+    /**
+     * Ends the session the way a refused token renewal does, and drains whatever the cancellation left
+     * outstanding so the shared `httpMock.verify()` still speaks for the case that follows.
+     */
+    function endSessionUnderneathTheWrite(): void {
+      TestBed.inject(SessionTeardownService).purge('renewalRefused');
+      fixture.detectChanges();
+      httpMock.match(() => true);
+    }
+
+    it('does not announce a successful UPDATE when the session ended before the write settled', () => {
+      // ⚠ THE MEASURED DEFECT. Runtime testing injected a 401 on `PUT /api/v1/users/16`; the renewal that
+      // followed was refused, so the session was purged - and a purge empties the store's failure slot AND
+      // lowers its in-flight count. Every settle path here read `failure === null` as success, so the
+      // operator was told "User account updated" for a write that never reached the API, and a fresh read
+      // showed the old value. An outcome nobody can establish must not be asserted.
+      arriveEditing(account(7));
+
+      type(CONTROL_ID.firstName, 'Augusta');
+      press(UPDATE_SUBMIT_LABEL);
+
+      expectRequest('PUT', userUrl(7), 'the write that will be abandoned');
+
+      endSessionUnderneathTheWrite();
+
+      expect(successSpy)
+        .withContext('the write was never settled by the server, so nothing may be confirmed')
+        .not.toHaveBeenCalledWith(USER_UPDATED_MESSAGE);
+    });
+
+    it('does not announce a successful MEMBERSHIP command when the session ended before it settled', () => {
+      arriveEditing(account(7, { isLockedOut: true }));
+
+      press(UNLOCK_LABEL);
+
+      expectRequest('POST', `${userUrl(7)}/unlock`, 'the release that will be abandoned');
+
+      endSessionUnderneathTheWrite();
+
+      expect(successSpy)
+        .withContext('the same emptied slot decides the four membership commands')
+        .not.toHaveBeenCalledWith(USER_UNLOCKED_MESSAGE);
+    });
+
+    it('still announces an update that DID settle, so the guard has not silenced the success path', () => {
+      // The discriminating control. A guard that simply stopped announcing would pass both cases above.
+      arriveEditing(account(7));
+
+      type(CONTROL_ID.firstName, 'Augusta');
+      press(UPDATE_SUBMIT_LABEL);
+      expectRequest('PUT', userUrl(7)).flush(envelope(account(7, { firstName: 'Augusta' })));
+      fixture.detectChanges();
+      expectNoListingReRead();
+
+      expect(successSpy).toHaveBeenCalledWith(USER_UPDATED_MESSAGE);
+    });
+  });
+
 });

@@ -41,6 +41,44 @@
   font-size: var(--font-size-sm);
 }
 
+// THE RECOVERY ROW, MOUNTED ONLY WHILE A FAILURE IS REPORTED
+// Its own paragraph rather than a member of the command row below, because it belongs to the failure above
+// it and must not sit among the controls that submit the form.
+.module-import__recovery {
+  margin-block: var(--space-2) 0;
+}
+
+// Deliberately the same command treatment the module listing gives its own retry, down to the floored
+// target size and the focus ring, so one affordance is not two different things on two screens.
+.module-import__retry {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: var(--target-size-min);
+  min-block-size: var(--target-size-min);
+  padding-block: var(--space-1);
+  padding-inline: var(--space-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background-color: transparent;
+  color: var(--color-primary);
+  font: inherit;
+  line-height: var(--line-height-tight);
+  text-decoration: none;
+  cursor: pointer;
+
+  @include mx.focus-ring;
+
+  &:hover {
+    color: var(--color-primary-hover);
+    text-decoration: underline;
+  }
+
+  &:active {
+    background-color: var(--color-selected);
+  }
+}
+
 // THE COMMAND ROW
 // A real gap rather than spacing characters, so the separation survives the collapsing of runs of blank
 // text and does not depend on a text node at all.

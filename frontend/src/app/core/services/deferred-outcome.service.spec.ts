@@ -116,7 +116,8 @@ describe('DeferredOutcomeService', () => {
     flush();
 
     expect(queuedMessages()).toEqual([
-      'The role could not be created Reference: 4d19ae7c1b8f4e2a9d6c3f5b7a091e2d',
+      'The role could not be created If you report this, quote reference '
+        + '4d19ae7c1b8f4e2a9d6c3f5b7a091e2d.',
     ]);
     expect(queuedSeverities()).withContext('the write did not happen').toEqual(['error']);
 
@@ -255,4 +256,46 @@ describe('DeferredOutcomeService', () => {
       .withContext('it is read where it is raised')
       .toBeFalse();
   });
+
+  it('says NOTHING for a write it can no longer settle, rather than reading an emptied slot as success', () => {
+    // ⚠ THE REPORTED DEFECT, AT THE LAYER THAT ANNOUNCED IT. A session teardown empties the domain store's
+    // failure slot itself, so a caller whose verdict is `failure() !== null ? 'failed' : 'succeeded'`
+    // resolves to 'succeeded' for a write that never reached the server. Measured in a browser: a refused
+    // `PUT` produced "User account updated". 'abandoned' is the verdict that has to produce silence.
+    service.announceWhenSettled(
+      verdict,
+      () => 'The account was updated.',
+      () => ({ message: 'The account could not be updated.', reference: 'ref-1' }),
+    );
+    flush();
+
+    verdict.set('abandoned');
+    flush();
+
+    expect(queuedMessages())
+      .withContext('neither outcome may be claimed for a write nobody can ask about')
+      .toEqual([]);
+  });
+
+  it('releases the watch on an abandoned write, exactly as it does on one it reported', () => {
+    service.announceWhenSettled(verdict, () => 'The account was updated.', declineFailure);
+    flush();
+
+    verdict.set('abandoned');
+    flush();
+
+    // The slot the verdict was derived from keeps moving after a teardown - the next session writes to it.
+    // A watch left standing would report that later write as this abandoned one.
+    verdict.set('succeeded');
+    flush();
+    verdict.set('failed');
+    flush();
+    verdict.set('succeeded');
+    flush();
+
+    expect(queuedMessages())
+      .withContext('abandoned is terminal, not a pause')
+      .toEqual([]);
+  });
+
 });

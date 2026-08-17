@@ -163,13 +163,14 @@ function resolvedReferenceText(root: ParentNode, value: string): string {
     .trim();
 }
 
-/** The component's five inputs, as an optional bundle. */
+/** The component's inputs, as an optional bundle. */
 interface FieldInputs {
   readonly label?: string;
   readonly for?: string;
   readonly required?: boolean;
   readonly help?: string;
   readonly error?: string | readonly string[] | null;
+  readonly limit?: number | null;
 }
 
 /** Pushes inputs in through the component reference, then renders. */
@@ -194,6 +195,10 @@ function applyInputs(fixture: ComponentFixture<FormFieldComponent>, inputs: Fiel
     fixture.componentRef.setInput('error', inputs.error);
   }
 
+  if (inputs.limit !== undefined) {
+    fixture.componentRef.setInput('limit', inputs.limit);
+  }
+
   fixture.detectChanges();
 }
 
@@ -209,6 +214,7 @@ function applyInputs(fixture: ComponentFixture<FormFieldComponent>, inputs: Fiel
       [required]="required"
       [help]="help"
       [error]="error"
+      [limit]="limit"
     >
       <input [attr.id]="controlId.length > 0 ? controlId : null" type="text" [disabled]="controlDisabled" />
       @if (showFrequency) {
@@ -231,6 +237,8 @@ class FormFieldHostComponent {
   public error: string | readonly string[] | null = null;
 
   public controlDisabled = false;
+
+  public limit: number | null = null;
 
   public showFrequency = false;
 
@@ -2113,5 +2121,695 @@ describe('FormFieldComponent', () => {
         .withContext("this field's own message is still described")
         .toContain(errorRegionOf(richRootOf(fixture)).id);
     });
+  });
+
+  // ---------------------------------------------------------------------------
+  // FOCUS ORDER BETWEEN THE CONTROL AND ITS HELP AFFORDANCE
+  // ---------------------------------------------------------------------------
+
+  describe('focus order between the control and its help affordance', () => {
+    /**
+     * The field's focusable elements in the order sequential focus will visit them. Reads DOM order and
+     * excludes anything explicitly taken out of the order, which is what the Tab key does for elements
+     * that carry no positive tabindex - and every focusable element this component renders or projects
+     * carries none, so DOM order IS the tab order here.
+     *
+     * ⚠ THIS IS DELIBERATELY NOT AN ASSERTION ABOUT `compareDocumentPosition` BETWEEN TWO CHOSEN NODES.
+     * The defect being guarded against is an ORDER a person traverses, so the measurement collects the
+     * whole traversal and asks where each control falls within it.
+     */
+    function focusOrder(root: ParentNode): readonly HTMLElement[] {
+      return Array.from(root.querySelectorAll('input, select, textarea, button, a[href]'))
+        .filter((node): node is HTMLElement => node instanceof HTMLElement)
+        .filter((node) => node.getAttribute('tabindex') !== '-1');
+    }
+
+    it('visits the projected control before the help affordance', () => {
+      // ⚠ THE DEFECT THIS CLOSES: the affordance was the second child of the label row, so sequential focus
+      // reached "Help" BEFORE the field it describes. On a screen carrying fourteen fields that doubled the
+      // stops between one control and the next, and a person tabbing forward was interrupted by an
+      // affordance for a field they had not arrived at yet.
+      const fixture = createHost();
+
+      fixture.componentInstance.help = 'What this field is for.';
+      fixture.detectChanges();
+
+      const root = hostRootOf(fixture);
+      const order = focusOrder(root);
+      const control = queryOrFail<HTMLInputElement>(root, 'input[type="text"]');
+      const toggle = toggleOf(root);
+
+      expect(order).withContext('both are focusable, so both are in the order').toContain(control);
+      expect(order).toContain(toggle);
+      expect(order.indexOf(toggle))
+        .withContext('the affordance follows the control it describes')
+        .toBeGreaterThan(order.indexOf(control));
+    });
+
+    it('visits every projected control before the help affordance, not just the first', () => {
+      // The narrowing case, and it is the one that separates "after the FIRST control" from "after the
+      // control GROUP". A field may project more than one control - this host projects a text box and a
+      // frequency select - and an affordance placed between them would still satisfy the spec above while
+      // interrupting the field exactly as before.
+      const fixture = createHost();
+
+      fixture.componentInstance.help = 'What this field is for.';
+      fixture.componentInstance.showFrequency = true;
+      fixture.detectChanges();
+
+      const root = hostRootOf(fixture);
+      const order = focusOrder(root);
+      const toggle = toggleOf(root);
+      const projected = order.filter((node) => node !== toggle);
+
+      expect(projected.length).withContext('a text box and a select').toBe(2);
+      expect(order.indexOf(toggle))
+        .withContext('the affordance comes after ALL of them')
+        .toBe(order.length - 1);
+    });
+
+    it('keeps the caption ahead of the control it names', () => {
+      // ⚠ THE COST THE CHOSEN FIX HAD TO AVOID, asserted so a later attempt to move the whole label row
+      // instead of the affordance alone cannot pass. Moving the row would have fixed the order above while
+      // putting every field's NAME after its control in reading order, which is the worse defect of the two:
+      // a screen reader working through the document linearly would meet the field before being told what
+      // it is.
+      const fixture = createHost();
+
+      fixture.componentInstance.help = 'What this field is for.';
+      fixture.detectChanges();
+
+      const root = hostRootOf(fixture);
+      const caption = labelElementOf(root);
+      const control = queryOrFail<HTMLInputElement>(root, 'input[type="text"]');
+
+      expect(caption.compareDocumentPosition(control) & Node.DOCUMENT_POSITION_FOLLOWING)
+        .withContext('the caption still precedes its control in the document')
+        .toBeGreaterThan(0);
+    });
+
+    it('places the affordance inside the group the caption names', () => {
+      // Where it now lives, stated as a structural fact rather than left implicit: the affordance is part of
+      // the field, so it belongs inside the wrapper the caption labels rather than trailing the whole block.
+      // This is also what keeps it on the control's own row, which is why the move added no height.
+      const fixture = createHost();
+
+      fixture.componentInstance.help = 'What this field is for.';
+      fixture.detectChanges();
+
+      const root = hostRootOf(fixture);
+
+      expect(slotOf(root).contains(toggleOf(root)))
+        .withContext('inside the control wrapper')
+        .toBeTrue();
+      expect(queryOrFail<HTMLElement>(root, '.form-field__label-row').contains(toggleOf(root)))
+        .withContext('and no longer in the caption row')
+        .toBeFalse();
+    });
+  });
+});
+
+/**
+ * A host that renders the field in its CHOICE arrangement - the `form-field--inline` variant, carrying a
+ * checkbox - inside a container narrow enough to reproduce the grid cell the membership screen puts these
+ * in. The container width and the label-track override are both writable, because the two findings this
+ * arrangement answers were each reproduced by a specific combination of the two.
+ */
+@Component({
+  selector: 'app-form-field-choice-host',
+  standalone: true,
+  imports: [FormFieldComponent],
+  template: `
+    <div class="probe-cell" [style.inline-size.px]="cellWidth" [style.--field-label-inline-size]="labelTrack">
+      <app-form-field class="form-field--inline" [label]="label" [for]="controlId" [help]="help" [error]="error">
+        <input [attr.id]="controlId" type="checkbox" />
+      </app-form-field>
+    </div>
+  `,
+})
+class FormFieldChoiceHostComponent {
+  /** `UseAuthProviders.Text` shape - one of the long membership captions that motivated the wide track. */
+  public label = 'Require a Unique Display Name';
+
+  public controlId = 'chk-unique-display-name';
+
+  public help = '';
+
+  public error: string | readonly string[] | null = null;
+
+  /** Roughly the measured width of a cell in the membership screen's three-column switch grid. */
+  public cellWidth = 350;
+
+  /** The membership screen's own override, expressed as the token value it resolves to. */
+  public labelTrack = '18.75rem';
+}
+
+/**
+ * THE CHOICE ARRANGEMENT - QA-06 and QA-13.
+ *
+ * Both findings were geometric, so these are measurements rather than class assertions: a rule that names
+ * the right selector but resolves to the wrong box is exactly the failure that was shipped, and only a
+ * measured position can tell the two apart.
+ */
+describe('FormFieldComponent choice arrangement', () => {
+  let fixture: ComponentFixture<FormFieldChoiceHostComponent>;
+  let host: FormFieldChoiceHostComponent;
+
+  /** The caption row, the projected box and the field wrapper, each narrowed or failed loudly. */
+  function parts(): { labelRow: HTMLElement; box: HTMLElement; field: HTMLElement } {
+    const root = fixture.nativeElement as HTMLElement;
+
+    return {
+      labelRow: queryOrFail<HTMLElement>(root, '.form-field__label-row'),
+      box: queryOrFail<HTMLElement>(root, 'input[type="checkbox"]'),
+      field: queryOrFail<HTMLElement>(root, '.form-field'),
+    };
+  }
+
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({
+      imports: [FormFieldChoiceHostComponent],
+      providers: [provideHttpClient(), provideHttpClientTesting()],
+    }).compileComponents();
+
+    fixture = TestBed.createComponent(FormFieldChoiceHostComponent);
+    host = fixture.componentInstance;
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    TestBed.inject(HttpTestingController).verify();
+  });
+
+  it('keeps the box on the caption\u2019s own row rather than below it', () => {
+    const { labelRow, box } = parts();
+
+    const captionBounds = labelRow.getBoundingClientRect();
+    const boxBounds = box.getBoundingClientRect();
+
+    // Vertical overlap is the claim, not equal tops: the caption is taller than the box, and the two are
+    // baseline-aligned, so their tops legitimately differ.
+    expect(boxBounds.top).toBeLessThan(captionBounds.bottom);
+    expect(boxBounds.bottom).toBeGreaterThan(captionBounds.top);
+  });
+
+  it('sizes the caption track to the caption, so the box is not pushed away by a wide label track', () => {
+    const { labelRow, box } = parts();
+
+    const captionBounds = labelRow.getBoundingClientRect();
+    const boxBounds = box.getBoundingClientRect();
+
+    // THE MEASUREMENT THAT FAILED BEFORE. With the fixed 300px track inside a 350px cell the box sat
+    // roughly 300px from its own caption and about 30px from the NEXT setting's - which is what made four
+    // to six of the fourteen switches read as belonging to the wrong label. One spacing step is
+    // `--space-2`; a generous ceiling is asserted rather than an exact gap so the token stays free to move.
+    expect(boxBounds.left - captionBounds.right).toBeLessThan(24);
+    expect(boxBounds.left).toBeGreaterThanOrEqual(captionBounds.right);
+  });
+
+  it('keeps the box beside its caption at a narrow width too', () => {
+    host.cellWidth = 320;
+    fixture.detectChanges();
+
+    const { labelRow, box } = parts();
+
+    const captionBounds = labelRow.getBoundingClientRect();
+    const boxBounds = box.getBoundingClientRect();
+
+    expect(boxBounds.left - captionBounds.right).toBeLessThan(24);
+    expect(boxBounds.top).toBeLessThan(captionBounds.bottom);
+  });
+
+  it('keeps the box beside its caption when the screen does not override the label track', () => {
+    host.labelTrack = '9.375rem';
+    fixture.detectChanges();
+
+    const { labelRow, box } = parts();
+
+    expect(box.getBoundingClientRect().left - labelRow.getBoundingClientRect().right).toBeLessThan(24);
+  });
+
+  it('draws the help panel with a border that separates it from a filled section', () => {
+    host.help = HELP_TEXT;
+    fixture.detectChanges();
+
+    const toggle = queryOrFail<HTMLButtonElement>(fixture.nativeElement as HTMLElement, '.form-field__help-toggle');
+    toggle.click();
+    fixture.detectChanges();
+
+    const panel = queryOrFail<HTMLElement>(fixture.nativeElement as HTMLElement, '.form-field__help');
+    const computed = getComputedStyle(panel);
+
+    // #CCCCCC, the STRONG border token. The ordinary token was measured to be too close: this panel is filled
+    // with the secondary surface and so is the role form's Advanced section, so inside that section the panel
+    // was drawn on a fill identical to its own and read as barely raised.
+    expect(computed.borderTopColor).toBe('rgb(204, 204, 204)');
+
+    // And provably not inherited from the text colour, which is what it used to be.
+    expect(computed.borderTopColor).not.toBe(computed.color);
+  });
+
+  it('lets the help panel and the failure list use the whole width rather than the box column', () => {
+    host.help = HELP_TEXT;
+    host.error = ERROR_WITHOUT_LEADING_BREAK;
+    fixture.detectChanges();
+
+    const toggle = queryOrFail<HTMLButtonElement>(fixture.nativeElement as HTMLElement, '.form-field__help-toggle');
+    toggle.click();
+    fixture.detectChanges();
+
+    const { labelRow, field } = parts();
+    const captionLeft = labelRow.getBoundingClientRect().left;
+
+    // Starting at the caption's own inline edge is what proves the full-width span: indented to the control
+    // column, each would have had a single checkbox's measure to render a sentence in.
+    for (const selector of ['.form-field__help', '.form-field__errors']) {
+      const region = queryOrFail<HTMLElement>(field, selector);
+      expect(region.getBoundingClientRect().left).toBeCloseTo(captionLeft, 0);
+      expect(region.getBoundingClientRect().width).toBeGreaterThan(100);
+    }
+  });
+});
+
+/**
+ * THE CAPTION ROW MUST NOT WRAP - QA-11.
+ *
+ * This reverses a deliberate earlier choice, so the specification states the reversal explicitly: the row
+ * used to wrap so that a shortfall moved the help affordance to its own line, and measured that put Help on
+ * a line of its own in 43 of 60 role cells, sometimes below the control it explained.
+ */
+describe('FormFieldComponent caption row', () => {
+  let fixture: ComponentFixture<FormFieldHostComponent>;
+
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({
+      imports: [FormFieldHostComponent],
+      providers: [provideHttpClient(), provideHttpClientTesting()],
+    }).compileComponents();
+
+    fixture = TestBed.createComponent(FormFieldHostComponent);
+    fixture.componentInstance.help = HELP_TEXT;
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    TestBed.inject(HttpTestingController).verify();
+  });
+
+  it('does not permit the help affordance to break onto its own line', () => {
+    const labelRow = queryOrFail<HTMLElement>(fixture.nativeElement as HTMLElement, '.form-field__label-row');
+
+    expect(getComputedStyle(labelRow).flexWrap).toBe('nowrap');
+  });
+
+  // A CASE PINNING THE AFFORDANCE TO THE CAPTION'S FIRST LINE STOOD HERE, AND THE AFFORDANCE IS NO LONGER IN
+  // THE CAPTION ROW AT ALL. It was measured that placing Help as the caption row's second child put it in
+  // sequential focus order BEFORE every field, so on a screen carrying fourteen fields the stops between one
+  // control and the next doubled and a person tabbing to a field was interrupted by an affordance describing a
+  // field they had not reached yet. The affordance therefore sits after the control it explains, inside the
+  // baseline-aligned control row - see the template's own note - and so cannot displace the caption at any
+  // measure, because it is no longer beside it.
+  //
+  // The property that case really protected survives in the case above: the caption row does not wrap, so a
+  // shortfall in the label column is absorbed by the caption's own text rather than by moving anything onto a
+  // line of its own. The affordance's placement beside its control is pinned by 'keeps the box beside its
+  // caption when the screen does not override the label track' and by the help-panel cases below.
+});
+
+/**
+ * Every CSS style rule reachable from the loaded stylesheets, flattened out of whatever `@media`,
+ * `@supports` or `@layer` wrappers it sits inside.
+ *
+ * Cross-origin sheets throw on `cssRules` access and are skipped rather than allowed to fail the sweep;
+ * under Karma every sheet is same-origin, so the guard is defensive only.
+ */
+function everyStyleRule(): readonly CSSStyleRule[] {
+  const collected: CSSStyleRule[] = [];
+
+  const walk = (rules: CSSRuleList): void => {
+    for (const rule of Array.from(rules)) {
+      if (rule instanceof CSSStyleRule) {
+        collected.push(rule);
+      }
+
+      const nested: unknown = (rule as { cssRules?: CSSRuleList }).cssRules;
+
+      if (nested instanceof CSSRuleList) {
+        walk(nested);
+      }
+    }
+  };
+
+  for (const sheet of Array.from(document.styleSheets)) {
+    try {
+      walk(sheet.cssRules);
+    } catch {
+      continue;
+    }
+  }
+
+  return collected;
+}
+
+/**
+ * Attribute-selector quoting is not stable across the two builds this specification runs under - the
+ * optimiser emits `input[type=checkbox]` where the source wrote `input[type='checkbox']` - so both the
+ * selector and the fragment being looked for are stripped of quotes before they are compared. Matching on
+ * the quoted spelling alone silently found nothing in the optimised bundle.
+ */
+function withoutQuotes(value: string): string {
+  return value.replace(/['"]/g, '');
+}
+
+/** The value a selector-matching rule declares for one property, or `null` when no such rule exists. */
+function declaredValue(selectorFragments: readonly string[], property: string): string | null {
+  for (const rule of everyStyleRule()) {
+    const selector = withoutQuotes(rule.selectorText);
+
+    if (!selectorFragments.every((fragment) => selector.includes(withoutQuotes(fragment)))) {
+      continue;
+    }
+
+    const value = rule.style.getPropertyValue(property);
+
+    if (value.length > 0) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * THE NATIVE CONTROL STATES - QA-34 and QA-18.
+ *
+ * These assert rules that live in the GLOBAL form stylesheet rather than in this component, and they are
+ * asserted from here because this is the component that projects every native control kind and because the
+ * global sheet is loaded into the test bundle. Two different techniques are used deliberately: a static
+ * property is measured on a real rendered control, whereas a `:hover` or `:active` declaration cannot be
+ * provoked from script and is therefore read out of the CSSOM.
+ */
+describe('Native control states', () => {
+  let fixture: ComponentFixture<FormFieldRichHostComponent>;
+
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({
+      imports: [FormFieldRichHostComponent],
+      providers: [provideHttpClient(), provideHttpClientTesting()],
+    }).compileComponents();
+
+    fixture = TestBed.createComponent(FormFieldRichHostComponent);
+    fixture.componentInstance.showLabelledCheckbox = true;
+    fixture.componentInstance.showTextarea = true;
+    fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    TestBed.inject(HttpTestingController).verify();
+  });
+
+  it('gives a choice control the compact target rather than leaving it at its native 13px', () => {
+    const checkbox = queryOrFail<HTMLInputElement>(fixture.nativeElement as HTMLElement, 'input[type="checkbox"]');
+
+    const bounds = checkbox.getBoundingClientRect();
+
+    // 24px is the floor that applies to a control with no inline exemption. The 44px minimum is NOT
+    // asserted here and must not be: a 13px tick centred in a 44px square reads as a rendering fault.
+    expect(bounds.width).toBeGreaterThanOrEqual(24);
+    expect(bounds.height).toBeGreaterThanOrEqual(24);
+  });
+
+  it('keeps every text-entry control at the full target minimum', () => {
+    const root = fixture.nativeElement as HTMLElement;
+
+    for (const selector of ['select', 'textarea']) {
+      const control = queryOrFail<HTMLElement>(root, selector);
+      expect(control.getBoundingClientRect().height)
+        .withContext(selector)
+        .toBeGreaterThanOrEqual(44);
+    }
+  });
+
+  it('answers a press on a choice control, which previously produced no change whatever', () => {
+    expect(declaredValue(["input[type='checkbox']", ':active'], 'box-shadow')).not.toBeNull();
+    expect(declaredValue(["input[type='radio']", ':active'], 'box-shadow')).not.toBeNull();
+  });
+
+  it('answers a hover on a choice control', () => {
+    expect(declaredValue(["input[type='checkbox']", ':hover'], 'box-shadow')).not.toBeNull();
+  });
+
+  it('answers a press on a text-entry control in the same vocabulary as the button', () => {
+    // ⚠ A BACKGROUND TINT, NOT A `box-shadow` RING, AND THE DISTINCTION IS THE WHOLE POINT. The first
+    // attempt was an inset ring; runtime measurement showed it was painted for exactly one frame and then
+    // lost, because `select:active` and `textarea:active` weigh (0,1,1) — a TIE with their own
+    // `:focus-visible` rule, which is declared later and therefore took the single `box-shadow` slot for the
+    // rest of the press. `background-color` is uncontested by the focus ring, which claims only `outline` and
+    // `box-shadow`, and it is the property and the token the button has always pressed with.
+    expect(declaredValue(['textarea', ':active'], 'border-color')).not.toBeNull();
+    expect(declaredValue(['textarea', ':active'], 'background-color')).not.toBeNull();
+  });
+
+  it('presses a text-entry control with the same token the button presses with', () => {
+    const control = declaredValue(['textarea', ':active'], 'background-color') ?? '';
+    const button = declaredValue(['button', ':active'], 'background-color') ?? '';
+
+    expect(control).not.toBe('');
+    expect(button).not.toBe('');
+    expect(control).toBe(button);
+  });
+
+  it('does not answer a text-entry press through a property the focus ring already claims', () => {
+    // A regression guard, stated as a prohibition because that is what the defect was: reintroducing a
+    // `box-shadow` here would compile, would look right in a static review, and would silently stop being
+    // visible on two of the three control kinds the moment the control took focus.
+    expect(declaredValue(['textarea', ':active'], 'box-shadow')).toBeNull();
+  });
+
+  it('states every state declaration in a token rather than a literal length or colour', () => {
+    const declarations = [
+      declaredValue(["input[type='checkbox']", ':hover'], 'box-shadow'),
+      declaredValue(["input[type='checkbox']", ':active'], 'box-shadow'),
+      declaredValue(['textarea', ':active'], 'background-color'),
+      declaredValue(['textarea', ':active'], 'border-color'),
+    ];
+
+    for (const declaration of declarations) {
+      expect(declaration).not.toBeNull();
+      expect(declaration ?? '').toContain('var(--');
+    }
+  });
+
+  it('keeps a read-only control looking read-only when it is pressed', () => {
+    // The guard is load-bearing: `input:not(...):active` outweighs `input[readonly]`, so without it a
+    // read-only field would flash the pressed tint as though it were about to accept typing.
+    //
+    // ⚠ THE RULES THIS SWEEPS ARE THE ONES THAT PAINT, AND THAT NARROWING IS DELIBERATE. Sweeping every rule
+    // whose selector merely mentions a pressed control also catches the reduced-motion press EXEMPTION, which
+    // declares one property - `transition-duration: 0s` - and therefore cannot make a read-only field look
+    // pressed. That rule has to name the bare compounds, because it mirrors the resting transition it exempts
+    // and is asserted compound by compound in `global-interaction-states.spec.ts`. The guard belongs on the
+    // declaration that produces the appearance, so that is what is asserted here.
+    const painting = everyStyleRule()
+      .filter((rule) => withoutQuotes(rule.selectorText).includes('textarea:active'))
+      .filter((rule) => rule.style.getPropertyValue('background-color').trim().length > 0);
+
+    expect(painting.length)
+      .withContext('the pressed tint is declared at all, so this is not passing vacuously')
+      .toBeGreaterThan(0);
+
+    for (const rule of painting) {
+      expect(withoutQuotes(rule.selectorText)).toContain('readonly');
+    }
+  });
+});
+
+/**
+ * THE DISCLOSURE TARGET - QA-18. The rule is global, so it is asserted on a bare `summary` rendered here
+ * rather than by loading one of the two screens that own a disclosure.
+ */
+@Component({
+  selector: 'app-form-field-disclosure-host',
+  standalone: true,
+  template: `
+    <details>
+      <summary>Advanced Settings</summary>
+      <p>Body</p>
+    </details>
+  `,
+})
+class DisclosureHostComponent {}
+
+describe('Disclosure target size', () => {
+  let fixture: ComponentFixture<DisclosureHostComponent>;
+
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({ imports: [DisclosureHostComponent] }).compileComponents();
+
+    fixture = TestBed.createComponent(DisclosureHostComponent);
+    fixture.detectChanges();
+  });
+
+  it('meets the full target minimum', () => {
+    const summary = queryOrFail<HTMLElement>(fixture.nativeElement as HTMLElement, 'summary');
+
+    expect(summary.getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
+  });
+
+  it('keeps the platform disclosure marker, which a flex spelling would have suppressed', () => {
+    const summary = queryOrFail<HTMLElement>(fixture.nativeElement as HTMLElement, 'summary');
+
+    const computed = getComputedStyle(summary);
+
+    expect(computed.display).toBe('list-item');
+    expect(computed.listStyleType).toBe('disclosure-closed');
+  });
+});
+
+describe('FormFieldComponent — the typing bound', () => {
+  // ⚠ MEASURED DEFECT: a native `maxlength` simply stops accepting keystrokes. Nothing is said, nothing is
+  // marked invalid, and a reader pasting a longer value keeps only its head - measured on the portal
+  // creation form, where several boxes truncate in silence. The bound is therefore STATED, and stated where
+  // it is heard before anything is typed.
+
+  /** A rendered field with the given inputs. */
+  function render(inputs: FieldInputs): ComponentFixture<FormFieldComponent> {
+    const fixture = TestBed.createComponent(FormFieldComponent);
+
+    applyInputs(fixture, inputs);
+
+    return fixture;
+  }
+
+  /** The bound region, or null when the field declares no bound. */
+  function limitRegion(fixture: ComponentFixture<FormFieldComponent>): HTMLElement | null {
+    return (fixture.nativeElement as HTMLElement).querySelector('.form-field__limit');
+  }
+
+  /**
+   * A field with a REAL control projected into it. The bound's association with the control can only be
+   * asserted against a control that exists, and the bare component projects nothing.
+   */
+  function renderProjected(limit: number | null): ComponentFixture<FormFieldHostComponent> {
+    const fixture = TestBed.createComponent(FormFieldHostComponent);
+
+    fixture.componentInstance.limit = limit;
+    fixture.detectChanges();
+
+    return fixture;
+  }
+
+  /** The projected text box. */
+  function projectedControl(fixture: ComponentFixture<FormFieldHostComponent>): HTMLInputElement | null {
+    return (fixture.nativeElement as HTMLElement).querySelector<HTMLInputElement>('input[type="text"]');
+  }
+
+  it('states the bound in a region the control is described by, and hides it from view', () => {
+    const fixture = render({ label: 'Title:', for: 'title', limit: 100 });
+    const region = limitRegion(fixture);
+    const group = (fixture.nativeElement as HTMLElement).querySelector('.form-field__control');
+
+    expect(region).not.toBeNull();
+    expect((region?.textContent ?? '').trim()).toBe('At most 100 characters.');
+    expect(region?.hasAttribute('data-visually-hidden'))
+      .withContext('announced, not drawn: the help disclosure is where a sighted reader reads it')
+      .toBeTrue();
+    expect(group?.getAttribute('aria-describedby')).toContain(String(region?.id));
+  });
+
+  it('repeats the bound inside the help disclosure, after whatever help was supplied', () => {
+    const fixture = render({ label: 'Title:', for: 'title', help: 'Give your site a title.', limit: 100 });
+    const host = fixture.nativeElement as HTMLElement;
+
+    host.querySelector<HTMLButtonElement>('.form-field__help-toggle')?.click();
+    fixture.detectChanges();
+
+    expect((host.querySelector('.form-field__help')?.textContent ?? '').trim()).toBe(
+      'Give your site a title. At most 100 characters.',
+    );
+  });
+
+  it('offers the disclosure for a bound alone, so a bound is visible as well as announced', () => {
+    const fixture = render({ label: 'Title:', for: 'title', limit: 50 });
+    const host = fixture.nativeElement as HTMLElement;
+
+    expect(host.querySelector('.form-field__help-toggle')).not.toBeNull();
+  });
+
+  it('describes the PROJECTED CONTROL by the bound, not only the group that wraps it', () => {
+    // ⚠ THIS IS THE SPECIFICATION A RUNTIME ACCESSIBILITY READ CAUGHT AND FOUR GREEN FILES DID NOT. The
+    // region was rendered correctly and the GROUP referenced it correctly, and every assertion here used
+    // to stop at the group - but an ARIA description on a composite group is not inherited by the control
+    // inside it, so Chrome computed NO accessible description for the box being typed into. The bound was
+    // announced on entering the field and was silent at the only moment it can still save a keystroke.
+    const fixture = renderProjected(128);
+    const host = fixture.nativeElement as HTMLElement;
+    const control = projectedControl(fixture);
+    const region = host.querySelector('.form-field__limit');
+
+    expect(region).not.toBeNull();
+    expect((region?.textContent ?? '').trim()).toBe('At most 128 characters.');
+    expect(referenceList(control?.getAttribute('aria-describedby') ?? ''))
+      .withContext('the control itself carries the reference, because descriptions are not inherited')
+      .toContain(String(region?.id));
+  });
+
+  it('keeps the bound on the control alongside the help and the error, bound first', () => {
+    // Order is asserted because it is the order the three are SPOKEN in. The bound comes first: it is the
+    // one that has to be heard before typing rather than after being refused.
+    const fixture = renderProjected(50);
+
+    fixture.componentInstance.help = 'Give your site a title.';
+    fixture.componentInstance.error = 'Title is required.';
+    fixture.detectChanges();
+
+    const host = fixture.nativeElement as HTMLElement;
+
+    host.querySelector<HTMLButtonElement>('.form-field__help-toggle')?.click();
+    fixture.detectChanges();
+
+    const control = projectedControl(fixture);
+    const base = String(control?.id);
+    const references = referenceList(control?.getAttribute('aria-describedby') ?? '');
+
+    // ⚠ The error reference is the CONTAINER, `<base>-error`, not the individual message element
+    // `<base>-error-0`: a field can carry several messages and a description points at all of them.
+    expect(references).toEqual([`${base}-limit`, `${base}-help`, `${base}-error`]);
+    expect(host.querySelector('.form-field__limit')?.id).toBe(`${base}-limit`);
+    expect(host.querySelector('.form-field__help')?.id).toBe(`${base}-help`);
+  });
+
+  it('drops the reference from the control as soon as the bound is withdrawn', () => {
+    const fixture = renderProjected(25);
+
+    fixture.componentInstance.limit = null;
+    fixture.detectChanges();
+
+    const control = projectedControl(fixture);
+
+    expect((fixture.nativeElement as HTMLElement).querySelector('.form-field__limit')).toBeNull();
+    expect(control?.getAttribute('aria-describedby'))
+      .withContext('no dangling reference survives the bound it pointed at')
+      .toBeNull();
+  });
+
+  it('states nothing at all, and adds no description, when there is no bound', () => {
+    const fixture = render({ label: 'Title:', for: 'title' });
+    const group = (fixture.nativeElement as HTMLElement).querySelector('.form-field__control');
+
+    expect(limitRegion(fixture)).toBeNull();
+    expect(group?.getAttribute('aria-describedby')).toBeNull();
+  });
+
+  it('refuses a bound that could not be a bound, rather than stating nonsense', () => {
+    for (const unusable of [0, -10, Number.NaN, null]) {
+      const fixture = render({ label: 'Title:', for: 'title', limit: unusable });
+
+      expect(limitRegion(fixture))
+        .withContext(`${String(unusable)} is not a typing bound`)
+        .toBeNull();
+
+      fixture.destroy();
+    }
   });
 });

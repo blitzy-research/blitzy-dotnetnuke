@@ -1,7 +1,9 @@
+using System.Globalization;
+using DnnMigration.Application.Options;
 using DnnMigration.Domain.Abstractions.Repositories;
 using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Domain.Common;
-using DnnMigration.Domain.Entities;
+using Microsoft.Extensions.Options;
 
 namespace DnnMigration.Infrastructure.Services;
 
@@ -38,7 +40,33 @@ internal sealed class PortalContextHolder : IPortalContextHolder
     /// </remarks>
     private const int MaximumAliasPathSegments = PortalAliasTopology.MaximumPathSegments;
 
+    /// <summary>
+    /// Base lifetime, in minutes, of a cached alias resolution before the configured performance multiplier
+    /// is applied.
+    /// </summary>
+    /// <remarks>
+    /// Twenty minutes is the conventional base lifetime this installation's other portal-scoped entries
+    /// carry, so alias resolution ages on the same schedule as the portal read whose facts it projects.
+    /// Every write path that can change one of those facts evicts this family explicitly, so the lifetime
+    /// bounds how long an entry survives WITHOUT a write rather than how stale an answer may be.
+    /// </remarks>
+    private const int AliasResolutionCacheTimeOutMinutes = 20;
+
+    /// <summary>Key family every cached alias resolution is filed under.</summary>
+    /// <remarks>
+    /// The legacy alias-resolution key name, reused rather than invented, so that the existing host and
+    /// portal invalidations - which already name this family - evict these entries without being taught
+    /// about them.
+    /// </remarks>
+    private const string AliasResolutionCacheKeyPrefix = MemoryCacheService.PortalAliasCacheKey;
+
     private readonly IPortalAliasRepository _aliases;
+
+    /// <summary>The shared cache the resolution is read through.</summary>
+    private readonly ICacheService _cache;
+
+    /// <summary>Supplies the configured cache-lifetime multiplier.</summary>
+    private readonly CachingOptions _caching;
 
     /// <summary>Guards creation of the resolution task. Never held across an await.</summary>
     private readonly object _gate = new();
@@ -54,13 +82,24 @@ internal sealed class PortalContextHolder : IPortalContextHolder
 
     /// <summary>Initialises a new holder for one inbound call.</summary>
     /// <param name="aliases">The repository that performs the exact-match alias lookup.</param>
+    /// <param name="cache">The shared cache the resolution is read through.</param>
+    /// <param name="caching">The configured cache-lifetime multiplier.</param>
     /// <exception cref="ArgumentNullException">
-    /// Thrown when <paramref name="aliases"/> is <see langword="null"/>.
+    /// Thrown when <paramref name="aliases"/>, <paramref name="cache"/> or <paramref name="caching"/> is
+    /// <see langword="null"/>.
     /// </exception>
-    public PortalContextHolder(IPortalAliasRepository aliases)
+    public PortalContextHolder(
+        IPortalAliasRepository aliases,
+        ICacheService cache,
+        IOptions<CachingOptions> caching)
     {
         ArgumentNullException.ThrowIfNull(aliases);
+        ArgumentNullException.ThrowIfNull(cache);
+        ArgumentNullException.ThrowIfNull(caching);
+
         _aliases = aliases;
+        _cache = cache;
+        _caching = caching.Value;
     }
 
     /// <inheritdoc />
@@ -103,8 +142,15 @@ internal sealed class PortalContextHolder : IPortalContextHolder
 
         // One round trip for the whole chain. Asking per candidate would be a query per path segment on
         // every request, which is why the repository member takes the collection.
-        IReadOnlyList<PortalAlias> matches = await _aliases
-            .GetAllByHttpAliasAsync(chain, cancellationToken)
+        //
+        // CACHED UNDER THE LEGACY ALIAS-RESOLUTION KEY, which is a restoration rather than an addition:
+        // DotNetNuke cached this same question, the key vocabulary already declares its name, and
+        // InvalidateHost has always evicted it. The entry is per address because that is what the question
+        // is asked by, and InvalidatePortal evicts the whole family - so a change to any portal, role,
+        // alias or membership fact the snapshot is built from is visible to the very next request. The
+        // snapshot carries the administrator and registered-role keys that authorisation decisions read, so
+        // there is no acceptable window in which it may be stale.
+        IReadOnlyList<TenantResolution> matches = await ReadResolutionsAsync(chain, cancellationToken)
             .ConfigureAwait(false);
 
         if (matches.Count == 0)
@@ -133,7 +179,7 @@ internal sealed class PortalContextHolder : IPortalContextHolder
                 "The host name in the request does not identify a configured portal.");
         }
 
-        List<PortalAlias> candidates = matches
+        List<TenantResolution> candidates = matches
             .Where(match => string.Equals(match.HttpAlias, resolvedAddress, StringComparison.OrdinalIgnoreCase))
             .ToList();
 
@@ -146,62 +192,56 @@ internal sealed class PortalContextHolder : IPortalContextHolder
                 "The host name in the request identifies more than one configured portal.");
         }
 
-        PortalAlias alias = candidates[0];
-
-        // The repository loads the owning portal with the alias. Verified rather than assumed, because the
-        // alternative to a check here is a null-reference fault below.
-        if (alias.Portal is not { } portal)
-        {
-            return Incomplete("the alias is not attached to a portal");
-        }
+        TenantResolution resolution = candidates[0];
 
         // The four facts the snapshot requires that the Portals table may legitimately leave unset. Each
         // is refused individually so that an operator reading the diagnostics learns which one to set.
-        if (portal.AdministratorId is not { } administratorId)
+        if (resolution.AdministratorId is not { } administratorId)
         {
             return Incomplete("the portal designates no administrator account");
         }
 
-        if (portal.AdministratorRoleId is not { } administratorRoleId)
+        if (resolution.AdministratorRoleId is not { } administratorRoleId)
         {
             return Incomplete("the portal designates no administrator role");
         }
 
-        if (portal.RegisteredRoleId is not { } registeredRoleId)
+        if (resolution.RegisteredRoleId is not { } registeredRoleId)
         {
             return Incomplete("the portal designates no registered-user role");
         }
 
         // The two role NAMES are not columns on Portals - the legacy views produced them with correlated
-        // sub-queries over Roles - so they are read from the roles the repository loaded alongside the
-        // portal.
-        if (FindRoleName(portal, administratorRoleId) is not { } administratorRoleName)
+        // sub-queries over Roles - so the lookup resolves them by key, exactly as those sub-queries did. A
+        // role whose name is stored blank is refused rather than carried as present-and-empty, because a
+        // blank name is a value capable of matching a role-name comparison.
+        if (resolution.AdministratorRoleName is not { Length: > 0 } administratorRoleName)
         {
             return Incomplete("the role designated administrator does not exist on the portal");
         }
 
-        if (FindRoleName(portal, registeredRoleId) is not { } registeredRoleName)
+        if (resolution.RegisteredRoleName is not { Length: > 0 } registeredRoleName)
         {
             return Incomplete("the role designated registered-user does not exist on the portal");
         }
 
-        if (string.IsNullOrEmpty(portal.PortalName))
+        if (string.IsNullOrEmpty(resolution.PortalName))
         {
             return Incomplete("the portal has no name");
         }
 
         // The STORED alias, not the value the caller supplied. They are equal by the lookup's own
         // predicate, so this is a statement of which one is authoritative rather than a correction.
-        if (string.IsNullOrEmpty(alias.HttpAlias))
+        if (string.IsNullOrEmpty(resolution.HttpAlias))
         {
             return Incomplete("the matched alias has no stored host name");
         }
 
         _current = new PortalContextAccessor(
-            portal.PortalId,
-            portal.PortalName,
-            alias.HttpAlias,
-            alias.PortalAliasId,
+            resolution.PortalId,
+            resolution.PortalName,
+            resolution.HttpAlias,
+            resolution.PortalAliasId,
             administratorId,
             administratorRoleId,
             administratorRoleName,
@@ -211,26 +251,44 @@ internal sealed class PortalContextHolder : IPortalContextHolder
         return Result.Success();
     }
 
-    /// <summary>Finds the name of one of the portal's roles by key.</summary>
+    /// <summary>
+    /// Reads the resolutions for one address chain, through the shared cache when caching is enabled.
+    /// </summary>
+    /// <param name="chain">The candidate addresses, most specific first.</param>
+    /// <param name="cancellationToken">Propagates abandonment of the operation.</param>
+    /// <returns>One resolution per matching alias; empty when none matches.</returns>
     /// <remarks>
-    /// By key, never by name, because role names are not unique in this schema. A role whose name is stored
-    /// blank is reported as absent rather than as present-and-empty, since a blank name cannot satisfy the
-    /// snapshot and the caller's next step is identical either way.
+    /// A MISS AND A NEGATIVE ANSWER ARE BOTH CACHED, deliberately. An address that names no configured
+    /// portal is the shape an unconfigured host and a probe both take, and re-asking the store for it on
+    /// every such request would let either one drive load that a configured caller cannot.
     /// </remarks>
-    /// <param name="portal">The portal whose roles were loaded with it.</param>
-    /// <param name="roleId">The key of the role to name.</param>
-    /// <returns>The role's name, or <see langword="null"/> when no such usable role is present.</returns>
-    private static string? FindRoleName(Portal portal, int roleId)
+    private Task<IReadOnlyList<TenantResolution>> ReadResolutionsAsync(
+        IReadOnlyList<string> chain,
+        CancellationToken cancellationToken)
     {
-        foreach (Role role in portal.Roles)
+        TimeSpan expiration = TimeSpan.FromMinutes(
+            AliasResolutionCacheTimeOutMinutes * _caching.PerformanceMultiplier);
+
+        if (expiration <= TimeSpan.Zero)
         {
-            if (role.RoleId == roleId)
-            {
-                return string.IsNullOrEmpty(role.RoleName) ? null : role.RoleName;
-            }
+            // Caching disabled by configuration. The creation path is not reached through the cache at all,
+            // which is what the multiplier's zero setting means rather than a zero-length lifetime.
+            return _aliases.ResolveTenantsByHttpAliasAsync(chain, cancellationToken);
         }
 
-        return null;
+        // Keyed by the chain rather than by the raw host name, because the chain is what the store is asked
+        // and two host names producing the same chain are one question. Ordinal-lower-cased so that a
+        // caller's choice of case cannot multiply entries for one address, matching the case insensitivity
+        // the store's own comparison applies.
+        string cacheKey = string.Create(
+            CultureInfo.InvariantCulture,
+            $"{AliasResolutionCacheKeyPrefix}|{string.Join('|', chain).ToLowerInvariant()}");
+
+        return _cache.GetOrCreateAsync(
+            cacheKey,
+            token => _aliases.ResolveTenantsByHttpAliasAsync(chain, token),
+            expiration,
+            cancellationToken);
     }
 
     /// <summary>Builds an incomplete-configuration refusal.</summary>

@@ -76,6 +76,42 @@ const PROFILE_DEFINITIONS = '/api/v1/profile-definitions';
 const MEMBER_SERVICES = '/api/v1/users/1/services';
 
 /**
+ * The page size the whole-catalogue reader asks for. Mirrors `WHOLE_CATALOGUE_PAGE_SIZE` in the service:
+ * duplicated rather than exported, because the value is part of what these assertions pin.
+ */
+const WHOLE_CATALOGUE_PAGE_SIZE = 100;
+
+/**
+ * The paged wire envelope the member-services endpoint answers with. Distinct from the single-payload
+ * envelope in exactly the respect that matters here - its metadata is populated rather than null - because
+ * the catalogue is now returned a bounded page at a time.
+ *
+ * @param items The rows of this page.
+ * @param totalCount The total across every page. Defaults to a single complete page.
+ * @returns The body to flush.
+ */
+const catalogue = <TRow>(
+  items: readonly TRow[],
+  totalCount: number = items.length,
+): {
+  readonly items: readonly TRow[];
+  readonly meta: {
+    readonly totalCount: number;
+    readonly pageIndex: number;
+    readonly pageSize: number;
+    readonly totalPages: number;
+  };
+} => ({
+  items,
+  meta: {
+    totalCount,
+    pageIndex: 0,
+    pageSize: WHOLE_CATALOGUE_PAGE_SIZE,
+    totalPages: totalCount === 0 ? 0 : Math.ceil(totalCount / WHOLE_CATALOGUE_PAGE_SIZE),
+  },
+});
+
+/**
  * The subscription of account 1 to service 0. ⚠ THE SERVICE IDENTIFIER IS ZERO ON PURPOSE. `Roles.RoleID`
  * seeds `IDENTITY(0, 1)` (`Website/Providers/DataProviders/SqlDataProvider/01.00.00.SqlDataProvider`
  * L114), so role zero is the administrator role of every shipped installation - and it is also the value
@@ -1406,19 +1442,67 @@ describe('UserService', () => {
   // The account's own subscriptions
 
   describe('listMemberServices', () => {
-    it('reads the catalogue of one account with no query string at all', () => {
+    it('reads the catalogue of one account a bounded page at a time, and asks for nothing the endpoint refuses', () => {
+      // MIGRATION: THIS ASSERTION INVERTED. The catalogue used to be read in one unbounded response and this
+      // case asserted an EMPTY query string. The endpoint now pages, and it answers 400 to `sortBy` and to
+      // `query`, so what must be pinned is that the reader sends the two paging arguments and NOTHING else.
       const observed = observe(service.listMemberServices(1));
 
       const request = expectRequest('GET', MEMBER_SERVICES);
 
-      expect(request.request.params.keys()).toEqual([]);
+      expect([...request.request.params.keys()].sort()).toEqual(['pageIndex', 'pageSize']);
+      expect(request.request.params.get('pageIndex')).toBe('0');
+      expect(request.request.params.get('pageSize')).toBe(String(WHOLE_CATALOGUE_PAGE_SIZE));
       expectNoInterceptorHeaders(request);
 
-      request.flush({ data: [MEMBER_SERVICE], meta: null } satisfies ApiResponse<
-        readonly MemberService[]
-      >);
+      request.flush(catalogue([MEMBER_SERVICE]));
 
       expect(observed.values).toEqual([[MEMBER_SERVICE]]);
+      expect(observed.completions.length).toBe(1);
+    });
+
+    it('reads EVERY page, so a catalogue that spans a page boundary arrives whole and in order', () => {
+      const filler: readonly MemberService[] = Array.from(
+        { length: WHOLE_CATALOGUE_PAGE_SIZE },
+        (_unused, index) => ({ ...MEMBER_SERVICE, roleId: index, roleName: `Service ${index}` }),
+      );
+      const tail: MemberService = { ...MEMBER_SERVICE, roleId: 500, roleName: 'Last service' };
+      const total = filler.length + 1;
+
+      const observed = observe(service.listMemberServices(1));
+
+      const first = expectRequest('GET', MEMBER_SERVICES);
+      expect(first.request.params.get('pageIndex')).toBe('0');
+      first.flush({
+        items: filler,
+        meta: {
+          totalCount: total,
+          pageIndex: 0,
+          pageSize: WHOLE_CATALOGUE_PAGE_SIZE,
+          totalPages: 2,
+        },
+      });
+
+      const second = expectRequest('GET', MEMBER_SERVICES);
+      expect(second.request.params.get('pageIndex')).toBe('1');
+      second.flush({
+        items: [tail],
+        meta: {
+          totalCount: total,
+          pageIndex: 1,
+          pageSize: WHOLE_CATALOGUE_PAGE_SIZE,
+          totalPages: 2,
+        },
+      });
+
+      const rows = observed.values[0] as readonly MemberService[];
+
+      expect(rows.length).toBe(total);
+      expect(rows[0].roleName).toBe('Service 0');
+      expect(rows[WHOLE_CATALOGUE_PAGE_SIZE - 1].roleName)
+        .withContext('the last row of the first page must survive the boundary')
+        .toBe(`Service ${WHOLE_CATALOGUE_PAGE_SIZE - 1}`);
+      expect(rows[total - 1].roleName).toBe('Last service');
       expect(observed.completions.length).toBe(1);
     });
 
@@ -1428,10 +1512,7 @@ describe('UserService', () => {
       // role the subscribe path still handed to a payment page.
       const observed = observe(service.listMemberServices(1));
 
-      expectRequest('GET', MEMBER_SERVICES).flush({
-        data: [MEMBER_SERVICE],
-        meta: null,
-      } satisfies ApiResponse<readonly MemberService[]>);
+      expectRequest('GET', MEMBER_SERVICES).flush(catalogue([MEMBER_SERVICE]));
 
       const rows = observed.values[0] as readonly MemberService[];
 
@@ -1443,9 +1524,7 @@ describe('UserService', () => {
     it('answers an account offered nothing with an empty catalogue rather than a failure', () => {
       const observed = observe(service.listMemberServices(1));
 
-      expectRequest('GET', MEMBER_SERVICES).flush({ data: [], meta: null } satisfies ApiResponse<
-        readonly MemberService[]
-      >);
+      expectRequest('GET', MEMBER_SERVICES).flush(catalogue([]));
 
       expect(observed.values).toEqual([[]]);
       expect(observed.failures).toEqual([]);
@@ -1454,10 +1533,9 @@ describe('UserService', () => {
     it('refuses a command word the API does not publish', () => {
       const observed = observe(service.listMemberServices(1));
 
-      expectRequest('GET', MEMBER_SERVICES).flush({
-        data: [{ ...MEMBER_SERVICE, subscriptionAction: 'Cancel' }],
-        meta: null,
-      });
+      expectRequest('GET', MEMBER_SERVICES).flush(
+        catalogue([{ ...MEMBER_SERVICE, subscriptionAction: 'Cancel' }]),
+      );
 
       expect(observed.values).toEqual([]);
       expect(observed.failures.length).toBe(1);
@@ -1465,7 +1543,41 @@ describe('UserService', () => {
     });
 
     it('refuses a null payload from a non-conforming intermediary', () => {
-      expectNullPayloadRefused(service.listMemberServices(1), MEMBER_SERVICES, 'response.data');
+      // The paged envelope names its collection `items`, so a body carrying the single-payload shape is
+      // refused at `response.items` with the member ABSENT rather than null. Asserted directly rather than
+      // through the shared helper, which pins the single-payload member name and received type.
+      const values: unknown[] = [];
+      const failures: unknown[] = [];
+
+      service.listMemberServices(1).subscribe({
+        next: (value: unknown) => values.push(value),
+        error: (failure: unknown) => failures.push(failure),
+      });
+
+      expectRequest('GET', MEMBER_SERVICES).flush({ data: null, meta: null });
+
+      expect(values).withContext('a null payload is not a successful answer').toEqual([]);
+      expect(failures.length).toBe(1);
+
+      const failure: unknown = failures[0];
+      expect(isContractViolation(failure)).toBeTrue();
+
+      if (isContractViolation(failure)) {
+        expect(failure.path).toBe('response.items');
+        expect(failure.received).withContext('a type name, never the value').toBe('nothing');
+      }
+    });
+
+    it('refuses a page whose metadata is missing, so a truncated read cannot look complete', () => {
+      // THE LOAD-BEARING REFUSAL OF THE PAGED CONTRACT. Without metadata the reader cannot know whether
+      // more pages exist, so a body with none must fail rather than answer a silently short catalogue.
+      const observed = observe(service.listMemberServices(1));
+
+      expectRequest('GET', MEMBER_SERVICES).flush({ items: [MEMBER_SERVICE], meta: null });
+
+      expect(observed.values).toEqual([]);
+      expect(observed.failures.length).toBe(1);
+      expect(isContractViolation(observed.failures[0])).toBeTrue();
     });
   });
 
@@ -2176,7 +2288,10 @@ describe('UserService', () => {
         method: 'GET',
         path: MEMBER_SERVICES,
         status: 200,
-        body: { data: [MEMBER_SERVICE], meta: null },
+        body: {
+          items: [MEMBER_SERVICE],
+          meta: { totalCount: 1, pageIndex: 0, pageSize: WHOLE_CATALOGUE_PAGE_SIZE, totalPages: 1 },
+        },
         invoke: () => service.listMemberServices(1),
       },
       {
@@ -2314,6 +2429,7 @@ describe('UserService', () => {
       'list',
       'listChoices',
       'listMemberServices',
+      'listMemberServicesPage',
       'listProfileDefinitions',
       'passwordReset',
       'redeemServiceCode',
@@ -2328,13 +2444,16 @@ describe('UserService', () => {
       'updateProfileDefinition',
     ];
 
-    it('exposes exactly twenty-five methods and not one more', () => {
+    it('exposes exactly twenty-six methods and not one more', () => {
+      // ⚠ TWENTY-FIVE BECAME TWENTY-SIX WHEN THE MEMBER-SERVICES CATALOGUE WAS BOUNDED. The endpoint now
+      // answers one page at a time, so the page reader is a member of the surface in its own right and the
+      // whole-catalogue reader is expressed in terms of it. Both are specified above.
       const actual: readonly string[] = Object.getOwnPropertyNames(UserService.prototype).sort();
 
       expect(actual)
         .withContext('a method added without a specification fails here first')
         .toEqual([...PROTOTYPE_MEMBERS]);
-      expect(actual.filter((name) => name !== 'constructor').length).toBe(25);
+      expect(actual.filter((name) => name !== 'constructor').length).toBe(26);
     });
 
     it('reads an account picker through its own method, not through a mode of the listing', () => {

@@ -3,6 +3,7 @@ import {
   Component,
   DestroyRef,
   ElementRef,
+  ViewChild,
   computed,
   inject,
   input,
@@ -173,6 +174,15 @@ function holds(
   templateUrl: './sidebar.component.html',
   styleUrl: './sidebar.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
+  // ⚠ #33 — ESCAPE COLLAPSES THE DISCLOSURE. On a handset the expanded rail displaces roughly 470px of the
+  // screen a reader was looking at, and the only way back was to find the toggle again and press it a second
+  // time; Escape did nothing, even with focus inside the rail. The listener is bound on the HOST rather than
+  // on the document, so it is scoped to this component's own subtree - which is exactly the scope the key
+  // should have here, because Escape belongs to whatever the reader is currently inside, and a dialog
+  // elsewhere on the screen must keep it.
+  host: {
+    '(keydown.escape)': 'onEscape($event)',
+  },
 })
 export class SidebarComponent {
   /**
@@ -207,6 +217,16 @@ export class SidebarComponent {
 
   /** Whether the shell has placed the rail BESIDE the content rather than above it. */
   private readonly sideBySideSignal = signal(true);
+
+  /**
+   * Whether the rail is presented beside the content, as a readable signal. Escape reads it to tell a
+   * handset disclosure - which a reader is inside, and can be escaped from - apart from a desktop rail,
+   * which is simply part of the page.
+   */
+  public readonly sideBySide: Signal<boolean> = this.sideBySideSignal.asReadonly();
+
+  /** The disclosure control, so focus can be returned to it when Escape collapses the rail. */
+  @ViewChild('navToggle') private toggleControl?: ElementRef<HTMLButtonElement>;
 
   /**
    * Whether the rail is currently collapsed. ⚠ DERIVED FROM THE LAYOUT UNTIL SOMEBODY SAYS OTHERWISE,
@@ -355,6 +375,32 @@ export class SidebarComponent {
     const entry: readonly string[] = pathSegments(item.path);
 
     return showing.length === entry.length ? 'page' : 'true';
+  }
+
+  /**
+   * Collapses an expanded disclosure and returns focus to the control that opened it.
+   *
+   * ⚠ #33 — FOCUS COMES BACK WITH IT, which is the half that is easy to miss. Collapsing the rail hides
+   * every link inside it, and hiding the element that holds focus drops focus to `body` - so a reader who
+   * pressed Escape to get out of the rail would find their next Tab starting again from the top of the
+   * document. Returning focus to the toggle leaves them exactly where they were before they opened it.
+   *
+   * Does nothing when the rail is already collapsed, and nothing when the rail is presented BESIDE the
+   * content rather than over it: at a desktop width the rail is not a disclosure a reader is inside, and
+   * collapsing it on Escape would be a surprise rather than an escape.
+   *
+   * @param event The key press, stopped only when this handler acts on it.
+   */
+  public onEscape(event: KeyboardEvent): void {
+    if (this.collapsed() || this.sideBySide()) {
+      return;
+    }
+
+    this.collapsedSignal.set(true);
+    event.preventDefault();
+    event.stopPropagation();
+
+    this.toggleControl?.nativeElement.focus();
   }
 
   /** Collapses the rail if it is expanded, expands it if it is collapsed. */

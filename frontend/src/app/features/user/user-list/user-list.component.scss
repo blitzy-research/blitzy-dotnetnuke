@@ -20,7 +20,11 @@
   color: var(--color-primary);
   text-decoration: underline;
 
-  @include mx.hover {
+  // ⚠ UNGATED, for the reason the portal listing's own row-command rule records: a measurement showed the
+  // pointer-capability guard silently disabling the hover treatment, leaving a command inside a data row
+  // with the pointer as its only feedback. The three listing screens now agree, and they agree with the
+  // global button rule, whose hover has never been gated.
+  &:hover {
     color: var(--color-primary-hover);
   }
 }
@@ -62,9 +66,24 @@
   font-weight: var(--font-weight-bold);
 }
 
-//  The absent-value mark. Muted, because absence is not a fault - it says nobody recorded a value,
-//  which is an ordinary state for a free-text profile answer.
-.user-list__absent-value {
+// THE UNAUTHORISED-ACCOUNT STATE — QA-19. The same two declarations, in the same order, as
+// `.role-list__fee-state` and the two expired-term treatments on the portal and module listings, because a
+// single shared vocabulary is the whole point: muted, because a state must not compete with the ordinary
+// values in the rows around it, and italic so the distinction survives for a reader who perceives no colour
+// at all. Colour is never the only carrier of meaning here — and here it is not a carrier at all.
+.user-list__row-state {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+// ⚠ `__absent-value` WAS REMOVED RATHER THAN LEFT UNUSED — QA-15. The absent-value mark on this screen is now
+// painted by the shared component, which carries its own muted colour, so this rule matched nothing at all —
+// and a rule matching nothing is dead weight in a stylesheet held to a 4 kB component budget.
+
+// The stray-whitespace mark, styled as the absent mark is so the two annotations read as one family. It is
+// deliberately NOT the danger colour: padding is a data-quality remark, not a failure.
+.user-list__padded-value {
+  margin-inline-start: var(--space-1);
   color: var(--color-text-muted);
 }
 
@@ -118,42 +137,60 @@
 }
 
 // ONE ENTRY, AND IT MUST NOT LOOK LIKE A BUTTON EVEN THOUGH IT IS ONE.
+//
+// ⚠ ITS SHARED HALF NOW LIVES IN THE BARE-COMMAND GROUP BELOW, and the consolidation is a measured
+// correction rather than a tidy-up. This screen carries three bare commands — the letter strip entry, the
+// row command and the empty-state command — and each had independently restated the SAME eight declarations
+// plus the shared hover, the shared focus ring and the shared press state. The compiled result held two
+// byte-identical `:focus-visible` blocks of 331 and 284 bytes and two byte-identical hover media blocks,
+// which is what pushed this stylesheet through its 4 kB component budget. What remains below is only what
+// is genuinely this control's own.
 .user-list__letter {
   flex: none;
   white-space: nowrap;
-
-  color: var(--color-primary);
   text-decoration: underline;
 
-  background-color: transparent;
-  border: none;
-  padding: 0;
-
-  min-block-size: var(--target-size-min);
-  min-inline-size: var(--target-size-min);
-  justify-content: center;
-
-  @include mx.hover {
-    color: var(--color-primary-hover);
+  // THE SURFACE TINT IS PART OF THIS STRIP'S HOVER, AND ITS ABSENCE WAS MEASURED RATHER THAN INFERRED. The
+  // portal listing's alphabet strip declares BOTH the hover colour and this surface, so the two strips -
+  // identical controls doing an identical job, one screen apart - answered a hover differently: this one moved
+  // its ink and left its box untouched. The colour half comes from the bare-command group below; only the
+  // tint is this control's own, because the row and empty-state commands in that group are glyph commands
+  // whose measured legacy appearance carries no fill at all.
+  //
+  // Declared BEFORE the applied-entry rule on purpose: the two tie on specificity, so source order elects the
+  // applied tint and an applied entry keeps it through a hover - the same arrangement the portal listing uses.
+  &:hover {
+    background-color: var(--color-surface);
   }
-
-  // THE RING IS RESTATED HERE BECAUSE THE BOX IT MEASURES AGAINST HAS JUST CHANGED. The shared focus ring
-  // is already applied to every button globally and the mixin is documented idempotent and safe to apply
-  // again on an individual control, so this costs nothing and can never conflict.
-  @include mx.focus-ring;
 
   // THE APPLIED ENTRY, AND ITS STATE IS NOT CARRIED BY COLOUR ALONE.
   &[aria-pressed='true'] {
     font-weight: var(--font-weight-bold);
     background-color: var(--color-selected);
   }
-  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE, and suppression without
-  // replacement is what leaves a control with no visible response at all.
-  &:active {
-    background-color: var(--color-selected);
-  }
 }
 
+// THE ZERO-RESULT SURFACE'S ACTION ROW — QA-28. Projected into the shared grid's empty state.
+//
+// It wraps rather than overflows, because the two affordances it carries are a full phrase apiece and the
+// empty state is centred inside a table that can be as narrow as a 320-unit viewport. Centred to sit under
+// the centred message it belongs to, and gapped on the shared scale so the two can never read as one.
+.user-list__empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+}
+
+// ⚠ THE EMPTY-STATE COMMANDS JOIN THE ROW-COMMAND SELECTOR GROUPS BELOW RATHER THAN RESTATING THEM. Every
+// declaration they need — the bare link-coloured surface, the floored target on both axes, the hover, the
+// focus ring and the restated press state — is already emitted for `.user-list__row-action`, and this
+// screen's compiled stylesheet is held to a 4 kB budget that a second copy of that block breaks outright.
+// The class is deliberately shared by a `<button>` and an `<a>`: one lists every account and one navigates,
+// but both are "the way out of an empty table", and presenting them differently would imply a difference
+// that is not there.
+.user-list__filter-action,
 .user-list__row-action,
 .user-list__failure-retry {
   // Held to its content width inside the stretching failure region above.
@@ -164,15 +201,21 @@
   align-items: center;
 }
 
+// THE BARE-COMMAND GROUP — the letter-strip entry, the row command and the empty-state command, which are
+// the three affordances on this screen that CARRY NO SURFACE. That is the measured legacy appearance for the
+// row commands: all three were image command columns, a bare sixteen-unit glyph each, with no fill, no
+// boundary and no padding of any kind. The letter strip and the empty-state command are held to the same
+// treatment so a reader meets one command vocabulary on this screen rather than three.
+//
+// The target floor applies to every one of them: a single-glyph command has almost no intrinsic width, so
+// the inline floor matters as much as the block one.
+.user-list__letter,
+.user-list__filter-action,
 .user-list__row-action {
   min-block-size: var(--target-size-min);
   min-inline-size: var(--target-size-min);
   justify-content: center;
-}
 
-// THE ROW COMMANDS CARRY NO SURFACE, WHICH IS THE MEASURED LEGACY APPEARANCE. All three were image command
-// columns — a bare sixteen-unit glyph each, with no fill, no boundary and no padding of any kind.
-.user-list__row-action {
   color: var(--color-primary);
   font-size: inherit;
 
@@ -180,10 +223,18 @@
   border: none;
   padding: 0;
 
-  @include mx.hover {
+  // ⚠ UNGATED, for the reason the portal listing's own row-command rule records: a measurement showed the
+  // pointer-capability guard silently disabling the hover treatment, leaving a command inside a data row
+  // with the pointer as its only feedback. The three listing screens now agree, and they agree with the
+  // global button rule, whose hover has never been gated.
+  &:hover {
     color: var(--color-primary-hover);
   }
 
+  // THE RING IS RESTATED FOR THE SET BECAUSE THE BOX IT MEASURES AGAINST HAS JUST CHANGED. The shared focus
+  // ring is already applied to every button globally and the mixin is documented idempotent and safe to
+  // apply again, so this costs nothing and can never conflict — and emitted ONCE for the set it costs a
+  // single rule rather than three copies of the same one.
   @include mx.focus-ring;
   // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE, and suppression without
   // replacement is what leaves a control with no visible response at all.
@@ -192,11 +243,34 @@
   }
 }
 
+// The one place the empty-state command departs from the row command: it carries WORDS rather than a glyph,
+// so it needs the padding the glyph deliberately does not have, and the rounded press surface that padding
+// implies. Declared after the shared block so it wins at equal specificity.
+.user-list__filter-action {
+  padding-block: var(--space-1);
+  padding-inline: var(--space-2);
+  line-height: var(--line-height-tight);
+  text-decoration: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
 .user-list__row-action--danger {
   color: var(--color-danger);
 
-  @include mx.hover {
+  // ⚠ UNGATED, for the reason the portal listing's own row-command rule records: a measurement showed the
+  // pointer-capability guard silently disabling the hover treatment, leaving a command inside a data row
+  // with the pointer as its only feedback. The three listing screens now agree, and they agree with the
+  // global button rule, whose hover has never been gated.
+  // ⚠ AND A SURFACE CHANGE, BECAUSE THE INK CANNOT MOVE. Re-setting the colour it already has changes
+  // nothing, and this command's colour is pinned: a destructive command stays in the danger hue and this
+  // vocabulary declares exactly one danger token. The selected tint is the only token that differs from BOTH
+  // row surfaces - the plain row is the background token and the alternating row is the surface token - so it
+  // is the only hover that can be perceived on every row. Stated plainly: hover and press paint the same tint
+  // on this one command, which is the lesser fault beside a hover that cannot be perceived at all.
+  &:hover {
     color: var(--color-danger);
+    background-color: var(--color-selected);
   }
 }
 
@@ -238,13 +312,22 @@
 //  it. Withdrawal below a step rather than addition above it is the direction the mixin
 //  documents for a rule that has to be taken away, and it is the only shape that cannot
 //  half-undo the clipping geometry.
+// ⚠ THE BREAKPOINT WAS REMOVED AND THE LABEL IS NOW WITHDRAWN AT EVERY WIDTH, and a measurement forced it.
+//  The commands column is a fixed 3.25rem track — one interactive target plus the cell's own padding, which
+//  is the whole point of the token — and the wording does not fit in it at ANY width. Measured with the
+//  breakpoint in place, at exactly 768px (the step's own upper edge, where the labels were still shown): the
+//  "Manage Roles" cell reported `scrollWidth` 69 against `clientWidth` 64 and its link box ended at 402.98
+//  while the cell ended at 398, so the command painted 4.98px into the username column beside it. That is the
+//  bleed the shared table rules exist to prevent, and reflow could not fix it: the glyph beside the words
+//  never shrinks, so the command's irreducible width stays wider than its own track.
+//
+//  Nothing is lost to a screen reader, which is what makes this the right trade rather than a reduction: the
+//  template gives all three commands an accessible name carrying the command AND naming the account, so the
+//  announcement is identical at every width. It is also a return TOWARD the measured legacy presentation —
+//  `users.ascx` declared three image command columns with no visible wording at all — and it matches the role
+//  listing, which withdraws its own command wording unconditionally for the same reason.
 .user-list__action-label {
-  min-inline-size: 0;
-  overflow-wrap: break-word;
-
-  @include mx.respond-below('md') {
-    @include mx.visually-hidden;
-  }
+  @include mx.visually-hidden;
 }
 
 // The 24px floor for the page actions, stated as its OWN rule rather than added to the shared

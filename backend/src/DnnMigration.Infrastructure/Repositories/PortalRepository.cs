@@ -127,19 +127,38 @@ internal sealed class PortalRepository : IPortalRepository
     // Replaces `GetPortal`, whose reader the controller hydrated column by column.
     public async Task<Portal?> GetByIdAsync(int portalId, bool includeAliases = false, CancellationToken cancellationToken = default)
     {
-        IQueryable<Portal> query = _dbContext.Portals;
-
-        if (includeAliases)
-        {
-            // Loaded only on request. The aliases are needed by the detail projection and by the update
-            // path that rewrites them, and by nothing else, so a listing does not pay for them.
-            query = query.Include(p => p.PortalAliases);
-        }
-
         // PortalID is IDENTITY(-1, 1), so both -1 and 0 are legitimate keys and neither may be treated as
         // "absent" - the shipped default portal really is portal 0 and the first generated tenant really is
         // -1, while -1 is simultaneously the legacy Null.NullInteger marker.
-        return await query
+        if (!includeAliases)
+        {
+            // RESOLVED ONCE PER REQUEST, THEN REUSED - and that is the whole point of asking by key here.
+            // FindAsync consults this scoped context's change tracker BEFORE it consults the database, so
+            // the second and every later ask for the same portal inside one request costs no round trip at
+            // all. FirstOrDefaultAsync, which this used to be, always issues one: a performance review
+            // measured the tenant portal being read twice on a single DELETE /users/{id} - the same
+            // statement, the same @portalId, twenty-one milliseconds apart - once by the request pipeline
+            // resolving the tenant and again by the service doing the work. Every authenticated request
+            // resolves its tenant, so this is the hot path rather than a corner of it.
+            //
+            // The substitution is exact, and both of the things that could have made it inexact were
+            // checked rather than assumed. This context sets no NoTracking default, so entities really are
+            // tracked and there really is something to find; and no entity in this model carries a global
+            // query filter, which FindAsync would silently bypass. Identity resolution already meant that
+            // FirstOrDefaultAsync handed back the tracked instance whenever one existed, so a caller
+            // holding unsaved edits observed those edits before this change and observes them still - all
+            // that has gone is the redundant SELECT that preceded them.
+            return await _dbContext.Portals
+                .FindAsync(new object?[] { portalId }, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        // Loaded only on request. The aliases are needed by the detail projection and by the update path
+        // that rewrites them, and by nothing else, so a listing does not pay for them. This path keeps its
+        // query because FindAsync cannot express an Include, and a caller that asked for the aliases needs
+        // them loaded whether or not the portal itself is already tracked.
+        return await _dbContext.Portals
+            .Include(p => p.PortalAliases)
             .FirstOrDefaultAsync(p => p.PortalId == portalId, cancellationToken)
             .ConfigureAwait(false);
     }

@@ -247,14 +247,14 @@ public sealed class PermissionEvaluatorTests
                 PermissionId = 1,
                 PermissionCode = "SYSTEM_MODULE_DEFINITION",
                 ModuleDefinitionId = 42,
-                PermissionKey = PermissionKey.VIEW,
+                PermissionKey = nameof(PermissionKey.VIEW),
             },
             new Permission
             {
                 PermissionId = 2,
                 PermissionCode = "SOME_OTHER_CODE",
                 ModuleDefinitionId = 42,
-                PermissionKey = PermissionKey.EDIT,
+                PermissionKey = nameof(PermissionKey.EDIT),
             },
         ];
 
@@ -322,14 +322,14 @@ public sealed class PermissionEvaluatorTests
                 PermissionId = 1,
                 PermissionCode = "SYSTEM_TAB",
                 ModuleDefinitionId = -1,
-                PermissionKey = PermissionKey.VIEW,
+                PermissionKey = nameof(PermissionKey.VIEW),
             },
             new Permission
             {
                 PermissionId = 2,
                 PermissionCode = "SYSTEM_TAB",
                 ModuleDefinitionId = -1,
-                PermissionKey = PermissionKey.EDIT,
+                PermissionKey = nameof(PermissionKey.EDIT),
             },
         ];
 
@@ -357,9 +357,12 @@ public sealed class PermissionEvaluatorTests
     /// </summary>
     /// <remarks>
     /// The legacy reader answered this by passing a null in both arguments, which its body treated as a
-    /// wildcard over the whole table. The repository contract takes no wildcard, and it does not need to:
-    /// Permission.PermissionKey IS the closed PermissionKey enumeration, so the enumeration is the complete
-    /// vocabulary any catalogue row could carry.
+    /// wildcard over the whole table. The repository contract takes no wildcard and neither did the legacy
+    /// provider surface, which declares readers by identifier, by module definition, by module, by folder
+    /// path, by scope-code-and-key and by page and nothing else - so with no scope named there is no row set
+    /// to read, and the answer is the set of keys THIS SOLUTION names. That is a statement about the target's
+    /// own vocabulary, not a claim that the free-text column cannot hold another spelling: naming a module
+    /// definition takes the store-backed path, which reports whatever the rows actually carry.
     /// </remarks>
     [Fact]
     public async Task Catalogue_AnswersAnAbsentFilterFromTheClosedKeySet()
@@ -421,7 +424,7 @@ public sealed class PermissionEvaluatorTests
                 PermissionId = 1,
                 PermissionCode = "SYSTEM_MODULE_DEFINITION",
                 ModuleDefinitionId = EntryModuleDefinitionId,
-                PermissionKey = PermissionKey.VIEW,
+                PermissionKey = nameof(PermissionKey.VIEW),
                 PermissionName = "View",
             },
             new Permission
@@ -429,7 +432,7 @@ public sealed class PermissionEvaluatorTests
                 PermissionId = 2,
                 PermissionCode = "SYSTEM_MODULE_DEFINITION",
                 ModuleDefinitionId = EntryModuleDefinitionId,
-                PermissionKey = PermissionKey.EDIT,
+                PermissionKey = nameof(PermissionKey.EDIT),
                 PermissionName = "Edit",
             },
         ];
@@ -611,7 +614,7 @@ public sealed class PermissionEvaluatorTests
                 PermissionId = 1,
                 PermissionCode = "MY_MODULE",
                 ModuleDefinitionId = EntryModuleDefinitionId,
-                PermissionKey = PermissionKey.EDIT,
+                PermissionKey = nameof(PermissionKey.EDIT),
                 PermissionName = "Edit",
             },
             new Permission
@@ -619,7 +622,7 @@ public sealed class PermissionEvaluatorTests
                 PermissionId = 2,
                 PermissionCode = "SYSTEM_MODULE_DEFINITION",
                 ModuleDefinitionId = 99,
-                PermissionKey = PermissionKey.VIEW,
+                PermissionKey = nameof(PermissionKey.VIEW),
                 PermissionName = "View",
             },
             new Permission
@@ -627,7 +630,7 @@ public sealed class PermissionEvaluatorTests
                 PermissionId = 3,
                 PermissionCode = "SYSTEM_TAB",
                 ModuleDefinitionId = 99,
-                PermissionKey = PermissionKey.VIEW,
+                PermissionKey = nameof(PermissionKey.VIEW),
                 PermissionName = "View",
             },
         ];
@@ -677,7 +680,7 @@ public sealed class PermissionEvaluatorTests
                 PermissionId = 5,
                 PermissionCode = "SYSTEM_TAB",
                 ModuleDefinitionId = -1,
-                PermissionKey = PermissionKey.VIEW,
+                PermissionKey = nameof(PermissionKey.VIEW),
                 PermissionName = "View",
             },
             new Permission
@@ -685,7 +688,7 @@ public sealed class PermissionEvaluatorTests
                 PermissionId = 6,
                 PermissionCode = "SYSTEM_MODULE_DEFINITION",
                 ModuleDefinitionId = EntryModuleDefinitionId,
-                PermissionKey = PermissionKey.EDIT,
+                PermissionKey = nameof(PermissionKey.EDIT),
                 PermissionName = "Edit",
             },
         ];
@@ -737,7 +740,7 @@ public sealed class PermissionEvaluatorTests
                 PermissionId = 9,
                 PermissionCode = "SYSTEM_MODULE_DEFINITION",
                 ModuleDefinitionId = EntryModuleDefinitionId,
-                PermissionKey = PermissionKey.VIEW,
+                PermissionKey = nameof(PermissionKey.VIEW),
                 PermissionName = "View",
             },
             new Permission
@@ -745,7 +748,7 @@ public sealed class PermissionEvaluatorTests
                 PermissionId = 4,
                 PermissionCode = "SYSTEM_MODULE_DEFINITION",
                 ModuleDefinitionId = EntryModuleDefinitionId,
-                PermissionKey = PermissionKey.EDIT,
+                PermissionKey = nameof(PermissionKey.EDIT),
                 PermissionName = "Edit",
             },
         ];
@@ -4060,6 +4063,149 @@ public sealed class PermissionEvaluatorTests
         keys.Should().Equal("VIEW");
     }
 
+    /// <summary>
+    /// A catalogue entry naming a key this solution does not enumerate is evaluated rather than rejected,
+    /// and it confers only itself.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// THIS IS THE REGRESSION GUARD FOR THE MAPPING DEFECT. <c>dbo.Permission.PermissionKey</c> is
+    /// <c>varchar(50) NOT NULL</c> with no check constraint, and DotNetNuke's own <c>AddPermission</c>
+    /// procedure accepts that full width precisely so a third-party module can register its own keys when it
+    /// installs. Typing the entity property as the closed enumeration made every such row throw from inside
+    /// the materialiser, which meant the module authorisation path answered an unhandled fault for every
+    /// caller who was not a host account - host accounts short-circuit before the read, which is exactly why
+    /// the defect could hide.
+    /// </para>
+    /// <para>
+    /// The caller here is deliberately an ORDINARY MEMBER, and the custom entry is registered against the
+    /// module's OWN definition, because that is the combination the defect reached. The key is granted, so
+    /// the answer is the key itself and nothing else: a custom key is neither swallowed nor promoted into one
+    /// of the four this solution names.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ModuleKeys_ACustomCatalogueKeyIsEvaluatedAndConfersOnlyItself()
+    {
+        const string customKey = "CUSTOM";
+
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithModule(ModuleId);
+        world.WithRole(MemberRoleId, MemberRoleName);
+        world.Catalogue.Add(CatalogueEntry(FirstPermissionId, customKey, ModuleDefinitionScopeCode));
+        world.ModuleGrants.Add(ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: MemberRoleId));
+
+        IPermissionEvaluator evaluator = world.Build();
+
+        IReadOnlyList<string> keys = Succeeded(await evaluator
+            .ListEffectiveModulePermissionKeysAsync(ModuleId, UserId, [MemberRoleName]));
+
+        // The stored spelling travels verbatim, because the column is free text and the row is real data.
+        keys.Should().Equal(customKey);
+
+        Succeeded(await evaluator.HasModulePermissionAsync(
+                ModuleId,
+                PermissionKey.VIEW,
+                UserId,
+                [MemberRoleName]))
+            .Should().BeFalse("a custom key is not VIEW, so it must not be mistaken for it");
+
+        Succeeded(await evaluator.HasModulePermissionAsync(
+                ModuleId,
+                PermissionKey.EDIT,
+                UserId,
+                [MemberRoleName]))
+            .Should().BeFalse("nor is it EDIT, which is the key the module read is gated on");
+    }
+
+    /// <summary>
+    /// A custom catalogue key alongside a named one leaves the named one's verdict exactly as it was.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The defect's blast radius was the WHOLE read, not one row: a single unreadable entry in the catalogue
+    /// took every verdict on that module down with it. So it is not enough that a custom key be tolerated in
+    /// isolation - it must be inert, leaving the grants around it answering precisely what they answered
+    /// before it was registered.
+    /// </remarks>
+    [Fact]
+    public async Task ModuleKeys_ACustomCatalogueKeyLeavesANamedKeysVerdictUntouched()
+    {
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithModule(ModuleId);
+        world.WithRole(MemberRoleId, MemberRoleName);
+        world.Catalogue.Add(CatalogueEntry(FirstPermissionId, PermissionKey.EDIT, ModuleDefinitionScopeCode));
+        world.Catalogue.Add(CatalogueEntry(SecondPermissionId, "CUSTOM", ModuleDefinitionScopeCode));
+        world.ModuleGrants.Add(ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: MemberRoleId));
+
+        IPermissionEvaluator evaluator = world.Build();
+
+        Succeeded(await evaluator.HasModulePermissionAsync(
+                ModuleId,
+                PermissionKey.EDIT,
+                UserId,
+                [MemberRoleName]))
+            .Should().BeTrue("the EDIT grant stands whatever else the catalogue happens to declare");
+
+        // The custom entry carries no grant, so it contributes nothing rather than failing the read.
+        Succeeded(await evaluator.ListEffectiveModulePermissionKeysAsync(ModuleId, UserId, [MemberRoleName]))
+            .Should().Equal("EDIT");
+    }
+
+    /// <summary>A stored key cased differently from the member it names still answers that member.</summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// Behaviour carried forward deliberately rather than an addition. Under the previous enum mapping the
+    /// provider's converter parsed case-insensitively, so a row spelled <c>edit</c> conferred EDIT; the
+    /// column's collation is case-insensitive too, which is how the legacy procedures compared it. Comparing
+    /// ordinally here would have silently started refusing such a row, which is a denial of service dressed
+    /// as strictness.
+    /// </remarks>
+    [Fact]
+    public async Task ModuleKeys_AStoredKeyCasedDifferentlyStillAnswersItsMember()
+    {
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithModule(ModuleId);
+        world.WithRole(MemberRoleId, MemberRoleName);
+        world.Catalogue.Add(CatalogueEntry(FirstPermissionId, "edit", ModuleDefinitionScopeCode));
+        world.ModuleGrants.Add(ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: MemberRoleId));
+
+        Succeeded(await world.Build().HasModulePermissionAsync(
+                ModuleId,
+                PermissionKey.EDIT,
+                UserId,
+                [MemberRoleName]))
+            .Should().BeTrue("the collation the column is read under does not distinguish the two spellings");
+    }
+
+    /// <summary>A deny recorded under one casing suppresses an allow recorded under another.</summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The corollary of the case-insensitive match above, and the reason the deny index is folded before it
+    /// is consulted: if the two spellings were treated as two keys, a deny would stop suppressing the allow
+    /// it was written to suppress, which turns a refusal into a grant. That is the one direction in which
+    /// getting this wrong is a security defect rather than an inconvenience.
+    /// </remarks>
+    [Fact]
+    public async Task ModuleKeys_ADenyUnderOneCasingSuppressesAnAllowUnderAnother()
+    {
+        EvaluatorWorld world = EvaluatorWorld.Create();
+        world.WithModule(ModuleId);
+        world.WithRole(MemberRoleId, MemberRoleName);
+        world.Catalogue.Add(CatalogueEntry(FirstPermissionId, "EDIT", ModuleDefinitionScopeCode));
+        world.Catalogue.Add(CatalogueEntry(SecondPermissionId, "edit", ModuleDefinitionScopeCode));
+        world.ModuleGrants.Add(ModuleGrantRow(FirstPermissionId, allowAccess: true, roleId: MemberRoleId));
+        world.ModuleGrants.Add(ModuleGrantRow(SecondPermissionId, allowAccess: false, roleId: MemberRoleId));
+
+        Succeeded(await world.Build().HasModulePermissionAsync(
+                ModuleId,
+                PermissionKey.EDIT,
+                UserId,
+                [MemberRoleName]))
+            .Should().BeFalse("deny precedence must not be escapable by re-casing the key");
+    }
+
     /// <summary>A denying grant on its own confers nothing, which is the same answer absence produces.</summary>
     /// <remarks>
     /// Under the legacy first-match-wins walk this row would have GRANTED the key, because that walk never
@@ -5028,10 +5174,12 @@ public sealed class PermissionEvaluatorTests
 
     /// <summary>The key vocabulary is a closed set of four persisted spellings.</summary>
     /// <remarks>
-    /// The key column was free text against which the legacy source compared bare literals. The target
-    /// types it as a closed enumeration whose member names are the stored spellings exactly, so the magic
-    /// strings become named members without changing one stored value - which is what lets the schema stay
-    /// immutable while the code stops guessing.
+    /// The key column is free text against which the legacy source compared bare literals, and the entity
+    /// keeps it that way. What the target closes is its OWN vocabulary: the four spellings the upgrade chain
+    /// seeds become named members, so a policy or a service parameter cannot misspell one, while a stored
+    /// value outside the set still materialises intact. The member identifiers are the stored spellings
+    /// exactly, which is what lets the two be compared without a lookup table and without changing one
+    /// stored value.
     /// </remarks>
     [Fact]
     public void PermissionKeys_AreAClosedSetOfFourPersistedSpellings()
@@ -5092,7 +5240,7 @@ public sealed class PermissionEvaluatorTests
         PermissionId = 1,
         PermissionCode = "SYSTEM_MODULE_DEFINITION",
         ModuleDefinitionId = 1,
-        PermissionKey = permissionKey,
+        PermissionKey = permissionKey.ToString(),
         PermissionName = permissionKey.ToString(),
     };
 
@@ -5129,13 +5277,33 @@ public sealed class PermissionEvaluatorTests
         int permissionId,
         PermissionKey permissionKey,
         string permissionCode,
+        int moduleDefinitionId = ModuleDefinitionId) =>
+        CatalogueEntry(permissionId, permissionKey.ToString(), permissionCode, moduleDefinitionId);
+
+    /// <summary>Builds a catalogue row naming a key by its stored spelling rather than by a member.</summary>
+    /// <param name="permissionId">The row's own identifier, which grants reference.</param>
+    /// <param name="permissionKey">The key exactly as the column holds it.</param>
+    /// <param name="permissionCode">The scope code the row belongs to.</param>
+    /// <param name="moduleDefinitionId">The definition the row declares.</param>
+    /// <returns>The catalogue row.</returns>
+    /// <remarks>
+    /// This overload exists so a test can plant a key OUTSIDE the four the upgrade chain seeds - which is a
+    /// row every real installation carrying a third-party module can already hold, because DotNetNuke's own
+    /// <c>AddPermission</c> procedure accepts <c>varchar(50)</c> in that position. Anything reachable through
+    /// the enumeration overload above is by definition a key this solution names, so on its own it cannot
+    /// exercise that case at all.
+    /// </remarks>
+    private static Permission CatalogueEntry(
+        int permissionId,
+        string permissionKey,
+        string permissionCode,
         int moduleDefinitionId = ModuleDefinitionId) => new()
         {
             PermissionId = permissionId,
             PermissionCode = permissionCode,
             ModuleDefinitionId = moduleDefinitionId,
             PermissionKey = permissionKey,
-            PermissionName = permissionKey.ToString(),
+            PermissionName = permissionKey,
         };
 
     /// <summary>Builds one grant recorded against the module under test.</summary>
@@ -5717,7 +5885,10 @@ public sealed class PermissionEvaluatorTests
                     It.IsAny<PermissionKey>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync((string code, PermissionKey key, CancellationToken _) => harness.Catalogue
-                    .Where(entry => entry.PermissionKey == key
+                    .Where(entry => string.Equals(
+                            entry.PermissionKey,
+                            key.ToString(),
+                            StringComparison.OrdinalIgnoreCase)
                         && string.Equals(entry.PermissionCode, code, StringComparison.OrdinalIgnoreCase))
                     .ToList());
 

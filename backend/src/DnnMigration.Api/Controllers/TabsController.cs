@@ -53,33 +53,49 @@ public sealed class TabsController : ControllerBase
         _tabs = tabs ?? throw new ArgumentNullException(nameof(tabs));
     }
 
-    /// <summary>Lists a portal's tabs in navigation order.</summary>
+    /// <summary>Lists one page of a portal's tabs in navigation order.</summary>
     /// <param name="portalId">The portal identifier.</param>
+    /// <param name="request">
+    /// The page of the collection to return, bound from the query string. <c>pageIndex</c> is zero-based and
+    /// <c>pageSize</c> defaults to ten and may not exceed one hundred. <c>sortBy</c> and <c>query</c> are
+    /// REFUSED with <c>400 Bad Request</c> rather than ignored: this collection has one meaningful order and
+    /// no filterable column of its own.
+    /// </param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
-    /// <returns>The portal's tabs, complete and unpaged, in the shared success envelope.</returns>
+    /// <returns>One page of the portal's tabs, with the collection's total, in the shared paged envelope.</returns>
     /// <remarks>
-    /// The order the service returns is the navigation order and is not re-sorted here. Re-sorting would
-    /// look harmless and would break the hierarchy, because a child's position is meaningful only relative
-    /// to the parent that precedes it.
+    /// <para>
+    /// The order the service returns is the navigation order and is not re-sorted here. Re-sorting would look
+    /// harmless and would break the hierarchy, because a child's position is meaningful only relative to the
+    /// parent that precedes it - which is also why this endpoint refuses a sort field instead of offering
+    /// one.
+    /// </para>
+    /// <para>
+    /// <b>Paged because the collection is unbounded by nature.</b> A tenant legitimately holds thousands of
+    /// pages, and the unpaged form grew linearly with tenant configuration - three thousand pages served 764
+    /// KiB in a single response - with no parameter a caller could use to ask for less.
+    /// </para>
     /// </remarks>
     // TENANT-BOUND, NOT MERELY AUTHENTICATED. A bare authentication requirement let any bearer token name
     // any portal in the route and enumerate that tenant's whole page hierarchy - titles, parentage and
     // ordering - which is tenant data even though nothing is mutated.
     [HttpGet("portals/{portalId:int}/tabs")]
     [Authorize(Policy = PolicyNames.PortalContentEditor)]
-    [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<TabListItemDto>>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(PagedResponse<TabListItemDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<ApiResponse<IReadOnlyList<TabListItemDto>>>> ListAsync(
+    public async Task<ActionResult<PagedResponse<TabListItemDto>>> ListAsync(
         int portalId,
+        [FromQuery] TabPagedRequest request,
         CancellationToken cancellationToken)
     {
-        Result<IReadOnlyList<TabListItemDto>> outcome = await _tabs
-            .GetTabsAsync(portalId, cancellationToken)
+        Result<PagedResult<TabListItemDto>> outcome = await _tabs
+            .GetTabsAsync(portalId, request, cancellationToken)
             .ConfigureAwait(false);
 
-        return this.Complete(outcome);
+        return this.CompletePage(outcome);
     }
 
     /// <summary>Retrieves one tab.</summary>

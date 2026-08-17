@@ -6,10 +6,10 @@ import {
   decodeDateString,
   decodeInteger,
   decodeNumber,
+  decodeNumericCode,
   decodeString,
   nullable,
   objectOf,
-  oneOfNumber,
   type Decoder,
 } from '../utils/decode.util';
 
@@ -36,6 +36,44 @@ export enum BannerAdvertisingMode {
   Site = 1,
   /** Banners are administered by the hosting provider. */
   Host = 2,
+}
+
+/**
+ * The registration modes this console publishes wording for. Exported so the decoder, the settings form
+ * and the listing all read one set rather than three copies of it.
+ */
+export const PUBLISHED_USER_REGISTRATION_MODES: readonly UserRegistrationMode[] = Object.freeze([
+  UserRegistrationMode.NoRegistration,
+  UserRegistrationMode.PrivateRegistration,
+  UserRegistrationMode.PublicRegistration,
+  UserRegistrationMode.VerifiedRegistration,
+]);
+
+/** The banner-advertising modes this console publishes wording for. */
+export const PUBLISHED_BANNER_ADVERTISING_MODES: readonly BannerAdvertisingMode[] = Object.freeze([
+  BannerAdvertisingMode.None,
+  BannerAdvertisingMode.Site,
+  BannerAdvertisingMode.Host,
+]);
+
+/**
+ * Whether a stored registration code is one this console can name.
+ *
+ * @param code The code exactly as the server sent it.
+ * @returns True when the code is published, narrowing `code` on success.
+ */
+export function isPublishedUserRegistrationMode(code: number): code is UserRegistrationMode {
+  return (PUBLISHED_USER_REGISTRATION_MODES as readonly number[]).includes(code);
+}
+
+/**
+ * Whether a stored banner-advertising code is one this console can name.
+ *
+ * @param code The code exactly as the server sent it.
+ * @returns True when the code is published, narrowing `code` on success.
+ */
+export function isPublishedBannerAdvertisingMode(code: number): code is BannerAdvertisingMode {
+  return (PUBLISHED_BANNER_ADVERTISING_MODES as readonly number[]).includes(code);
 }
 
 // MIGRATION: TENANT RESOLUTION NO LONGER MATCHES ON A SUBSTRING. The legacy resolution procedure compared
@@ -156,11 +194,21 @@ export interface PortalDetail {
    */
   readonly expiryDate: string | null;
 
-  /** How the portal admits new accounts. */
-  readonly userRegistration: UserRegistrationMode;
+  /**
+   * How the portal admits new accounts, from `dbo.Portals.UserRegistration`.
+   *
+   * ⚠ DECLARED `number` AND NOT THE ENUMERATION, for the reason recorded on {@link decodePortalDetail}:
+   * the column is a plain `int` discriminator with no check constraint, so a code this console publishes
+   * no wording for is reachable, and refusing such a record would cost the reader the whole response.
+   * Narrow with {@link isPublishedUserRegistrationMode} before naming a code.
+   */
+  readonly userRegistration: number;
 
-  /** Where banner advertising is administered. */
-  readonly bannerAdvertising: BannerAdvertisingMode;
+  /**
+   * Where banner advertising is administered, from `dbo.Portals.BannerAdvertising`. Declared `number` for
+   * the same reason as the member above; narrow with {@link isPublishedBannerAdvertisingMode}.
+   */
+  readonly bannerAdvertising: number;
 
   /** Three-letter currency code; the column is fixed-width `char(3)`. */
   readonly currency: string | null;
@@ -296,11 +344,17 @@ export interface PortalSettings {
    */
   readonly expiryDate: string | null;
 
-  /** How the portal admits new accounts. */
-  readonly userRegistration: UserRegistrationMode;
+  /**
+   * How the portal admits new accounts, from `dbo.Portals.UserRegistration`. Declared `number` for the
+   * reason recorded on {@link PortalDetail.userRegistration}.
+   */
+  readonly userRegistration: number;
 
-  /** Where banner advertising is administered. */
-  readonly bannerAdvertising: BannerAdvertisingMode;
+  /**
+   * Where banner advertising is administered, from `dbo.Portals.BannerAdvertising`. Declared `number` for
+   * the reason recorded on {@link PortalDetail.userRegistration}.
+   */
+  readonly bannerAdvertising: number;
 
   /** Three-letter currency code. */
   readonly currency: string | null;
@@ -594,7 +648,17 @@ export const decodePortalListItem: Decoder<PortalListItem> = objectOf<PortalList
   expiryDate: nullable(decodeDateString),
 });
 
-/** Decodes one portal in full. Three details are deliberate. */
+/**
+ * Decodes one portal in full. Three details are deliberate.
+ *
+ * ⚠ THE TWO DISCRIMINATOR CODES ARE TOLERATED RATHER THAN REFUSED, and this is the one place the reasoning
+ * is written out for both this decoder and {@link decodePortalSettings}. `Portals.UserRegistration` and
+ * `Portals.BannerAdvertising` are plain `int` columns carrying no check constraint, so an installation
+ * upgraded from a later DotNetNuke generation, or one whose own code wrote a mode this console never
+ * published, holds a code with no wording here. Refusing it refused the whole portal record; on a LISTING
+ * it would refuse every other portal on the page with it. The integer is therefore kept exactly as stored
+ * and the presentation layer marks a code it cannot name.
+ */
 export const decodePortalDetail: Decoder<PortalDetail> = objectOf<PortalDetail>({
   portalId: decodeInteger,
   portalName: nullable(decodeString),
@@ -604,17 +668,8 @@ export const decodePortalDetail: Decoder<PortalDetail> = objectOf<PortalDetail>(
   logoFile: nullable(decodeString),
   backgroundFile: nullable(decodeString),
   expiryDate: nullable(decodeDateString),
-  userRegistration: oneOfNumber([
-    UserRegistrationMode.NoRegistration,
-    UserRegistrationMode.PrivateRegistration,
-    UserRegistrationMode.PublicRegistration,
-    UserRegistrationMode.VerifiedRegistration,
-  ]),
-  bannerAdvertising: oneOfNumber([
-    BannerAdvertisingMode.None,
-    BannerAdvertisingMode.Site,
-    BannerAdvertisingMode.Host,
-  ]),
+  userRegistration: decodeNumericCode(PUBLISHED_USER_REGISTRATION_MODES),
+  bannerAdvertising: decodeNumericCode(PUBLISHED_BANNER_ADVERTISING_MODES),
   currency: nullable(decodeString),
   administratorId: nullable(decodeInteger),
   email: nullable(decodeString),
@@ -657,17 +712,8 @@ export const decodePortalSettings: Decoder<PortalSettings> = objectOf<PortalSett
   logoFile: nullable(decodeString),
   backgroundFile: nullable(decodeString),
   expiryDate: nullable(decodeDateString),
-  userRegistration: oneOfNumber([
-    UserRegistrationMode.NoRegistration,
-    UserRegistrationMode.PrivateRegistration,
-    UserRegistrationMode.PublicRegistration,
-    UserRegistrationMode.VerifiedRegistration,
-  ]),
-  bannerAdvertising: oneOfNumber([
-    BannerAdvertisingMode.None,
-    BannerAdvertisingMode.Site,
-    BannerAdvertisingMode.Host,
-  ]),
+  userRegistration: decodeNumericCode(PUBLISHED_USER_REGISTRATION_MODES),
+  bannerAdvertising: decodeNumericCode(PUBLISHED_BANNER_ADVERTISING_MODES),
   currency: nullable(decodeString),
   administratorId: nullable(decodeInteger),
   hostFee: nullable(decodeNumber),

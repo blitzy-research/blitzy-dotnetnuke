@@ -98,13 +98,35 @@ $_breakpoint-epsilon: 0.001rem;
 // Include inside a selector: it attaches `:focus-visible` to the parent, so a top-level include is a
 // compile error rather than a silent no-op. Idempotent, and therefore safe to apply broadly and again on an
 // individual control.
+// The ring itself, stated once so the two entry points below cannot drift apart.
+@mixin _focus-ring-paint {
+  outline: var(--focus-ring-width) var(--border-style) var(--focus-ring-color);
+  outline-offset: var(--focus-ring-offset);
+  box-shadow: 0 0 0
+    calc(var(--focus-ring-offset) + var(--focus-ring-width) + var(--focus-ring-width))
+    var(--focus-ring-contrast-color);
+}
+
 @mixin focus-ring {
   &:focus-visible {
-    outline: var(--focus-ring-width) var(--border-style) var(--focus-ring-color);
-    outline-offset: var(--focus-ring-offset);
-    box-shadow: 0 0 0
-      calc(var(--focus-ring-offset) + var(--focus-ring-width) + var(--focus-ring-width))
-      var(--focus-ring-contrast-color);
+    @include _focus-ring-paint;
+  }
+}
+
+// ⚠ #27 / #29 — THE RING ON PLAIN `:focus`, for the places where focus ARRIVES PROGRAMMATICALLY. A browser
+// matches `:focus-visible` from the last input modality, so an element focused by script after a MOUSE
+// interaction gets no ring at all: a confirm dialog opened by clicking put focus on its cancelling
+// affordance and showed nothing until the reader pressed Tab, and a pager moving focus off a step it had
+// just disabled moved it invisibly. Both are cases where the application, not the reader, decided where
+// focus went, so the reader has to be told - and in both the element is one the reader is expected to act on
+// immediately.
+//
+// Use this ONLY where focus is moved by script. Everywhere a reader focuses something themselves,
+// `focus-ring` is correct: it is what keeps a ring off every mouse click on every button in the application.
+@mixin focus-ring-always {
+  &:focus,
+  &:focus-visible {
+    @include _focus-ring-paint;
   }
 }
 

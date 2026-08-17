@@ -5,6 +5,7 @@ import {
   FieldMessages,
   ProblemSeverity,
   ProblemSummary,
+  SUPPORT_REFERENCE_LEAD,
   problemSeverity,
   summarizeProblem,
 } from '../../../core/utils/form-errors.util';
@@ -57,6 +58,22 @@ export class ErrorBannerComponent {
    * the choice is load-bearing rather than stylistic.
    */
   readonly problem = input<ProblemDetails | null>(null);
+
+  /**
+   * Rendered labels for the field names the server reports, keyed by the wire property name.
+   *
+   * ⚠ WITHOUT THIS THE BANNER QUOTES RAW WIRE PROPERTY NAMES AT AN OPERATOR. A validation failure arrives
+   * keyed by the contract's own property names - `portalName`, `hostFee`, `expiryDate`, `processorUserId`
+   * - and listing those verbatim asks a person to map an identifier they have never seen onto a field
+   * they can see. Three of those four are not even recognisable: the screen calls them Title, Hosting Fee
+   * and Expiry Date. A screen that already owns a label dictionary for its own fields passes it here, and
+   * the banner names the same field the same way the form does.
+   *
+   * Defaults to empty, so a screen that supplies nothing keeps the previous behaviour and no caller is
+   * obliged to change. A name absent from the dictionary falls back to the wire name, which is strictly
+   * better than showing nothing.
+   */
+  readonly fieldLabels = input<Readonly<Record<string, string>>>({});
 
   /**
    * A sentence to show when a failure carries NO problem document at all, or null to stay silent. ⚠ THIS
@@ -151,17 +168,37 @@ export class ErrorBannerComponent {
     computed(() => this.summary().supportReference);
 
   /** Whether there is an identifier worth quoting. */
+  /** Introduces the support reference and explains what a reader is meant to do with it. */
+  readonly referenceLead: string = SUPPORT_REFERENCE_LEAD;
+
   readonly hasSupportReference: Signal<boolean> =
     computed(() => this.supportReference() !== null);
 
   /**
-   * The label shown for a group of messages.
+   * The label shown for a group of messages. Resolved in three steps, so the best available name always
+   * wins: the caller's dictionary, then the same name with its first character lower-cased - which is the
+   * form `fieldMessages` normalises keys into, and therefore the form a dictionary keyed by control name
+   * will match - and finally the wire name itself.
    *
    * @param field The field name from the problem document.
    * @returns The label to show.
    */
   labelFor(field: string): string {
-    return field.length === 0 ? FORM_LEVEL_LABEL : field;
+    if (field.length === 0) {
+      return FORM_LEVEL_LABEL;
+    }
+
+    const labels: Readonly<Record<string, string>> = this.fieldLabels();
+    const exact: string | undefined = labels[field];
+
+    if (exact !== undefined && exact.length > 0) {
+      return exact;
+    }
+
+    const camelCased = `${field.charAt(0).toLowerCase()}${field.slice(1)}`;
+    const byCamelCase: string | undefined = labels[camelCased];
+
+    return byCamelCase !== undefined && byCamelCase.length > 0 ? byCamelCase : field;
   }
 
   /**

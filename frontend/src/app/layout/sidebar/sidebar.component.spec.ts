@@ -1126,6 +1126,45 @@ describe('SidebarComponent', () => {
       expect(normalise(present(toggle(), 'a disclosure control').textContent)).toBe(TOGGLE_NAME);
     });
 
+    it('collapses on Escape and hands focus back to the control that expanded it', () => {
+      // ⚠ MEASURED DEFECT: an expanded disclosure could not be dismissed from the keyboard at all, and the
+      // expansion displaces roughly 470px of content at 375px, so a reader who opened it had to tab through
+      // every destination to get back out. Escape is the conventional dismissal for a transient expansion.
+      setArrangement(false);
+
+      const control = present(toggle(), 'a disclosure control');
+
+      control.click();
+      fixture.detectChanges();
+
+      expect(present(toggle(), 'a disclosure control').getAttribute('aria-expanded')).toBe('true');
+
+      // Pressed from INSIDE the expansion, which is where a reader walking the destinations will be.
+      const destination = navAnchors()[0];
+
+      destination?.focus();
+      host().dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      fixture.detectChanges();
+
+      expect(present(toggle(), 'a disclosure control').getAttribute('aria-expanded')).toBe('false');
+      expect(document.activeElement)
+        .withContext('focus goes back to the control that opened it, not to the document')
+        .toBe(present(toggle(), 'a disclosure control'));
+    });
+
+    it('leaves the SIDE-BY-SIDE arrangement alone on Escape, because nothing is overlaying anything', () => {
+      // Beside the content the rail is not a transient expansion but the page's own navigation column;
+      // collapsing it on Escape would be a surprise rather than an escape.
+      setArrangement(true);
+
+      expect(present(toggle(), 'a disclosure control').getAttribute('aria-expanded')).toBe('true');
+
+      host().dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      fixture.detectChanges();
+
+      expect(present(toggle(), 'a disclosure control').getAttribute('aria-expanded')).toBe('true');
+    });
+
     it('names the region it operates, and that region exists', () => {
       const control = present(toggle(), 'a disclosure control');
       const controls = present(
@@ -2036,4 +2075,198 @@ describe('SidebarComponent', () => {
       expect(TestBed.inject(HttpClient, null, { optional: true })).toBeNull();
     });
   });
+  // ⚠ MINOR (target size) — eight of the nine destinations measured 152 by 29.
+  describe('the size of each destination as a pointer target', () => {
+    it('floors every destination at the shared minimum target size', async () => {
+      await createComponent(NAVIGABLE_ROUTES);
+
+      const anchors: readonly HTMLAnchorElement[] = navAnchors();
+
+      // ⚠ THE TOKEN IS RESOLVED THROUGH THE BROWSER RATHER THAN PARSED, AND THE FIRST VERSION OF THIS
+      // SPECIFICATION GOT IT WRONG. A custom property's value comes back as authored - `2.75rem` - so parsing
+      // it yields 2.75 and every comparison against a computed `44px` failed for a unit mismatch rather than
+      // for the behaviour under test. Assigning it to a real element makes the browser do the conversion.
+      const probe: HTMLDivElement = document.createElement('div');
+      probe.style.blockSize = 'var(--target-size-min)';
+      document.body.appendChild(probe);
+      const floor: number = probe.getBoundingClientRect().height;
+      probe.remove();
+
+      // The control: the token has to resolve, or every comparison below is against NaN and vacuous.
+      expect(floor).withContext('the shared target-size token resolves').toBeGreaterThan(0);
+      expect(anchors.length).withContext('the rail rendered its destinations').toBeGreaterThan(0);
+
+      // Both the declaration and the outcome it produces are asserted: `min-block-size` is what the stylesheet
+      // changed, and the rendered height is what a person's finger actually lands on. With the floor removed
+      // the fixture renders these anchors at 29 - the same 29 measured on eight of the nine live destinations -
+      // so each assertion fails on its own, and neither is carrying the other.
+      anchors.forEach((anchor) => {
+        const resolved: CSSStyleDeclaration = getComputedStyle(anchor);
+
+        expect(Number.parseFloat(resolved.minBlockSize))
+          .withContext(`${anchor.textContent?.trim() ?? 'destination'} declares the floor`)
+          .toBe(floor);
+
+        expect(anchor.getBoundingClientRect().height)
+          .withContext(`${anchor.textContent?.trim() ?? 'destination'} renders at least ${floor} tall`)
+          .toBeGreaterThanOrEqual(floor);
+      });
+    });
+
+    it('centres a single-line label inside the floored box rather than stranding it at the top', async () => {
+      await createComponent(NAVIGABLE_ROUTES);
+
+      const anchor: HTMLAnchorElement | undefined = navAnchors()[0];
+
+      if (anchor === undefined) {
+        throw new Error('the rail rendered no destinations');
+      }
+
+      // A floor alone would leave a one-line label sitting against the top edge of a taller box, which reads
+      // as a misalignment rather than as a larger target. The alignment is what makes the extra height
+      // invisible, so it is asserted alongside it.
+      const resolved: CSSStyleDeclaration = getComputedStyle(anchor);
+
+      expect(resolved.display).toBe('flex');
+      expect(resolved.alignItems).toBe('center');
+    });
+  });
+
+  // ⚠ MAJOR (Issue 21) — collapsing the rail reclaimed exactly zero pixels.
+  describe('the track the collapsed rail gives back', () => {
+  /** One flattened stylesheet rule: its selector, its declarations, and the media query guarding it. */
+  interface FlatLayoutRule {
+    readonly selectorText: string;
+    readonly style: CSSStyleDeclaration;
+    readonly media: string | null;
+  }
+
+  /**
+   * Every style rule reachable from the document, including those nested inside media queries.
+   *
+   * \u26a0 A RULE SCAN RATHER THAN A COMPUTED READING, AND THE REASON IS THE FIXTURE. The declaration under
+   * test is gated behind a `min-width` media query, and a fixture is rendered at whatever width the runner
+   * happens to give it - so a computed value would assert the runner's width rather than the stylesheet's
+   * intent, and would flip between a wide runner and a narrow one. Nested rules are therefore walked
+   * unconditionally: this measures what the stylesheet DECLARES.
+   *
+   * The test build loads `src/styles.scss`, which is what puts these rules in `document.styleSheets`.
+   *
+   * @returns The flattened rules.
+   */
+  function flattenedLayoutRules(): readonly FlatLayoutRule[] {
+    const collected: FlatLayoutRule[] = [];
+
+    const walk = (rules: CSSRuleList, media: string | null): void => {
+      Array.from(rules).forEach((rule) => {
+        if (rule instanceof CSSMediaRule) {
+          walk(rule.cssRules, rule.conditionText);
+
+          return;
+        }
+
+        if (rule instanceof CSSStyleRule) {
+          collected.push({ selectorText: rule.selectorText, style: rule.style, media });
+        }
+      });
+    };
+
+    Array.from(document.styleSheets).forEach((sheet) => {
+      try {
+        walk(sheet.cssRules, null);
+      } catch {
+        return;
+      }
+    });
+
+    return collected;
+  }
+
+    /**
+     * Whether one selector-list part is exactly the given class compound.
+     *
+     * \u26a0 THE ATTRIBUTE SUFFIX HAS TO BE TOLERATED, AND AN EXACT COMPARISON FAILED BECAUSE OF IT. Angular's
+     * emulated encapsulation rewrites every component rule to carry a scoping attribute, so the authored
+     * `.app-sidebar` reaches the stylesheet as `.app-sidebar[_ngcontent-ng-c123]` with a suffix that changes
+     * every build. A plain equality check therefore found none of them and the first version of these
+     * specifications reported zero rules against correct code.
+     *
+     * @param part One comma-separated part of a selector list.
+     * @param compound The class compound to match, including its leading dot.
+     * @returns Whether the part is that compound, with or without a scoping attribute.
+     */
+    function isCompound(part: string, compound: string): boolean {
+      const escaped: string = compound.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+      return new RegExp(`^${escaped}(\\[[^\\]]*\\])*$`).test(part.trim());
+    }
+
+    /** The rules whose selector list carries the given compound. */
+    function rulesFor(compound: string): readonly FlatLayoutRule[] {
+      return flattenedLayoutRules().filter((rule) =>
+        rule.selectorText.split(',').some((part) => isCompound(part, compound)),
+      );
+    }
+
+    // The component is created so that its stylesheet is certainly in the document: Angular appends component
+    // styles on first instantiation, and a rule scan that ran before any instantiation would find nothing.
+    beforeEach(async () => {
+      await createComponent([]);
+    });
+
+    it('declares a definite rail width for the expanded rail, at the side-by-side step only', () => {
+      // The control. If this reads zero the stylesheet under test was never loaded and the assertions below
+      // would pass for the wrong reason.
+      const declared = rulesFor('.app-sidebar').filter(
+        (rule) => rule.style.getPropertyValue('inline-size').trim().length > 0,
+      );
+
+      expect(declared.length).withContext('a rail width is declared').toBeGreaterThan(0);
+      declared.forEach((rule) => {
+        expect(rule.style.getPropertyValue('inline-size').trim()).toBe('var(--layout-rail-inline-size)');
+        expect(rule.media).withContext('gated to the side-by-side step').toMatch(/min-width/);
+      });
+    });
+
+    it('overrides that width in the collapsed state, so the column shrinks to what is left in it', () => {
+      // ⚠ THE DISCRIMINATING DECLARATION. Before the fix `.app-sidebar--collapsed` declared `gap: 0` and
+      // NOTHING ELSE, so the definite 185-pixel width above stayed in force and collapsing gave back nothing:
+      // measured at 768, 1024 and 1280 the reclaim was 0.00 pixels at every one. Asserting merely that a
+      // collapsed rule exists would pass under the defect, because one did.
+      const collapsed = rulesFor('.app-sidebar--collapsed').filter(
+        (rule) => rule.style.getPropertyValue('inline-size').trim().length > 0,
+      );
+
+      expect(collapsed.length).withContext('the collapsed state overrides the width').toBeGreaterThan(0);
+      collapsed.forEach((rule) => {
+        expect(rule.style.getPropertyValue('inline-size').trim()).toBe('max-content');
+
+        // Gated to the same step as the width it overrides. Below the step the rail is a full-width band above
+        // the content, and `max-content` there would leave the band narrower than the page it spans - measured
+        // at 375 the band is 360 wide, and it must stay that way.
+        expect(rule.media).withContext('gated to the side-by-side step').toMatch(/min-width/);
+      });
+    });
+
+    it('keeps the collapsed override after the rule it overrides, so it wins on source order alone', () => {
+      // Both selectors are a single class, so they tie on specificity. Source order is the entire mechanism,
+      // and an override authored earlier in the file would silently lose without any selector looking wrong.
+      const all = flattenedLayoutRules();
+      const base = all.findIndex(
+        (rule) =>
+          rule.selectorText.split(',').some((part) => isCompound(part, '.app-sidebar')) &&
+          rule.style.getPropertyValue('inline-size').trim().length > 0,
+      );
+      const override = all.findIndex(
+        (rule) =>
+          rule.selectorText.split(',').some((part) => isCompound(part, '.app-sidebar--collapsed')) &&
+          rule.style.getPropertyValue('inline-size').trim().length > 0,
+      );
+
+      expect(base).withContext('the base width rule was found').toBeGreaterThan(-1);
+      expect(override).withContext('the collapsed override was found').toBeGreaterThan(-1);
+      expect(override).withContext('the override follows the rule it overrides').toBeGreaterThan(base);
+    });
+  });
+
 });

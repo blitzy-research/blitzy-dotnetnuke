@@ -305,9 +305,16 @@ export function oneOf<T extends string>(allowed: readonly T[]): Decoder<T> {
 }
 
 /**
- * Decodes a value that must be one of a closed set of numeric codes. The numeric counterpart of {@link
- * oneOf}, for the integer discriminator columns the legacy schema stores rather than lookup rows: the
- * portal's registration mode and banner advertising mode, and a module's visibility.
+ * Decodes a value that must be one of a closed set of numeric codes.
+ *
+ * ⚠ RESERVED FOR A CODE THIS CLIENT ITSELF ORIGINATES, AND NOT FOR A SCHEMA-BACKED DISCRIMINATOR COLUMN.
+ * Refusing an unrecognised code refuses the whole record and — through {@link arrayOf} and {@link
+ * pageOf} — the whole page that record sits in. That is right only where an unrecognised code means the
+ * document is not the document this client asked for. It is wrong for every legacy discriminator column,
+ * because those columns are plain `int` with no check constraint, any DotNetNuke installation whose
+ * modules registered their own values holds codes this console never published, and one such row must not
+ * be able to blank a listing. Use {@link decodeNumericCode} for those and mark the unrecognised code in
+ * the presentation layer.
  *
  * @param allowed The permitted codes.
  * @returns A decoder producing one of the permitted codes.
@@ -324,6 +331,33 @@ export function oneOfNumber<T extends number>(allowed: readonly T[]): Decoder<T>
 
     return code as T;
   };
+}
+
+/**
+ * Decodes an integer DISCRIMINATOR CODE, admitting a code this client does not recognise.
+ *
+ * The tolerant counterpart of {@link oneOfNumber}, and the decoder every legacy discriminator column must
+ * use. Integer-ness is still enforced — a string or a fraction where a code belongs really is a contract
+ * violation and is still refused — but membership of the published set is NOT, so an installation holding
+ * `TabModules.Visibility = 9` renders its module listing with that one cell marked instead of losing the
+ * page.
+ *
+ * This mirrors the treatment `ProfilePropertyDefinition.dataType` and `ProfilePropertyDefinition.
+ * visibility` already receive: both are decoded as plain integers, and the profile-definition screen marks
+ * a code it cannot name with `#<code>`, a `title` and sr-only wording. The published set is still taken as
+ * an argument so that the wire expectation is documented AT the decoder, and so that an empty set — a call
+ * site with no wording at all for the column — fails at construction rather than silently.
+ *
+ * @param allowed The codes this client publishes wording for.
+ * @returns A decoder producing the integer exactly as it arrived.
+ * @throws TypeError When no published code is named.
+ */
+export function decodeNumericCode(allowed: readonly number[]): Decoder<number> {
+  if (allowed.length === 0) {
+    throw new TypeError('decodeNumericCode requires at least one published code.');
+  }
+
+  return decodeInteger;
 }
 
 /**

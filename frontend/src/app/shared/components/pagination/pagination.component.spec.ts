@@ -409,19 +409,25 @@ describe('PaginationComponent', () => {
       expect(emitted).toEqual([2]);
     });
 
-    it('(d) disables stepping back on the first page and emits nothing when it is clicked', () => {
+    it('(d) marks stepping back unavailable on the first page and emits nothing when it is clicked', () => {
       bind(0, 10, 25);
 
-      // Half one: the unavailability is stated PROGRAMMATICALLY through the native `disabled` property, so
-      // assistive technology and the pointer agree. Styling alone would leave a keyboard user able to
-      // activate it.
-      expect(step(STEP.previous).disabled)
+      // Half one: the unavailability is stated PROGRAMMATICALLY, so assistive technology and the pointer
+      // agree, and styling alone would leave a keyboard user able to activate it. It is stated with
+      // `aria-disabled` rather than the native property, and the paired assertion that `disabled` is FALSE
+      // is what pins that choice - see the dedicated specs below for why the native property was rejected.
+      expect(step(STEP.previous).getAttribute('aria-disabled'))
         .withContext('already on the first page')
-        .toBeTrue();
-      expect(step(STEP.first).disabled).toBeTrue();
+        .toBe('true');
+      expect(step(STEP.first).getAttribute('aria-disabled')).toBe('true');
+      expect(step(STEP.first).disabled)
+        .withContext('deliberately NOT the native property')
+        .toBeFalse();
 
-      // Half two: nothing is emitted. Clicking a disabled button is a no-op by the HTML specification, so
-      // this proves the rendered state...
+      // Half two: nothing is emitted - and this half is now a STRONGER test than it was. With the native
+      // property the browser discarded the click before any handler ran, so the assertion was really about
+      // the HTML specification. Nothing blocks it now, so the click genuinely reaches the handler and the
+      // component's own refusal is what holds.
       step(STEP.previous).click();
       step(STEP.first).click();
 
@@ -433,7 +439,7 @@ describe('PaginationComponent', () => {
       expect(emitted).withContext('no index below the first may ever be emitted').toEqual([]);
     });
 
-    it('(e) disables stepping forward on the last page and emits nothing when it is clicked', () => {
+    it('(e) marks stepping forward unavailable on the last page and emits nothing when it is clicked', () => {
       // The last index is COMPUTED here rather than written in, and the numbers are chosen so that it is
       // unambiguous: 120 records at 25 a page is 5 pages, so the last index is 4. A size of 25 also means
       // neither legacy default could produce this page count.
@@ -445,8 +451,13 @@ describe('PaginationComponent', () => {
 
       bind(lastPageIndex, pageSize, totalCount);
 
-      expect(step(STEP.next).disabled).withContext('already on the last page').toBeTrue();
-      expect(step(STEP.last).disabled).toBeTrue();
+      expect(step(STEP.next).getAttribute('aria-disabled'))
+        .withContext('already on the last page')
+        .toBe('true');
+      expect(step(STEP.last).getAttribute('aria-disabled')).toBe('true');
+      expect(step(STEP.last).disabled)
+        .withContext('deliberately NOT the native property')
+        .toBeFalse();
       expect(positionText()).toBe('5 / 5');
 
       step(STEP.next).click();
@@ -578,17 +589,25 @@ describe('PaginationComponent', () => {
       }
     });
 
-    it('is announced politely, because a page change replaces the list without moving focus', () => {
+    // ⚠ INVERTED, AND THE INVERSION IS THE FIX. This region carried `aria-live="polite"` and
+    // `aria-atomic="true"` while the table's own `role="status"` region carried the record count with the
+    // same politeness - so ONE page change produced TWO polite announcements with an intervening blank, and
+    // a screen reader read the range and the count as unrelated events. The table's region is now the single
+    // announcer and states the dataset total itself, so this one is visible-only. It keeps its text and its
+    // position, so nothing changes for the eye.
+    it('is NOT a live region, because the table announces the change once for both of them', () => {
       bind(0, 10, 34);
 
       const status = element('.pagination__status');
 
       expect(status.getAttribute('aria-live'))
-        .withContext('a status update must not interrupt')
-        .toBe('polite');
-      expect(status.getAttribute('aria-atomic'))
-        .withContext('the whole sentence has to be re-read, not just the digits that changed')
-        .toBe('true');
+        .withContext('a second polite region would announce the same action twice')
+        .toBeNull();
+      expect(status.getAttribute('aria-atomic')).toBeNull();
+      expect(status.getAttribute('role')).toBeNull();
+
+      // The reader still sees it, which is the whole reason the element stays.
+      expect((status.textContent ?? '').trim()).toBe(`1${EN_DASH}10 of 34`);
     });
   });
 
@@ -612,8 +631,8 @@ describe('PaginationComponent', () => {
     it('offers no forward step beyond the end', () => {
       bind(11, 10, 30);
 
-      expect(step(STEP.next).disabled).toBeTrue();
-      expect(step(STEP.last).disabled).toBeTrue();
+      expect(step(STEP.next).getAttribute('aria-disabled')).toBe('true');
+      expect(step(STEP.last).getAttribute('aria-disabled')).toBe('true');
     });
 
     it('steps back into range rather than emitting an index that does not exist', () => {
@@ -851,10 +870,15 @@ describe('PaginationComponent', () => {
   // FOCUS AFTER A TERMINAL STEP
   // ---------------------------------------------------------------------------
 
-  describe('focus after a step that disables itself', () => {
-    // ⚠ FIRST AND LAST DESTROY THEIR OWN AFFORDANCE BY SUCCEEDING. Reaching the last page makes "Last page"
-    // unavailable, the template states that with the native `disabled` property, and a browser discards
-    // focus on an element that becomes disabled - dropping it to `body`.
+  describe('focus after a step that becomes unavailable', () => {
+    // ⚠ FIRST AND LAST DESTROY THEIR OWN AFFORDANCE BY SUCCEEDING, AND THE FIX FOR THAT IS NOW UPSTREAM OF
+    // FOCUS ENTIRELY. Reaching the last page makes "Last page" unavailable. While the template said so with
+    // the native `disabled` property a browser discarded focus on it, dropping focus to `body`, and this
+    // component carried four element references, an injected document, two flags and two lifecycle hooks to
+    // move focus to a surviving neighbour. The template now says so with `aria-disabled`, so the control
+    // never becomes disabled, the browser never takes focus away, and the person keeps focus exactly where
+    // they left it - on the control they just pressed. These specs assert THAT, which is why they are
+    // stronger than the repair they replaced: staying put needs no machinery to go wrong.
 
     /**
      * Simulates a real activation: focus the control, then click it, the way both a pointer and a
@@ -867,26 +891,95 @@ describe('PaginationComponent', () => {
       control.click();
     }
 
-    it('moves focus to Previous when Last disables itself', () => {
+    it('keeps focus on Last after it becomes unavailable', () => {
       bind(0, 10, 25);
 
       activate(STEP.last);
-      // The consumer owns the page: binding the emitted index back is what makes the step disabled, which
-      // is the state the repair reacts to.
+      // The consumer owns the page: binding the emitted index back is what makes the step unavailable.
       bind(2, 10, 25);
 
-      expect(step(STEP.last).disabled).withContext('the activated step is now unavailable').toBeTrue();
-      expect(document.activeElement).withContext('focus retained inside the pager').toBe(step(STEP.previous));
+      expect(step(STEP.last).getAttribute('aria-disabled'))
+        .withContext('the activated step is now unavailable')
+        .toBe('true');
+      expect(step(STEP.last).disabled)
+        .withContext('and it is NOT the native property, which is why focus survives')
+        .toBeFalse();
+      expect(document.activeElement)
+        .withContext('focus stays on the control the person pressed')
+        .toBe(step(STEP.last));
     });
 
-    it('moves focus to Next when First disables itself', () => {
+    it('keeps focus on First after it becomes unavailable', () => {
       bind(2, 10, 25);
 
       activate(STEP.first);
       bind(0, 10, 25);
 
-      expect(step(STEP.first).disabled).toBeTrue();
-      expect(document.activeElement).toBe(step(STEP.next));
+      expect(step(STEP.first).getAttribute('aria-disabled')).toBe('true');
+      expect(step(STEP.first).disabled).toBeFalse();
+      expect(document.activeElement).toBe(step(STEP.first));
+    });
+
+    it('leaves an unavailable step reachable by the keyboard', () => {
+      // ⚠ THIS IS THE DEFECT THE ATTRIBUTE CHANGE CLOSES, and it is the measurement that drove it: on the
+      // first page, calling `focus()` on First left `document.activeElement` unmoved and the control was
+      // absent from the tab order, while the same call on the available Next step moved focus correctly -
+      // so the method was sound and the button genuinely unreachable. A keyboard user could not reach it,
+      // and was therefore never told it existed or why it was unavailable.
+      bind(0, 10, 25);
+
+      const unavailable = step(STEP.first);
+
+      expect(unavailable.getAttribute('aria-disabled')).withContext('precondition').toBe('true');
+
+      unavailable.focus();
+
+      expect(document.activeElement)
+        .withContext('an unavailable step must still be reachable and announceable')
+        .toBe(unavailable);
+      expect(unavailable.tabIndex)
+        .withContext('and still in the sequential tab order')
+        .toBe(0);
+    });
+
+    it('refuses Last when the bound page is already past the end', () => {
+      // ⚠ THE INPUT THAT SEPARATES THE HANDLER GUARD FROM THE EMISSION RULE IT SITS IN FRONT OF, and the
+      // reason the guard is BEHAVIOUR-PRESERVING rather than defensive. While the native property was in
+      // use the browser discarded this click before any handler ran, so nothing was emitted. Bound past the
+      // end, `effectivePage` clamps DOWN to the last real index, which makes `canGoNext` false and the step
+      // unavailable - but `requestPage(2)` would find index 2 in range AND different from the bound 11, and
+      // emit it. Without the guard, swapping the attribute would therefore have made an unavailable control
+      // start acting, which is a behaviour change smuggled in behind an accessibility fix.
+      //
+      // Correcting an out-of-range binding is deliberately NOT this control's job: the sibling spec
+      // 'steps back into range rather than emitting an index that does not exist' assigns that to Previous,
+      // which is announced AVAILABLE in this same state and so is the affordance a person can actually use.
+      bind(11, 10, 30);
+
+      expect(step(STEP.last).getAttribute('aria-disabled')).withContext('precondition').toBe('true');
+
+      step(STEP.last).click();
+
+      expect(emitted).withContext('a step announced unavailable must do nothing').toEqual([]);
+    });
+
+    it('refuses First when there is only one page to be on', () => {
+      // The companion case for the backward pair, and it exercises the PUBLIC CONTRACT rather than a click:
+      // with a single page the steps are not rendered at all, so no pointer can reach them, but `goFirst`
+      // and `canGoPrevious` are both public and a consumer may call one after reading the other. Bound
+      // beyond a single page, `effectivePage` clamps to 0 so `canGoPrevious` is false, while `requestPage(0)`
+      // would still find 0 in range and different from the bound 5.
+      //
+      // A below-first index cannot be used to make this point: the `page` input's transform reduces a bound
+      // index to a whole number no lower than the first page, so a negative never reaches the internals.
+      bind(5, 10, 5);
+
+      expect(component.canGoPrevious).withContext('precondition').toBeFalse();
+
+      component.goFirst();
+      component.goPrevious();
+
+      expect(emitted).withContext('nowhere to step back to, so nothing may be emitted').toEqual([]);
     });
 
     it('leaves focus alone when the activated step stays available', () => {

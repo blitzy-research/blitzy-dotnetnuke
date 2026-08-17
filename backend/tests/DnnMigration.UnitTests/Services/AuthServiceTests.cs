@@ -2676,25 +2676,44 @@ public class AuthServiceTests
     }
 
     /// <summary>
-    /// Sign-in does not resolve mutable authority for either the access token or its response projection.
+    /// Sign-in describes the caller's authority in its RESPONSE while keeping it out of the access token.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// Roles and permission keys change independently of a token's lifetime. They are loaded through
-    /// <c>/auth/me</c> and re-evaluated by server-side authorization, so the login path must not read or
-    /// copy them into long-lived bearer material.
+    /// <para>
+    /// ⚠ THIS TEST WAS REVERSED, AND ITS PREDECESSOR'S NAME - "does not resolve mutable authority for the
+    /// token response" - NAMED THE DEFECT RATHER THAN THE REQUIREMENT. A runtime audit found that signing in
+    /// answered with empty role and permission collections while the current-user read, issued moments later
+    /// by the same client, answered with the caller's real authority. Two descriptions of one session
+    /// disagreed, and the empty one was not a silence: an empty collection asserts that the account holds
+    /// nothing.
+    /// </para>
+    /// <para>
+    /// The security property the predecessor was reaching for is real and is UNCHANGED, which is why it is
+    /// still asserted below: roles and permission keys change independently of a token's lifetime, so they
+    /// must never be baked into long-lived bearer material. That property is structural rather than
+    /// incidental - the token contract accepts only an account identifier and a tenant identifier, so no
+    /// authority can reach it - and server-side authorization re-evaluates authority on every request. A
+    /// response body is not a credential, and describing the session in one discloses nothing that the
+    /// current-user read does not already publish to the same caller.
+    /// </para>
     /// </remarks>
     [Fact]
-    public async Task SignIn_DoesNotResolveMutableAuthorityForTheTokenResponse()
+    public async Task SignIn_ReportsTheCallersAuthorityInTheResponseButNotInTheToken()
     {
         Harness harness = Harness.Ready();
 
         Result<LoginResponse> result = await harness.LoginAsync();
 
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
-        result.Value.User.Roles.Should().BeEmpty();
-        result.Value.User.Permissions.Should().BeEmpty();
 
+        harness.Users.Verify(
+            users => users.ListRoleNamesAsync(
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<DateTime>(),
+                It.IsAny<CancellationToken>()),
+            Times.Once());
         harness.Permissions.Verify(
             permissions => permissions.GetEffectivePermissionKeysAsync(
                 It.IsAny<int>(),
@@ -2702,15 +2721,10 @@ public class AuthServiceTests
                 It.IsAny<int?>(),
                 It.IsAny<int?>(),
                 It.IsAny<CancellationToken>()),
-            Times.Never());
-        harness.Users.Verify(
-            users => users.ListRoleNamesAsync(
-                It.IsAny<int>(),
-                It.IsAny<int>(),
-                It.IsAny<DateTime>(),
-                It.IsAny<CancellationToken>()),
-            Times.Never());
+            Times.Once());
 
+        // The token is minted from the two identifiers alone. This is what keeps authority out of the bearer
+        // material: there is no parameter through which a role or a permission key could travel.
         harness.Tokens.Verify(
             tokens => tokens.IssueTokensAsync(
                 It.IsAny<int>(),

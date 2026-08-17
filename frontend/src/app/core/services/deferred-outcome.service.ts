@@ -4,7 +4,19 @@ import type { EffectRef, Signal } from '@angular/core';
 import { NotificationService } from './notification.service';
 
 /** How a write that outlived its screen turned out. */
-export type DeferredOutcome = 'pending' | 'succeeded' | 'failed';
+/**
+ * How a write that outlived its screen turned out.
+ *
+ * ⚠ `'abandoned'` IS NOT A FOURTH FLAVOUR OF FAILURE, AND CONFLATING IT WITH `'succeeded'` WAS A REAL
+ * DEFECT. A write is abandoned when the session it belonged to ended underneath it: the domain store's
+ * failure slot is emptied by that teardown rather than by the server, so from this point on the absence
+ * of a failure says nothing whatsoever about whether the write landed. Measured in a browser: a `PUT`
+ * that never reached the API was announced to the operator as "User account updated", because the
+ * verdict below read `failure() !== null ? 'failed' : 'succeeded'` and the teardown had just nulled it.
+ * An abandoned write is therefore announced as NEITHER outcome — the operator has already been told the
+ * session ended, and a second sentence guessing at the write would be the only untrue one on screen.
+ */
+export type DeferredOutcome = 'pending' | 'succeeded' | 'failed' | 'abandoned';
 
 /**
  * How a write that outlived its screen is to be reported when it did NOT succeed. ⚠ DELIBERATELY NOT A
@@ -65,6 +77,13 @@ export class DeferredOutcomeService {
         // signal there would make this effect depend on what it had just done.
         untracked(() => {
           watcher?.destroy();
+
+          // Released, not reported. The watcher is destroyed exactly as it is for the other two verdicts,
+          // so nothing is left consuming the slot it was observing, but no sentence is produced: an
+          // outcome nobody can know is one nobody should be told.
+          if (settled === 'abandoned') {
+            return;
+          }
 
           if (settled === 'failed') {
             const notice: DeferredFailureNotice | null = describeFailure();

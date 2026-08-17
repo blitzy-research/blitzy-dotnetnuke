@@ -2030,6 +2030,57 @@ describe('RoleAssignmentComponent', () => {
       ]);
     });
 
+    // ---------------------------------------------------------------------------------------------
+    // U21 - THE MARKING IS BOUNDED BY WHAT HAS BEEN READ, AND THE BOUND IS NOW STATED
+    // ---------------------------------------------------------------------------------------------
+
+    /** The note rendered beside the picker, or the empty string. */
+    function pickerNote(): string {
+      return (
+        host().querySelector<HTMLElement>('.role-assignment__lookup-note')?.textContent?.trim() ?? ''
+      );
+    }
+
+    // ⚠ THE MEASURED DEFECT. The membership listing is paged, so with 46 members only the ten on the page
+    // in hand carried the "already in this role" note - and an operator scanning the list was misinformed
+    // by omission about the other thirty-six. Submitting still detects it, via the server probe the
+    // confirmation performs; what was missing was saying so.
+    it('states that the already-in-role marking is incomplete while memberships remain unread', () => {
+      create('0', { usersControl: USERS_CONTROL_COMBO });
+      answerRole(role(0));
+      answerMemberships(0, [membership()], 46);
+      answerAccountChoicesPage([
+        account({ userId: 42, username: 'ada', displayName: 'Ada Lovelace' }),
+        account({ userId: 43, username: 'grace', displayName: 'Grace Hopper' }),
+      ]);
+
+      expect(pickerNote()).toContain('may appear unmarked');
+      expect(pickerNote())
+        .withContext('the reassurance is load-bearing: the probe still catches it')
+        .toContain('detected before anything is saved');
+    });
+
+    it('says nothing once the whole membership is in hand, because the marking is then complete', () => {
+      create('0', { usersControl: USERS_CONTROL_COMBO });
+      answerRole(role(0));
+      answerMemberships(0, [membership()]);
+      answerAccountChoicesPage([
+        account({ userId: 42, username: 'ada', displayName: 'Ada Lovelace' }),
+        account({ userId: 43, username: 'grace', displayName: 'Grace Hopper' }),
+      ]);
+
+      expect(pickerNote()).toBe('');
+    });
+
+    it('says nothing when there is nothing to mark, so the note cannot stand alone', () => {
+      create('0', { usersControl: USERS_CONTROL_COMBO });
+      answerRole(role(0));
+      answerMemberships(0, [membership()], 46);
+      answerAccountChoicesPage([]);
+
+      expect(pickerNote()).not.toContain('may appear unmarked');
+    });
+
     it('describes the dropdown with its own help, not the name box\u2019s instruction', () => {
       create('0', { usersControl: USERS_CONTROL_COMBO });
       answerRole(role(0));
@@ -2667,9 +2718,18 @@ describe('RoleAssignmentComponent', () => {
       press(DELETE_LABEL);
 
       expect(query('.confirm-dialog')).withContext('the question is asked').not.toBeNull();
-      expect(textIn(query('.confirm-dialog__message')).trim()).toBe(
-        CONFIRM_REMOVAL_MESSAGE,
-      );
+      // ⚠ THE QUESTION IS ASSERTED AS A PREFIX AND THE RECORD BY NAME, WHICH IS STRONGER THAN THE EQUALITY
+      // THIS REPLACES. The body used to be the bare legacy sentence and named nothing - searched against
+      // every identifier on the page it matched none of them - while the dialog is a real modal that covers
+      // the grid, including the row being destroyed. Keeping the sentence as a PREFIX is what still proves
+      // the measured wording survives verbatim; asserting the name is what proves the operator can tell
+      // which record is at risk without seeing the row.
+      const body: string = textIn(query('.confirm-dialog__message')).trim();
+
+      expect(body.startsWith(CONFIRM_REMOVAL_MESSAGE))
+        .withContext(`the measured question, verbatim, at the front of: ${body}`)
+        .toBeTrue();
+      expect(body).toContain('Ada Lovelace');
       expect(query('.confirm-dialog')?.getAttribute('role')).toBe('alertdialog');
       expect(query('.confirm-dialog__button--danger'))
         .withContext('marked destructive')
@@ -3261,12 +3321,16 @@ describe('RoleAssignmentComponent', () => {
     });
 
     /**
-     * ⚠ THE QUALIFIERS MUST NOT WIDEN INTO AN ORDINARY MEMBERSHIP. Most memberships are in force and
-     * carry no bounds at all; a mark on those would be noise on every row and would train a reader to
-     * ignore it on the rows that matter. A membership with NO bounds is `current` by definition — it
-     * has neither lapsed nor is it waiting to start.
+     * ⚠ THE ADVERSE QUALIFIERS MUST NOT WIDEN INTO AN ORDINARY MEMBERSHIP. Most memberships are in force
+     * and carry no bounds at all; stamping `Expired` or `Pending` on those would be noise on every row and
+     * would train a reader to ignore them on the rows that matter. A membership with NO bounds is `current`
+     * by definition — it has neither lapsed nor is it waiting to start.
+     *
+     * R6 did not change that. An unbounded membership still carries nothing whatsoever, because the
+     * screen's older invariant forbids a qualifier beside a cell the date renders empty; only a membership
+     * whose expiry bound is a real painted date is now stated to be in force.
      */
-    it('marks a membership in force with nothing at all', () => {
+    it('marks a membership in force with neither adverse qualifier', () => {
       const lastYear = new Date(Date.now() - 400 * 24 * 60 * 60 * 1000).toISOString();
       const nextYear = new Date(Date.now() + 400 * 24 * 60 * 60 * 1000).toISOString();
 
@@ -3281,6 +3345,109 @@ describe('RoleAssignmentComponent', () => {
         expect(cells.join('|')).not.toContain('Expired');
         expect(cells.join('|')).not.toContain('Pending');
       }
+    });
+
+    /**
+     * R7 — THE ACCESSIBLE NAME MUST SEPARATE THE DATE FROM ITS QUALIFIER. Angular compiles templates with
+     * `preserveWhitespaces` disabled, and these interpolations are bound TIGHT to the block that follows
+     * them (`}}@if`), so there was never any whitespace for the compiler to collapse into a space. The cell
+     * announced one run-together token, measured as `8/28/2026Pending`, while the sibling portal listing
+     * rendered the same shape correctly as `1/1/2020 Expired` purely because its interpolation and the
+     * newline after it happen to share one text node.
+     *
+     *
+     * ⚠ THE ASSERTION PINS U+00A0 RATHER THAN "SOME WHITESPACE", AND THAT PRECISION IS THE FIX. An ordinary
+     * space reaches the DOM but is NOT always handed to a screen reader: where Angular's anchor comments leave
+     * the separator an isolated whitespace-only text node, Blink builds no text box for it, so it never becomes
+     * a StaticText node and name-from-contents concatenates anyway. That was measured through the CDP
+     * Accessibility domain in two independent browsers - with an ordinary space the `--current` cell computed
+     * an accessible name of "9/20/2027Active" while its DOM `textContent` read "9/20/2027 Active", so a spec
+     * asserting only `textContent` passed over a live defect. U+00A0 is not collapsible, always produces a text
+     * box, and therefore always reaches the tree. Matching `\s` here would accept the character that regressed.
+     *
+     * THE SEPARATOR IS THE WHOLE CASE: the date and the word are both present either way.
+     */
+    it('separates a date from its qualifier, rather than running the two together', () => {
+      const nextYear = new Date(Date.now() + 400 * 24 * 60 * 60 * 1000).toISOString();
+      const lastYear = new Date(Date.now() - 400 * 24 * 60 * 60 * 1000).toISOString();
+
+      arrive(0, [
+        membership({ userId: 1, effectiveDate: nextYear, expiryDate: null }),
+        membership({ userId: 2, effectiveDate: null, expiryDate: lastYear }),
+      ]);
+
+      const pendingCell: string = cellsOf(rows()[0])[2] ?? '';
+      const expiredCell: string = cellsOf(rows()[1])[3] ?? '';
+
+      expect(pendingCell).toMatch(/\d\u00a0Pending$/u);
+      expect(pendingCell).not.toMatch(/\dPending/u);
+      expect(expiredCell).toMatch(/\d\u00a0Expired$/u);
+      expect(expiredCell).not.toMatch(/\dExpired/u);
+    });
+
+    /**
+     * R6 — THE THREE STATES MUST BE TOLD APART BY MORE THAN THE PRESENCE OF A WORD. Both qualifiers shared
+     * ONE class, so a membership that had merely not started yet was painted in the danger colour at bold
+     * weight exactly like one that had lapsed: two adverse-looking rows, with colour carrying nothing that
+     * distinguished them.
+     *
+     * The classes are what this asserts, because they are what carries the treatment; the words are asserted
+     * beside them so the distinction is never resting on colour alone.
+     */
+    it('gives a lapsed and a not-yet-started membership DIFFERENT treatments', () => {
+      const nextYear = new Date(Date.now() + 400 * 24 * 60 * 60 * 1000).toISOString();
+      const lastYear = new Date(Date.now() - 400 * 24 * 60 * 60 * 1000).toISOString();
+
+      arrive(0, [
+        membership({ userId: 1, effectiveDate: nextYear, expiryDate: null }),
+        membership({ userId: 2, effectiveDate: null, expiryDate: lastYear }),
+      ]);
+
+      const pendingMark: Element | null = rows()[0].querySelector(
+        '.role-assignment__lifecycle--pending',
+      );
+      const expiredMark: Element | null = rows()[1].querySelector(
+        '.role-assignment__lifecycle--expired',
+      );
+
+      expect(pendingMark).withContext('the not-yet-started state has its own treatment').not.toBeNull();
+      expect(expiredMark).withContext('the lapsed state has its own treatment').not.toBeNull();
+      expect(rows()[0].querySelector('.role-assignment__lifecycle--expired'))
+        .withContext('and neither borrows the other\'s')
+        .toBeNull();
+      expect(rows()[1].querySelector('.role-assignment__lifecycle--pending'))
+        .toBeNull();
+    });
+
+    /**
+     * R6 — A MEMBERSHIP IN FORCE WITH A REAL BOUND SAYS SO. Two painted future dates, one lapsed and one
+     * still running, previously differed by the presence or absence of a word, so "in force" and "this
+     * console reached no judgement" rendered identically.
+     */
+    it('states that a membership with a painted expiry bound is in force', () => {
+      const nextYear = new Date(Date.now() + 400 * 24 * 60 * 60 * 1000).toISOString();
+
+      arrive(0, [membership({ effectiveDate: null, expiryDate: nextYear })]);
+
+      const row: HTMLTableRowElement = rows()[0];
+
+      expect(cellsOf(row)[3]).toMatch(/\d\u00a0Active$/u);
+      expect(row.querySelector('.role-assignment__lifecycle--current')).not.toBeNull();
+    });
+
+    /**
+     * THE GATE, AND THE CASE THAT DISCRIMINATES IT. The screen's older invariant — no qualifier beside a
+     * cell the date renders empty — outranks the new word, so an unbounded membership keeps its empty
+     * cell. An implementation that stated "Active" for every `current` row would satisfy the case above and
+     * fail this one, by putting a lone word where a date belongs.
+     */
+    it('does NOT claim a membership is in force when it has no expiry bound to qualify', () => {
+      arrive(0, [membership({ effectiveDate: null, expiryDate: null })]);
+
+      const cells = cellsOf(rows()[0]);
+
+      expect(cells[3]).toBe('');
+      expect(cells.join('|')).not.toContain('Active');
     });
 
     /**
@@ -3341,7 +3508,18 @@ describe('RoleAssignmentComponent', () => {
 
       // Machine-independent because `LOCALE_ID` is pinned in the harness above.
       expect(cells[2]).toBe(EXPIRY_DATE_RENDERED);
-      expect(cells[3]).toBe(PERPETUAL_DATE_RENDERED);
+      // R6 — the bound is painted rather than blanked, which is what this case exists to prove, AND it is
+      // now qualified as in force: a painted future bound and a painted lapsed one used to differ only by
+      // the presence of a word, so "in force" was indistinguishable from "not judged".
+      //
+      // ⚠ THE SEPARATOR IS U+00A0, NOT AN ORDINARY SPACE, AND THIS LITERAL PINS IT DELIBERATELY. An ordinary
+      // space reaches the DOM but is dropped from the ACCESSIBILITY TREE wherever Angular's anchor comments
+      // leave it an isolated whitespace-only text node - Blink builds no text box for one, so it never
+      // becomes a StaticText node and the accessible name concatenates regardless. Measured through the CDP
+      // Accessibility domain in two browsers: this very cell computed "9/20/2027Active" while its DOM read
+      // "9/20/2027 Active". Which whitespace character appears here is incidental to what THIS case exists
+      // to prove, but writing a plain space would silently readmit the regression.
+      expect(cells[3]).toBe(`${PERPETUAL_DATE_RENDERED}\u00a0Active`);
     });
 
     /**

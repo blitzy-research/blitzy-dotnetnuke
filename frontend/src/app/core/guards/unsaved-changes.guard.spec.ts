@@ -14,6 +14,7 @@ import {
   DISCARD_CHANGES_PROMPT,
   UNSAVED_CHANGES_PROMPT,
   UnsavedChangesTracker,
+  confirmDiscardUnsavedChanges,
   activeRouteGuardsUnsavedChanges,
   unsavedChangesGuard,
 } from './unsaved-changes.guard';
@@ -469,6 +470,116 @@ describe('unsavedChangesGuard, through the mounted-screen tracker', () => {
     expect(confirmSpy).not.toHaveBeenCalled();
   });
 
+  // -----------------------------------------------------------------------------------------------------
+  // ASKING BEFORE ACTING
+  // -----------------------------------------------------------------------------------------------------
+
+  // ⚠ THE MEASURED DEFECT THESE PROVE CLOSED. Logout discarded a dirty form in SILENCE while navigating
+  // from the very same form raised the confirmation. The cause was ordering rather than a missing gate: the
+  // shell revoked the credential and tore the session down BEFORE the router could reach `canDeactivate`, so
+  // the question either arrived too late to be answerable or could be answered "no" and leave the operator
+  // holding unsaved work on a screen whose session had already ended.
+
+  describe('a caller that must ask before it acts', () => {
+    it('lets a clean application through without asking anything', () => {
+      expect(tracker.confirmDiscard()).toBeTrue();
+      expect(confirmSpy)
+        .withContext('nothing is at stake, so nothing is asked')
+        .not.toHaveBeenCalled();
+    });
+
+    it('asks the SAME question the router would ask, and reports the answer', () => {
+      const host = TestBed.createComponent(ProbeHostComponent);
+
+      host.componentInstance.dirty = true;
+
+      expect(tracker.confirmDiscard()).toBeTrue();
+      expect(confirmSpy).toHaveBeenCalledOnceWith(UNSAVED_CHANGES_PROMPT);
+    });
+
+    it('refuses the caller when the operator declines, so nothing irreversible happens', () => {
+      const host = TestBed.createComponent(ProbeHostComponent);
+
+      host.componentInstance.dirty = true;
+      confirmSpy.and.returnValue(false);
+
+      expect(tracker.confirmDiscard())
+        .withContext('declining must abandon the whole gesture, not merely the navigation')
+        .toBeFalse();
+    });
+
+    it('does not ask twice: the router admits the departure the operator already consented to', () => {
+      const host = TestBed.createComponent(ProbeHostComponent);
+
+      host.componentInstance.dirty = true;
+
+      expect(tracker.confirmDiscard()).toBeTrue();
+      expect(confirmSpy).toHaveBeenCalledTimes(1);
+
+      expect(runGuard())
+        .withContext('the navigation that follows carries the answer already given')
+        .toBeTrue();
+      expect(confirmSpy)
+        .withContext('and asks nothing further')
+        .toHaveBeenCalledTimes(1);
+    });
+
+    it('records the answer for ONE departure only, so consent cannot be reused', () => {
+      const host = TestBed.createComponent(ProbeHostComponent);
+
+      host.componentInstance.dirty = true;
+
+      expect(tracker.confirmDiscard()).toBeTrue();
+      expect(runGuard()).toBeTrue();
+
+      // A second, unrelated departure is a new question.
+      expect(runGuard()).toBeTrue();
+      expect(confirmSpy)
+        .withContext('the second departure is challenged on its own account')
+        .toHaveBeenCalledTimes(2);
+    });
+
+    it('leaves no consent behind when the operator declined', () => {
+      const host = TestBed.createComponent(ProbeHostComponent);
+
+      host.componentInstance.dirty = true;
+      confirmSpy.and.returnValue(false);
+
+      expect(tracker.confirmDiscard()).toBeFalse();
+
+      confirmSpy.calls.reset();
+      confirmSpy.and.returnValue(false);
+
+      expect(runGuard())
+        .withContext('a refusal grants nothing, so the next departure is still challenged')
+        .toBeFalse();
+      expect(confirmSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not leave a stale consent behind when the departure never happens', () => {
+      const host = TestBed.createComponent(ProbeHostComponent);
+
+      host.componentInstance.dirty = true;
+
+      expect(tracker.confirmDiscard()).toBeTrue();
+
+      // The gesture is abandoned before any navigation, and the screen is edited again.
+      host.componentInstance.dirty = false;
+
+      expect(runGuard())
+        .withContext('a clean application leaves freely; the record is consumed here')
+        .toBeTrue();
+
+      host.componentInstance.dirty = true;
+      confirmSpy.calls.reset();
+
+      expect(runGuard()).toBeTrue();
+      expect(confirmSpy)
+        .withContext('and the next dirty departure is challenged rather than waved through')
+        .toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('treats a probe that throws as clean rather than turning a navigation into an error', () => {
     TestBed.runInInjectionContext(() => {
       tracker.watch(() => {
@@ -495,5 +606,28 @@ describe('unsavedChangesGuard, through the mounted-screen tracker', () => {
     expect(tracker.isDirty()).toBeTrue();
     expect(runGuard()).toBeTrue();
     expect(confirmSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Specification for {@link confirmDiscardUnsavedChanges}, the one place the discard question is asked.
+ *
+ * ⚠ EXPORTED BECAUSE A SECOND CALLER NEEDED IT, AND THAT CALLER IS WHY IT IS COVERED HERE. Measured on the
+ * profile screen, the in-form Cancel button discarded unsaved entry in silence while the sidebar and the
+ * browser's Back button beside it both refused until the operator confirmed. Both paths now put THIS question,
+ * so a change to the sentence cannot reach one exit and miss the other.
+ */
+describe('confirmDiscardUnsavedChanges', () => {
+  it('puts the shared sentence and reports acceptance', () => {
+    const asked = spyOn(globalThis, 'confirm').and.returnValue(true);
+
+    expect(confirmDiscardUnsavedChanges()).toBeTrue();
+    expect(asked).toHaveBeenCalledOnceWith(DISCARD_CHANGES_PROMPT);
+  });
+
+  it('reports a refusal as a refusal, so the caller keeps the entry', () => {
+    spyOn(globalThis, 'confirm').and.returnValue(false);
+
+    expect(confirmDiscardUnsavedChanges()).toBeFalse();
   });
 });

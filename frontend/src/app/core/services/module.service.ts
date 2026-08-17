@@ -7,6 +7,7 @@ import {
   decodeModuleDefinition,
   decodeModuleDetail,
   decodeModuleListItem,
+  decodeModulePermissionGrid,
   decodeModuleSettingsBag,
 } from '../models/module.model';
 import {
@@ -16,7 +17,12 @@ import {
   envelopeOf,
   pageOf,
 } from '../utils/decode.util';
-import { moduleListParams, modulePlacementParams } from '../utils/http-params.util';
+import {
+  carriesModuleSearchText,
+  moduleListParams,
+  moduleSearchBody,
+  modulePlacementParams,
+} from '../utils/http-params.util';
 import { presentedInContext } from './notification.service';
 
 import type { HttpParams } from '@angular/common/http';
@@ -34,6 +40,8 @@ import type {
   ModuleExportRequest,
   ModuleImportRequest,
   ModuleListPage,
+  ModulePermissionGrid,
+  ModulePermissionReplacement,
   ModuleSettingsBag,
   UpdateModuleRequest,
 } from '../models/module.model';
@@ -52,6 +60,9 @@ const MODULE_DEFINITION_LIST_RESPONSE: Decoder<readonly ModuleDefinition[]> = en
   arrayOf(decodeModuleDefinition),
 );
 const MODULE_DEFINITION_RESPONSE: Decoder<ModuleDefinition> = envelopeOf(decodeModuleDefinition);
+const MODULE_PERMISSIONS_RESPONSE: Decoder<ModulePermissionGrid> = envelopeOf(
+  decodeModulePermissionGrid,
+);
 
 /**
  * Typed transport for the module placement and module definition endpoints. ONE METHOD, ONE ENDPOINT, ONE
@@ -76,6 +87,19 @@ export class ModuleService {
     request: PagedRequestParams,
     filter?: ModuleListFilter | null,
   ): Observable<ModuleListPage> {
+    // ⚠ THE TRANSPORT IS CHOSEN BY WHETHER THE QUERY CARRIES A TERM A PERSON TYPED, AND THIS BRANCH MUST
+    // NOT BE COLLAPSED TO ONE CALL. A query string is written into the reverse proxy's access log and into
+    // the API's own request log; a search term is content the caller chose, while a page index, a page size,
+    // an ordering, a page restriction and a recycle-bin flag are not. The account listing had already
+    // settled this the same way, and the two listings disagreeing was the whole of the defect.
+    if (carriesModuleSearchText(request)) {
+      return this.http
+        .post<unknown>(API_ENDPOINTS.modules.search(), moduleSearchBody(request, filter), {
+          context: presentedInContext(),
+        })
+        .pipe(map((body) => decodeResponse(MODULE_PAGE, body)));
+    }
+
     const params: HttpParams = moduleListParams(request, filter);
 
     // The paged listing is the one endpoint here whose body IS the envelope, so no payload member is lifted
@@ -198,6 +222,39 @@ export class ModuleService {
 
     return this.http.put<void>(API_ENDPOINTS.modules.settings(moduleId), settings, {
       params,
+      context: presentedInContext(),
+    });
+  }
+
+  /**
+   * Reads one module's grant grid. `GET /modules/{moduleId}/permissions`.
+   *
+   * @param moduleId The module whose grants to read.
+   * @returns The columns, the role and account rows, and the state of every cell.
+   */
+  getModulePermissions(moduleId: number): Observable<ModulePermissionGrid> {
+    return this.http
+      .get<unknown>(API_ENDPOINTS.modules.permissions(moduleId), {
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(MODULE_PERMISSIONS_RESPONSE, body)));
+  }
+
+  /**
+   * Replaces one module's grant grid. `PUT /modules/{moduleId}/permissions`, answering `204` with no body.
+   *
+   * ⚠ A REPLACE, NOT A MERGE: a grant absent from the payload is withdrawn, and the inheritance switch is
+   * written in the same commit as the grants.
+   *
+   * @param moduleId The module whose grants to replace.
+   * @param replacement The complete grant state, and the state of the inheritance switch.
+   * @returns Completion, with no payload.
+   */
+  replaceModulePermissions(
+    moduleId: number,
+    replacement: ModulePermissionReplacement,
+  ): Observable<void> {
+    return this.http.put<void>(API_ENDPOINTS.modules.permissions(moduleId), replacement, {
       context: presentedInContext(),
     });
   }

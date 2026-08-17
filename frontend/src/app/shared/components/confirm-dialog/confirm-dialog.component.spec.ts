@@ -7,6 +7,8 @@ import { TestBed, type ComponentFixture } from '@angular/core/testing';
 import { ChangeDetectionStrategy, Component, type Type } from '@angular/core';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { NavigationStart, Router } from '@angular/router';
+import { Subject } from 'rxjs';
 
 import { ConfirmDialogComponent } from './confirm-dialog.component';
 
@@ -355,6 +357,9 @@ class FocusTargetFreeDialogComponent extends ConfirmDialogComponent {}
 // ---------------------------------------------------------------------------
 
 describe('ConfirmDialogComponent', () => {
+  /** The navigation stream handed to the component in place of a router, driven directly by this suite. */
+  let navigations: Subject<NavigationStart>;
+
   /** Every fixture created during a specification, torn down afterwards. */
   let fixtures: ComponentFixture<unknown>[] = [];
 
@@ -375,6 +380,8 @@ describe('ConfirmDialogComponent', () => {
   let httpMock: HttpTestingController;
 
   beforeEach(async () => {
+    navigations = new Subject<NavigationStart>();
+
     await TestBed.configureTestingModule({
       imports: [
         ConfirmDialogComponent,
@@ -390,7 +397,21 @@ describe('ConfirmDialogComponent', () => {
       // The real client is registered FIRST and the testing backend SECOND, which is the documented order:
       // the testing backend replaces the real backend's transport while leaving the rest of the client
       // intact.
-      providers: [provideHttpClient(), provideHttpClientTesting()],
+      // ⚠ A ROUTER STAND-IN IS REGISTERED FOR EVERY SPECIFICATION IN THIS SUITE, NOT ONLY THE NAVIGATION
+      // ONES. The component watches navigations so it cannot outlive the screen that raised it, and giving
+      // every fixture the same stream means the other specifications also prove that the watch does nothing
+      // until a navigation actually begins - a subscription that misfired would settle a dialog under a
+      // suite that never navigates, and that would surface here rather than in the browser.
+      //
+      // A stream this suite owns is used rather than a real router because the observable is what the
+      // component consumes: driving it directly makes the moment of the navigation exact, where a real
+      // `navigateByUrl` would make it depend on a route table and a transition schedule that have nothing to
+      // do with what is under test.
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        { provide: Router, useValue: { events: navigations } },
+      ],
     }).compileComponents();
 
     fixtures = [];
@@ -1118,6 +1139,82 @@ describe('ConfirmDialogComponent', () => {
   // =========================================================================
   //  8. DISMISSALS THE PLATFORM ORIGINATES
   // =========================================================================
+  describe('dismissal when the screen navigates away', () => {
+    /** A navigation beginning, as the router would report it. */
+    function beginNavigation(url = '/elsewhere'): void {
+      navigations.next(new NavigationStart(1, url));
+    }
+
+    it('dismisses when a navigation begins', () => {
+      // ⚠ THE MEASURED DEFECT, AND WHY TEARDOWN DID NOT ALREADY COVER IT. With the confirmation open on
+      // `/users?searchby=all`, browser Back reached `/users` - the SAME route with different query
+      // parameters - so Angular RETAINED the listing component, `ngOnDestroy` never ran, and the modal
+      // survived still `open`, still `:modal`, still holding focus on Cancel, with the scroll lock intact on
+      // the document element, over a list that no longer contained the record. `focus()` on a link outside it
+      // did not move focus at all. The confirming affordance stayed live the whole time.
+      const fixture = createDialog();
+      const outcomes = observeOutcomes(fixture);
+
+      expect(outcomes.cancelled()).withContext('nothing before the navigation').toBe(0);
+
+      beginNavigation();
+
+      expect(outcomes.cancelled()).withContext('dismissed by the navigation').toBe(1);
+      expect(outcomes.confirmed()).withContext('and never confirmed by it').toBe(0);
+    });
+
+    it('dismisses once however many navigations follow', () => {
+      const fixture = createDialog();
+      const outcomes = observeOutcomes(fixture);
+
+      beginNavigation('/first');
+      beginNavigation('/second');
+      beginNavigation('/third');
+
+      expect(outcomes.cancelled()).toBe(1);
+    });
+
+    it('does not turn a completed confirmation into a dismissal', () => {
+      // ⚠ THE NARROWING CASE, and the one that would do real damage if it failed. Confirming a deletion
+      // navigates on success, so the navigation this watch reacts to is the OUTCOME of the confirmation on
+      // most screens - and reporting a cancel after a confirm would tell the consumer to abandon an action it
+      // has already started.
+      const fixture = createDialog();
+      const outcomes = observeOutcomes(fixture);
+
+      confirmButtonOf(fixture).click();
+
+      expect(outcomes.confirmed()).withContext('precondition').toBe(1);
+
+      beginNavigation();
+
+      expect(outcomes.cancelled()).withContext('the navigation must add nothing').toBe(0);
+      expect(outcomes.confirmed()).toBe(1);
+    });
+
+    it('does not turn a dismissal into a second dismissal', () => {
+      const fixture = createDialog();
+      const outcomes = observeOutcomes(fixture);
+
+      cancelButtonOf(fixture).click();
+      beginNavigation();
+
+      expect(outcomes.cancelled()).toBe(1);
+    });
+
+    it('stops watching once the dialog is gone', () => {
+      // A stream that outlived the component would settle a dialog that no longer exists, and on a screen
+      // mounting two dialogs would settle the wrong one.
+      const fixture = createDialog();
+      const outcomes = observeOutcomes(fixture);
+
+      fixture.destroy();
+      beginNavigation();
+
+      expect(outcomes.cancelled()).withContext('teardown already reported its own outcome').toBe(0);
+    });
+  });
+
   describe('dismissals the platform originates', () => {
     it('cancels when a click lands on the backdrop', () => {
       const fixture = createDialog();
@@ -2182,4 +2279,192 @@ describe('ConfirmDialogComponent', () => {
       expect(document.documentElement.classList.contains(LOCK_CLASS)).toBeFalse();
     });
   });
+  // ---------------------------------------------------------------------------------------------------
+  // THE INITIAL FOCUS INDICATOR
+  // ---------------------------------------------------------------------------------------------------
+
+  describe('the focus indicator on the control it focuses itself', () => {
+    /**
+     * Every selector in the component's own stylesheet that paints a focus outline on the dialog's two
+     * affordances, with the emulated encapsulation attribute stripped so the selectors read as authored.
+     */
+    function focusOutlineSelectors(): readonly string[] {
+      const found: string[] = [];
+
+      for (const sheet of Array.from(document.styleSheets)) {
+        let rules: CSSRuleList;
+
+        try {
+          rules = sheet.cssRules;
+        } catch {
+          continue;
+        }
+
+        for (const rule of Array.from(rules)) {
+          if (!(rule instanceof CSSStyleRule)) {
+            continue;
+          }
+
+          const selector = rule.selectorText.replace(/\[_ngcontent-[^\]]+\]/g, '');
+
+          if (!selector.includes('confirm-dialog__button')) {
+            continue;
+          }
+
+          // ⚠ READ THE SHORTHAND, NOT THE LONGHAND. The ring is declared as
+          // `outline: var(--focus-ring-width) var(--border-style) var(--focus-ring-color)`, and a shorthand
+          // whose value contains `var()` cannot be expanded by the CSSOM - every longhand getter returns
+          // the empty string and only the shorthand carries the text.
+          if (rule.style.getPropertyValue('outline').trim().length > 0) {
+            found.push(selector.replace(/\s+/g, ' ').trim());
+          }
+        }
+      }
+
+      return found;
+    }
+
+    it('paints the ring on PLAIN :focus as well as on :focus-visible', () => {
+      // ⚠ THE STYLESHEET IS ONLY IN THE DOCUMENT ONCE THE COMPONENT HAS BEEN INSTANTIATED, so the sweep
+      // below would find nothing at all without this.
+      const fixture = createDialog();
+
+      // ⚠ MEASURED DEFECT: this dialog moves focus itself, onto the cancelling affordance, so that an
+      // immediate Enter cannot destroy anything. A dialog opened by CLICKING leaves the browser's last input
+      // modality set to pointer, and `:focus-visible` matches from the last modality - so the dialog
+      // presented NO visible focus at all until the reader pressed Tab, while having taken focus away from
+      // the page. Asserted from the stylesheet rather than from a rendered box because a headless run cannot
+      // set the modality a real pointer sets.
+      const selectors = focusOutlineSelectors();
+
+      expect(selectors.length).withContext('the action carries a focus ring at all').toBeGreaterThan(0);
+      expect(selectors.some((selector) => /:focus(?!-visible)/.test(selector)))
+        .withContext('a ring that a script-moved focus will also show')
+        .toBeTrue();
+      expect(selectors.some((selector) => selector.includes(':focus-visible')))
+        .withContext('and the keyboard-only ring is kept as well')
+        .toBeTrue();
+
+      fixture.destroy();
+    });
+
+    it('has actually moved focus onto the cancelling affordance when it opens', () => {
+      // The other half of the same guarantee: a ring that is always painted is only useful if focus is
+      // really inside the dialog.
+      const fixture = createDialog();
+
+      expect(document.activeElement).toBe(cancelButtonOf(fixture));
+
+      fixture.destroy();
+    });
+  });
+  // ⚠ MINOR (interaction placement) — the centred frame covered the record it was asking about.
+  describe('where the frame sits over the screen behind it', () => {
+    /**
+     * The LAYOUT viewport, which is what `margin: auto` centres a fixed frame within.
+     *
+     * ⚠ `window.innerWidth` IS THE WRONG MEASUREMENT HERE, and the first version of the centring assertion
+     * below failed by exactly 7.5 pixels because of it: `innerWidth` counts the classic scrollbar and the
+     * initial containing block does not, so half a scrollbar showed up as an apparent off-centre frame.
+     *
+     * @returns The viewport width and height in pixels, excluding any classic scrollbar.
+     */
+    function layoutViewport(): { width: number; height: number } {
+      return {
+        width: document.documentElement.clientWidth,
+        height: document.documentElement.clientHeight,
+      };
+    }
+
+    /**
+     * Resolves a CSS length expression to pixels by letting the browser do it.
+     *
+     * A custom property comes back as authored - `2.5rem`, `90vh` - so parsing one yields a number in the
+     * wrong unit. Assigning it to a real element and measuring the result is the only reliable conversion.
+     *
+     * @param expression The length expression, which may reference custom properties.
+     * @returns The resolved length in pixels.
+     */
+    function resolvedLength(expression: string): number {
+      const probe: HTMLDivElement = document.createElement('div');
+      probe.style.blockSize = expression;
+      document.body.appendChild(probe);
+      const resolved: number = probe.getBoundingClientRect().height;
+      probe.remove();
+
+      return resolved;
+    }
+
+    /** The offset the frame is anchored by. */
+    function anchorOffset(): number {
+      return resolvedLength('var(--space-8)');
+    }
+
+    it('anchors near the top of the viewport instead of over the middle of the screen', () => {
+      const fixture = createDialog();
+      const bounds: DOMRect = dialogOf(fixture).getBoundingClientRect();
+
+      // Self-validating: a frame that measured zero would satisfy any placement assertion.
+      expect(bounds.width).toBeGreaterThan(0);
+      expect(bounds.height).toBeGreaterThan(0);
+
+      // ⚠ THE DISCRIMINATING COMPARISON IS AGAINST WHERE CENTRING WOULD HAVE PUT IT. Asserting a small
+      // `top` alone would pass on a short viewport where the centre is near the top anyway; asserting only
+      // "not centred" would pass if the frame were pushed off the BOTTOM. Both are stated.
+      const centredTop: number = (layoutViewport().height - bounds.height) / 2;
+
+      expect(bounds.top).withContext('above where centring would place it').toBeLessThan(centredTop);
+      expect(bounds.top).withContext('anchored by the declared offset').toBeCloseTo(anchorOffset(), 0);
+    });
+
+    it('keeps the frame horizontally centred, so this is a reposition and not a redesign', () => {
+      const fixture = createDialog();
+      const dialog = dialogOf(fixture);
+      const resolved: CSSStyleDeclaration = getComputedStyle(dialog);
+      const left: number = Number.parseFloat(resolved.marginLeft);
+      const right: number = Number.parseFloat(resolved.marginRight);
+
+      // ⚠ CENTRING IS ASSERTED FROM THE FRAME'S OWN RESOLVED MARGINS, NOT FROM THE VIEWPORT, AND MEASURING
+      // IT THE OTHER WAY IS WHAT MADE THE FIRST VERSION OF THIS SPECIFICATION FAIL AGAINST CORRECT CODE. The
+      // comparison was against `documentElement.clientWidth`, which read 765 while the containing block for
+      // this fixed frame was 750: the scroll lock reserves the scrollbar gutter rather than letting the page
+      // jump when the dialog opens, so the two differ by exactly the 15-pixel gutter and the frame appeared
+      // 7.5 pixels off-centre when its own margins were 211.719 and 211.734 - equal to within a sub-pixel.
+      // Two auto margins resolving equal IS what centred means, and it needs no viewport measurement at all.
+      expect(left).toBeCloseTo(right, 0);
+
+      // The narrowing. Equal margins of zero would also satisfy the comparison above while describing a frame
+      // stretched edge to edge, so the centring is required to be doing actual work.
+      expect(left).withContext('the frame is centred rather than stretched').toBeGreaterThan(0);
+
+      // And the inline insets are what let those auto margins centre it, so they are pinned too.
+      expect(Number.parseFloat(resolved.left)).toBe(0);
+      expect(Number.parseFloat(resolved.right)).toBe(0);
+    });
+
+    it('still fits inside the viewport once the offset is taken out of the height cap', () => {
+      const fixture = createDialog();
+      const dialog = dialogOf(fixture);
+
+      // ⚠ THE COMPARISON IS AGAINST THE UNADJUSTED TOKEN, AND A TEETH CHECK IS WHY. The first version of
+      // this specification asserted only that the cap plus the offset fitted inside the viewport - and
+      // reverting the adjustment left it green, because the unadjusted cap is 90% of the viewport and 90% plus
+      // a 40-pixel offset still fits inside any viewport taller than 390. It was true and vacuous. What the
+      // two implementations disagree about is whether the offset was taken OUT of the cap, so that is measured
+      // directly: a frame long enough to reach the cap has to fit BELOW the offset, not merely somewhere.
+      const cap: number = Number.parseFloat(getComputedStyle(dialog).maxBlockSize);
+      const unadjusted: number = resolvedLength('var(--dialog-max-block-size)');
+      const offset: number = anchorOffset();
+
+      expect(unadjusted).withContext('the height token resolves').toBeGreaterThan(0);
+      expect(offset).withContext('the anchor offset resolves').toBeGreaterThan(0);
+      expect(cap).toBeCloseTo(unadjusted - offset, 0);
+
+      // And the outcome that adjustment exists to produce.
+      expect(cap + offset)
+        .withContext('the cap plus the offset stays within the viewport')
+        .toBeLessThanOrEqual(layoutViewport().height + 1);
+    });
+  });
+
 });

@@ -92,6 +92,40 @@ public sealed class PortalsController : ControllerBase
         return this.CompletePage(outcome);
     }
 
+    /// <summary>Lists the installation's portals, taking every filter from the request body.</summary>
+    /// <param name="request">Paging, sorting and filtering arguments, bound from the body.</param>
+    /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
+    /// <returns>A page of portals.</returns>
+    /// <remarks>
+    /// ⚠ THIS EXISTS FOR A PRIVACY REASON, NOT AN ERGONOMIC ONE, AND IS THE ADDRESS THE APPLICATION USES.
+    /// The sibling <c>GET</c> bound TWO caller-chosen terms from the query string - the free-text term and
+    /// the site-name filter - so both were written into the request line that the reverse proxy's access log
+    /// and this application's own request log record. The account listing had already settled this the same
+    /// way. The <c>GET</c> is retained for a term-free read and delegates to the identical service call, so
+    /// the two transports cannot answer differently.
+    /// </remarks>
+    [HttpPost("search")]
+    [Authorize(Policy = PolicyNames.HostAdministrator)]
+    [TenantOptional(
+        "Enumerates every portal in the installation and must work on an installation that has none, where no "
+        + "alias can resolve; restricted to host accounts.")]
+    [ProducesResponseType(typeof(PagedResponse<PortalListItemDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    public async Task<ActionResult<PagedResponse<PortalListItemDto>>> SearchAsync(
+        [FromBody] PortalSearchRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        Result<PagedResult<PortalListItemDto>> outcome = await _portalService
+            .ListPortalsAsync(request, request.Name, cancellationToken)
+            .ConfigureAwait(false);
+
+        return this.CompletePage(outcome);
+    }
+
     /// <summary>Reads one portal in full.</summary>
     /// <param name="portalId">The portal identifier.</param>
     /// <param name="cancellationToken">Abandons the read when the caller disconnects.</param>

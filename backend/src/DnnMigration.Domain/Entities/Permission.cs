@@ -1,5 +1,4 @@
 using DnnMigration.Domain.Common;
-using DnnMigration.Domain.Enums;
 
 namespace DnnMigration.Domain.Entities;
 
@@ -65,12 +64,31 @@ public sealed class Permission : Entity<int>
     /// <summary>Gets or sets the action this catalogue entry names.</summary>
     /// <value>The <c>PermissionKey</c> column, whose terminal declaration is <c>varchar(50) NOT NULL</c>.</value>
     /// <remarks>
-    /// <b>persist the member identifier, never the ordinal.</b> The column is text, so the Infrastructure
-    /// configuration must apply an explicit string value conversion that writes exactly <c>VIEW</c>,
-    /// <c>EDIT</c>, <c>READ</c> or <c>WRITE</c> - the enumeration's own member identifiers, which are what
-    /// a production database already contains - and reads the same spellings back.
+    /// <para>
+    /// MIGRATION: <b>a plain <see cref="string"/> and NOT the <see cref="Enums.PermissionKey"/>
+    /// enumeration</b> - the same decision already taken for <see cref="PermissionCode"/> above, and taken
+    /// here for the same reason. The column is <c>varchar(50) NOT NULL</c> with NO check constraint and no
+    /// lookup foreign key: it was created <c>varchar(20)</c> (<c>02.02.00.SqlDataProvider</c> line 688) and
+    /// deliberately WIDENED to fifty characters (<c>04.06.00.SqlDataProvider</c> line 398, comment
+    /// "enlarge permission key field"), with <c>AddPermission</c> accepting <c>@PermissionKey varchar(50)</c>
+    /// from line 407 onward. The legacy property this replaces is likewise declared
+    /// <c>Public Property PermissionKey() As String</c>
+    /// (<c>Library/Components/Security/Permissions/Permission.vb</c> line 69). DotNetNuke's extensibility
+    /// model has a third-party module register its own keys at install time through that very procedure, so
+    /// an installation this migration has never seen can already hold a key outside the four the upgrade
+    /// chain seeds - and it must round-trip intact rather than fail to materialise.
+    /// </para>
+    /// <para>
+    /// The four keys the upgrade chain does seed - <c>VIEW</c>, <c>EDIT</c>, <c>READ</c> and <c>WRITE</c> -
+    /// remain named members of <see cref="Enums.PermissionKey"/>, which stays the closed vocabulary that
+    /// authorisation policies, permission requirements and service parameters are written against. The
+    /// enumeration is therefore the set of keys THIS SOLUTION can ask about, never a claim about the set of
+    /// keys the column can HOLD. Match a stored spelling against a member with
+    /// <see cref="StringComparison.OrdinalIgnoreCase"/>, because the column's collation is
+    /// case-insensitive.
+    /// </para>
     /// </remarks>
-    public PermissionKey PermissionKey { get; set; }
+    public string PermissionKey { get; set; } = string.Empty;
 
     /// <summary>
     /// Gets or sets the human-readable name of the action, as the legacy permission grids showed it.

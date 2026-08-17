@@ -265,6 +265,17 @@ function controlMessages(
 }
 
 /** Creates a role group. Reached at `role-groups/new` and nowhere else. */
+/**
+ * THE SUBTITLE, UNDER THE APPLICATION'S ONE SUBTITLE RULE. Every screen's header carries exactly one
+ * subtitle stating that screen's SCOPE: the record it acts on when the title does not already name it,
+ * and otherwise what the screen is for, in one line. It never carries a status, a count or a progress
+ * readout - those belong to the live region that owns them, and a count in two places is two owners of
+ * one fact. Measured finding: subtitles appeared on ten of the twenty screens and carried three
+ * different kinds of thing, so a reader could not tell what the slot was for.
+ */
+const PAGE_SUBTITLE =
+  'A group collects related security roles under one name.';
+
 @Component({
   selector: 'app-role-group-form',
   standalone: true,
@@ -290,9 +301,19 @@ export class RoleGroupFormComponent {
    * navigation: Cancel, an in-application link and the browser's Back button are navigations a route
    * guard can refuse, while closing or reloading the tab is not, and only the browser's own unload prompt
    * covers that - which needs the dirty state at an arbitrary moment rather than at a navigation.
+   *
+   * ⚠ THE BUSY EXCLUSION WAS REMOVED, AND ITS REMOVAL CLOSES A MEASURED HOLE. This predicate used to read
+   * `dirty && busy === false`, which reported the screen CLEAN for exactly as long as a write was in flight -
+   * so navigating away mid-save was admitted in silence, the departure destroyed the component, and
+   * `takeUntilDestroyed` cancelled the request. The operator lost the write and was told nothing. A form
+   * holding an unfinished write is the LEAST safe moment to leave, not the safest.
+   *
+   * The exclusion was written to stop the application's OWN post-save navigation being challenged, and that
+   * case is already covered properly: every success path replaces the address imperatively, which
+   * `unsavedChangesGuard` admits explicitly. Nothing here has to approximate it a second time.
    */
   private readonly unsavedEntry = inject(UnsavedChangesTracker).watch(
-    () => this.form.dirty && this.store.saving() === false,
+    () => this.form.dirty,
   );
   /**
    * The shared role state, and the only route to the API from this screen. The transport is deliberately
@@ -348,6 +369,9 @@ export class RoleGroupFormComponent {
 
   // The wording and limits the template binds, exposed rather than repeated as literals so
   // that the rendered screen and the specification read the same constants.
+
+  /** The one-line scope statement shown beneath the title. */
+  readonly pageSubtitle = PAGE_SUBTITLE;
 
   readonly pageTitle = ROLE_GROUP_FORM_TITLE;
 

@@ -1,3 +1,4 @@
+using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Application.Dtos.Tab;
 using DnnMigration.Domain.Common;
 
@@ -24,22 +25,41 @@ namespace DnnMigration.Application.Abstractions;
 public interface ITabService
 {
     /// <summary>
-    /// Lists every page belonging to one portal, as a flat sequence ordered for hierarchical display.
+    /// Lists one page of the pages belonging to one portal, as a flat sequence ordered for hierarchical
+    /// display.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Serves <c>GET /api/v1/portals/{id}/tabs</c>. This single member replaces six legacy read members:
     /// <c>GetTabs</c>, the two <c>GetAllTabs</c> overloads, the two <c>GetTabsByParentId</c> overloads and
     /// <c>GetTabsByPortal</c>.
+    /// </para>
+    /// <para>
+    /// <b>Paged, because a portal's page tree is unbounded by nature.</b> A tenant legitimately holds
+    /// thousands of pages, and an unpaged listing made the response grow linearly with tenant configuration
+    /// with nothing a caller could do about it. The page is cut from the pages this caller may act on, so the
+    /// reported total is the size of the collection the caller is paging rather than the tenant's raw count.
+    /// </para>
     /// </remarks>
     /// <param name="portalId">Identifier of the portal whose pages are requested, taken from the route.</param>
+    /// <param name="request">
+    /// The page of the collection to return. The sort field and the filter are refused by
+    /// <c>TabPagedRequestValidator</c> before this member is reached, and refused again here, because the
+    /// navigation order is the only order in which a page tree describes itself truthfully.
+    /// </param>
     /// <param name="cancellationToken">Token observed while the read is in flight.</param>
     /// <returns>
-    /// A task producing a successful result whose value is the portal's pages - possibly an empty sequence,
-    /// never <see langword="null"/> - or a failed result carrying the reason code
-    /// <c>tab.portal_not_found</c> when no portal bears <paramref name="portalId"/>, which the API layer
-    /// maps to <c>404 Not Found</c>.
+    /// A task producing a successful result whose value is one page of the portal's pages - possibly an empty
+    /// page, never <see langword="null"/> - or a failed result carrying the reason code
+    /// <c>tab.portal_not_found</c> when no portal bears <paramref name="portalId"/>, which the API layer maps
+    /// to <c>404 Not Found</c>, or <c>tab.paging_invalid</c> when the request names an ordering or a filter
+    /// this collection does not offer, which maps to <c>400 Bad Request</c>.
     /// </returns>
-    Task<Result<IReadOnlyList<TabListItemDto>>> GetTabsAsync(int portalId, CancellationToken cancellationToken = default);
+    /// <exception cref="ArgumentNullException"><paramref name="request"/> is <see langword="null"/>.</exception>
+    Task<Result<PagedResult<TabListItemDto>>> GetTabsAsync(
+        int portalId,
+        TabPagedRequest request,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Reads one page by identifier, returning a successful result whose value is <see langword="null"/>

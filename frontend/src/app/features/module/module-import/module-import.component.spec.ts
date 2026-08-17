@@ -73,8 +73,18 @@ const CORRELATION_ID = 'f41c7a92-0b6d-4e58-8a37-1d9c5b2e6f04';
 
 const IMPORT_TITLE = 'Import Module';
 
-/** The supporting sentence, re-authored from the paragraph inside `ModuleHelp.Text`. */
-const IMPORT_SUBTITLE = 'Administrators can import content for the specified module.';
+/**
+ * The supporting sentence: the paragraph inside `ModuleHelp.Text` verbatim, then what the operation actually
+ * does.
+ *
+ * ⚠ THE SECOND HALF IS NET NEW AND IS ASSERTED HERE ON PURPOSE. The legacy sentence named the operation
+ * and its audience and said nothing about what it consumes or what becomes of the module's current content -
+ * and reported against the running application, an operator pressing Import could not tell whether the
+ * document would be ADDED to the module or REPLACE it. Continuing the sentence is not replacing it.
+ */
+const IMPORT_SUBTITLE =
+  'Administrators can import content for the specified module. The content is read from an XML document on '
+  + 'this device and replaces the module\u2019s current content.';
 
 /** The document field's label. `plFile.Text`, with the legacy `suffix=":"` colon not reproduced. */
 const FILE_FIELD_LABEL = 'File';
@@ -135,7 +145,7 @@ const CONTENT_TYPE_MISMATCH_CODE = 'module.content_type_mismatch';
 const NOT_PORTABLE_CODE = 'module.not_portable';
 
 /** The sentence the route gate presents when it refuses a navigation. */
-const ACCESS_REFUSED_MESSAGE = 'You do not have access to this content.';
+const ACCESS_REFUSED_MESSAGE = 'You do not have permission to view this content.';
 
 /**
  * The one policy this screen's own address declares. ⚠ MEASURED FROM `../module.routes.ts`, NOT ASSUMED.
@@ -252,6 +262,7 @@ function listRow(overrides: Partial<ModuleListItem> = {}): ModuleListItem {
     moduleName: 'DNN_Announcements',
     description: '',
     version: '01.00.00',
+    isAdmin: false,
     moduleOrder: 1,
     allTabs: false,
     visibility: ModuleVisibility.Maximized,
@@ -848,7 +859,18 @@ describe('ModuleImportComponent', () => {
         .withContext('no partial picker is offered')
         .toBeNull();
       expect(query('.module-import__choice-summary')).toBeNull();
-      expect(visibleText(requireElement(root(), 'app-empty-state'))).toContain(NO_MODULES_MESSAGE);
+
+      // ⚠ THE WORDING CHANGED, AND THE OLD WORDING WAS A FALSE STATEMENT. This screen used to render
+      // "There are no modules available to import content into." for a read that FAILED - a claim about the
+      // tenant's data made from a failure - and it was measured saying exactly that while twenty-four
+      // modules existed. A failed read now says only that nothing could be read, and offers a retry.
+      const placeholder: string = visibleText(requireElement(root(), 'app-empty-state'));
+
+      expect(placeholder).not.toContain(NO_MODULES_MESSAGE);
+      expect(placeholder).toContain('could not be read');
+      expect(query('.module-import__retry'))
+        .withContext('and the failed state offers a way back')
+        .not.toBeNull();
     });
 
     it('offers a choice for every listed module, behind the legacy opening prompt', () => {
@@ -1492,7 +1514,7 @@ describe('ModuleImportComponent', () => {
       expect(severitiesAnnouncedFor(IMPORT_SUCCEEDED_MESSAGE)).toEqual(['success']);
       expect(notifySpy).toHaveBeenCalledWith('success', IMPORT_SUCCEEDED_MESSAGE, null, true);
 
-      expect(navigateSpy).toHaveBeenCalledOnceWith([MODULE_LIST_ROUTE], { replaceUrl: true });
+      expect(navigateSpy).toHaveBeenCalledOnceWith([MODULE_LIST_ROUTE], { queryParams: {}, replaceUrl: true });
     });
 
     it('synthesises no listing row from the payload it just sent', async () => {
@@ -1507,7 +1529,7 @@ describe('ModuleImportComponent', () => {
 
       httpMock.expectNone(() => true);
 
-      expect(navigateSpy).toHaveBeenCalledOnceWith([MODULE_LIST_ROUTE], { replaceUrl: true });
+      expect(navigateSpy).toHaveBeenCalledOnceWith([MODULE_LIST_ROUTE], { queryParams: {}, replaceUrl: true });
     });
 
     it('never treats an empty or blank response body as a failure, nor a failure as success', async () => {
@@ -1523,7 +1545,7 @@ describe('ModuleImportComponent', () => {
       fixture.detectChanges();
 
       expect(severitiesAnnouncedFor(IMPORT_SUCCEEDED_MESSAGE)).toEqual(['success']);
-      expect(navigateSpy).toHaveBeenCalledOnceWith([MODULE_LIST_ROUTE], { replaceUrl: true });
+      expect(navigateSpy).toHaveBeenCalledOnceWith([MODULE_LIST_ROUTE], { queryParams: {}, replaceUrl: true });
     });
 
     it('shows the busy indicator while the transfer is outstanding', async () => {
@@ -1694,7 +1716,7 @@ describe('ModuleImportComponent', () => {
       cancel();
 
       expect(fieldMessages()).toEqual([]);
-      expect(navigateSpy).toHaveBeenCalledOnceWith([MODULE_LIST_ROUTE]);
+      expect(navigateSpy).toHaveBeenCalledOnceWith([MODULE_LIST_ROUTE], { queryParams: {} });
       httpMock.expectNone(() => true);
     });
 
@@ -1706,7 +1728,7 @@ describe('ModuleImportComponent', () => {
 
       cancel();
 
-      expect(navigateSpy).toHaveBeenCalledOnceWith([MODULE_LIST_ROUTE]);
+      expect(navigateSpy).toHaveBeenCalledOnceWith([MODULE_LIST_ROUTE], { queryParams: {} });
       httpMock.expectNone(() => true);
     });
 
@@ -1771,8 +1793,14 @@ describe('ModuleImportComponent', () => {
 
       expect(queryAll('h1')).withContext('one top-level heading, not two').toHaveSize(1);
       expect(visibleText(root()))
-        .withContext('the help resource sentence, re-authored as text')
+        .withContext('the help resource sentence, verbatim, and then what the operation actually does')
         .toContain(IMPORT_SUBTITLE);
+      expect(visibleText(root()).toLowerCase())
+        .withContext('the reader is told what the operation consumes')
+        .toContain('xml document');
+      expect(visibleText(root()).toLowerCase())
+        .withContext('and that it replaces rather than adds')
+        .toContain('replaces');
     });
 
     it('labels the document field from its own resource values, without the legacy colon', () => {

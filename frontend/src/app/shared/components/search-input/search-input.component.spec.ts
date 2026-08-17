@@ -1481,6 +1481,154 @@ describe('SearchInputComponent', () => {
       ).toBe('button');
     });
   });
+  // =========================================================================
+  // TERMS THAT CANNOT FILTER, AND SAYING SO
+  // =========================================================================
+
+  describe('terms that cannot filter', () => {
+    // Measured against the live listing before this: five spaces returned every record while the screen
+    // asserted `Filtered: user name begins with "     "`; three zero-width spaces returned nothing while
+    // the same claim rendered as `""` with the quotes touching; and 300 typed characters silently became
+    // 256 with no message anywhere. All three are cases where the term the server acted on was not the
+    // term the operator believed they had entered.
+
+    /** The advisory this control renders, or null when it renders none. */
+    function advisory(): string | null {
+      const node = fixture.nativeElement.querySelector('.search-input__advisory');
+
+      return node === null ? null : (node.textContent ?? '').trim();
+    }
+
+    /** Types a value and lets the debounce elapse, then settles the view. */
+    function enterTerm(value: string): void {
+      typeInto(field(), value);
+      tick(SHORT_DEBOUNCE_MS);
+      fixture.detectChanges();
+    }
+
+    beforeEach(() => {
+      component.debounceMs = SHORT_DEBOUNCE_MS;
+      fixture.detectChanges();
+    });
+
+    it('emits the EMPTY term for a search of nothing but spaces, and says why', fakeAsync(() => {
+      enterTerm('     ');
+
+      expect(emitted).toEqual(['']);
+      expect(advisory()).toBe('A search of only spaces matches every record, so no filter was applied.');
+    }));
+
+    it('strips characters that occupy no width, and says so', fakeAsync(() => {
+      // Three zero-width spaces. The operator sees an empty box either way; the difference is whether the
+      // screen goes on to claim a filter naming a value nobody can see.
+      enterTerm('\u200b\u200b\u200b');
+
+      expect(emitted).toEqual(['']);
+      expect(advisory()).toBe('Invisible characters were removed from the search.');
+    }));
+
+    it('keeps the visible part of a term that also carried invisible characters', fakeAsync(() => {
+      enterTerm('ad\u200bam');
+
+      expect(emitted).toEqual(['adam']);
+      expect(advisory()).toBe('Invisible characters were removed from the search.');
+    }));
+
+    it('covers the whole invisible set, not just the zero-width space', fakeAsync(() => {
+      // Soft hyphen, zero-width non-joiner, zero-width joiner, a bidi control, another bidi control, word
+      // joiner, byte-order mark. Each is typed as its own term with a distinct visible part, so the
+      // duplicate guard cannot mask a failure by suppressing an identical emission.
+      const invisibles = ['\u00ad', '\u200c', '\u200d', '\u200e', '\u202a', '\u2060', '\ufeff'];
+
+      invisibles.forEach((invisible: string, index: number): void => {
+        enterTerm(`a${invisible}${index}`);
+      });
+
+      expect(emitted).toEqual(invisibles.map((_unused, index: number): string => `a${index}`));
+    }));
+
+    it('announces truncation when a term is longer than the control will emit', fakeAsync(() => {
+      enterTerm('x'.repeat(300));
+
+      expect(emitted[0]?.length).toBe(256);
+      expect(advisory()).toBe('Only the first 256 characters of the search were used.');
+    }));
+
+    it('keeps announcing truncation while further characters are being discarded', fakeAsync(() => {
+      // ⚠ THE REGRESSION THIS PINS. The emitted term stops changing once the cap is reached, so the
+      // duplicate guard correctly suppresses further queries - and suppressing the ADVISORY along with them
+      // would restore exactly the silence being fixed. Hence the adjustment is recorded BEFORE the guard.
+      enterTerm('x'.repeat(300));
+      enterTerm('x'.repeat(320));
+
+      expect(emitted).withContext('the duplicate query is still suppressed').toHaveSize(1);
+      expect(advisory()).toBe('Only the first 256 characters of the search were used.');
+    }));
+
+    it('RETIRES the advisory when the term stops being adjusted but does not change', fakeAsync(() => {
+      // ⚠ THE DISCRIMINATING CASE, and the reason the adjustment is recorded BEFORE the duplicate guard.
+      // Paste 300 characters, then delete the excess down to exactly the cap. The emitted term is
+      // IDENTICAL both times, so the duplicate guard suppresses the second query - correctly, there is
+      // nothing new to ask. But nothing is being discarded any more, so the advisory must go.
+      //
+      // An earlier version of this block asserted that the advisory PERSISTED across two over-long terms,
+      // which proved nothing: the signal simply kept its previous value, so the assertion passed whether
+      // the adjustment was recorded before the guard or after it. This case fails when it is recorded
+      // after.
+      enterTerm('x'.repeat(300));
+
+      expect(advisory()).toBe('Only the first 256 characters of the search were used.');
+      expect(emitted).toEqual(['x'.repeat(256)]);
+
+      enterTerm('x'.repeat(256));
+
+      expect(emitted).withContext('no new query: the term is unchanged').toHaveSize(1);
+      expect(advisory())
+        .withContext('nothing is being discarded now, so nothing is advised')
+        .toBeNull();
+    }));
+
+    it('reports truncation in preference to invisible removal when both happened', fakeAsync(() => {
+      // The operator loses meaningful characters to the cut and only decoration to the strip, so the cut is
+      // the fact worth stating.
+      enterTerm(`${'y'.repeat(300)}\u200b`);
+
+      expect(advisory()).toBe('Only the first 256 characters of the search were used.');
+    }));
+
+    it('renders NO advisory for an ordinary term, so the advisory cannot become wallpaper', fakeAsync(() => {
+      enterTerm('adam');
+
+      expect(emitted).toEqual(['adam']);
+      expect(advisory()).toBeNull();
+    }));
+
+    it('renders no advisory once an adjusted term is replaced by an ordinary one', fakeAsync(() => {
+      enterTerm('     ');
+      expect(advisory()).not.toBeNull();
+
+      enterTerm('adam');
+
+      expect(advisory()).withContext('the advisory retires with the term that caused it').toBeNull();
+    }));
+
+    it('exposes the advisory in a polite live region so it is announced as well as painted', fakeAsync(() => {
+      enterTerm('     ');
+
+      const node = fixture.nativeElement.querySelector('.search-input__advisory');
+
+      expect(node?.getAttribute('role')).toBe('status');
+      expect(node?.getAttribute('aria-live')).toBe('polite');
+    }));
+
+    it('preserves an interior space, which is a real part of a name', fakeAsync(() => {
+      // The blank rule must apply to a term that is ENTIRELY whitespace and to nothing else.
+      enterTerm('van der');
+
+      expect(emitted).toEqual(['van der']);
+      expect(advisory()).toBeNull();
+    }));
+  });
 });
 
 describe('SearchInputComponent within a consuming host', () => {
@@ -1791,5 +1939,48 @@ describe('SearchInputComponent labelled by its consumer', () => {
     expect(textOf(own)).toBe(LABEL_TEXT);
     expect(own.getAttribute('for')).toBe(labelledHostField().id);
     expect(Array.from(labelledHostField().labels ?? []).length).toBe(1);
+  });
+
+});
+
+describe('SearchInputComponent — the typing bound', () => {
+  // ⚠ MEASURED DEFECT: a 300-character term was accepted to 256 characters and the remainder was dropped in
+  // silence - no counter, no message, and no way for a reader to know the term had been cut. The native
+  // `maxlength` stays, because it is what prevents an unbounded term reaching the query; what is added is a
+  // statement of it, announced when the box takes focus and therefore before anything is lost.
+
+  let fixture: ComponentFixture<SearchInputComponent>;
+
+  beforeEach(() => {
+    TestBed.configureTestingModule({ imports: [SearchInputComponent] });
+    fixture = TestBed.createComponent(SearchInputComponent);
+    fixture.detectChanges();
+  });
+
+  it('describes the field with its bound, in the shared wording', () => {
+    const host: HTMLElement = fixture.nativeElement;
+    const field = requireElement<HTMLInputElement>(host, FIELD_SELECTOR);
+    const region = host.querySelector('.search-input__limit');
+
+    expect(region).not.toBeNull();
+    expect((region?.textContent ?? '').trim()).toBe('At most 256 characters.');
+    expect(field.getAttribute('aria-describedby')).toBe(String(region?.id));
+
+    // The same bound the field enforces, so the statement cannot drift from the rule.
+    expect(field.getAttribute('maxlength')).toBe('256');
+  });
+
+  it('hides the statement from view, because it is announced rather than drawn', () => {
+    const region = (fixture.nativeElement as HTMLElement).querySelector('.search-input__limit');
+
+    expect(region?.hasAttribute('data-visually-hidden')).toBeTrue();
+  });
+
+  it('keeps the statement OUT of the control row, so the row still holds exactly the two controls', () => {
+    const host: HTMLElement = fixture.nativeElement;
+    const row = requireElement<HTMLElement>(host, ROW_SELECTOR);
+
+    expect(row.querySelector('.search-input__limit')).toBeNull();
+    expect(row.children.length).toBe(2);
   });
 });

@@ -303,6 +303,15 @@ public sealed class UserService : IUserService
     private const string ServiceCodeNotMatchedCode = "user.service.code-not-matched";
 
     /// <summary>
+    /// Reported when a catalogue page request names an ordering or a filter the catalogue does not offer.
+    /// </summary>
+    /// <remarks>
+    /// Hyphenated like its siblings above; the API layer normalises a code before looking up its status, so
+    /// the hyphen and the underscore spellings are the same code and only one status can be reached.
+    /// </remarks>
+    private const string MemberServicePagingInvalidCode = "user.service.paging-invalid";
+
+    /// <summary>
     /// Cache key holding a tenant's projected profile property definitions, carried over verbatim from
     /// <c>DataCache.ProfileDefinitionsCacheKey</c>.
     /// </summary>
@@ -2180,6 +2189,13 @@ public sealed class UserService : IUserService
         }
 
         var submitted = new Dictionary<int, UserProfileValueDto>(profile.Properties.Count);
+
+        // Kept as two accumulators rather than one, because the summary code published for the whole refusal
+        // has to be the code of the FIRST submitted value that failed — a required property the caller never
+        // sent has no position among the values it did send, so it cannot be allowed to claim first place.
+        ProfileFieldFailures valueFailures = default;
+        ProfileFieldFailures requiredFailures = default;
+
         foreach (UserProfileValueDto property in profile.Properties)
         {
             if (property is null)
@@ -2219,9 +2235,15 @@ public sealed class UserService : IUserService
                         $"Portal {portalId} does not define profile property {property.PropertyDefinitionId}."));
             }
 
+            // ⚠ A VALUE FAILURE IS COLLECTED, NOT RETURNED, and the distinction from the refusals above is
+            // deliberate. Everything before this point is a malformed REQUEST — a null entry, a property this
+            // tenant does not define, the same property twice, a visibility outside the enumeration — which no
+            // operator can correct by retyping a box, so failing on the first is right. A value that is too
+            // long or does not match its declared format IS correctable per field, and an operator handed one
+            // refusal at a time has to submit once per mistake to discover them all.
             if (ValidateProfileValue(definition, property.PropertyValue) is ResultReason invalid)
             {
-                return Result.Failure(invalid);
+                AddFieldFailure(ref valueFailures, definition.PropertyName, invalid);
             }
 
             submitted[property.PropertyDefinitionId] = property;
@@ -2237,11 +2259,23 @@ public sealed class UserService : IUserService
             if (!submitted.TryGetValue(definition.PropertyDefinitionId, out UserProfileValueDto? property)
                 || string.IsNullOrEmpty(property.PropertyValue))
             {
-                return Result.Failure(
-                    ProfileRequiredPropertyMissingCode,
-                    FormattableString.Invariant(
-                        $"Profile property \"{definition.PropertyName}\" is required."));
+                AddFieldFailure(
+                    ref requiredFailures,
+                    definition.PropertyName,
+                    new ResultReason(
+                        ProfileRequiredPropertyMissingCode,
+                        FormattableString.Invariant(
+                            $"Profile property \"{definition.PropertyName}\" is required.")));
             }
+        }
+
+        // ORDER IS THE SUBMITTED ORDER FIRST, THEN THE OMITTED-BUT-REQUIRED ONES, so that the summary code and
+        // sentence a client reads on its own are the ones it would have received before this became a
+        // multi-field refusal. That keeps the flat half of the document byte-compatible with what every
+        // existing caller already handles, while the `errors` member is purely additive.
+        if (CombineFieldFailures(valueFailures, requiredFailures) is { } refusal)
+        {
+            return Result.Failure(refusal);
         }
 
         IReadOnlyList<UserProfileValue> stored =
@@ -3198,6 +3232,96 @@ public sealed class UserService : IUserService
             .ToList();
     }
 
+    /// <summary>
+    /// The per-field refusals gathered while checking one profile submission, together with the code and
+    /// sentence of the first of them.
+    /// </summary>
+    /// <remarks>
+    /// A struct with a lazily created dictionary, so the overwhelmingly common outcome — a submission with
+    /// nothing wrong with it — allocates nothing at all.
+    /// </remarks>
+    private struct ProfileFieldFailures
+    {
+        /// <summary>Gets or sets the messages gathered per property name, or <see langword="null"/> when none.</summary>
+        public Dictionary<string, List<string>>? Messages { get; set; }
+
+        /// <summary>Gets or sets the reason of the first failure gathered, which supplies the summary.</summary>
+        public ResultReason? First { get; set; }
+    }
+
+    /// <summary>Records one property's refusal, keyed by the property name the caller submitted it under.</summary>
+    /// <param name="failures">The accumulator to add to.</param>
+    /// <param name="propertyName">The declared name of the property at fault.</param>
+    /// <param name="reason">The refusal for that property.</param>
+    /// <remarks>
+    /// The key is the DECLARED PROPERTY NAME rather than the definition identifier, because the client has to
+    /// attach the message to a control and it identifies its controls by name. A numeric identifier would put
+    /// the burden of the mapping on every consumer.
+    /// </remarks>
+    private static void AddFieldFailure(
+        ref ProfileFieldFailures failures,
+        string propertyName,
+        ResultReason reason)
+    {
+        failures.Messages ??= new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        failures.First ??= reason;
+
+        if (!failures.Messages.TryGetValue(propertyName, out List<string>? messages))
+        {
+            messages = new List<string>(1);
+            failures.Messages[propertyName] = messages;
+        }
+
+        messages.Add(reason.Message);
+    }
+
+    /// <summary>
+    /// Folds the gathered refusals into the single failure reason the caller receives, or reports that there
+    /// were none.
+    /// </summary>
+    /// <param name="values">Refusals about values that were submitted.</param>
+    /// <param name="required">Refusals about required properties that were not submitted.</param>
+    /// <returns>
+    /// The combined reason, or <see langword="null"/> when neither accumulator gathered anything.
+    /// </returns>
+    private static ResultReason? CombineFieldFailures(
+        ProfileFieldFailures values,
+        ProfileFieldFailures required)
+    {
+        ResultReason? summary = values.First ?? required.First;
+
+        if (summary is null)
+        {
+            return null;
+        }
+
+        var merged = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
+
+        foreach (Dictionary<string, List<string>>? source in new[] { values.Messages, required.Messages })
+        {
+            if (source is null)
+            {
+                continue;
+            }
+
+            foreach (KeyValuePair<string, List<string>> entry in source)
+            {
+                if (merged.TryGetValue(entry.Key, out IReadOnlyList<string>? existing))
+                {
+                    // One property can legitimately fail twice — a value both too long and malformed — and both
+                    // sentences are kept, because each names a different correction.
+                    merged[entry.Key] = existing.Concat(entry.Value).ToArray();
+
+                    continue;
+                }
+
+                merged[entry.Key] = entry.Value.ToArray();
+            }
+        }
+
+        return new ResultReason(summary.Code, summary.Message, merged);
+    }
+
     /// <summary>Tests a submitted profile value against the rules its definition declares.</summary>
     /// <param name="definition">The definition the value belongs to.</param>
     /// <param name="value">The submitted value.</param>
@@ -3457,16 +3581,37 @@ public sealed class UserService : IUserService
     private readonly record struct MemberServiceScope(Portal Portal, User Account);
 
     /// <inheritdoc />
-    public async Task<Result<IReadOnlyList<MemberServiceDto>>> ListMemberServicesAsync(
+    public async Task<Result<PagedResult<MemberServiceDto>>> ListMemberServicesAsync(
         int portalId,
         int userId,
+        MemberServicePagedRequest request,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(request);
+
+        // Refused here as well as at the boundary, because this is a public application-layer contract and
+        // the validator that rejects an ordering or a filter runs on the HTTP path only. The catalogue is
+        // published in the order the tenant's subscribable roles are read; accepting a sort field and then
+        // ignoring it would tell the caller their ordering applied.
+        if (request.HasSort)
+        {
+            return Result<PagedResult<MemberServiceDto>>.Failure(
+                MemberServicePagingInvalidCode,
+                $"The member-service catalogue cannot be ordered by '{request.SortBy}'.");
+        }
+
+        if (request.HasQuery)
+        {
+            return Result<PagedResult<MemberServiceDto>>.Failure(
+                MemberServicePagingInvalidCode,
+                "The member-service catalogue is not filtered by text.");
+        }
+
         Result<MemberServiceScope> scope = await OpenMemberServiceScopeAsync(portalId, userId, cancellationToken)
             .ConfigureAwait(false);
         if (scope.IsFailure)
         {
-            return Result<IReadOnlyList<MemberServiceDto>>.Failure(scope.Error!);
+            return Result<PagedResult<MemberServiceDto>>.Failure(scope.Error!);
         }
 
         IReadOnlyList<Role> published = await _roles
@@ -3500,7 +3645,24 @@ public sealed class UserService : IUserService
                 tenantTakesPayment));
         }
 
-        return Result<IReadOnlyList<MemberServiceDto>>.Success(catalogue);
+        // ⚠ CLASSIFIED IN FULL, THEN PAGED, AND THE ORDER OF THOSE TWO IS DELIBERATE. Every row's
+        // subscription state is decided against the single clock reading above, so cutting the page earlier
+        // would save classifying the rows that are not returned while making the reported total a count of
+        // rows nobody classified. Paging last keeps the total honest and keeps every row's answer identical
+        // to what the unpaged catalogue reported for it.
+        if (request.PageSize == 0)
+        {
+            return Result<PagedResult<MemberServiceDto>>.Success(
+                PagedResult<MemberServiceDto>.Unpaged(catalogue));
+        }
+
+        List<MemberServiceDto> window = catalogue
+            .Skip(Paging.SkipCount(request.PageIndex, request.PageSize))
+            .Take(request.PageSize)
+            .ToList();
+
+        return Result<PagedResult<MemberServiceDto>>.Success(
+            PagedResult<MemberServiceDto>.Create(window, catalogue.Count, request.PageIndex, request.PageSize));
     }
 
     /// <inheritdoc />

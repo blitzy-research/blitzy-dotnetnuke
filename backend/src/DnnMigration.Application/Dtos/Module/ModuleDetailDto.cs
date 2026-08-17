@@ -189,6 +189,47 @@ public sealed class ModuleDetailDto
     public string? IconFile { get; set; }
 
     /// <summary>
+    /// How this placement is aligned within its pane, mapped from <c>TabModules.Alignment</c>
+    /// (<c>nvarchar(10) NULL</c>, 03.00.01 line 27), or <see langword="null"/> when no alignment is stored.
+    /// </summary>
+    /// <remarks>
+    /// MIGRATION: this member, together with <see cref="Color"/> and <see cref="Border"/>, was ABSENT from
+    /// the first port of this contract, so the three columns the legacy screen edited had no route to a
+    /// caller at all - the settings screen could store neither, and the values an upgraded installation
+    /// already held were invisible. The legacy control was a horizontal radio list with the exact values
+    /// <c>left</c>, <c>center</c>, <c>right</c> and the empty string for "Not Specified"
+    /// (<c>modulesettings.ascx:L122-L127</c>), and those spellings are LOAD-BEARING DATA: they are what the
+    /// column already contains and what the legacy container rendering compared against, so they are
+    /// carried through unchanged rather than re-spelled or converted to an enumeration.
+    /// </remarks>
+    public string? Alignment { get; set; }
+
+    /// <summary>
+    /// The background colour of this placement's container, mapped from <c>TabModules.Color</c>
+    /// (<c>nvarchar(20) NULL</c>, 03.00.01 line 28), or <see langword="null"/> when none is stored.
+    /// </summary>
+    /// <remarks>
+    /// An OPAQUE legacy token carried through unparsed. The legacy box was a free-text field with no
+    /// validator at all, and the column admits anything twenty characters or shorter - a hex triple, a CSS
+    /// colour name, or something an installation invented - so narrowing it here would reject data that is
+    /// already stored.
+    /// </remarks>
+    public string? Color { get; set; }
+
+    /// <summary>
+    /// The border width of this placement's container, mapped from <c>TabModules.Border</c>
+    /// (<c>nvarchar(1) NULL</c>, 03.00.01 line 29), or <see langword="null"/> when none is stored.
+    /// </summary>
+    /// <remarks>
+    /// ONE CHARACTER WIDE, AND A NUMBER. The legacy box carried <c>MaxLength="1"</c> and an integer
+    /// data-type validator whose message read "Invalid Border (must be a number between 0 and 9)"
+    /// (<c>modulesettings.ascx:L137-L138</c>), so the effective domain is a single digit. It travels as a
+    /// string because the column is <c>nvarchar</c> and because the empty string - not a zero - is how the
+    /// legacy screen expressed "no border stored".
+    /// </remarks>
+    public string? Border { get; set; }
+
+    /// <summary>
     /// How this placement is presented on its page, mapped from <c>TabModules.Visibility</c> (<c>int NOT
     /// NULL</c>, 03.00.01 line 31). Legacy caption "Visibility:", whose help text reads: "Choose the
     /// default visibility for this Module".
@@ -262,4 +303,26 @@ public sealed class ModuleDetailDto
     /// operator identifier when handing content to a module's own portability implementation.
     /// </remarks>
     public string? Version { get; set; }
+
+    /// <summary>
+    /// Whether this module was created from an ADMINISTRATION package, projected read-only from
+    /// <c>DesktopModules.IsAdmin</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// WHY A CLIENT NEEDS THIS: the generic settings surface refuses an administrative module outright with
+    /// <c>module.settings_protected</c>, because such a module's settings are owned by the typed screen that
+    /// administers them - the User Accounts package's settings are the portal's membership settings - and are
+    /// not editable as ordinary module settings. Without this member a client cannot tell which modules those
+    /// are, so it offers a settings affordance on every row and one of them always ends in a refusal. The
+    /// administrative definitions are also absent from the portal-placeable definition catalogue, so their
+    /// nature cannot be inferred from a second read either.
+    /// </para>
+    /// <para>
+    /// NULL IS NOT FALSE. The underlying column is <c>bit NOT NULL</c>, so a resolved package always answers
+    /// one or the other; null means the definition or its package could not be resolved and nothing is being
+    /// claimed. A client must treat only an explicit <see langword="true"/> as administrative.
+    /// </para>
+    /// </remarks>
+    public bool? IsAdmin { get; set; }
 }

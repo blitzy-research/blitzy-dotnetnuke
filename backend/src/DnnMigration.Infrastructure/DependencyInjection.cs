@@ -8,6 +8,7 @@ using DnnMigration.Domain.Abstractions.Repositories;
 using DnnMigration.Domain.Abstractions.Services;
 using DnnMigration.Infrastructure.HealthChecks;
 using DnnMigration.Infrastructure.Persistence;
+using DnnMigration.Infrastructure.Persistence.Interceptors;
 using DnnMigration.Infrastructure.Repositories;
 using DnnMigration.Infrastructure.Security;
 using DnnMigration.Infrastructure.Services;
@@ -57,8 +58,23 @@ public static class DependencyInjection
 
     /// <summary>Greatest time the dependency probe is allowed before the infrastructure abandons it.</summary>
     /// <remarks>
-    /// Two seconds, so the probe can time out and the endpoint still answers inside the five seconds the
-    /// container's own probe allows before it counts the attempt as a failure.
+    /// <para>
+    /// Two seconds, so a readiness answer arrives while an orchestrator is still waiting for one. This is the
+    /// OUTER of two bounds; the probe carries a shorter one of its own around the statement it executes, and
+    /// <c>DatabaseHealthCheck</c> records which of them ends an attempt and why that varies.
+    /// </para>
+    /// <para>
+    /// It is not what keeps the CONTAINER's probe inside its five-second timeout, and reading it that way
+    /// invites the wrong conclusion if it is ever changed: the image's <c>HEALTHCHECK</c> and the compose
+    /// health condition both read <c>/health</c>, which is the liveness view and runs no readiness-tagged
+    /// probe at all, so this bound cannot delay them. What it bounds is <c>/health/ready</c>, which no part of
+    /// the committed topology gates start-up on.
+    /// </para>
+    /// <para>
+    /// A dependency being black-holed rather than closed can still carry one attempt past this bound, because
+    /// the provider may not observe cancellation until it stops waiting for the server to acknowledge that the
+    /// statement was abandoned. The answer is unhealthy either way; only its promptness varies.
+    /// </para>
     /// </remarks>
     private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(2);
     /// <summary>The schema holding the migrations-history table.</summary>
@@ -254,21 +270,25 @@ public static class DependencyInjection
     private static void AddPersistence(IServiceCollection services, string connectionString)
     {
         services.AddDbContext<DnnDbContext>(options =>
-            options.UseSqlServer(
-                connectionString,
-                sql =>
-                {
-                    sql.MigrationsHistoryTable(MigrationsHistoryTableName, MigrationsHistorySchema);
+            options
+                // Acts on the ONE annotation a repository can attach to a value-sensitive search, and on
+                // nothing else: an untagged statement leaves this interceptor byte-for-byte unchanged.
+                .AddInterceptors(PerValuePlanHintInterceptor.Instance)
+                .UseSqlServer(
+                    connectionString,
+                    sql =>
+                    {
+                        sql.MigrationsHistoryTable(MigrationsHistoryTableName, MigrationsHistorySchema);
 
-                    // Retry-on-failure is declared so that the retry count and delay are the provider's
-                    // documented defaults rather than values invented here.
-                    sql.EnableRetryOnFailure();
+                        // Retry-on-failure is declared so that the retry count and delay are the provider's
+                        // documented defaults rather than values invented here.
+                        sql.EnableRetryOnFailure();
 
-                    // ONE DECISION, DEFERRED TO EXECUTION TIME: retry when it is safe, do not when it is
-                    // not. The substituted strategy keeps the provider's own retry policy and re-evaluates
-                    // only whether retrying applies, each time it runs.
-                    sql.ExecutionStrategy(dependencies => new TransactionAwareExecutionStrategy(dependencies));
-                }));
+                        // ONE DECISION, DEFERRED TO EXECUTION TIME: retry when it is safe, do not when it
+                        // is not. The substituted strategy keeps the provider's own retry policy and
+                        // re-evaluates only whether retrying applies, each time it runs.
+                        sql.ExecutionStrategy(dependencies => new TransactionAwareExecutionStrategy(dependencies));
+                    }));
 
         // The mapped tables among those now stage against one change tracker, and the sequence as a whole
         // is made durable by ITransactionScope.CommitAsync rather than by any single flush, because it

@@ -12,6 +12,11 @@ import {
   untracked,
 } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
+import {
+  MEMBERSHIP_SETTINGS_ROUTE,
+  MODULE_LIST_ROUTE,
+} from '../../../core/config/app-routes.config';
+import { ListReturnStore } from '../../../core/state/list-return.store';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 
@@ -29,18 +34,19 @@ import {
 
 import type { ParamMap, Params } from '@angular/router';
 
-import { ModuleVisibility } from '../../../core/models/module.model';
+import { ModuleVisibility, isPublishedModuleVisibility } from '../../../core/models/module.model';
 import { NotificationService } from '../../../core/services/notification.service';
 import { AuthStore } from '../../../core/state/auth.store';
 import { ModuleStore } from '../../../core/state/module.store';
 import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialog/confirm-dialog.component';
+import { AbsentValueComponent } from '../../../shared/components/absent-value/absent-value.component';
 import { DataTableComponent } from '../../../shared/components/data-table/data-table.component';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
 import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
 import { PaginationComponent } from '../../../shared/components/pagination/pagination.component';
 import { SearchInputComponent } from '../../../shared/components/search-input/search-input.component';
 import { HasPermissionDirective } from '../../../shared/directives/has-permission.directive';
-import { DateDisplayPipe } from '../../../shared/pipes/date-display.pipe';
+import { DateDisplayPipe, parseDisplayInstant } from '../../../shared/pipes/date-display.pipe';
 import { YesNoPipe } from '../../../shared/pipes/yes-no.pipe';
 
 import type { OnInit, Signal } from '@angular/core';
@@ -74,6 +80,21 @@ const TABLE_CAPTION = 'Modules placed on this site';
 
 /** Placeholder of the single filter control. */
 const SEARCH_PLACEHOLDER = 'Search modules';
+
+/**
+ * How an active free-text filter is stated on screen.
+ *
+ * ⚠ #36 — THIS SCREEN NEVER SAID WHAT IT WAS FILTERED BY. The term lived in the address and in the search
+ * box, and the box is cleared by any return to the screen, so a filtered listing was indistinguishable from a
+ * short one: a reader seeing three modules had nothing on the page telling them the other 247 were withheld
+ * by a filter rather than absent. The user listing already discloses its filter in these words, and one
+ * wording across two listings is the point.
+ */
+const FILTER_DISCLOSURE_TEMPLATE = 'Filtered: module title or name contains \u201c{text}\u201d.';
+
+/** What is said when the text entered carries nothing to match on. @see FILTER_DISCLOSURE_TEMPLATE */
+const IGNORED_TERM_NOTICE =
+  'The text entered contained no characters to match on, so the listing is unfiltered.';
 
 /** Wording of the row commands. */
 const COMMAND_LABEL = Object.freeze({
@@ -132,6 +153,12 @@ const REMOVE_CONFIRM_MESSAGE = 'Are You Sure You Wish To Delete This Module ?';
  * Column headings. MEASURED from `Website/admin/Modules/App_LocalResources/ModuleSettings.ascx.resx`,
  * whose fifty-nine entries were read directly.
  */
+/**
+ * The word an expired placement is qualified with. Deliberately the SAME word the portal listing paints, so
+ * one state has one name across the application.
+ */
+const EXPIRED_QUALIFIER = 'Expired';
+
 const COLUMN_LABEL = Object.freeze({
   /** Authored: the identity column has no resource key in the module resources. */
   moduleId: 'ID',
@@ -166,6 +193,18 @@ const VISIBILITY_LABEL: Readonly<Record<ModuleVisibility, string>> = Object.free
   [ModuleVisibility.Minimized]: 'Minimized',
   [ModuleVisibility.None]: 'None',
 });
+
+/**
+ * The prefix painted where a stored visibility code is not one of the three this console publishes wording
+ * for. Deliberately the SAME idiom the profile-definition listing already uses for a data-type reference it
+ * cannot name - `#` followed by the stored number - so a reader who has met one has met both.
+ */
+const UNNAMEABLE_VISIBILITY_PREFIX = '#';
+
+/** What the marked code means, for assistive technology and for a pointer hovering the cell. */
+const UNNAMEABLE_VISIBILITY_DESCRIPTION_PREFIX = 'visibility code ';
+
+const UNNAMEABLE_VISIBILITY_DESCRIPTION_SUFFIX = ', name unavailable';
 
 /**
  * Confirmation shown once a removal has succeeded. Phrased about the PLACEMENT rather than about the
@@ -253,6 +292,37 @@ function serialiseModuleListQuery(query: ModuleListAddressQuery): Params {
   };
 }
 
+/**
+ * The zero-result wording when the address names a page beyond the end of the result set.
+ *
+ * ⚠ NOT THE SAME SENTENCE AS "nothing matched", AND THE DISTINCTION IS THE DEFECT. Reported: `?currentpage=99`
+ * rendered "No records found." beside a caption reading "21-30 of 30" - a range describing records the grid
+ * is not showing and cannot show, and no way back. The portal listing already draws this distinction; this
+ * one did not.
+ */
+const PAST_END_MESSAGE = 'This page is past the end of the results. Return to the first page.';
+
+/** The zero-result wording when a search matched nothing. */
+const NO_MATCHES_MESSAGE = 'No modules match the current search.';
+
+/**
+ * The zero-result wording when the site genuinely holds no module placements.
+ *
+ * The shared grid's own default answers all three zero-result states with one sentence, and that is what
+ * let a populated range stand beside "No records found." Naming the state is what makes the difference
+ * between the three legible.
+ */
+const NO_MODULES_MESSAGE = 'No modules are placed on this site.';
+
+/** The wording of the affordance that withdraws the search term. */
+const CLEAR_SEARCH_LABEL = 'Clear search';
+
+/** The wording of the affordance that returns to the first page. */
+const FIRST_PAGE_LABEL = 'First page';
+
+/** The zero-based index of the first page. */
+const FIRST_PAGE_INDEX = 0;
+
 /** Route addresses this screen links to. Assembled as plain path strings and handed to `routerLink`. */
 const ROUTE = Object.freeze({
   /** The listing's own root, and the prefix of every per-module address. */
@@ -265,6 +335,32 @@ const ROUTE = Object.freeze({
   settings: 'settings',
   /** Sub-path of the per-placement export screen. */
   export: 'export',
+});
+
+/**
+ * The definition name of the administrative package whose settings ARE the portal's membership settings,
+ * spelled exactly as the server spells it.
+ *
+ * ⚠ THE SAME LITERAL THE SERVER KEYS ON. `MembershipSettingsDto.UserAccountsModuleDefinitionName` is
+ * `"User Accounts"` - two words, one space - and the repository lookup behind the membership settings screen
+ * matches `ModuleDefinition.FriendlyName` against it. Matching the same value here is what makes the
+ * affordance below point at the screen that genuinely owns those settings rather than at a guess.
+ */
+const USER_ACCOUNTS_DEFINITION_NAME = 'User Accounts';
+
+/**
+ * Where an ADMINISTRATIVE module's settings are actually administered, keyed by definition name.
+ *
+ * ⚠ WHY THIS EXISTS. The generic settings screen answers `module.settings_protected` for any module whose
+ * package is administrative, because those settings belong to the typed screen that owns them. Measured on
+ * the running application: the listing offered `Settings` on the `User Accounts` row, the screen behind it
+ * refused every time, and the operator was told the settings were "available only through their typed
+ * privileged endpoint" - which names no screen they can reach. This maps the one administrative package this
+ * console administers onto the screen that does own it, and an unknown administrative package falls through
+ * to no affordance at all rather than to a refusal.
+ */
+const ADMINISTERED_ELSEWHERE: Readonly<Record<string, string>> = Object.freeze({
+  [USER_ACCOUNTS_DEFINITION_NAME]: MEMBERSHIP_SETTINGS_ROUTE,
 });
 
 @Component({
@@ -285,6 +381,8 @@ const ROUTE = Object.freeze({
     HasPermissionDirective,
     YesNoPipe,
     DateDisplayPipe,
+    // The ONE rendering of an absent value, shared with every other listing.
+    AbsentValueComponent,
   ],
   templateUrl: './module-list.component.html',
   styleUrl: './module-list.component.scss',
@@ -303,6 +401,11 @@ export class ModuleListComponent implements OnInit {
   private readonly route = inject(ActivatedRoute);
 
   private readonly router = inject(Router);
+
+
+  /** Where this listing stands, so a form returning to it restores the same place. */
+
+  private readonly listReturn = inject(ListReturnStore);
 
   /** Ties the address subscription to this component's lifetime. */
   private readonly destroyRef = inject(DestroyRef);
@@ -381,6 +484,10 @@ export class ModuleListComponent implements OnInit {
   @ViewChild('allTabsCell', { static: true })
   private allTabsCellTemplate?: TemplateRef<DataTableCellContext<ModuleListItem>>;
 
+  /** The visibility cell, which marks a stored code this console publishes no wording for. */
+  @ViewChild('visibilityCell', { static: true })
+  private visibilityCellTemplate?: TemplateRef<DataTableCellContext<ModuleListItem>>;
+
   /** The schedule start, rendered through the shared date pipe in its default short-date mode. */
   @ViewChild('startDateCell', { static: true })
   private startDateCellTemplate?: TemplateRef<DataTableCellContext<ModuleListItem>>;
@@ -431,7 +538,59 @@ export class ModuleListComponent implements OnInit {
    */
   protected readonly hasResults: Signal<boolean> = computed(() => this.meta().totalCount > 0);
 
+  /**
+   * Whether the page IN HAND holds rows, which is what mounts the pager.
+   *
+   * ⚠ NARROWER THAN {@link hasResults}, AND THE DIFFERENCE IS THE DEFECT. A page past the end of a real
+   * result set has a total and no rows, so gating on the total alone painted a range - "21-30 of 30" -
+   * beside a grid showing nothing, describing records it cannot show. The portal listing gates on its rows
+   * for the same reason.
+   */
+  protected readonly hasRows: Signal<boolean> = computed(() => this.modules().length > 0);
+
+  /** Whether the address names a page beyond the end of the result set. */
+  protected readonly isPastEnd: Signal<boolean> = this.store.isPastEnd;
+
+  /** Whether a search term is in force, which decides both the wording and the recovery offered. */
+  protected readonly isSearching: Signal<boolean> = computed(
+    () => (this.store.query().query ?? null) !== null,
+  );
+
+  /**
+   * The zero-result wording, chosen from the state that actually holds.
+   *
+   * Three states, three sentences: past the end of a real result set, a search that matched nothing, and a
+   * tenant with no modules. Answering all three with "No records found." is what let a populated range
+   * stand beside it.
+   */
+  protected readonly emptyMessage: Signal<string> = computed<string>(() => {
+    if (this.isPastEnd()) {
+      return PAST_END_MESSAGE;
+    }
+
+    return this.isSearching() ? NO_MATCHES_MESSAGE : NO_MODULES_MESSAGE;
+  });
+
+  /** The wording of the clear-search affordance. */
+  protected readonly clearSearchLabel = CLEAR_SEARCH_LABEL;
+
+  /** The wording of the return-to-first-page affordance. */
+  protected readonly firstPageLabel = FIRST_PAGE_LABEL;
+
   protected readonly listLoading = this.store.listLoading;
+
+  /**
+   * What the GRID is told about waiting, which is broader than "a request is in flight".
+   *
+   * ⚠ AN UN-ASKED LISTING IS A WAITING LISTING, NOT AN EMPTY ONE, and conflating the two is the measured
+   * empty-table flash. The shared grid prefers its waiting placeholder over its empty one, so handing it
+   * this instead of the raw in-flight flag is what stops a listing that has not been read yet from
+   * asserting that the tenant has no modules. The store's latch is raised on a read's success AND on its
+   * failure, so this cannot leave a spinner standing over a failure the grid is able to report.
+   */
+  protected readonly listWaiting: Signal<boolean> = computed(
+    () => this.listLoading() || !this.store.listSettled(),
+  );
 
   /**
    * The current failure, or `null`. Held as the structured record the store built - the operation, the
@@ -449,6 +608,13 @@ export class ModuleListComponent implements OnInit {
 
     return current === null ? null : current.problem;
   });
+
+  /**
+   * Whether the LISTING READ failed, so the absence of rows is a failure rather than a site with no
+   * modules on it. Handed to the shared grid, which then withholds the empty state and reports truthfully
+   * in its live region instead of announcing "No records found."
+   */
+  protected readonly listFailed = this.store.listFailed;
 
   /**
    * The key the listing is currently ordered by. ⚠ FALLS BACK TO THE SERVER'S OWN ORDER RATHER THAN TO
@@ -478,7 +644,82 @@ export class ModuleListComponent implements OnInit {
 
   protected readonly tableCaption = TABLE_CAPTION;
 
+  /** The word an expired placement is qualified with. The SAME word the portal listing uses. */
+  protected readonly expiredQualifier = EXPIRED_QUALIFIER;
+
+  /**
+   * Whether a wire instant is usable at all, so a cell can tell an absent term from a recorded one.
+   *
+   * The pipe's own parser is asked, so a qualifier can never be painted beside an empty cell and a date can
+   * never be painted without one - the two verdicts come from a single implementation.
+   *
+   * @param instant The value as it arrived on the wire.
+   * @returns True when the value names a real moment.
+   */
+  protected hasInstant(instant: string | null | undefined): boolean {
+    return parseDisplayInstant(instant) !== null;
+  }
+
+  /**
+   * Whether a placement's term has already ended.
+   *
+   * ⚠ THIS IS THE ONE FACT THE ROW COULD NOT REPORT. An expired placement is not rendered on its page, and its
+   * row was byte-identical to a live one, so the state had to be inferred by reading a date. Judged against the
+   * start of today rather than the current instant, which is the same rule the portal listing applies, so a
+   * term ending today reads as expired on both screens rather than on one.
+   *
+   * @param row The placement.
+   * @returns True when a recorded end date is not in the future.
+   */
+  protected isTermExpired(row: ModuleListItem): boolean {
+    const instant: Date | null = parseDisplayInstant(row.endDate);
+
+    if (instant === null) {
+      return false;
+    }
+
+    const now = new Date();
+    const startOfToday = new Date(0);
+    startOfToday.setUTCFullYear(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    startOfToday.setUTCHours(0, 0, 0, 0);
+
+    return instant.getTime() <= startOfToday.getTime();
+  }
+
+  /**
+   * What the grid's progress indicator says while a read is in flight. Names the collection rather than
+   * saying "Loading…", so the announcement identifies WHAT is loading; the same label serves the first-read
+   * placeholder and the refetch strip, so this screen has one loading vocabulary.
+   */
+  protected readonly loadingLabel = 'Loading modules…';
+
   protected readonly searchPlaceholder = SEARCH_PLACEHOLDER;
+
+  /**
+   * The text most recently entered that carried nothing to match on, or `null` when the last search was a
+   * real one. Held here rather than in the address because it describes an entry that was NOT made into a
+   * request, and an address records requests.
+   */
+  private readonly _ignoredTerm = signal<string | null>(null);
+
+  /**
+   * What the listing is filtered by, or the statement that an entry was ignored, or `null` when neither
+   * applies. Read from the STORE rather than from the search box, so it states what the rows on screen
+   * actually answer - the box is cleared on every return to this screen while the filter is not.
+   */
+  protected readonly filterDisclosure: Signal<string | null> = computed(() => {
+    if (this._ignoredTerm() !== null) {
+      return IGNORED_TERM_NOTICE;
+    }
+
+    const inForce: string | null = this.store.query().query ?? null;
+
+    if (inForce === null || inForce.length === 0) {
+      return null;
+    }
+
+    return FILTER_DISCLOSURE_TEMPLATE.replace('{text}', inForce);
+  });
 
   protected readonly commandLabel = COMMAND_LABEL;
 
@@ -488,7 +729,27 @@ export class ModuleListComponent implements OnInit {
 
   protected readonly pageActionLabel = PAGE_ACTION_LABEL;
 
-  protected readonly removeConfirmMessage = REMOVE_CONFIRM_MESSAGE;
+  /**
+   * The confirmation body: the legacy question verbatim, then WHICH record it means.
+   *
+   * ⚠ THE MEASURED DEFECT. The dialog read only "Are You Sure You Wish To Delete This Module ?" and named nothing at
+   * all - searched against every identifier on the page it matched none of them - while being a real modal
+   * that PHYSICALLY COVERS the grid behind it. Measured with the sixth row targeted, it overlaid the three
+   * rows above it and the top of the target itself, so an operator had no way to check what was about to be
+   * destroyed: the record's identity existed only on the triggering control's accessible name, which is
+   * unreachable once the modal holds focus.
+   *
+   * The wording is APPENDED rather than rewritten, so the measured legacy sentence survives unchanged and
+   * this reads as the same question with the answer to "which one" added. The module is named through the same {@link describeModule} the row commands use, so the dialog and
+   * the control that raised it can never disagree about which record is meant.
+   */
+  protected readonly removeConfirmMessage: Signal<string> = computed<string>(() => {
+    const target: ModuleListItem | null = this.removalTarget();
+
+    return target === null
+      ? REMOVE_CONFIRM_MESSAGE
+      : `${REMOVE_CONFIRM_MESSAGE} ${describeModule(target)}`;
+  });
 
   /** Address of the create screen, for the primary page action. */
   protected readonly createLink = ROUTE.create;
@@ -619,6 +880,10 @@ export class ModuleListComponent implements OnInit {
           return;
         }
 
+        // Remembered at the single point where the coordinate is settled and canonical, so every route
+        // into a changed coordinate is covered without each handler having to say so.
+        this.listReturn.remember(MODULE_LIST_ROUTE, serialiseModuleListQuery(query));
+
         // ⚠ THE ECHO GUARD IS NOT ARMED HERE, AND ARMING IT HERE WOULD DISABLE THE SEARCH BOX'S
         // RECONCILIATION ENTIRELY. Only the box's own handler knows that a term came from the box; every
         // OTHER route to this line - a back navigation, a typed address, a correction - is a term the box
@@ -650,13 +915,31 @@ export class ModuleListComponent implements OnInit {
   }
 
   /**
-   * Address of the settings screen for one placement.
+   * Where this row's settings are administered, or `null` when this console cannot administer them.
+   *
+   * ⚠ NOT ALWAYS THE GENERIC SETTINGS SCREEN, AND THAT IS THE FIX. An ordinary module's settings are the
+   * generic screen. A module created from an ADMINISTRATIVE package has settings the generic screen refuses
+   * outright with `module.settings_protected` - so for the one administrative package this console
+   * administers, the affordance goes to the screen that owns those settings, and for any other it is
+   * withheld rather than offered as a link that always ends in a refusal.
+   *
+   * Only an explicit `true` counts as administrative: `null` means the server could not resolve the package
+   * and is claiming nothing, in which case the ordinary destination is offered and the server remains the
+   * authority on whether it is allowed.
    *
    * @param row The row being rendered.
-   * @returns `/modules/{moduleId}/settings`.
+   * @returns The address to link to, or `null` for no affordance.
    */
-  protected settingsLink(row: ModuleListItem): string {
-    return `${ROUTE.modules}/${row.moduleId}/${ROUTE.settings}`;
+  protected settingsDestination(row: ModuleListItem): string | null {
+    if (row.isAdmin !== true) {
+      return `${ROUTE.modules}/${row.moduleId}/${ROUTE.settings}`;
+    }
+
+    // Trimmed because the column is `nvarchar` and a name carrying incidental whitespace is still that
+    // package; compared exactly otherwise, mirroring the server's own equality test.
+    const definition: string = (row.friendlyName ?? '').trim();
+
+    return ADMINISTERED_ELSEWHERE[definition] ?? null;
   }
 
   /**
@@ -674,19 +957,45 @@ export class ModuleListComponent implements OnInit {
   // ---------------------------------------------------------------------------------------------------
 
   /**
-   * Resolves a visibility code to its display word.
+   * Whether a stored visibility code is one this console can name.
    *
    * @param visibility The code as the server sent it.
-   * @returns The display word, or empty text for a code this contract does not declare.
+   * @returns True when the code is published.
    */
-  protected visibilityLabel(visibility: ModuleVisibility): string {
-    const resolved: string | undefined = VISIBILITY_LABEL[visibility];
+  protected isNameableVisibility(visibility: number): boolean {
+    return isPublishedModuleVisibility(visibility);
+  }
 
-    if (resolved === undefined) {
-      return '';
+  /**
+   * Resolves a visibility code to its display word.
+   *
+   * ⚠ THE UNRECOGNISED CASE NO LONGER RENDERS EMPTY TEXT, and the empty text was the defect. The column is
+   * `int` with no check constraint, so a code outside the published three is reachable on any installation
+   * whose own modules registered one - and it used to paint a blank cell, which reads as "nothing recorded"
+   * for a row that in fact records something this console cannot name.
+   *
+   * @param visibility The code as the server sent it.
+   * @returns The display word for a published code, or the marked stored code for one that is not.
+   */
+  protected visibilityLabel(visibility: number): string {
+    if (isPublishedModuleVisibility(visibility)) {
+      return VISIBILITY_LABEL[visibility];
     }
 
-    return resolved;
+    return `${UNNAMEABLE_VISIBILITY_PREFIX}${String(visibility)}`;
+  }
+
+  /**
+   * What an unnameable visibility code means, in words.
+   *
+   * @param visibility The code as the server sent it.
+   * @returns Wording naming the stored code, for a `title` and for assistive technology.
+   */
+  protected visibilityDescription(visibility: number): string {
+    return (
+      `${UNNAMEABLE_VISIBILITY_DESCRIPTION_PREFIX}${String(visibility)}` +
+      UNNAMEABLE_VISIBILITY_DESCRIPTION_SUFFIX
+    );
   }
 
   // ---------------------------------------------------------------------------------------------------
@@ -702,7 +1011,18 @@ export class ModuleListComponent implements OnInit {
    * @param term The text the shared search control emitted, already debounced and trimmed by it.
    */
   protected onSearch(term: string): void {
-    const wanted: string | null = term.length === 0 ? null : term;
+    // ⚠ #36 — A TERM OF NOTHING BUT SPACES CARRIES NO FILTER, so it is not sent. It returned the whole listing
+    // in any case, and sending it made an unfiltered grid look like a filtered one.
+    //
+    // The SHARED control now recognises that case before this handler sees it: it emits the empty term and
+    // states the reason itself in its own polite region, in the same words for every listing. What follows is
+    // therefore a defence in depth rather than the only guard - it holds for any caller that hands this
+    // handler a whitespace term directly - and this screen's own notice is what would then be shown.
+    const blankButTyped: boolean = term.length > 0 && term.trim().length === 0;
+
+    this._ignoredTerm.set(blankButTyped ? term : null);
+
+    const wanted: string | null = term.length === 0 || blankButTyped ? null : term;
 
     // Recorded BEFORE the store is written, because writing it runs the reconciling effect synchronously
     // and the guard has to be in place by the time that effect reads it. See {@link ownQueryRequest} for
@@ -779,6 +1099,40 @@ export class ModuleListComponent implements OnInit {
       queryParams: { [PAGE_PARAM]: firstPageParameter(pageIndex) },
       queryParamsHandling: 'merge',
     });
+  }
+
+  /**
+   * Withdraws the search term and re-reads from the first page.
+   *
+   * ⚠ OFFERED BESIDE THE ZERO-RESULT SURFACE, BECAUSE THAT IS WHERE IT IS NEEDED. A search that matched
+   * nothing leaves an operator looking at an empty grid whose only route back is to find the box, select
+   * its contents and clear them - and the box is above the failure surface and the grid, so on a long
+   * listing it may not be on screen at all.
+   */
+  protected onClearSearch(): void {
+    // ⚠ THE BOX IS EMPTIED HERE, EXPLICITLY, AND THE RECONCILING EFFECT CANNOT DO IT FOR US. Runtime
+    // testing measured the consequence of leaving it out: the address became `/modules`, all the
+    // unfiltered rows returned, and the box went on showing `nothingmatches` - a populated search field
+    // whose term contradicted both the address bar and the grid beneath it.
+    //
+    // The cause is the echo guard armed by `onSearch`, and the guard is RIGHT for the path it was written
+    // for. When the term came FROM the box, the box already holds the operator's text - possibly with more
+    // typed since - so correcting it would overwrite live typing. But this button is a SECOND affordance
+    // over the same term: the operator never touched the box, so nothing in it needs protecting, and the
+    // very guard that protects typing is what leaves the stale term standing.
+    //
+    // Adopting is emit-free, so it neither starts a new delay nor dispatches the query `onSearch` is about
+    // to dispatch itself. Ordered BEFORE `onSearch` so the box is already correct when the address settles.
+    this.searchControl?.cancelPendingSearch('');
+
+    // Routed through the same handler the box uses, so the echo guard is armed exactly as it is there and
+    // the box is not written back over while the address settles.
+    this.onSearch('');
+  }
+
+  /** Returns to the first page, which is the only recovery from an address past the end. */
+  protected onReturnToFirstPage(): void {
+    this.onPageChange(FIRST_PAGE_INDEX);
   }
 
   // ---------------------------------------------------------------------------------------------------
@@ -858,7 +1212,12 @@ export class ModuleListComponent implements OnInit {
         headerHidden: true,
         headerAlign: 'center',
         bodyAlign: 'center',
-        width: 'min-content',
+        // ⚠ EVERY COLUMN OF THIS GRID DECLARES A WIDTH, AND THE COMMAND TRACK IS A LENGTH RATHER THAN
+        // `min-content`. A fixed table layout cannot use `min-content` - it is not a length - so it fell back
+        // to the automatic share and made this hidden-label column as wide as a title column, while the tracks
+        // that carry real text were starved: names broke mid-word at 1440 and every track resolved near 49px at
+        // 375. The token is one interactive target plus the cell's own padding.
+        width: 'var(--table-commands-column-inline-size)',
         kind: 'actions',
         cellTemplate: this.requireTemplate(this.rowCommandsTemplate, 'rowCommands'),
       },
@@ -867,6 +1226,8 @@ export class ModuleListComponent implements OnInit {
       //    of the five names the endpoint's allow-list accepts.
       {
         key: SORTABLE_KEY.moduleId,
+        width: '6%',
+        atomic: true,
         label: COLUMN_LABEL.moduleId,
         sortable: true,
         headerAlign: 'center',
@@ -878,6 +1239,7 @@ export class ModuleListComponent implements OnInit {
       {
         kind: 'template',
         key: SORTABLE_KEY.moduleTitle,
+        width: '18%',
         label: COLUMN_LABEL.moduleTitle,
         sortable: true,
         headerAlign: 'center',
@@ -893,11 +1255,20 @@ export class ModuleListComponent implements OnInit {
         headerAlign: 'center',
         bodyAlign: 'start',
         field: 'friendlyName',
+        // ⚠ THE ONE COLUMN ON THIS GRID THAT DECLARES NO WIDTH, AND ONE MUST NOT.
+        //
+        // Under `table-layout: fixed` the leftover after the percentage tracks goes to whichever columns did
+        // not declare one. This grid's weights previously summed to 99%, which left the commands column
+        // one percent — and a column cannot be narrower than its own content, so the four commands inside it
+        // decided its width instead: a 62.98px flex box 188px tall, which made every row of this listing
+        // 196px high. Leaving the definition name unweighted lets the commands column take exactly the track
+        // its token asks for, and gives the slack to the value a reader identifies the placement by.
       },
 
       // 5. The installed PACKAGE's programmatic name. Not sortable, for the same reason.
       {
         key: 'moduleName',
+        width: '13%',
         label: COLUMN_LABEL.moduleName,
         headerAlign: 'center',
         bodyAlign: 'start',
@@ -907,6 +1278,7 @@ export class ModuleListComponent implements OnInit {
       // 6. The all-pages flag.
       {
         key: 'allTabs',
+        width: '6%',
         label: COLUMN_LABEL.allTabs,
         headerAlign: 'center',
         bodyAlign: 'center',
@@ -914,19 +1286,24 @@ export class ModuleListComponent implements OnInit {
         cellTemplate: this.requireTemplate(this.allTabsCellTemplate, 'allTabsCell'),
       },
 
-      // 7. The visibility state.
+      // 7. The visibility state. A TEMPLATE rather than a plain value column, because a code this console
+      // cannot name has to reach assistive technology as words while the cell still paints the stored code.
       {
         key: 'visibility',
+        width: '8%',
         label: COLUMN_LABEL.visibility,
         headerAlign: 'center',
         bodyAlign: 'center',
-        value: (row: ModuleListItem): string => this.visibilityLabel(row.visibility),
+        kind: 'template',
+        cellTemplate: this.requireTemplate(this.visibilityCellTemplate, 'visibilityCell'),
       },
 
       // 8. The placement's position within its pane - the numeric column, mirroring the counts at
       // `portals.ascx:L44-L45`.
       {
         key: 'moduleOrder',
+        width: '6%',
+        atomic: true,
         label: COLUMN_LABEL.moduleOrder,
         headerAlign: 'center',
         bodyAlign: 'center',
@@ -935,6 +1312,7 @@ export class ModuleListComponent implements OnInit {
 
       {
         key: SORTABLE_KEY.startDate,
+        width: '10%',
         label: COLUMN_LABEL.startDate,
         sortable: true,
         headerAlign: 'center',
@@ -944,6 +1322,7 @@ export class ModuleListComponent implements OnInit {
       },
       {
         key: SORTABLE_KEY.endDate,
+        width: '10%',
         label: COLUMN_LABEL.endDate,
         sortable: true,
         headerAlign: 'center',

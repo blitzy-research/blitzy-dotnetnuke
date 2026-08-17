@@ -185,6 +185,17 @@ export const ROLE_ASSIGNMENT_TEXT = Object.freeze({
    */
   pending: 'Pending',
 
+  /**
+   * Qualifier beside an expiry bound on a membership that is IN FORCE today — R6.
+   *
+   * ⚠ STATED RATHER THAN LEFT TO BE INFERRED FROM AN ABSENCE. With only the two exceptional states
+   * qualified, a membership in force carried no mark at all, so "in force" and "this console did not judge
+   * this row" were the same rendering — and a reader using the accessibility tree received nothing
+   * whatsoever for the ordinary case. FULLY AUTHORED, like its two siblings: no legacy screen compared
+   * either bound against the clock, so there is no wording in the resource set to recover.
+   */
+  current: 'Active',
+
   confirmRemoval: 'Are You Sure You Wish To Delete This Item?',
 
   /** Global `Cancel.Action`, the screen's single module action at `:L634`. */
@@ -305,6 +316,17 @@ export const ROLE_ASSIGNMENT_TEXT = Object.freeze({
 
   /** Shown when the tenant asked for the drop-down and the site holds no accounts to offer. */
   accountChoicesEmpty: 'This site holds no accounts to choose from.',
+
+  /**
+   * U21 - THE ANNOTATION CANNOT BE COMPLETE AND THE SCREEN NOW SAYS SO. The membership listing is paged,
+   * so only the memberships on the page in hand can be marked; an operator scanning the list was
+   * misinformed by omission about every member beyond it. The reassurance is not decoration: choosing an
+   * account this role already holds IS detected before anything is written, by the server probe the
+   * confirmation step performs, so the incomplete marking cannot cause a duplicate assignment.
+   */
+  accountChoicesAnnotationPartial:
+    'Accounts already in this role are marked only where the membership list below has been read this far,'
+    + ' so an existing member may appear unmarked. Choosing one is still detected before anything is saved.',
 
   /** Shown when the route did not carry a usable role identifier. */
   roleUnresolved: 'No security role was addressed, so no memberships can be shown.',
@@ -873,6 +895,17 @@ function resolveMembershipLifecycle(row: UserRole, now: Date): MembershipLifecyc
 }
 
 /** Routed container for `/roles/:roleId/users`. */
+/**
+ * THE SUBTITLE, UNDER THE APPLICATION'S ONE SUBTITLE RULE. Every screen's header carries exactly one
+ * subtitle stating that screen's SCOPE: the record it acts on when the title does not already name it,
+ * and otherwise what the screen is for, in one line. It never carries a status, a count or a progress
+ * readout - those belong to the live region that owns them, and a count in two places is two owners of
+ * one fact. Measured finding: subtitles appeared on ten of the twenty screens and carried three
+ * different kinds of thing, so a reader could not tell what the slot was for.
+ */
+const PAGE_SUBTITLE =
+  'The accounts holding this role, and the dates they hold it between.';
+
 @Component({
   selector: 'app-role-assignment',
   standalone: true,
@@ -1049,12 +1082,24 @@ export class RoleAssignmentComponent {
   >(new Set<string>());
 
   /**
-   * Reports this screen's unsaved entry to the tracker that guards both ways of leaving it. ⚠ THE ROUTE
-   * DECLARES `unsavedChangesGuard` AND THIS SCREEN USED TO REGISTER NOTHING, so the gate was answered by
-   * a reflective sweep over this component's fields.
+   * Registers this screen's unsaved-entry probe with the application's tracker. ⚠ WHY A REGISTRATION
+   * RATHER THAN A ROUTE-LEVEL READ. Leaving a screen happens two ways and only one of them is a router
+   * navigation: Cancel, an in-application link and the browser's Back button are navigations a route
+   * guard can refuse, while closing or reloading the tab is not, and only the browser's own unload prompt
+   * covers that - which needs the dirty state at an arbitrary moment rather than at a navigation.
+   *
+   * ⚠ THE BUSY EXCLUSION WAS REMOVED, AND ITS REMOVAL CLOSES A MEASURED HOLE. This predicate used to read
+   * `dirty && busy === false`, which reported the screen CLEAN for exactly as long as a write was in flight -
+   * so navigating away mid-save was admitted in silence, the departure destroyed the component, and
+   * `takeUntilDestroyed` cancelled the request. The operator lost the write and was told nothing. A form
+   * holding an unfinished write is the LEAST safe moment to leave, not the safest.
+   *
+   * The exclusion was written to stop the application's OWN post-save navigation being challenged, and that
+   * case is already covered properly: every success path replaces the address imperatively, which
+   * `unsavedChangesGuard` admits explicitly. Nothing here has to approximate it a second time.
    */
   private readonly unsavedEntry = inject(UnsavedChangesTracker).watch(
-    () => this.form.dirty && this.saving() === false,
+    () => this.form.dirty,
   );
 
   /** The screen's typed form. */
@@ -1147,6 +1192,14 @@ export class RoleAssignmentComponent {
    * TRUSTWORTHY. The membership listing is paged, so an account absent from the rows on screen is
    * normally UNKNOWN rather than a non-member.
    */
+  /**
+   * Whether the "already in this role" marking on the picker can be trusted to be COMPLETE - U21. It can
+   * only mark accounts whose membership rows are in hand, and the membership listing is paged.
+   */
+  protected readonly choiceAnnotationIncomplete: Signal<boolean> = computed(
+    () => this.accountChoiceEntries().length > 0 && !this.membershipPageIsComplete(),
+  );
+
   private readonly membershipPageIsComplete: Signal<boolean> = computed(() => {
     const addressed = this.roleIdSignal();
 
@@ -1252,6 +1305,21 @@ export class RoleAssignmentComponent {
     }
 
     return this.store.assignmentsLoading();
+  });
+
+  /**
+   * Whether the MEMBERSHIP READ failed, so zero rows means "nothing is known" rather than "this role has no
+   * members". Narrowed to the read operation and to THIS screen's role, because the store is provided at the
+   * application root and its failure slot holds whatever failed most recently anywhere.
+   */
+  public readonly assignmentsFailed: Signal<boolean> = computed(() => {
+    const addressed = this.roleIdSignal();
+
+    if (addressed === null || this.store.assignmentsRoleId() !== addressed) {
+      return false;
+    }
+
+    return this.store.failure()?.operation === 'loadAssignments';
   });
 
   /** Whether a membership write of this screen's is in flight, so the action can be held. */
@@ -1494,6 +1562,9 @@ export class RoleAssignmentComponent {
    * The heading, with the role's name substituted into the legacy title template. the placeholder is
    * filled by INTERPOLATION and never by a markup-injecting binding.
    */
+  /** The one-line scope statement shown beneath the title. */
+  public readonly pageSubtitle = PAGE_SUBTITLE;
+
   public readonly title: Signal<string> = computed(() => {
     const current = this.role();
     if (current === null) {
@@ -1945,6 +2016,27 @@ export class RoleAssignmentComponent {
   }
 
   /**
+   * Whether the expiry cell should state that this membership is IN FORCE — R6.
+   *
+   * ⚠ GATED ON THE BOUND ACTUALLY PAINTING, AND THE GATE IS THE POINT. This screen holds an invariant that
+   * predates the finding and outranks it: a qualifier never appears beside a cell the date renders as empty.
+   * `Null.vb` spells an unset date as `Date.MinValue`, so both the emptiness and the qualification are
+   * decided by the SAME parser precisely so that an unset bound cannot acquire a word. Stating "Active" in
+   * an otherwise empty date column would also read as though the word were the date.
+   *
+   * So a membership with no expiry bound at all keeps its empty cell, exactly as before, and only a
+   * membership whose expiry bound is a real painted date is qualified. That is where the finding's complaint
+   * actually bites: two painted future dates, one lapsed and one in force, previously differed by the
+   * presence or absence of a word and nothing else, leaving "in force" indistinguishable from "not judged".
+   *
+   * @param row The membership.
+   * @returns True when the in-force qualifier belongs beside this row's expiry date.
+   */
+  public showsInForceQualifier(row: UserRole): boolean {
+    return this.membershipState(row) === 'current' && boundInstant(row.expiryDate) !== null;
+  }
+
+  /**
    * Whether the row command should be offered for one membership. This is `DeleteButtonVisible` from
    * `SecurityRoles.ascx.vb:L360-L363`, which delegated to `RoleController.CanRemoveUserFromRole`.
    *
@@ -1976,6 +2068,35 @@ export class RoleAssignmentComponent {
    * @param row The membership the command would end.
    * @returns The command's accessible name, qualified by the account's display name.
    */
+  /**
+   * The confirmation body: the legacy question verbatim, then WHICH record it means.
+   *
+   * ⚠ THE MEASURED DEFECT. The dialog read only "Are You Sure You Wish To Delete This Item?" and named nothing at
+   * all - searched against every identifier on the page it matched none of them - while being a real modal
+   * that PHYSICALLY COVERS the grid behind it. Measured with the sixth row targeted, it overlaid the three
+   * rows above it and the top of the target itself, so an operator had no way to check what was about to be
+   * destroyed: the record's identity existed only on the triggering control's accessible name, which is
+   * unreachable once the modal holds focus.
+   *
+   * The wording is APPENDED rather than rewritten, so the measured legacy sentence survives unchanged and
+   * this reads as the same question with the answer to "which one" added. The member is named through the same expression {@link
+   * RoleAssignmentComponent.removalCommandName} gives the control that raised the dialog, so the two can
+   * never disagree.
+   */
+  public readonly removalMessage: Signal<string> = computed<string>(() => {
+    const target: UserRole | null = this.pendingRemoval();
+
+    if (target === null) {
+      return this.text.confirmRemoval;
+    }
+
+    const named: string = target.displayName.trim();
+
+    return named.length === 0
+      ? this.text.confirmRemoval
+      : `${this.text.confirmRemoval} ${named}`;
+  });
+
   public removalCommandName(row: UserRole): string {
     return `${this.text.delete} ${row.displayName}`;
   }

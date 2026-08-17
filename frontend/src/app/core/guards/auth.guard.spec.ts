@@ -15,8 +15,12 @@ import type { ActivatedRouteSnapshot, RouterStateSnapshot } from '@angular/route
 
 import type { AuthSession } from '../models/auth.model';
 import { TokenStorageService } from '../services/token-storage.service';
+import { NotificationService } from '../services/notification.service';
 import { AuthStore } from '../state/auth.store';
-import { authGuard } from './auth.guard';
+import { authGuard,
+  CREDENTIAL_REMEDIATION_MESSAGE,
+  PROFILE_REMEDIATION_MESSAGE,
+} from './auth.guard';
 
 /** The sign-in route, spelled again rather than imported. */
 const SIGN_IN_PATH = '/login';
@@ -131,12 +135,27 @@ describe('authGuard', () => {
   let renewSession: jasmine.Spy;
   let storeOffLimits: Record<string, jasmine.Spy>;
   let custodianOffLimits: Record<string, jasmine.Spy>;
+  let notified: { readonly severity: string; readonly message: string }[];
+  let retained: number;
+  let restricted: WritableSignal<boolean>;
+  let credentialObligation: WritableSignal<boolean>;
+  let profileObligation: WritableSignal<boolean>;
+  let caller: WritableSignal<{ readonly userId: number } | null>;
 
   beforeEach(() => {
     session = {
       isAuthenticated: signal(false),
       accessToken: signal<string | null>(null),
     };
+
+    // The SESSION-LEVEL OBLIGATIONS, which the gate now honours. Default to none, so every case written
+    // before they existed continues to state exactly what it stated.
+    restricted = signal(false);
+    credentialObligation = signal(false);
+    profileObligation = signal(false);
+    caller = signal<{ readonly userId: number } | null>({ userId: 7 });
+    notified = [];
+    retained = 0;
 
     storeOffLimits = offLimitsSpies(STORE_MEMBERS_OFF_LIMITS);
     custodianOffLimits = offLimitsSpies(CUSTODIAN_MEMBERS_OFF_LIMITS);
@@ -163,10 +182,27 @@ describe('authGuard', () => {
         provideHttpClientTesting(),
         provideRouter([]),
         {
+          provide: NotificationService,
+          useValue: {
+            // Recorded rather than spied, so a case can assert HOW MANY were raised and WHAT they said -
+            // both of which are the substance of this fix.
+            notify: (severity: string, message: string): void => {
+              notified.push({ severity, message });
+            },
+            retainAcrossNavigation: (): void => {
+              retained += 1;
+            },
+          },
+        },
+        {
           provide: AuthStore,
           useValue: {
             isAuthenticated: session.isAuthenticated,
             refreshSession: renewSession,
+            sessionRestricted: () => restricted(),
+            mustChangePassword: () => credentialObligation(),
+            mustUpdateProfile: () => profileObligation(),
+            currentUser: () => caller(),
             ...storeOffLimits,
           },
         },
@@ -325,6 +361,195 @@ describe('authGuard', () => {
   // =========================================================================
   // THE ATTEMPTED ADDRESS SURVIVES THE ROUND TRIP
   // =========================================================================
+
+  /**
+   * THE SESSION-LEVEL OBLIGATIONS, which are a different kind of refusal from a missing permission and were
+   * measured being reported as the same kind.
+   *
+   * The API refuses every endpoint that is not remediation-allowed with `auth.remediation_required` and an
+   * actionable sentence. The permission gate used to cancel the navigation before any request was issued, so
+   * that document never arrived and the caller was told "You do not have access to this content." - a
+   * standing fact about their account - for a task they could finish in the next minute. Worse, once the task
+   * WAS finished the outcome was byte-identical, so the two were indistinguishable.
+   */
+  describe('an outstanding session obligation', () => {
+    it('sends a caller owing profile fields to the screen that collects them, and says why', () => {
+      signIn();
+      restricted.set(true);
+      credentialObligation.set(false);
+
+      const decision = runGuard('/portals');
+
+      expect(decision instanceof UrlTree)
+        .withContext('the caller is LANDED somewhere they can act, not left nowhere')
+        .toBeTrue();
+      expect(router.serializeUrl(decision as UrlTree)).toBe('/users/7/profile');
+
+      const warned = notified.filter((entry) => entry.severity === 'warning');
+
+      expect(warned.length).withContext('stated once').toBe(1);
+      expect(warned[0].message)
+        .withContext('the ACTIONABLE sentence, not the permanent one')
+        .toBe(PROFILE_REMEDIATION_MESSAGE);
+      expect(warned[0].message).not.toContain('do not have access');
+    });
+
+    it('states the credential obligation first when both apply', () => {
+      signIn();
+      restricted.set(true);
+      credentialObligation.set(true);
+
+      // The same order the root redirect resolves them in, so a caller carrying both is never told about the
+      // second while the first still blocks them.
+      expect(router.serializeUrl(runGuard('/portals') as UrlTree)).toBe('/users/7/password');
+      expect(notified[0].message).toBe(CREDENTIAL_REMEDIATION_MESSAGE);
+    });
+
+    it('admits the remediation screens themselves, or the two would chase each other', () => {
+      signIn();
+      restricted.set(true);
+
+      // Both, and for both obligations, because either screen may be the one in hand.
+      credentialObligation.set(true);
+      expect(runGuard('/users/7/password')).toBeTrue();
+      credentialObligation.set(false);
+      profileObligation.set(true);
+      expect(runGuard('/users/7/profile')).toBeTrue();
+
+      expect(notified.length)
+        .withContext('and nothing is announced, because the caller is already where they need to be')
+        .toBe(0);
+    });
+
+    // ⚠ THE FOLLOWING CASES PIN A DEFECT MEASURED IN A REAL BROWSER, NOT A HYPOTHETICAL. The gate used to
+    // admit an address on SHAPE alone — `/users/{any-id}/(profile|password)` — so a caller owing only a
+    // password change followed the header's "Manage Profile" link, was admitted off the one screen that
+    // could clear their obligation, and the server then refused that screen's own data with
+    // `403 auth.not_permitted`. They were stranded on a Forbidden-erroring screen. `RemediationAuthorization
+    // Handler` allows the password endpoint only while `MustChangePassword` stands and the profile endpoint
+    // only while `MustUpdateProfile` stands, each on the caller's own account; these cases hold this gate to
+    // the same two conditions so the two cannot disagree about the same request.
+
+    it('will not carry a caller owing a PASSWORD change onto their profile screen', () => {
+      signIn();
+      restricted.set(true);
+      credentialObligation.set(true);
+      profileObligation.set(false);
+
+      const decision = runGuard('/users/7/profile');
+
+      expect(decision instanceof UrlTree)
+        .withContext('the server refuses that screen\'s data; admitting it strands the caller')
+        .toBeTrue();
+      expect(router.serializeUrl(decision as UrlTree)).toBe('/users/7/password');
+    });
+
+    it('tells that caller about the credential, not the profile they were reaching for', () => {
+      signIn();
+      restricted.set(true);
+      credentialObligation.set(true);
+      profileObligation.set(false);
+
+      runGuard('/users/7/profile');
+
+      expect(notified.length).withContext('stated once').toBe(1);
+      expect(notified[0].message).toBe(CREDENTIAL_REMEDIATION_MESSAGE);
+      expect(notified[0].message).not.toBe(PROFILE_REMEDIATION_MESSAGE);
+    });
+
+    it('will not carry a caller owing PROFILE fields onto their password screen', () => {
+      signIn();
+      restricted.set(true);
+      credentialObligation.set(false);
+      profileObligation.set(true);
+
+      const decision = runGuard('/users/7/password');
+
+      expect(decision instanceof UrlTree).toBeTrue();
+      expect(router.serializeUrl(decision as UrlTree)).toBe('/users/7/profile');
+      expect(notified[0].message).toBe(PROFILE_REMEDIATION_MESSAGE);
+    });
+
+    it('admits EITHER of their own screens when both obligations stand, as the server does', () => {
+      signIn();
+      restricted.set(true);
+      credentialObligation.set(true);
+      profileObligation.set(true);
+
+      expect(runGuard('/users/7/password'))
+        .withContext('the destination')
+        .toBeTrue();
+      expect(runGuard('/users/7/profile'))
+        .withContext('walking on to the second obligation must not be redirected backwards')
+        .toBeTrue();
+      expect(notified.length).withContext('nothing to announce; both were admitted').toBe(0);
+    });
+
+    it('refuses SOMEBODY ELSE\'S remediation screen, matching the ownership condition', () => {
+      signIn();
+      restricted.set(true);
+      credentialObligation.set(true);
+      profileObligation.set(false);
+      caller.set({ userId: 7 });
+
+      // Same shape, same obligation, different account - which the server requires to be the caller's own.
+      const decision = runGuard('/users/999/password');
+
+      expect(decision instanceof UrlTree).toBeTrue();
+      expect(router.serializeUrl(decision as UrlTree)).toBe('/users/7/password');
+    });
+
+    it('is not defeated by a query string or a fragment on the admitted address', () => {
+      signIn();
+      restricted.set(true);
+      credentialObligation.set(true);
+      profileObligation.set(false);
+
+      expect(runGuard('/users/7/password?from=header')).toBeTrue();
+      expect(runGuard('/users/7/password#main-content')).toBeTrue();
+      expect(runGuard('/users/7/password/')).toBeTrue();
+      expect(notified.length).toBe(0);
+    });
+
+    it('never redirects an address to itself, even in a store state the obligations cannot explain', () => {
+      signIn();
+      // Restricted, yet neither flag stands. `sessionRestricted` is derived from the two, so this cannot
+      // arise in production - which is exactly why the loop-prevention test must not depend on it.
+      restricted.set(true);
+      credentialObligation.set(false);
+      profileObligation.set(false);
+
+      expect(runGuard('/users/7/profile'))
+        .withContext('a self-redirect would make the router chase itself')
+        .toBeTrue();
+    });
+
+    it('admits the sign-in route, so an obligation cannot prevent signing out and back in', () => {
+      signIn();
+      restricted.set(true);
+
+      expect(runGuard('/login')).toBeTrue();
+      expect(notified.length).toBe(0);
+    });
+
+    it('claims nothing when the session carries no obligation', () => {
+      signIn();
+      restricted.set(false);
+
+      expect(runGuard('/portals')).toBeTrue();
+      expect(notified.length).toBe(0);
+    });
+
+    it('does not redirect when there is no account to address a remediation screen with', () => {
+      signIn();
+      restricted.set(true);
+      caller.set(null);
+
+      // Nothing is claimed and nothing is announced: a redirect would have to invent an identifier.
+      expect(runGuard('/portals')).toBeTrue();
+      expect(notified.length).toBe(0);
+    });
+  });
 
   describe('returnUrl preservation', () => {
     it('carries a plain path through exactly once, encoded by the router alone', () => {

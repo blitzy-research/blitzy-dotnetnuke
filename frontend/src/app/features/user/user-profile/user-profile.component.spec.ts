@@ -14,10 +14,18 @@ import {
 } from '../../../core/models/profile.model';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
 import type { UserDetail } from '../../../core/models/user.model';
-import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
+import {
+  DISCARD_CHANGES_PROMPT,
+  UnsavedChangesTracker,
+} from '../../../core/guards/unsaved-changes.guard';
 import { NotificationService } from '../../../core/services/notification.service';
 import { TokenStorageService } from '../../../core/services/token-storage.service';
-import { NOT_SPECIFIED_OPTION_TEXT, UserProfileComponent } from './user-profile.component';
+import { compileTenantPattern } from '../../../core/utils/tenant-pattern.util';
+import {
+  NOT_SPECIFIED_OPTION_TEXT,
+  PROFILE_REMEDIATION_EXPLANATION,
+  UserProfileComponent,
+} from './user-profile.component';
 
 /**
  * Specification for the dynamic profile editor. The cases below are chosen around the failure modes this
@@ -232,6 +240,29 @@ describe('UserProfileComponent', () => {
     respond(properties, userId, displayVisibilityEnabled);
   }
 
+  /**
+   * The help text rendered for one named property. `app-form-field` paints `.form-field__help` only while
+   * its disclosure is expanded, so the toggle is pressed first.
+   *
+   * @param propertyName The declared property name.
+   * @returns The help text, trimmed, or the empty string when no affordance is offered.
+   */
+  function helpFor(propertyName: string): string {
+    const fields = Array.from(host().querySelectorAll<HTMLElement>('app-form-field'));
+    const field = fields.find((candidate) => candidate.textContent?.includes(propertyName) === true)
+      ?? fields[0];
+    const toggle = field?.querySelector<HTMLButtonElement>('.form-field__help-toggle');
+
+    if (toggle === null || toggle === undefined) {
+      return '';
+    }
+
+    toggle.click();
+    fixture.detectChanges();
+
+    return field?.querySelector<HTMLElement>('.form-field__help')?.textContent?.trim() ?? '';
+  }
+
   /** The host element, typed once so no case repeats the cast. */
   function host(): HTMLElement {
     return fixture.nativeElement as HTMLElement;
@@ -432,6 +463,38 @@ describe('UserProfileComponent', () => {
       );
     });
 
+    /**
+     * `ManageUsers.ascx.vb` L259-L262 chose the heading on `IsUser And IsProfile`, and `UserModuleBase.vb`
+     * L350-L371 shows `IsProfile` already implies `IsUser`, so the rule reduces to: THE PROFILE SCREEN, SEEN
+     * BY ITS OWN OWNER, RENDERED NO TITLE ROW AND THEREFORE NO IDENTIFIER. We keep the heading, because a
+     * routed screen needs an accessible name, and withhold only the identifier.
+     *
+     * The pair of cases below is what gives this coverage teeth: dropping the identifier unconditionally
+     * would satisfy the first and break the second, and appending it unconditionally does the reverse.
+     */
+    it("withholds the record identifier from the account's own owner", () => {
+      seatIdentity(USER_ID);
+
+      load([entry(declaration())]);
+
+      const header = present(host().querySelector('app-page-header'), 'the page header').textContent ?? '';
+      expect(header).toContain('Edit Profile - jsmith');
+      expect(header).not.toContain('(Id:');
+      expect(header).not.toContain('Id: 7');
+    });
+
+    it('still discloses the identifier to an administrator viewing somebody else', () => {
+      // A DIFFERENT caller: the identifier is the administrative detail that separates two accounts sharing
+      // a display name, so it is disclosed to the administrator who needs it.
+      seatIdentity(USER_ID + 1);
+
+      load([entry(declaration())]);
+
+      expect(present(host().querySelector('app-page-header'), 'the page header').textContent).toContain(
+        'Edit Profile - jsmith (Id: 7)',
+      );
+    });
+
     it('is never blank while the account is still being read', () => {
       fixture.detectChanges();
 
@@ -590,14 +653,252 @@ describe('UserProfileComponent', () => {
       expect(headings()).toEqual(['General']);
     });
 
-    it('renders every property, including one the tenant marked not visible', () => {
-      load([
+    // ⚠ THIS BLOCK PREVIOUSLY ASSERTED THAT A `visible: false` PROPERTY IS RENDERED TO EVERYONE, and
+    // that claim was wrong about legacy in one direction only. `Profile.ascx.vb` L164-L168 is
+    // `For Each ... If IsAdmin Then profProperty.Visible = True` with NO else arm, and the untouched
+    // declaration then reached `FieldEditorControl.Visible` (L963) - an ASP.NET server control property,
+    // so the field rendered NOTHING for the account's own owner. The intent worth keeping is that an
+    // ADMINISTRATOR sees everything; what is corrected is who else does.
+    /** Seats a caller who administers the tenant, which is the legacy `IsAdmin` predicate. */
+    function seatAdministrator(): void {
+      TestBed.inject(TokenStorageService).store({
+        accessToken: 'not-a-real-token.not-a-real-payload.not-a-real-signature',
+        expiresAtUtc: '2099-12-31T23:59:59.000Z',
+        refreshToken: 'not-a-real-refresh-token',
+        mustChangePassword: false,
+        mustUpdateProfile: false,
+        passwordExpiring: false,
+        user: {
+          userId: 999,
+          portalId: 0,
+          portalName: 'Baseline Portal',
+          username: 'administrator',
+          displayName: 'The Administrator',
+          email: 'admin@example.test',
+          isSuperUser: true,
+          isPortalAdministrator: true,
+          roles: ['Administrators'],
+          permissions: [],
+        },
+      });
+    }
+
+    /** The two declarations every case in this group shares. */
+    function visibleAndHidden(overrides: Partial<ProfilePropertyDefinition> = {}): readonly UserProfileValue[] {
+      return [
         entry(declaration({ propertyDefinitionId: 1, propertyName: 'FirstName', visible: true, viewOrder: 1 })),
-        entry(declaration({ propertyDefinitionId: 2, propertyName: 'LastName', visible: false, viewOrder: 2 })),
-      ]);
+        entry(
+          declaration({ propertyDefinitionId: 2, propertyName: 'LastName', visible: false, viewOrder: 2, ...overrides }),
+          overrides.required === true
+            ? { propertyValue: '', lastUpdatedDate: null }
+            : { propertyValue: 'Smith' },
+        ),
+      ];
+    }
+
+    it('renders every property to an administrator, including one marked not visible', () => {
+      seatAdministrator();
+      load(visibleAndHidden());
 
       expect(controls().length).toBe(2);
       expect(labels()).toEqual(['First Name', 'Last Name']);
+    });
+
+    it("withholds a property marked not visible from the account's own owner", () => {
+      load(visibleAndHidden());
+
+      expect(controls().length).toBe(1);
+      expect(labels()).toEqual(['First Name']);
+    });
+
+    it('says how many properties it is withholding, so the form does not read as the whole profile', () => {
+      load(visibleAndHidden());
+
+      const note = host().querySelector<HTMLElement>('.user-profile__withheld');
+
+      expect(note).not.toBeNull();
+      expect(note?.textContent).toContain('1 further profile detail');
+      expect(note?.textContent).toContain('unchanged');
+    });
+
+    // ⚠ THE DEADLOCK GUARD. `ProfileController.ValidateProfile` (L305-L319) and the port's
+    // `RequiresProfileCompletionAsync` BOTH gate on `Required` with no reference to `Visible`, so a
+    // property declared required and not visible made the gate unsatisfiable for ever while the editor
+    // rendered no control to satisfy it. Honouring the declaration without this exception reproduces a
+    // deadlock legacy shipped.
+    it('shows a property marked not visible when it is required and unmet, because the site gates on it', () => {
+      load(visibleAndHidden({ required: true }));
+
+      expect(controls().length).toBe(2);
+      expect(labels()).toEqual(['First Name', 'Last Name *required']);
+    });
+
+    // ⚠ THE DATA-LOSS GUARD, AND THE REASON WITHHOLDING IS NOT THE SAME AS OMITTING.
+    // `UserService.UpdateProfileAsync` replaces the whole answer set and writes `Cleared(value)` for every
+    // stored value the submission omits, so a withheld property left out of the payload is DESTROYED.
+    it('carries a withheld property verbatim in the write, so saving does not destroy it', () => {
+      load(visibleAndHidden());
+
+      const first = controls()[0];
+      first.value = 'Jane';
+      first.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+
+      present(host().querySelector('form'), 'the form').dispatchEvent(new Event('submit'));
+      fixture.detectChanges();
+
+      const written = httpMock.expectOne(
+        (request) => request.method === 'PUT' && request.url === profileUrl(USER_ID),
+      );
+      const body = written.request.body as { properties: readonly { propertyDefinitionId: number; propertyValue: string }[] };
+
+      expect(body.properties.length).toBe(2);
+      expect(body.properties.find((property) => property.propertyDefinitionId === 2)?.propertyValue).toBe('Smith');
+
+      written.flush(null, { status: 204, statusText: 'No Content' });
+      httpMock
+        .expectOne((request) => request.method === 'GET' && request.url === profileUrl(USER_ID))
+        .flush({
+          data: { userId: USER_ID, properties: [], displayVisibilityEnabled: true },
+          meta: null,
+        } satisfies ApiResponse<UserProfile>);
+      fixture.detectChanges();
+    });
+  });
+
+  // ---------------------------------------------------------------------------------------------------
+  // U12, U14 AND U15 - WHAT THE FORM TELLS THE OPERATOR BEFORE IT REFUSES THEM
+  // ---------------------------------------------------------------------------------------------------
+
+  describe('what the declaration discloses', () => {
+    /** The reach entries, in document order. */
+    function outstanding(): readonly HTMLButtonElement[] {
+      return Array.from(host().querySelectorAll<HTMLButtonElement>('.user-profile__outstanding-link'));
+    }
+
+    // ⚠ THE MEASURED DEFECT. A mandatory property declared last rendered as the final control roughly
+    // 2400px below the fold, and NOTHING above the fold said it was outstanding. Focus already moves to
+    // the first invalid control on a refused submit; what was missing was any way to reach it before
+    // submitting, which is the moment the operator needs it.
+    it('lists an unmet required property so it can be reached without hunting for it', () => {
+      load([
+        entry(declaration({ propertyDefinitionId: 1, propertyName: 'FirstName', viewOrder: 1 }), {
+          propertyValue: 'Jane',
+        }),
+        entry(
+          declaration({ propertyDefinitionId: 2, propertyName: 'Telephone', required: true, viewOrder: 99 }),
+        ),
+      ]);
+
+      expect(outstanding().length).toBe(1);
+      expect(outstanding()[0].textContent?.trim()).toBe('Telephone');
+    });
+
+    it('moves focus to the control the reach entry names', () => {
+      load([
+        entry(
+          declaration({ propertyDefinitionId: 2, propertyName: 'Telephone', required: true, viewOrder: 99 }),
+        ),
+      ]);
+
+      const control = controls()[0];
+      outstanding()[0].click();
+      fixture.detectChanges();
+
+      expect(document.activeElement).toBe(control);
+    });
+
+    it('withdraws the reach entry once the requirement is met', () => {
+      load([
+        entry(
+          declaration({ propertyDefinitionId: 2, propertyName: 'Telephone', required: true, viewOrder: 99 }),
+        ),
+      ]);
+
+      const control = controls()[0];
+      control.value = '+1 555 0100';
+      control.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+
+      expect(outstanding().length).toBe(0);
+    });
+
+    // ⚠ U15 - THE RULE IS NOT DEAD, IT WAS MERELY NEVER STATED. `UserService.ValidateProfileValue`
+    // enforces the declared expression server-side through a cached, length-bounded matcher with a 50ms
+    // timeout, so a value breaking it IS refused - the operator just had no way to know the rule existed
+    // until the refusal arrived. Reporting the binding limit first is the same principle this workspace
+    // already applies to the credential rules and to the search advisory.
+    it('states the declared format requirement before a save can be refused for breaking it', () => {
+      load([
+        entry(
+          declaration({
+            propertyDefinitionId: 9,
+            propertyName: 'CustomCode',
+            length: 20,
+            validationExpression: '^[0-9]{5}$',
+          }),
+        ),
+      ]);
+
+      const help = helpFor('CustomCode');
+
+      expect(help).toContain('at most 20 characters');
+      expect(help).toContain('a specific format this site requires');
+    });
+
+    // ⚠ U12b - A TENANT-DECLARED PROPERTY CARRIES NO CURATED WORDING, so it previously rendered no help
+    // affordance whatsoever even though its declaration bounded its length.
+    it('gives a property with no curated wording a help affordance drawn from its declaration', () => {
+      load([entry(declaration({ propertyDefinitionId: 9, propertyName: 'RequiredHiddenProp', length: 50 }))]);
+
+      expect(helpFor('RequiredHiddenProp')).toBe('Accepts at most 50 characters.');
+    });
+
+    it('bounds nothing and says nothing when the declaration bounds nothing', () => {
+      load([
+        entry(
+          declaration({ propertyDefinitionId: 9, propertyName: 'Unbounded', length: 0, validationExpression: null }),
+        ),
+      ]);
+
+      expect(host().querySelector('.form-field__help-toggle')).toBeNull();
+    });
+
+    // ⚠ U14 - Two accounts whose stored answer serialises identically as "" DID render differently,
+    // because only a row that was never written is seeded from the declared default. The distinction is
+    // correct; what was missing was any way to see which of the two you were looking at.
+    it('marks a value seeded from the declared default as not yet the account\'s own', () => {
+      load([
+        entry(declaration({ propertyDefinitionId: 1, propertyName: 'Website', defaultValue: 'https://example.test' })),
+      ]);
+
+      expect(controls()[0].value).toBe('https://example.test');
+      expect(host().querySelector('.user-profile__seeded')?.textContent).toContain('Suggested by this site');
+    });
+
+    it('does not mark a stored blank as seeded, because that answer IS the account\'s own', () => {
+      load([
+        entry(
+          declaration({ propertyDefinitionId: 1, propertyName: 'Website', defaultValue: 'https://example.test' }),
+          { propertyValue: '', lastUpdatedDate: '2024-05-01T10:00:00Z' },
+        ),
+      ]);
+
+      expect(controls()[0].value).toBe('');
+      expect(host().querySelector('.user-profile__seeded')).toBeNull();
+    });
+
+    it('withdraws the seeded remark once the operator edits the value', () => {
+      load([
+        entry(declaration({ propertyDefinitionId: 1, propertyName: 'Website', defaultValue: 'https://example.test' })),
+      ]);
+
+      const control = controls()[0];
+      control.value = 'https://mine.test';
+      control.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+
+      expect(host().querySelector('.user-profile__seeded')).toBeNull();
     });
   });
 
@@ -642,13 +943,21 @@ describe('UserProfileComponent', () => {
     });
   });
 
-  // THE TENANT'S VALIDATION EXPRESSION IS NOT RUN HERE
-  // ⚠ THIS BLOCK ASSERTED THE OPPOSITE, AND THE ASSERTION WAS THE VULNERABILITY. The expression is
-  // administrator-authored data, so it is untrusted input to whatever engine runs it, and it was being
-  // compiled and executed synchronously on the UI thread on every keystroke — on controls whose length is
-  // frequently unbounded, because a declared length of zero means no maximum.
+  // THE TENANT'S VALIDATION EXPRESSION, RUN HERE WHEN IT IS SAFE TO RUN
+  //
+  // ⚠ THIS BLOCK HAS NOW ASSERTED BOTH ANSWERS, AND NEITHER OF THE FIRST TWO WAS RIGHT. It originally required
+  // the expression to be compiled and executed on the UI thread on every keystroke, which is a real
+  // vulnerability: the expression is administrator-authored data, `RegExp` cannot be given a time limit, and a
+  // declared length of zero means the input it runs against is unbounded. It was then changed to require that
+  // the expression never be evaluated in the browser at all — which removed the vulnerability and, measured at
+  // runtime, removed the rule with it, because the server's refusal was published as a flat problem document
+  // that no control could be attached to.
+  //
+  // The contract asserted below is the one that holds both properties at once: the expression IS evaluated
+  // here when a static screen shows it cannot backtrack catastrophically, and is left to the server — which
+  // has a linear-time engine and a real timeout — when it cannot.
   describe('the declared validation pattern', () => {
-    it('does not evaluate a stored expression in the browser', () => {
+    it('evaluates a safe stored expression in the browser', () => {
       load([entry(declaration({ validationExpression: '^[0-9]*$' }))]);
 
       const control = present(controls()[0], 'the value control');
@@ -656,16 +965,30 @@ describe('UserProfileComponent', () => {
       control.dispatchEvent(new Event('input'));
       fixture.detectChanges();
 
-      // A value the expression plainly refuses, and nothing is reported beside the box: the rule is the
-      // server's, and the operator learns of it from the server's answer.
-      expect(host().querySelector('.form-field__error')).toBeNull();
+      // A value the expression plainly refuses, reported beside the box rather than a round trip later.
+      expect((present(host().querySelector('.form-field__error'), 'the message').textContent ?? '').trim())
+        .toContain('does not match the format it requires');
     });
 
-    it('is not blocked from submitting by a value the stored expression would refuse', () => {
+    it('blocks a submit carrying a value a safe stored expression refuses', () => {
       load([entry(declaration({ validationExpression: '^[0-9]*$' }))]);
 
       const control = present(controls()[0], 'the value control');
       control.value = 'letters';
+      control.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+
+      present(host().querySelector('form'), 'the form').dispatchEvent(new Event('submit'));
+      fixture.detectChanges();
+
+      httpMock.expectNone((request) => request.method === 'PUT');
+    });
+
+    it('submits a value a safe stored expression accepts', () => {
+      load([entry(declaration({ validationExpression: '^[0-9]*$' }))]);
+
+      const control = present(controls()[0], 'the value control');
+      control.value = '42';
       control.dispatchEvent(new Event('input'));
       fixture.detectChanges();
 
@@ -678,7 +1001,7 @@ describe('UserProfileComponent', () => {
       const carried = written.request.body as {
         readonly properties: readonly { readonly propertyValue: string }[];
       };
-      expect(present(carried.properties[0], 'the submitted property').propertyValue).toBe('letters');
+      expect(present(carried.properties[0], 'the submitted property').propertyValue).toBe('42');
 
       written.flush(null);
       httpMock
@@ -690,8 +1013,9 @@ describe('UserProfileComponent', () => {
     });
 
     it('renders the screen for an expression no engine could compile', () => {
-      // Nothing compiles it any longer, so an uncompilable one costs nothing at all — but the case is kept
-      // because it is the shape of stored data most likely to be present.
+      // An uncompilable expression is a handover to the server rather than a client-side error, so it must not
+      // throw and must not stop the screen rendering. This is the shape of stored data most likely to be
+      // present, which is why the case is kept.
       expect(() =>
         load([entry(declaration({ validationExpression: '([unclosed' }))]),
       ).not.toThrow();
@@ -699,7 +1023,7 @@ describe('UserProfileComponent', () => {
       expect(controls().length).toBe(1);
     });
 
-    it('accepts any value whatever the stored expression says', () => {
+    it('accepts any value when the stored expression could not be compiled', () => {
       load([entry(declaration({ validationExpression: '([unclosed' }))]);
 
       const control = present(controls()[0], 'the value control');
@@ -708,6 +1032,35 @@ describe('UserProfileComponent', () => {
       fixture.detectChanges();
 
       expect(host().querySelector('.form-field__error')).toBeNull();
+    });
+
+    it('does not run an expression that could backtrack catastrophically', () => {
+      // ⚠ THE ONE CASE THAT KEEPS THE SAFETY PROPERTY HONEST. `^(a+)+$` is an ordinary thing for an
+      // administrator to type and takes exponential time on a non-matching input. Silence here is correct
+      // behaviour, not the regression it would be for `^[0-9]*$`, and the value must still be submittable so
+      // that the server gets its chance to refuse under a timeout.
+      load([entry(declaration({ validationExpression: '^(a+)+$' }))]);
+
+      const control = present(controls()[0], 'the value control');
+      control.value = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa!';
+      control.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+
+      expect(host().querySelector('.form-field__error')).toBeNull();
+
+      present(host().querySelector('form'), 'the form').dispatchEvent(new Event('submit'));
+      fixture.detectChanges();
+
+      httpMock
+        .expectOne((request) => request.method === 'PUT')
+        .flush(null, { status: 204, statusText: 'No Content' });
+
+      httpMock
+        .match(() => true)
+        .forEach((outstanding) =>
+          outstanding.flush({ data: { userId: USER_ID, properties: [] } }),
+        );
+      fixture.detectChanges();
     });
   });
 
@@ -986,7 +1339,19 @@ describe('UserProfileComponent', () => {
       expect(host().querySelector('.form-field__error')).not.toBeNull();
     });
 
-    it('restores the values the profile arrived with when the operator cancels', () => {
+    // ⚠ THESE THREE REPLACE ONE SPEC THAT ASSERTED THE OPPOSITE, AND THE EARLIER ANSWER WAS WRONG RATHER
+    // THAN MERELY DIFFERENT. It required Cancel to restore the arrival values in silence, which is exactly
+    // the behaviour measured as a defect: the sidebar and the browser's Back button both refused to leave
+    // this screen until the operator confirmed, while the Cancel button sitting between them discarded the
+    // same unsaved entry without asking. A control cannot be the quiet exception to a promise the two
+    // controls beside it keep.
+    //
+    // The question is put through `globalThis.confirm`, which is what the departure gate has always used, so
+    // it is stubbed here for a second reason beyond observing it: an unstubbed native dialog blocks the
+    // renderer, and a blocked renderer cannot answer the runner's pings - the whole file died mid-run on a
+    // ping timeout until this was stubbed.
+    it('asks before discarding, and restores the arrival values once the operator accepts', () => {
+      const asked = spyOn(globalThis, 'confirm').and.returnValue(true);
       load([
         entry(declaration(), { propertyValue: 'John', lastUpdatedDate: '2024-01-01T00:00:00Z' }),
       ]);
@@ -996,14 +1361,56 @@ describe('UserProfileComponent', () => {
       control.dispatchEvent(new Event('input'));
       fixture.detectChanges();
 
-      const buttons = Array.from(host().querySelectorAll<HTMLButtonElement>('.user-profile__actions button'));
-      present(buttons[1], 'the cancel action').click();
+      cancel();
       fixture.detectChanges();
 
+      // The SAME sentence the departure gate puts, read from the export rather than restated, so the two
+      // ways out of this screen cannot drift into asking differently for the same thing.
+      expect(asked).toHaveBeenCalledWith(DISCARD_CHANGES_PROMPT);
       // Possible in one call only because every control is non-nullable: resetting one
       // returns it to its construction value rather than to null.
       expect(present(controls()[0], 'the value control').value).toBe('John');
     });
+
+    it('keeps the typed value when the operator refuses to discard it', () => {
+      spyOn(globalThis, 'confirm').and.returnValue(false);
+      load([
+        entry(declaration(), { propertyValue: 'John', lastUpdatedDate: '2024-01-01T00:00:00Z' }),
+      ]);
+
+      const control = present(controls()[0], 'the value control');
+      control.value = 'edited';
+      control.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+
+      cancel();
+      fixture.detectChanges();
+
+      expect(present(controls()[0], 'the value control').value).toBe('edited');
+    });
+
+    it('does not put the question at all when there is nothing to discard', () => {
+      const asked = spyOn(globalThis, 'confirm').and.returnValue(true);
+      load([
+        entry(declaration(), { propertyValue: 'John', lastUpdatedDate: '2024-01-01T00:00:00Z' }),
+      ]);
+
+      cancel();
+      fixture.detectChanges();
+
+      expect(asked).not.toHaveBeenCalled();
+      expect(present(controls()[0], 'the value control').value).toBe('John');
+    });
+
+    /** Presses the in-form Cancel control, named here so the three specs above read as one contract. */
+    function cancel(): void {
+      const buttons = Array.from(
+        host().querySelectorAll<HTMLButtonElement>('.user-profile__actions button'),
+      );
+
+      present(buttons[1], 'the cancel action').click();
+    }
+
   });
 
   describe('the visibility affordance', () => {
@@ -2094,9 +2501,25 @@ describe('UserProfileComponent', () => {
   });
 
   // EVERY MEASURED LEGACY VALIDATION EXPRESSION, AGAINST THE SAME RULE
-  // MIGRATION: THE TENANT'S VALIDATION EXPRESSION IS NOT EVALUATED IN THE BROWSER, AND THAT IS A DELIBERATE
-  // DIVERGENCE FROM `Profile.ascx` L15, WHICH DECLARED `enableClientValidation="true"`.
+  //
+  // ⚠ THIS GROUP USED TO ASSERT THE OPPOSITE, AND THE ASSERTION WAS WRONG RATHER THAN MERELY OUTDATED. It
+  // encoded a deliberate divergence from `Profile.ascx` L15's `enableClientValidation="true"`: the tenant's
+  // expression was not evaluated in the browser, and the justification recorded beside the omission was that
+  // the rule was "still reported per field through the server's model-state message". Measured at runtime, it
+  // was not — the server published its refusal as a FLAT problem document with no `errors` member, so nothing
+  // could be attached to a control, no message appeared, no control was marked invalid and focus stayed on
+  // `BODY`. The declared client behaviour and the actual server behaviour were each relying on the other.
+  //
+  // Both are now fixed, and the browser evaluates the expression whenever it is safe to do so — which is what
+  // restores the legacy `enableClientValidation` behaviour these expressions were measured from.
   describe('every measured legacy validation expression', () => {
+    /** The action row's buttons, in document order. Restated locally, as each group in this file does. */
+    function actions(): readonly HTMLButtonElement[] {
+      return Array.from(
+        host().querySelectorAll<HTMLButtonElement>('.user-profile__actions button'),
+      );
+    }
+
     /** One measured expression, with a value it plainly refuses and one it plainly accepts. */
     interface MeasuredExpression {
       /** What the expression is for, named in the case title. */
@@ -2149,8 +2572,25 @@ describe('UserProfileComponent', () => {
       }
     });
 
+    // ⚠ EACH EXPECTATION IS DERIVED FROM THE SHIPPED SAFETY SCREEN, NOT ASSERTED INDEPENDENTLY OF IT, and that
+    // is the only honest way to write this. TWO OF THESE FOUR MEASURED LEGACY EXPRESSIONS ARE THEMSELVES
+    // REDOS-PRONE — both address expressions quantify a group that already contains a quantifier, which is the
+    // textbook catastrophic-backtracking shape — so the browser declines to run them and the server, which has
+    // a linear-time engine and a match timeout, enforces them instead. Hardcoding "all four are checked in the
+    // browser" would assert a behaviour that must never be true; hardcoding which two are safe would silently
+    // rot the day the screen is retuned. Asking `compileTenantPattern` keeps the specification and the shipped
+    // rule the same statement.
     for (const measured of MEASURED) {
-      it(`reports nothing beside a value the ${measured.what} expression refuses`, () => {
+      const runsInBrowser = compileTenantPattern(measured.expression) !== null;
+      const disposition = runsInBrowser ? 'is checked here' : 'is left to the server';
+
+      it(`declares whether the ${measured.what} expression ${disposition}`, () => {
+        // Present so the disposition of every measured expression is recorded as a fact of the suite rather
+        // than only implied by the branches below.
+        expect(compileTenantPattern(measured.expression) === null).toBe(!runsInBrowser);
+      });
+
+      it(`${runsInBrowser ? 'reports' : 'stays silent about'} a value the ${measured.what} expression refuses`, () => {
         load([entry(declaration({ validationExpression: measured.expression }))]);
 
         const control = present(controls()[0], 'the value control');
@@ -2159,8 +2599,51 @@ describe('UserProfileComponent', () => {
         control.dispatchEvent(new Event('blur'));
         fixture.detectChanges();
 
-        expect(host().querySelector('.form-field__error')).toBeNull();
-        expect(present(controls()[0], 'the value control').hasAttribute('aria-invalid')).toBeFalse();
+        if (!runsInBrowser) {
+          // Silence is CORRECT for these two, not the regression it would be for the others: an expression
+          // that could hang the tab is not run here at all.
+          expect(host().querySelector('.form-field__error')).toBeNull();
+          expect(present(controls()[0], 'the value control').hasAttribute('aria-invalid')).toBeFalse();
+
+          return;
+        }
+
+        const message = present(host().querySelector('.form-field__error'), 'the failure message');
+
+        // The wording matches the server's refusal for the same rule, so tripping it in the browser and
+        // tripping it on the server do not read as two different problems.
+        expect((message.textContent ?? '').trim()).toContain('does not match the format it requires');
+        expect(present(controls()[0], 'the value control').getAttribute('aria-invalid')).toBe('true');
+      });
+
+      it(`${runsInBrowser ? 'blocks' : 'permits'} a submit carrying a value the ${measured.what} expression refuses`, () => {
+        load([entry(declaration({ validationExpression: measured.expression }))]);
+
+        const control = present(controls()[0], 'the value control');
+        control.value = measured.refused;
+        control.dispatchEvent(new Event('input'));
+        fixture.detectChanges();
+
+        present(actions()[0], 'the update action').click();
+        fixture.detectChanges();
+
+        if (!runsInBrowser) {
+          // It MUST reach the transport, or the rule would not be enforced anywhere at all.
+          httpMock
+            .expectOne((candidate) => candidate.method === 'PUT')
+            .flush(null, { status: 204, statusText: 'No Content' });
+
+          httpMock
+            .match(() => true)
+            .forEach((outstanding) => outstanding.flush({ data: { userId: USER_ID, properties: [] } }));
+          fixture.detectChanges();
+
+          return;
+        }
+
+        // Nothing may reach the transport: the point of checking in the browser is that a refusal the browser
+        // can already see does not cost a round trip.
+        httpMock.expectNone((candidate) => candidate.method === 'PUT');
       });
 
       it(`reports nothing beside a value the ${measured.what} expression accepts`, () => {
@@ -2173,8 +2656,17 @@ describe('UserProfileComponent', () => {
         fixture.detectChanges();
 
         expect(host().querySelector('.form-field__error')).toBeNull();
+        expect(present(controls()[0], 'the value control').hasAttribute('aria-invalid')).toBeFalse();
       });
     }
+
+    it('leaves at least one measured legacy expression to the server, which is why the screen exists', () => {
+      const unsafe = MEASURED.filter((measured) => compileTenantPattern(measured.expression) === null);
+
+      expect(unsafe.length)
+        .withContext('the measured set must keep covering the unsafe case')
+        .toBeGreaterThan(0);
+    });
 
     // `ValidationExpression nvarchar(100) NULL` permits null, and the installer seeds the EMPTY STRING for
     // all nineteen properties, so BOTH spellings of "no expression" occur in real data and both must behave
@@ -2488,6 +2980,91 @@ describe('UserProfileComponent', () => {
       fixture.detectChanges();
     }
 
+    // -------------------------------------------------------------------------------------------------
+    // THE LANDING IS EXPLAINED
+    // -------------------------------------------------------------------------------------------------
+
+    // ⚠ THE MEASURED DEFECT THESE PROVE CLOSED. A caller who signed in correctly was moved off the screen
+    // they asked for onto this one, and the screen said nothing whatsoever about why - it rendered as an
+    // ordinary profile edit. The obligation was legible only from the fact that everything else refused.
+
+    it('explains the landing when the caller was moved here to satisfy an obligation', () => {
+      loadRemediating([
+        entry(declaration({ propertyDefinitionId: 1, propertyName: 'FirstName', viewOrder: 1 }), {
+          propertyValue: '',
+          lastUpdatedDate: '2024-01-01T00:00:00Z',
+        }),
+      ]);
+
+      const explanation = host().querySelector('.user-profile__remediation');
+
+      expect(explanation)
+        .withContext('the reason for the landing is stated on the screen the caller was sent to')
+        .not.toBeNull();
+      expect(explanation?.textContent?.trim())
+        .withContext('and it is the authored sentence, not a paraphrase assembled in the template')
+        .toBe(PROFILE_REMEDIATION_EXPLANATION);
+      expect(PROFILE_REMEDIATION_EXPLANATION)
+        .withContext('which names what to do rather than describing a permanent condition')
+        .toContain('save');
+    });
+
+    it('does not announce the explanation, because the redirect was announced once already', () => {
+      loadRemediating([]);
+
+      const explanation = host().querySelector('.user-profile__remediation');
+
+      // The guard that performed the redirect emits the single announcement for the action. A second live
+      // region carrying the same fact is the double-announcement defect corrected on the sign-in screen.
+      expect(explanation?.getAttribute('role'))
+        .withContext('a standing explanation, marked as such and not as a live status')
+        .toBe('note');
+      expect(explanation?.getAttribute('aria-live'))
+        .withContext('and it carries no politeness setting of its own')
+        .toBeNull();
+    });
+
+    it('says nothing about an obligation to a caller who has none', () => {
+      seatIdentity(USER_ID);
+      load([
+        entry(declaration({ propertyDefinitionId: 1, propertyName: 'FirstName', viewOrder: 1 }), {
+          propertyValue: 'John',
+          lastUpdatedDate: '2024-01-01T00:00:00Z',
+        }),
+      ]);
+
+      expect(host().querySelector('.user-profile__remediation'))
+        .withContext('an operator editing their own profile by choice is told nothing about a requirement')
+        .toBeNull();
+    });
+
+    it('says nothing to an administrator editing somebody else, whose obligation is not theirs', () => {
+      // ⚠ THE OBLIGATION IS THE CALLER'S, NOT THE SUBJECT'S. A held advisory says the SIGNED-IN caller owes
+      // a completion; rendering it while they edit another account would assert it about the wrong person.
+      seatRemediatingIdentity(USER_ID + 1);
+      fixture.componentRef.setInput('userId', String(USER_ID));
+      fixture.detectChanges();
+
+      httpMock
+        .expectOne(profileUrl(USER_ID))
+        .flush({
+          data: { userId: USER_ID, properties: [], displayVisibilityEnabled: true },
+          meta: null,
+        } satisfies ApiResponse<UserProfile>);
+      fixture.detectChanges();
+
+      // ⚠ AND THE ACCOUNT READ IS STILL WITHHELD, which is a second fact worth recording here. The
+      // suppression is keyed on the HELD ADVISORY rather than on whose account is open, because the server
+      // refuses every non-exempted endpoint while an obligation stands - whoever the subject is.
+      expect(httpMock.match((request) => request.url === `/api/v1/users/${USER_ID}`))
+        .withContext('a restricted session reads no account, not even somebody else’s')
+        .toEqual([]);
+
+      expect(host().querySelector('.user-profile__remediation'))
+        .withContext('the advisory is about the caller, so it is withheld on somebody else’s account')
+        .toBeNull();
+    });
+
     it('reads the profile but NOT the account, because only one of the two is exempted', () => {
       loadRemediating([
         entry(declaration({ propertyDefinitionId: 1, propertyName: 'FirstName', viewOrder: 1 }), {
@@ -2586,4 +3163,127 @@ describe('UserProfileComponent', () => {
       expect(navigate).not.toHaveBeenCalled();
     });
   });
+
+  // ---------------------------------------------------------------------------------------------------
+  // THE FORM SURVIVES ITS OWN SAVE
+  // ---------------------------------------------------------------------------------------------------
+
+  // ⚠ THE MEASURED DEFECT THESE PROVE CLOSED. A successful save RE-READS the profile, and the waiting
+  // indicator was the screen's FIRST content branch - so every save replaced the entire form, every label,
+  // every value the operator had just typed and both actions, with "Loading profile…" until the confirming
+  // read landed. Reported as the profile form blanking entirely during save.
+  describe('the form is not blanked while a save is in flight', () => {
+    /** Submits the rendered form. */
+    function submitForm(): void {
+      present(host().querySelector('form'), 'the form').dispatchEvent(new Event('submit'));
+      fixture.detectChanges();
+    }
+
+    it('keeps every field and its typed value on screen for the whole write and its confirming read', () => {
+      load([
+        entry(declaration({ propertyDefinitionId: 1, propertyName: 'FirstName', viewOrder: 1 }), {
+          propertyValue: 'John',
+          lastUpdatedDate: '2024-01-01T00:00:00Z',
+        }),
+        entry(declaration({ propertyDefinitionId: 2, propertyName: 'LastName', viewOrder: 2 }), {
+          propertyValue: 'Smith',
+          lastUpdatedDate: '2024-01-01T00:00:00Z',
+        }),
+      ]);
+
+      expect(controls().length).toBe(2);
+
+      submitForm();
+
+      // THE WRITE IS OUTSTANDING.
+      const written = httpMock.expectOne(`/api/v1/users/${USER_ID}/profile`);
+      expect(written.request.method).toBe('PUT');
+
+      expect(host().querySelector('app-loading-spinner[label="Loading profile…"]'))
+        .withContext('the whole-screen indicator must not replace a form that is on screen')
+        .toBeNull();
+      expect(controls().map((control) => control.value))
+        .withContext('the values the operator submitted are still in front of them')
+        .toEqual(['John', 'Smith']);
+      expect(present(host().querySelector('form'), 'the form').getAttribute('aria-busy'))
+        .withContext('and the form reports itself working instead of disappearing')
+        .toBe('true');
+
+      written.flush(null, { status: 204, statusText: 'No Content' });
+      fixture.detectChanges();
+
+      // THE CONFIRMING RE-READ IS OUTSTANDING - the window the blanking was measured in.
+      const confirmed = httpMock.expectOne(`/api/v1/users/${USER_ID}/profile`);
+
+      expect(host().querySelector('app-loading-spinner[label="Loading profile…"]')).toBeNull();
+      expect(controls().map((control) => control.value)).toEqual(['John', 'Smith']);
+      expect(present(host().querySelector('form'), 'the form').getAttribute('aria-busy')).toBe('true');
+
+      confirmed.flush({
+        data: {
+          userId: USER_ID,
+          properties: [
+            entry(declaration({ propertyDefinitionId: 1, propertyName: 'FirstName', viewOrder: 1 }), {
+              propertyValue: 'John',
+              lastUpdatedDate: '2024-01-01T00:00:00Z',
+            }),
+            entry(declaration({ propertyDefinitionId: 2, propertyName: 'LastName', viewOrder: 2 }), {
+              propertyValue: 'Smith',
+              lastUpdatedDate: '2024-01-01T00:00:00Z',
+            }),
+          ],
+          displayVisibilityEnabled: true,
+        },
+        meta: null,
+      } satisfies ApiResponse<UserProfile>);
+      fixture.detectChanges();
+
+      expect(present(host().querySelector('form'), 'the form').getAttribute('aria-busy'))
+        .withContext('and it stops reporting itself working once the read has answered')
+        .toBeNull();
+      expect(host().querySelector('.user-profile__pending')).toBeNull();
+    });
+
+    it('states what it is doing ONCE, in ONE live region, and withholds both actions while it does', () => {
+      load([
+        entry(declaration({ propertyDefinitionId: 1, propertyName: 'FirstName', viewOrder: 1 }), {
+          propertyValue: 'John',
+          lastUpdatedDate: '2024-01-01T00:00:00Z',
+        }),
+      ]);
+
+      submitForm();
+      const written = httpMock.expectOne(`/api/v1/users/${USER_ID}/profile`);
+
+      const pending = host().querySelectorAll('.user-profile__pending');
+      expect(pending.length)
+        .withContext('one sentence, not one per state')
+        .toBe(1);
+      expect(present(pending[0], 'the pending line').getAttribute('role')).toBe('status');
+      // ⚠ NO NESTED LIVE REGION. The shared indicator claims one of its own when given a label, and a
+      // region inside a region is how a single transition came to be announced twice.
+      expect(present(pending[0], 'the pending line').querySelectorAll('[role="status"]').length).toBe(0);
+
+      const both = Array.from(host().querySelectorAll<HTMLButtonElement>('.user-profile__actions button'));
+      expect(both.length).toBe(2);
+      for (const action of both) {
+        expect(action.disabled)
+          .withContext(`"${(action.textContent ?? '').trim()}" must not be operable while the save is in flight`)
+          .toBeTrue();
+      }
+
+      written.flush(null, { status: 204, statusText: 'No Content' });
+      fixture.detectChanges();
+
+      // Still exactly one sentence during the confirming read, with different wording.
+      expect(host().querySelectorAll('.user-profile__pending').length).toBe(1);
+
+      httpMock.expectOne(`/api/v1/users/${USER_ID}/profile`).flush({
+        data: { userId: USER_ID, properties: [], displayVisibilityEnabled: true },
+        meta: null,
+      } satisfies ApiResponse<UserProfile>);
+      fixture.detectChanges();
+    });
+  });
+
 });

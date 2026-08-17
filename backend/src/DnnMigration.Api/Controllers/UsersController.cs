@@ -662,23 +662,33 @@ public sealed class UsersController : ControllerBase
         return this.Complete(outcome);
     }
 
-    /// <summary>Lists the member services this account may subscribe to, with its own subscription state.</summary>
+    /// <summary>Lists one page of the member services this account may subscribe to, with its own state.</summary>
     /// <param name="userId">The account identifier, which must be the caller's own.</param>
+    /// <param name="request">
+    /// The page of the catalogue to return, bound from the query string. <c>pageIndex</c> is zero-based and
+    /// <c>pageSize</c> defaults to ten and may not exceed one hundred. <c>sortBy</c> and <c>query</c> are
+    /// REFUSED with <c>400 Bad Request</c> rather than ignored: the catalogue is published in one order and
+    /// has no filterable column of its own.
+    /// </param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
-    /// <returns>The catalogue, in the shared envelope.</returns>
+    /// <returns>One page of the catalogue, with its total, in the shared paged envelope.</returns>
     /// <remarks>
-    /// Deliberately UNPAGED, because the read it replaces was: the legacy grid bound the whole result and
-    /// hid itself when the count was zero. A tenant's set of public roles is a published price list, not a
-    /// data set.
+    /// MIGRATION: THE LEGACY GRID WAS UNPAGED AND THIS IS NOT. It bound the whole result and hid itself when
+    /// the count was zero, on the assumption that a tenant's published price list is small. A tenant
+    /// publishing a thousand roles disproved the assumption: the response carried a thousand rows of eighteen
+    /// fields - 437 KiB - to a subscriber acting on one of them. Every row is still classified against one
+    /// instant, so the answers are unchanged; only how much of the catalogue travels at once is bounded.
     /// </remarks>
     [HttpGet("{userId:int}/services")]
     [Authorize(Policy = PolicyNames.AccountOwner)]
-    [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<MemberServiceDto>>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(PagedResponse<MemberServiceDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<ApiResponse<IReadOnlyList<MemberServiceDto>>>> ListMemberServicesAsync(
+    public async Task<ActionResult<PagedResponse<MemberServiceDto>>> ListMemberServicesAsync(
         int userId,
+        [FromQuery] MemberServicePagedRequest request,
         CancellationToken cancellationToken)
     {
         if (ResolvePortalId() is not { } portalId)
@@ -686,11 +696,11 @@ public sealed class UsersController : ControllerBase
             return this.ForbiddenProblem(TenantUnresolvedCode);
         }
 
-        Result<IReadOnlyList<MemberServiceDto>> outcome = await _users
-            .ListMemberServicesAsync(portalId, userId, cancellationToken)
+        Result<PagedResult<MemberServiceDto>> outcome = await _users
+            .ListMemberServicesAsync(portalId, userId, request, cancellationToken)
             .ConfigureAwait(false);
 
-        return this.Complete(outcome);
+        return this.CompletePage(outcome);
     }
 
     /// <summary>Subscribes this account to a member service, or renews a lapsed subscription.</summary>

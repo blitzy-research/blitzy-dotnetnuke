@@ -27,9 +27,12 @@ import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guar
 import { NotificationService } from '../../../core/services/notification.service';
 import { PortalStore } from '../../../core/state/portal.store';
 import {
+  conflictMessage,
+  failureCode,
   fieldErrorMessage,
   isAliasInUseCode,
   isDuplicateAliasCode,
+  problemSupportReference,
 } from '../../../core/utils/form-errors.util';
 import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialog/confirm-dialog.component';
 import { DataTableComponent } from '../../../shared/components/data-table/data-table.component';
@@ -187,8 +190,21 @@ const ALIAS_REQUIRED_MESSAGE = 'An HTTP alias is required.';
 /** Mirrors the server's maximum-length refusal, whose limit is 200. */
 const ALIAS_TOO_LONG_MESSAGE = 'An HTTP alias may not exceed 200 characters.';
 
-/** Shown when the RAW entry exceeds the legacy input cap of 255 characters. */
-const ALIAS_ENTRY_TOO_LONG_MESSAGE = 'An HTTP alias may not exceed 255 characters.';
+/*
+ * ⚠ THE SECOND LENGTH MESSAGE IS GONE, AND ITS REMOVAL IS THE FIX. This screen carried two: one naming
+ * 255 (the rendered box's legacy cap) and one naming 200 (the limit that actually governs), and it
+ * reported the 255 one FIRST. An operator who pasted 260 characters was told the limit was 255, trimmed to
+ * 240, and was then told - for the first time - that it was really 200. Announcing a limit that is not the
+ * binding one, and only revealing the binding one once the first is satisfied, is the same defect as
+ * disclosing password rules one at a time.
+ *
+ * 200 is the binding limit on THREE independent authorities: the legacy column is
+ * `[HTTPAlias] [nvarchar] (200)` at `Website/Providers/DataProviders/SqlDataProvider/02.02.02.SqlDataProvider:L3807`,
+ * `PortalAliasConfiguration` declares `HasMaxLength(200)`, and the server validator enforces
+ * `PortalAliasRules.MaximumLength`. Nothing can be stored between 201 and 255, so a message naming 255 was
+ * never true. {@link ALIAS_ENTRY_MAX_LENGTH} still caps the BOX, because that is measured legacy parity for
+ * the typing experience - it simply no longer has a message of its own to contradict the real rule with.
+ */
 
 /** Mirrors the server's shape refusal. */
 const ALIAS_INVALID_MESSAGE =
@@ -252,6 +268,29 @@ function isActiveAliasRefusal(failure: PortalFailure): boolean {
  * @param alias One alias row.
  * @returns The host name, or the empty string when the row carries none.
  */
+/**
+ * The canonical form of a submitted host name: trimmed, and lower case.
+ *
+ * ⚠ CASE WAS NEITHER NORMALISED NOR REJECTED, WHICH IS THE DEFECT THIS CLOSES, AND LOWER CASE IS THE
+ * LEGACY RULE RATHER THAN A PREFERENCE. `Library/Components/Portal/PortalAliasController.vb` applied
+ * `.ToLower` on EVERY path that touched an alias - `AddPortalAlias` at L31, `UpdatePortalAliasInfo` at L97
+ * and both read paths at L52 and L76 - and the sign-up screen lower-cased the field directly at
+ * `Website/admin/Portal/Signup.ascx.vb:L183`. An alias is the one thing that resolves an incoming request
+ * to a tenant, so `WWW.Example.Test` and `www.example.test` naming different rows would be a tenant-
+ * resolution hazard, not a cosmetic inconsistency.
+ *
+ * ⚠ `toLowerCase` RATHER THAN `toLocaleLowerCase`, DELIBERATELY. The locale-aware form maps a dotted
+ * capital I to a dotless one under a Turkish locale, so the same typed alias would canonicalise to two
+ * different host names depending on the operator's machine. The server pairs this with
+ * `ToLowerInvariant()` for the same reason.
+ *
+ * @param entry The host name as typed.
+ * @returns The form that will be stored.
+ */
+function canonicalAlias(entry: string): string {
+  return entry.trim().toLowerCase();
+}
+
 function aliasText(alias: PortalAlias): string {
   const held: string | null = alias.httpAlias;
 
@@ -642,6 +681,14 @@ type PendingOperation = 'none' | 'list' | 'create' | 'update' | 'delete';
  * `Website/admin/Portal/EditPortalAlias.ascx.vb` added, edited and removed - and the target feature
  * declares no alias-form route for the second one to become.
  */
+/**
+ * THE SUBTITLE, UNDER THE APPLICATION'S ONE SUBTITLE RULE. Every screen's header carries exactly one
+ * subtitle stating that screen's SCOPE: the record it acts on when the title does not already name it,
+ * and otherwise what the screen is for, in one line. It never carries a status, a count or a progress
+ * readout - those belong to the live region that owns them, and a count in two places is two owners of
+ * one fact. Measured finding: subtitles appeared on ten of the twenty screens and carried three
+ * different kinds of thing, so a reader could not tell what the slot was for.
+ */
 @Component({
   selector: 'app-portal-alias-list',
   standalone: true,
@@ -721,6 +768,11 @@ export class PortalAliasListComponent implements OnInit {
     this.closeForm();
     this.pending = 'list';
     this.store.clearFailures();
+
+    // ⚠ ADOPTION COMES FIRST, AND THE ORDER IS LOAD-BEARING. `selectPortal` discards everything held
+    // about the portal that WAS selected - the alias list included - so adopting after the alias read
+    // would throw away the very rows just requested.
+    this.adoptPortal(value);
     this.store.loadAliases(value);
   }
 
@@ -800,8 +852,25 @@ export class PortalAliasListComponent implements OnInit {
   //  THE FORM
   // ---------------------------------------------------------------------------
 
+  /**
+   * Registers this screen's unsaved-entry probe with the application's tracker. ⚠ WHY A REGISTRATION
+   * RATHER THAN A ROUTE-LEVEL READ. Leaving a screen happens two ways and only one of them is a router
+   * navigation: Cancel, an in-application link and the browser's Back button are navigations a route
+   * guard can refuse, while closing or reloading the tab is not, and only the browser's own unload prompt
+   * covers that - which needs the dirty state at an arbitrary moment rather than at a navigation.
+   *
+   * ⚠ THE BUSY EXCLUSION WAS REMOVED, AND ITS REMOVAL CLOSES A MEASURED HOLE. This predicate used to read
+   * `dirty && busy === false`, which reported the screen CLEAN for exactly as long as a write was in flight -
+   * so navigating away mid-save was admitted in silence, the departure destroyed the component, and
+   * `takeUntilDestroyed` cancelled the request. The operator lost the write and was told nothing. A form
+   * holding an unfinished write is the LEAST safe moment to leave, not the safest.
+   *
+   * The exclusion was written to stop the application's OWN post-save navigation being challenged, and that
+   * case is already covered properly: every success path replaces the address imperatively, which
+   * `unsavedChangesGuard` admits explicitly. Nothing here has to approximate it a second time.
+   */
   private readonly unsavedEntry = inject(UnsavedChangesTracker).watch(
-    () => this.form.dirty && this.loading() === false,
+    () => this.form.dirty,
   );
 
   protected readonly form = new FormGroup<PortalAliasFormModel>({
@@ -809,7 +878,6 @@ export class PortalAliasListComponent implements OnInit {
       nonNullable: true,
       validators: [
         Validators.required,
-        Validators.maxLength(ALIAS_ENTRY_MAX_LENGTH),
         httpAliasValidator,
       ],
     }),
@@ -818,6 +886,12 @@ export class PortalAliasListComponent implements OnInit {
   // ---------------------------------------------------------------------------
   //  STATIC WORDING FOR THE TEMPLATE
   // ---------------------------------------------------------------------------
+
+  // ⚠ NO STATIC SCOPE STATEMENT IS RENDERED BENEATH THE TITLE, AND ITS ABSENCE IS THE DECISION. The subtitle
+  // slot carries the PORTAL'S OWN NAME instead: this screen's act is deleting the only thing that resolves a
+  // request to a tenant, so which tenant is on screen outranks a restatement of what the screen is for - and
+  // the two sibling screens under `/portals/:portalId` already state the tenant in that same slot. When no
+  // name has been retrieved the slot renders nothing at all, because naming the wrong tenant reads as fact.
 
   protected readonly heading = HEADING;
 
@@ -878,6 +952,41 @@ export class PortalAliasListComponent implements OnInit {
   protected readonly settingsLinkLabel: string = SETTINGS_LINK_LABEL;
 
   /**
+   * The name of the portal whose host names are on screen, or nothing when it is not known.
+   *
+   * ⚠ THE MEASURED DEFECT THIS CLOSES. This screen named no portal at all. Its heading is the constant
+   * "Portal Aliases" and its rows are bare host names, so an operator who arrived by typed address - or
+   * who kept two tenants open - had NOTHING on the screen telling them which portal they were about to
+   * add a host name to, or delete one from. Both sibling screens under `/portals/:portalId` already state
+   * it: `portal-settings.component.html` binds this same detail into the shared header's subtitle slot,
+   * and that is the affordance mirrored here rather than a new one invented for this screen.
+   *
+   * ⚠ THE SELECTION IS COMPARED, NOT TRUSTED. `PortalStore` holds ONE selected portal, so a detail left
+   * over from a sibling screen would otherwise let this screen caption portal -1's host names with portal
+   * 2's name - a worse defect than naming nothing, because it reads as fact. The held identifier must
+   * equal the one this screen's own address names before the name is used, and `-1` is a REAL portal
+   * identifier here (`Portals.PortalID` is seeded `IDENTITY(-1,1)`), so the comparison is by value and
+   * never by truthiness.
+   */
+  protected readonly portalName = computed<string | undefined>(() => {
+    const target: number = this.portalIdValue();
+
+    if (Number.isNaN(target) || this.store.selectedPortalId() !== target) {
+      return undefined;
+    }
+
+    const detail = this.store.selectedPortal();
+
+    if (detail === null) {
+      return undefined;
+    }
+
+    const name: string | null = detail.portalName;
+
+    return name === null || name.trim().length === 0 ? undefined : name;
+  });
+
+  /**
    * The rows to render: the store's collection, but ONLY when it belongs to the portal this screen is
    * showing. The store is application-scoped, so the collection in hand may have been read for a
    * different portal - during a navigation between two portals it certainly has.
@@ -916,9 +1025,19 @@ export class PortalAliasListComponent implements OnInit {
     return this.store.aliasesPortalId() === target && this.store.aliases() !== null;
   });
 
-  /** Whether the portal has been read and has no host names at all. */
-  protected readonly isListEmpty = computed<boolean>(
-    () => this.listReady() && this.rows().length === 0,
+  /**
+   * Whether the HOST-NAME READ failed without producing a list, so nothing at all is known about this
+   * portal's host names.
+   *
+   * ⚠ THE MEASURED DEFECT THIS CLOSES. As a tenant administrator addressing another tenant's portal, the
+   * read is refused with `403` and `aliases()` stays null - so {@link listReady} is false and the grid,
+   * which is now the only listing branch, would otherwise reach its own empty row. The screen showed a
+   * Forbidden banner and "Nothing to Display / No records found." at the same time, asserting the portal
+   * has no host names when none had ever been retrieved, beside two commands that could not succeed. Bound
+   * to the grid's `[failed]`, this reports that the records could not be READ instead.
+   */
+  protected readonly listFailed = computed<boolean>(
+    () => this.listReady() === false && this.store.aliasFailure() !== null,
   );
 
   /**
@@ -1038,9 +1157,33 @@ export class PortalAliasListComponent implements OnInit {
     return client.length === 0 ? [server] : [...client, server];
   });
 
-  protected readonly bannerProblem = computed<ProblemDetails | null>(
-    () => this.store.aliasFailure()?.problem ?? null,
-  );
+  /**
+   * The document the shared banner renders.
+   *
+   * ⚠ A RECOGNISED STATE REFUSAL IS RE-WORDED FROM THE SHARED LEGACY VOCABULARY, AND THIS SCREEN WAS THE
+   * ONE SURFACE THAT DID NOT DO IT. Every other conflict surface - the portal form, the role listing, the
+   * module transfer screens - asks `conflictMessage` for the legacy sentence against the code the server
+   * publishes, and this one passed the document straight through, so the same class of refusal was worded
+   * two different ways depending on which screen provoked it. The server's own sentence is the worse of the
+   * two here: it is written as a diagnostic for a log reader - "The host name 'localhost' is already bound
+   * to a portal." - where the legacy resource says "The Portal Alias Name You Specified Already Exists.
+   * Please Choose A Different Portal Alias.", which is the wording the AAP requires equivalence with.
+   *
+   * Only `detail` is replaced. The type, the title, the field dictionary and the support reference are the
+   * document's own, so nothing diagnostic and nothing quotable is lost - and a refusal whose code this
+   * client does not recognise is passed through untouched rather than being given invented wording.
+   */
+  protected readonly bannerProblem = computed<ProblemDetails | null>(() => {
+    const problem: ProblemDetails | null = this.store.aliasFailure()?.problem ?? null;
+
+    if (problem === null) {
+      return null;
+    }
+
+    const legacySentence: string | null = conflictMessage(failureCode(problem));
+
+    return legacySentence === null ? problem : { ...problem, detail: legacySentence };
+  });
 
   // ---------------------------------------------------------------------------
   //  CONSTRUCTION AND LIFECYCLE
@@ -1095,9 +1238,32 @@ export class PortalAliasListComponent implements OnInit {
       return;
     }
 
+    // Before the list read, for the ordering reason the input setter states.
+    this.adoptPortal(target);
+
     if (this.listReady() === false && this.loading() === false) {
       this.pending = 'list';
       this.store.loadAliases(target);
+    }
+  }
+
+  /**
+   * Adopts the portal this screen's address names, and reads it once if its name is not already held.
+   *
+   * Reached from BOTH entry paths - the route input setter and the lifecycle hook - because either can be
+   * the first to see a given portal depending on how the screen was reached.
+   *
+   * @param target The portal named by the address. Assumed already checked for usability by the caller.
+   */
+  private adoptPortal(target: number): void {
+    // Returns early when the portal is already the selected one, which is the common case on arrival from
+    // a sibling screen: the detail is then already held and this costs nothing and requests nothing.
+    this.store.selectPortal(target);
+
+    // Only when the name is genuinely unheld AND no read is already in flight. Without the second test
+    // the two entry paths would each issue a request for the same portal.
+    if (this.store.selectedPortal() === null && this.store.detailLoading() === false) {
+      this.store.loadSelectedPortal();
     }
   }
 
@@ -1191,6 +1357,10 @@ export class PortalAliasListComponent implements OnInit {
 
     this.submitAttempted.set(true);
 
+    // Submitting by keyboard never blurs the box, so the canonical form is settled here too rather than
+    // relying on a blur that may not have happened.
+    this.canonicaliseEntry();
+
     const control = this.form.controls.httpAlias;
     const entry = control.value;
 
@@ -1198,6 +1368,15 @@ export class PortalAliasListComponent implements OnInit {
     this.refreshAliasMessages();
 
     if (this.form.invalid) {
+      return;
+    }
+
+    if (this.namesAnExistingAlias(entry)) {
+      // Stated at the field, because it is a judgement on what was typed - and in the SAME wording the
+      // server's refusal carries, so one sentence serves both routes.
+      this.clientAliasMessages.set([DUPLICATE_ALIAS_MESSAGE]);
+      this.focusEntry();
+
       return;
     }
 
@@ -1309,7 +1488,61 @@ export class PortalAliasListComponent implements OnInit {
    * have reached it.
    */
   protected onAliasBlur(): void {
+    // ⚠ CANONICALISED HERE, WHERE THE OPERATOR CAN STILL SEE IT. The server stores the lower-case form
+    // either way, so normalising only on the wire would leave the box showing something the portal will
+    // never be reachable by - and would make the row that comes back after the save look like a value
+    // nobody typed. Blur is the earliest point at which rewriting the box cannot fight the person typing
+    // into it.
+    this.canonicaliseEntry();
     this.refreshAliasMessages();
+  }
+
+  /**
+   * Rewrites the box to the form that will be stored, when it is not already in that form.
+   *
+   * Guarded by an equality test rather than written unconditionally: `setValue` on an unchanged value would
+   * still mark the form dirty and still run every validator, which would make merely tabbing through an
+   * untouched field look like an edit to the unsaved-changes guard.
+   */
+  /**
+   * Whether the canonical entry already names a host name held for THIS portal, other than the row being
+   * edited.
+   *
+   * ⚠ THIS DOES NOT REPLACE THE SERVER'S REFUSAL, AND MUST NOT BE READ AS DOING SO. Alias uniqueness is
+   * GLOBAL - `IX_PortalAlias` is a unique index over the whole table - while this screen holds only the
+   * aliases of the portal it is showing. A host name already claimed by a DIFFERENT tenant is therefore
+   * invisible here and is still refused by the server with a `409`, which the banner surfaces. What this
+   * closes is the case an operator hits by hand: re-entering a host name that is listed on the very screen
+   * they are looking at, and having to wait for a round trip to be told so.
+   *
+   * Compared case-insensitively even though the entry has already been canonicalised, because a row STORED
+   * before case was normalised may still carry capitals.
+   *
+   * @param entry The canonical entry.
+   * @returns Whether another row of this portal already carries it.
+   */
+  private namesAnExistingAlias(entry: string): boolean {
+    const canonical: string = canonicalAlias(entry);
+
+    if (canonical.length === 0) {
+      return false;
+    }
+
+    const editing: number | undefined = this.store.selectedAliasId();
+
+    return this.rows().some(
+      (row) =>
+        row.portalAliasId !== editing && canonicalAlias(aliasText(row)) === canonical,
+    );
+  }
+
+  private canonicaliseEntry(): void {
+    const control = this.form.controls.httpAlias;
+    const canonical: string = canonicalAlias(control.value);
+
+    if (canonical !== control.value) {
+      control.setValue(canonical);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1461,12 +1694,8 @@ export class PortalAliasListComponent implements OnInit {
       return;
     }
 
-    if (control.hasError('maxlength')) {
-      this.clientAliasMessages.set([ALIAS_ENTRY_TOO_LONG_MESSAGE]);
-
-      return;
-    }
-
+    // The binding limit, and now the only one reported. `httpAliasValidator` raises this for anything over
+    // 200 and returns without adding the shape failures, so one refusal produces one sentence.
     if (control.hasError(ALIAS_TOO_LONG_ERROR)) {
       this.clientAliasMessages.set([ALIAS_TOO_LONG_MESSAGE]);
 
@@ -1500,12 +1729,16 @@ export class PortalAliasListComponent implements OnInit {
       return;
     }
 
+    // The reference is threaded through rather than dropped. `warning()` cannot carry one - the service
+    // documents that and warns against using it for a server refusal - so these two calls go through
+    // `notify()` instead. A 403 always arrives with a correlation identifier in its problem document, and it
+    // is the identifier a support request needs.
     switch (this.pending) {
       case 'delete':
-        this.notifications.warning(DELETE_DENIED_MESSAGE);
+        this.notifications.notify('warning', DELETE_DENIED_MESSAGE, problemSupportReference(failure.problem));
         break;
       case 'list':
-        this.notifications.warning(VIEW_DENIED_MESSAGE);
+        this.notifications.notify('warning', VIEW_DENIED_MESSAGE, problemSupportReference(failure.problem));
         break;
       case 'create':
       case 'update':

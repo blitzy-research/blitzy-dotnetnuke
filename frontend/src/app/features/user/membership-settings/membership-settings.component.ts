@@ -1,27 +1,35 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  DestroyRef,
+  ElementRef,
   computed,
   effect,
-  ElementRef,
   inject,
+  signal,
   type OnInit,
   type Signal,
 } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
+
+import type { AbstractControl, ValidationErrors } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '../../../core/models/paged-result.model';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
+import type { TabListItem } from '../../../core/models/tab.model';
 import type {
   MembershipSettings,
   MembershipSettingsUpdateResult,
 } from '../../../core/models/user.model';
 import { NotificationService } from '../../../core/services/notification.service';
 import { AuthStore } from '../../../core/state/auth.store';
+import { TabService } from '../../../core/services/tab.service';
 import type { UserOperation } from '../../../core/state/user.store';
 import { UserStore } from '../../../core/state/user.store';
 import { fieldErrorMessage } from '../../../core/utils/form-errors.util';
+import { buildPageChoices, type PageOption } from '../../../core/utils/page-options.util';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
 import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
 import { LoadingSpinnerComponent } from '../../../shared/components/loading-spinner/loading-spinner.component';
@@ -222,6 +230,15 @@ export const MEMBERSHIP_SETTINGS_TEXT = Object.freeze({
    * platform falls back to.
    */
   storedNotice: 'These user settings are stored for this site.',
+
+  /**
+   * Said once, above the three redirect pickers, when the page listing could not be read. A reduced
+   * affordance rather than a failure: the pickers still show whatever the tenant stored and every setting on
+   * the screen can still be saved, so this is a note and not the error banner.
+   */
+  pagesUnavailableNotice:
+    'The list of pages for this site could not be read, so the redirect choices below show only the ' +
+    'pages these settings already point at. Every other setting can still be saved.',
 } as const);
 
 /**
@@ -459,9 +476,160 @@ const PROFILE_DEFINITIONS_PATH = '/settings/profile-definitions';
 const REQUIRED_MESSAGE = 'This setting is required.';
 
 /**
+ * The wording of the option that stores no redirect at all. NOT the legacy `<None Specified>` used by the
+ * portal page selectors: for those, absence means the portal has no such page, whereas here it means the
+ * account is left wherever it already is, and saying so is worth more than matching a sibling screen's
+ * wording for a different question.
+ */
+const NO_REDIRECT_LABEL = 'No redirect (stay on the current page)';
+
+/** Shown beneath a picker that currently stores no page. */
+const NO_STORED_PAGE_NOTE = 'Stored value: no redirect.';
+
+/**
+ * Shown when the submitted address expression cannot be compiled at all. The server's own wording for the
+ * same refusal, so the operator is told the same thing whichever layer catches it.
+ */
+const EXPRESSION_UNUSABLE_MESSAGE =
+  'This expression could not be compiled as a regular expression, so it would refuse every address it ' +
+  'was applied to. Enter a valid expression, or clear the field to restore the default.';
+
+/**
+ * Refuses an address-validation expression that is not a compilable regular expression.
+ *
+ * ⚠ COMPILABILITY IS THE ONLY QUESTION ASKED HERE, AND THAT IS DELIBERATE. Measured on this screen,
+ * replacing the expression with `[a-z` left the field `ng-valid` with no message, no `aria-invalid` and no
+ * banner, so a site-wide setting that would then refuse EVERY address could be typed and saved without a
+ * word of warning. The server does refuse it - its own rule compiles the pattern and applies it to a probe
+ * address - but a refusal that only arrives after a save is a refusal the operator has to discover.
+ *
+ * What this must NOT do is ask whether the expression is a WISE one. The browser never executes this value:
+ * it is stored text, and the server is what applies it. Two of the four address expressions this platform
+ * itself shipped are quadratic under backtracking, so screening for that here would refuse values the
+ * server accepts and lock an operator out of a setting they are entitled to keep - a worse defect than the
+ * one being fixed. The screen that DOES reject those patterns guards the profile screen, where the browser
+ * really does run them against what the operator types.
+ *
+ * @param control The control holding the submitted expression.
+ * @returns A validation error keyed `expressionUnusable`, or null when the expression compiles.
+ */
+function expressionCompiles(control: AbstractControl): ValidationErrors | null {
+  const value: unknown = control.value;
+
+  // An empty value is not an unusable expression - it is the absence of one, which restores the default and
+  // is a legitimate answer. It is also what the framework's own validators skip, so the two agree.
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    return null;
+  }
+
+  try {
+    // Constructed AND applied, because construction alone does not prove usability: a pattern can compile
+    // and still throw on use. The probe is an address, since an address is what this expression exists to
+    // judge.
+    const expression = new RegExp(value);
+
+    expression.test('probe.address@example.com');
+
+    return null;
+  } catch {
+    return { expressionUnusable: true };
+  }
+}
+
+/**
  * The tenant's account-administration settings screen. the class name and this file's location are a
  * RUNTIME contract, not a convention.
  */
+/**
+ * The tokens `UserService.FormatDisplayName` substitutes. Anything else in square brackets survives into
+ * every account's display name verbatim, which is what makes an unrecognised token a silent defect rather
+ * than a harmless one.
+ */
+// THE NO-REDIRECT WORDING IS DECLARED ONCE, ABOVE. A terser 'No redirect' was written here as well; the
+// fuller sentence is kept because it says what the setting DOES rather than only what it omits, and two
+// constants of the same name cannot both stand.
+
+/**
+ * The wording for a stored identifier this site's page list does not carry - a page since moved to the
+ * recycle bin, or one belonging to another tenant. It is OFFERED rather than dropped, so saving the form
+ * cannot clear a setting the operator never touched.
+ */
+const UNLISTED_PAGE_PREFIX = 'Page ';
+
+const DISPLAY_NAME_FORMAT_TOKENS: readonly string[] = Object.freeze([
+  '[USERID]',
+  '[FIRSTNAME]',
+  '[LASTNAME]',
+  '[USERNAME]',
+]);
+
+/** `Users.DisplayName` is declared `nvarchar(128)`, so a longer composition cannot be stored. */
+const DISPLAY_NAME_MAXIMUM_LENGTH = 128;
+
+/** The message shown when the format names no substitution at all. */
+export const DISPLAY_NAME_FORMAT_NEEDS_A_TOKEN_MESSAGE =
+  'The format must use at least one of [USERID], [FIRSTNAME], [LASTNAME] or [USERNAME]; without one, every'
+  + ' account would be renamed to the same text.';
+
+/** The message shown when the format names something that will never be substituted. */
+export const DISPLAY_NAME_FORMAT_UNKNOWN_TOKEN_MESSAGE =
+  'This site substitutes only [USERID], [FIRSTNAME], [LASTNAME] and [USERNAME]. Anything else in square'
+  + ' brackets is stored exactly as typed.';
+
+/** The message shown when the format's own fixed text cannot fit the stored column. */
+export const DISPLAY_NAME_FORMAT_TOO_LONG_MESSAGE =
+  `A display name is stored in ${DISPLAY_NAME_MAXIMUM_LENGTH} characters, and this format's own fixed text`
+  + ' already exceeds that before any account values are substituted.';
+
+/**
+ * Validates the format that RENAMES EVERY ACCOUNT IN THE TENANT - U16. The screen already warns that it
+ * does; what it did not do was check the value at all, so a format naming no token would have given every
+ * account the same literal display name, and one naming a token this port does not substitute would have
+ * stored the brackets verbatim. `UserService.FormatDisplayName` performs four ordinal replacements and
+ * nothing else, and `UserInfo.vb` L362-L363 did the same, so the recognised set is closed.
+ *
+ * All three rules are reported together rather than one at a time, for the reason recorded on the
+ * credential screen: revealing a second rule only once the first is satisfied is the same defect elsewhere.
+ *
+ * @param control The format control.
+ * @returns The validation errors, or `null` when the format is usable.
+ */
+function displayNameFormatRules(control: AbstractControl): ValidationErrors | null {
+  const format = typeof control.value === 'string' ? control.value : '';
+
+  // An empty format is the tenant declining to compose display names at all, which is the stored default.
+  if (format.trim().length === 0) {
+    return null;
+  }
+
+  const failures: string[] = [];
+  const upper = format.toUpperCase();
+
+  if (!DISPLAY_NAME_FORMAT_TOKENS.some((token: string) => upper.includes(token))) {
+    failures.push(DISPLAY_NAME_FORMAT_NEEDS_A_TOKEN_MESSAGE);
+  }
+
+  const bracketed = upper.match(/\[[^\]]*\]/g) ?? [];
+
+  if (bracketed.some((token: string) => !DISPLAY_NAME_FORMAT_TOKENS.includes(token))) {
+    failures.push(DISPLAY_NAME_FORMAT_UNKNOWN_TOKEN_MESSAGE);
+  }
+
+  // The fixed text is whatever remains once every substitution is removed: the part that cannot shrink.
+  let fixed = format;
+
+  for (const token of DISPLAY_NAME_FORMAT_TOKENS) {
+    fixed = fixed.split(token).join('');
+    fixed = fixed.split(token.toLowerCase()).join('');
+  }
+
+  if (fixed.length > DISPLAY_NAME_MAXIMUM_LENGTH) {
+    failures.push(DISPLAY_NAME_FORMAT_TOO_LONG_MESSAGE);
+  }
+
+  return failures.length === 0 ? null : { displayNameFormat: failures };
+}
+
 @Component({
   selector: 'app-membership-settings',
   standalone: true,
@@ -490,9 +658,19 @@ export class MembershipSettingsComponent implements OnInit {
    * navigation: Cancel, an in-application link and the browser's Back button are navigations a route
    * guard can refuse, while closing or reloading the tab is not, and only the browser's own unload prompt
    * covers that - which needs the dirty state at an arbitrary moment rather than at a navigation.
+   *
+   * ⚠ THE BUSY EXCLUSION WAS REMOVED, AND ITS REMOVAL CLOSES A MEASURED HOLE. This predicate used to read
+   * `dirty && busy === false`, which reported the screen CLEAN for exactly as long as a write was in flight -
+   * so navigating away mid-save was admitted in silence, the departure destroyed the component, and
+   * `takeUntilDestroyed` cancelled the request. The operator lost the write and was told nothing. A form
+   * holding an unfinished write is the LEAST safe moment to leave, not the safest.
+   *
+   * The exclusion was written to stop the application's OWN post-save navigation being challenged, and that
+   * case is already covered properly: every success path replaces the address imperatively, which
+   * `unsavedChangesGuard` admits explicitly. Nothing here has to approximate it a second time.
    */
   private readonly unsavedEntry = inject(UnsavedChangesTracker).watch(
-    () => this.form.dirty && this.saving() === false,
+    () => this.form.dirty,
   );
   /**
    * The account store, injected rather than the transport service. the store, not the service, is the
@@ -508,8 +686,17 @@ export class MembershipSettingsComponent implements OnInit {
    */
   private readonly auth = inject(AuthStore);
 
+  /** Cancels the page read when this screen goes away. */
+  private readonly destroyRef = inject(DestroyRef);
+
   /** The confirmation channel. */
   private readonly notifications = inject(NotificationService);
+
+  /**
+   * The page listing, read for ONE purpose: to turn the three redirect destinations from numbers the
+   * operator has to know into pages they can choose. This screen never writes a page.
+   */
+  private readonly pages = inject(TabService);
 
   private readonly router = inject(Router);
 
@@ -546,8 +733,12 @@ export class MembershipSettingsComponent implements OnInit {
   /** The page-size ceiling, from the shared constant. */
   protected readonly maximumRecordsPerPage = MAX_PAGE_SIZE;
 
-  /** The page-identifier floor. */
-  protected readonly minimumPageIdentifier = MINIMUM_PAGE_IDENTIFIER;
+  // THE PAGE-IDENTIFIER FLOOR IS NO LONGER EXPOSED TO THE TEMPLATE. It advertised a `min` on a bare number
+  // box, and the three redirect destinations are pickers now, so nothing can be typed that needs a floor. The
+  // constant itself still guards the form controls below, for the values arriving from the server.
+
+  /** The wording of the no-redirect option, for the template. */
+  protected readonly noRedirectLabel = NO_REDIRECT_LABEL;
 
   /** The stored-text ceiling. */
   protected readonly maximumSettingLength = MAXIMUM_SETTING_LENGTH;
@@ -642,12 +833,15 @@ export class MembershipSettingsComponent implements OnInit {
       { nonNullable: true, validators: [Validators.min(MINIMUM_PAGE_IDENTIFIER)] },
     ),
 
-    // Length is the ONLY rule applied to this expression here. Whether it is a usable pattern is checked by
-    // the server, which compiles it, and the value is treated as opaque text in the browser: nothing in
-    // this file compiles it, executes it or matches anything against it.
+    // Two rules: how long the value may be, and whether it is a regular expression at all. The value is
+    // still never APPLIED in the browser - `expressionCompiles` runs it against a fixed probe address and
+    // nothing else - so no address the operator types is ever judged by a pattern this screen holds.
     securityEmailValidation: new FormControl(
       LEGACY_MEMBERSHIP_SETTINGS_DEFAULTS.securityEmailValidation,
-      { nonNullable: true, validators: [Validators.maxLength(MAXIMUM_SETTING_LENGTH)] },
+      {
+        nonNullable: true,
+        validators: [Validators.maxLength(MAXIMUM_SETTING_LENGTH), expressionCompiles],
+      },
     ),
 
     securityRequireValidProfile: new FormControl(
@@ -665,9 +859,25 @@ export class MembershipSettingsComponent implements OnInit {
 
     securityDisplayNameFormat: new FormControl(
       LEGACY_MEMBERSHIP_SETTINGS_DEFAULTS.securityDisplayNameFormat,
-      { nonNullable: true, validators: [Validators.maxLength(MAXIMUM_SETTING_LENGTH)] },
+      {
+        nonNullable: true,
+        validators: [Validators.maxLength(MAXIMUM_SETTING_LENGTH), displayNameFormatRules],
+      },
     ),
   });
+
+  /** The portal's pages, as received. Empty until the read lands, and empty again if it fails. */
+  private readonly pageRows = signal<readonly TabListItem[]>([]);
+
+  /**
+   * The portal whose pages have already been asked for. A plain field rather than a signal, deliberately:
+   * it is read and written inside the reader below and nothing renders it, so making it reactive would only
+   * let the reader retrigger itself.
+   */
+  private pagesReadFor: number | null = null;
+
+  /** Whether the page read failed, so the selectors are knowingly thin and say so. */
+  private readonly pagesFailed = signal(false);
 
   // PROJECTED STATE
 
@@ -712,6 +922,47 @@ export class MembershipSettingsComponent implements OnInit {
     () => this.auth.currentUser()?.userId ?? null,
   );
 
+  /**
+   * The choices behind the three redirect destinations.
+   *
+   * ⚠ WHY A PICKER AT ALL. Measured on this screen, all three destinations were bare numeric spinners -
+   * "Redirect After Login" invited a raw page identifier - directly beneath help text promising the operator
+   * "can select a page to redirect to". Nothing on the screen said which numbers were legal, so the setting
+   * was only usable by somebody who already knew the page table.
+   *
+   * The admission rules, the hierarchy indent and the retained-choice handling are the shared ones the portal
+   * settings screen uses for its four page selectors, so the two screens cannot disagree about what a
+   * choosable page is. The stored values are RETAINED even when the filter would hide them, which is what
+   * stops saving anything else on this screen from silently discarding a redirect that points at a page since
+   * recycled.
+   */
+  protected readonly pageOptions: Signal<readonly PageOption[]> = computed(() => {
+    const settings = this.store.membershipSettings();
+
+    const retain: number[] = [];
+
+    if (settings !== null) {
+      for (const reference of [
+        settings.redirectAfterLogin,
+        settings.redirectAfterRegistration,
+        settings.redirectAfterLogout,
+      ]) {
+        if (reference !== null) {
+          retain.push(reference);
+        }
+      }
+    }
+
+    // The administration band is excluded by identifier, and this screen does not read the portal detail
+    // that carries it, so nothing is excluded on that ground here. A redirect INTO administration is a
+    // legitimate choice for an administrator anyway, which is the opposite of the portal home page the
+    // shared rule was written for.
+    return buildPageChoices(this.pageRows(), null, retain);
+  });
+
+  /** Whether the page listing could not be read, so the pickers are knowingly thin. */
+  protected readonly pagesUnavailable: Signal<boolean> = this.pagesFailed.asReadonly();
+
   /** The failure to show, or null. */
   protected readonly problem: Signal<ProblemDetails | null> = computed(() => {
     const failure = this.store.failure();
@@ -723,16 +974,13 @@ export class MembershipSettingsComponent implements OnInit {
     return failure.problem;
   });
 
-  /** The failure summarised, for the case where there is no document to hand the banner. */
-  protected readonly failureMessage: Signal<string | null> = computed(() => {
-    const failure = this.store.failure();
-
-    if (failure === null || MEMBER_SERVICE_OPERATIONS.includes(failure.operation)) {
-      return null;
-    }
-
-    return failure.problem === null ? failure.summary.message : null;
-  });
+    // A TRANSPORT-ONLY SENTENCE USED TO BE COMPOSED HERE, AND IT IS GONE BECAUSE THE FAILURE IT COVERED
+  // CANNOT OCCUR ANY MORE. It existed for the one class of failure that carried no problem document: a
+  // response this client could not decode, which reaches a subscriber as a plain error with no status and no
+  // body. The account store now synthesises a document for exactly that case - `contractProblem`, titled
+  // "Unexpected response" - so the shared banner above always has real wording, a real severity and a real
+  // support reference to render, and a second surface saying the same thing in weaker words would be one
+  // announcement too many.
 
   /**
    * Whether the form may be submitted. Refused while the policy is being read or written, and the refusal
@@ -877,6 +1125,43 @@ export class MembershipSettingsComponent implements OnInit {
     this.store.loadMembershipSettings();
   }
 
+  /**
+   * Reads the portal's pages once per portal, for all three redirect pickers to share.
+   *
+   * ⚠ REACTIVE RATHER THAN READ ONCE ON ARRIVAL, AND MEASURED BEFORE IT WAS. The session resolves
+   * asynchronously, so "which portal is this?" is genuinely unanswered for the first moments of the screen's
+   * life - and a single read taken in the initialiser therefore found no portal, returned, and left all three
+   * pickers permanently thin however quickly the session then arrived. Keyed on the portal so a session that
+   * resolves late is picked up, and guarded on the portal already read so a redraw cannot re-read it.
+   *
+   * ⚠ A FAILED READ IS NOT A FAILED SCREEN. The pages are an affordance over a value the operator can
+   * already hold, so losing them must not stop the other twenty-two settings being edited: the pickers fall
+   * back to whatever the tenant has stored, a note says so, and nothing is refused.
+   */
+  private readonly pageReader = effect(() => {
+    const portalId = this.auth.portalId();
+
+    if (portalId === null || portalId === this.pagesReadFor) {
+      return;
+    }
+
+    this.pagesReadFor = portalId;
+
+    this.pages
+      .getByPortal(portalId)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (rows: readonly TabListItem[]) => {
+          this.pageRows.set(rows);
+          this.pagesFailed.set(false);
+        },
+        error: () => {
+          this.pageRows.set([]);
+          this.pagesFailed.set(true);
+        },
+      });
+  });
+
   // -------------------------------------------------------------------------
   // TEMPLATE ACCESSORS
   // -------------------------------------------------------------------------
@@ -890,6 +1175,25 @@ export class MembershipSettingsComponent implements OnInit {
    */
   protected controlId(field: MembershipSettingsFieldName): string {
     return `membership-setting-${field}`;
+  }
+
+  /**
+   * The stored page identifier for one redirect setting, as the secondary fact beneath its picker.
+   *
+   * Read from the FORM rather than from the stored policy, so it tracks the operator's current choice
+   * rather than describing a value they have already replaced on screen.
+   *
+   * @param field The redirect setting's control name.
+   * @returns The sentence to show beneath the picker.
+   */
+  protected storedPageNote(field: MembershipSettingsFieldName): string {
+    const value: unknown = this.form.controls[field].value;
+
+    if (typeof value !== 'number' || Number.isFinite(value) === false) {
+      return NO_STORED_PAGE_NOTE;
+    }
+
+    return `Stored value: page ${value}.`;
   }
 
   /**
@@ -946,7 +1250,12 @@ export class MembershipSettingsComponent implements OnInit {
     // border and no `aria-invalid` until focus moved away, so the operator was told the value was unusable
     // only after they had stopped looking at it.
     if (control.hasError('required')) {
-      return control.untouched ? null : REQUIRED_MESSAGE;
+      // ⚠ `pristine` AND `untouched`, NOT `untouched` ALONE. Measured on this screen, EMPTYING a required
+      // box reported nothing at all until focus moved away: clearing it makes the control dirty but leaves
+      // it untouched, so the message the operator most needed - the one saying the value they just deleted
+      // is required - was the one message withheld. A field the operator has not been near still stays
+      // silent, which is the whole point of gating it.
+      return control.untouched && control.pristine ? null : REQUIRED_MESSAGE;
     }
 
     if (control.hasError('min') || control.hasError('max')) {
@@ -955,6 +1264,18 @@ export class MembershipSettingsComponent implements OnInit {
 
     if (control.hasError('maxlength')) {
       return `This setting may not exceed ${MAXIMUM_SETTING_LENGTH} characters.`;
+    }
+
+    if (control.hasError('expressionUnusable')) {
+      return EXPRESSION_UNUSABLE_MESSAGE;
+    }
+
+    // U16 - EVERY UNMET RULE, TOGETHER. This one setting renames every account in the tenant, and the
+    // screen already says so; reporting one broken rule at a time would mean fixing it revealed another.
+    const formatFailures = control.getError('displayNameFormat') as readonly string[] | undefined;
+
+    if (formatFailures !== undefined && formatFailures.length > 0) {
+      return formatFailures.join(' ');
     }
 
     return null;

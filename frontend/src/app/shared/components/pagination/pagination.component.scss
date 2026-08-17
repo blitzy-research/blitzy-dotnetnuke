@@ -148,6 +148,19 @@
   color: var(--color-text-muted);
   font-size: var(--font-size-base);
   line-height: var(--line-height-base);
+
+  // ⚠ #29 — A RING, BECAUSE THIS IS A FOCUS TARGET OF LAST RESORT. The readout carries `tabindex="-1"` so a
+  // reader never tabs to it, but the pager focuses it by script when a step disables itself and no other
+  // step is usable. Focus moved without a mark is focus lost, so the always-visible variant is the right one
+  // here for the same reason it is right inside the dialog: the application chose this element, not the
+  // reader. The ring is drawn inside the box so a readout at the very edge of the panel cannot draw it
+  // outside the visible area.
+  @include mx.focus-ring-always;
+
+  &:focus,
+  &:focus-visible {
+    outline-offset: calc(-1 * var(--focus-ring-width));
+  }
 }
 
 .pagination__controls {
@@ -175,4 +188,21 @@
   font-size: var(--font-size-base);
   font-variant-numeric: tabular-nums;
   line-height: var(--line-height-base);
+}
+
+// THE UNAVAILABLE STEP, AND THIS IS THE ONE PLACE THIS FILE MUST SPEAK. The note at the top of this file
+// stands unchanged - restating ink, fill or border here would outrank the global disabled treatment and
+// silently repaint an unavailable step as an available one - and nothing below restates any of them. What
+// the global `aria-disabled` rule cannot supply from where it sits is the CURSOR, and its absence would be
+// worse than cosmetic: the house button declares `cursor: pointer`, so an unavailable step would invite
+// the very press it refuses, and the native `:disabled` rule that used to answer with `not-allowed` no
+// longer applies now the property is gone.
+//
+// `pointer-events` is restored to `auto` for the same reason and only for that reason: the global rule
+// switches it off, which suppresses the cursor along with the press. It is not what prevents activation -
+// it never was, since it leaves Enter and Space untouched on a control that stays focusable - so nothing
+// is weakened by turning it back on. The paired class refuses the step itself, from every input modality.
+.pagination__button[aria-disabled='true'] {
+  pointer-events: auto;
+  cursor: not-allowed;
 }

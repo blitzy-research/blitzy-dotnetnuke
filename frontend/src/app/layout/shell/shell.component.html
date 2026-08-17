@@ -54,7 +54,12 @@
   was the hidden table cell at index.ascx L91, whose class `portal.css` L27 also defines with an empty
   body.
 -->
-<main [id]="mainRegionId" class="shell__main" tabindex="-1">
+<main
+  [id]="mainRegionId"
+  class="shell__main"
+  [class.shell__main--message-reserved]="reservesNotificationSpace()"
+  tabindex="-1"
+>
   <!--
     The application's notification surface, mounted here rather than as a sixth shell region for two
     reasons.

@@ -22,12 +22,15 @@
       composed from the page that was ASKED for, so it updates the instant a step is pressed - which is
       right for the eye and wrong for the ear.
     -->
-    <p
-      class="pagination__status"
-      aria-live="polite"
-      aria-atomic="true"
-      [attr.aria-busy]="ariaBusy"
-    >
+    <!--
+      ⚠ VISIBLE, NOT ANNOUNCED, AND THE REMOVAL OF `aria-live` IS THE FIX. This carried `aria-live="polite"`
+      and `aria-atomic="true"` while the table's own `role="status"` region carried the record count with the
+      same politeness - so ONE action produced TWO polite announcements with an intervening blank, and a
+      screen reader read the range and the count as if they were unrelated events. The table's region is now
+      the single announcer and states the dataset total itself, so nothing is lost by this region falling
+      silent. It keeps its text, its class and its position, so nothing changes for the eye.
+    -->
+    <p class="pagination__status">
       {{ firstItemNumber }}&ndash;{{ lastItemNumber }} of {{ totalCount }}
     </p>
 
@@ -39,16 +42,27 @@
           slot the page links occupied, then next and last.
         -->
         <!--
-          ⚠ THE `#firstStep` AND `#lastStep` REFERENCES ARE LOAD-BEARING, NOT DIAGNOSTIC. Both controls
-          disable themselves by succeeding, and a browser discards focus on an element that becomes
-          disabled - measured at runtime as focus landing on `body` after First and after Last, while
-          Next and Previous retained it.
+          ⚠ UNAVAILABILITY IS STATED WITH `aria-disabled`, NOT THE NATIVE PROPERTY, AND THE MEASUREMENT
+          BEHIND THAT IS THE WHOLE REASON THIS COMMENT EXISTS. With the native attribute the step was
+          removed from the keyboard entirely: measured on the first page, `firstButton.focus()` left
+          `document.activeElement` unmoved and the control was ABSENT from the tab order, while the same
+          call on the available Next step moved focus correctly - so the method was sound and the button
+          genuinely unreachable. A keyboard user tabbing the pager could not reach First or Previous at
+          all, and therefore was never told they existed or why they were unavailable.
+          `_forms.scss` already declares the `aria-disabled` appearance and states the preference in the
+          same terms: a control a keyboard user can reach and hear announced as unavailable beats one that
+          has silently vanished. The rendered appearance is unchanged by this - the same three non-colour
+          cues carry the state, ink, border and cursor - so nothing is lost for the eye.
+
+          ⚠ THE HANDLERS MUST ENFORCE WHAT THE ATTRIBUTE ANNOUNCES. `aria-disabled` is a statement to
+          assistive technology and nothing more: the element still activates, from a pointer and from
+          Enter or Space. `goFirst` and its siblings therefore refuse the step themselves, which is the
+          enforcement the native property used to supply for free.
         -->
         <button
-          #firstStep
           class="pagination__button"
           type="button"
-          [disabled]="!canGoPrevious"
+          [attr.aria-disabled]="canGoPrevious ? null : 'true'"
           [attr.aria-label]="labels.first"
           (click)="goFirst()"
         >
@@ -56,10 +70,9 @@
         </button>
 
         <button
-          #previousStep
           class="pagination__button"
           type="button"
-          [disabled]="!canGoPrevious"
+          [attr.aria-disabled]="canGoPrevious ? null : 'true'"
           [attr.aria-label]="labels.previous"
           (click)="goPrevious()"
         >
@@ -73,10 +86,9 @@
         <span class="pagination__position" aria-current="page">{{ displayPage }} / {{ totalPages }}</span>
 
         <button
-          #nextStep
           class="pagination__button"
           type="button"
-          [disabled]="!canGoNext"
+          [attr.aria-disabled]="canGoNext ? null : 'true'"
           [attr.aria-label]="labels.next"
           (click)="goNext()"
         >
@@ -84,10 +96,9 @@
         </button>
 
         <button
-          #lastStep
           class="pagination__button"
           type="button"
-          [disabled]="!canGoNext"
+          [attr.aria-disabled]="canGoNext ? null : 'true'"
           [attr.aria-label]="labels.last"
           (click)="goLast()"
         >

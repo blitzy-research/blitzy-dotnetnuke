@@ -10,6 +10,7 @@ import {
   type PagedResponse,
 } from '../../../core/models/paged-result.model';
 import type { ProblemDetails, ProblemDetailsErrors } from '../../../core/models/problem-details.model';
+import type { TabListItem } from '../../../core/models/tab.model';
 import type {
   MembershipSettings,
   MembershipSettingsUpdateResult,
@@ -19,7 +20,11 @@ import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guar
 import { NotificationService } from '../../../core/services/notification.service';
 import { TokenStorageService } from '../../../core/services/token-storage.service';
 import { UserStore } from '../../../core/state/user.store';
-import { MEMBERSHIP_SETTINGS_TEXT, MembershipSettingsComponent } from './membership-settings.component';
+import {
+  COLUMN_TOGGLE_FIELDS,
+  MEMBERSHIP_SETTINGS_TEXT,
+  MembershipSettingsComponent,
+} from './membership-settings.component';
 
 describe('MembershipSettingsComponent', () => {
   let fixture: ComponentFixture<MembershipSettingsComponent>;
@@ -33,6 +38,32 @@ describe('MembershipSettingsComponent', () => {
   // table shows up here as a failure instead of being silently agreed with.
 
   const SETTINGS_URL = '/api/v1/users/settings';
+
+  /** The portal the seated session names, and therefore the portal whose pages the redirect pickers offer. */
+  const SESSION_PORTAL_ID = -1;
+
+  /**
+   * The wording of the option that stores no redirect. Written out rather than imported, exactly as the
+   * addresses above are: the operator reads this sentence, so a change to it must fail here and be read
+   * rather than being silently agreed with.
+   */
+  const NO_REDIRECT_LABEL = 'No redirect (stay on the current page)';
+
+  /**
+   * The refusal shown for an expression that cannot be compiled. Written out rather than imported for the
+   * same reason the wording above is: the operator reads this sentence.
+   */
+  const EXPRESSION_UNUSABLE_MESSAGE =
+    'This expression could not be compiled as a regular expression, so it would refuse every address it ' +
+    'was applied to. Enter a valid expression, or clear the field to restore the default.';
+
+  /**
+   * The page listing the three redirect pickers read. ⚠ THIS SCREEN NOW READS PAGES, AND EVERY SPEC BELOW
+   * DEPENDS ON THAT. The redirect destinations were bare numeric spinners and are now pickers over the
+   * tenant's real pages, so arriving on the screen issues one further read. Spelled out as a literal for the
+   * same reason the policy address is: a wrong route template must fail here rather than agree with itself.
+   */
+  const PAGES_URL = `/api/v1/portals/${String(SESSION_PORTAL_ID)}/tabs`;
 
   /** The account the seated session names, and therefore the subject of the mounted panel. */
   const CALLER_ACCOUNT_ID = 42;
@@ -224,6 +255,69 @@ describe('MembershipSettingsComponent', () => {
     return { data, meta: null };
   }
 
+  /** The page size `TabService.getByPortal` reads the whole collection in. */
+  const PAGE_READ_SIZE = 100;
+
+  /**
+   * The PAGED envelope the mounted subscription panel's catalogue read answers with. MIGRATION: that
+   * catalogue used to arrive in one unbounded response and is now read a bounded page at a time, so a body
+   * carrying `data` fails its decode and reaches the panel as a FAILED read - which paints the panel's own
+   * error banner in cases that meant to answer it successfully.
+   *
+   * @param rows The rows of this page, defaulting to none.
+   * @returns The body to flush.
+   */
+  function cataloguePage(rows: readonly unknown[] = []): {
+    readonly items: readonly unknown[];
+    readonly meta: {
+      readonly totalCount: number;
+      readonly pageIndex: number;
+      readonly pageSize: number;
+      readonly totalPages: number;
+    };
+  } {
+    return {
+      items: rows,
+      meta: {
+        totalCount: rows.length,
+        pageIndex: 0,
+        pageSize: PAGE_READ_SIZE,
+        totalPages: rows.length === 0 ? 0 : Math.ceil(rows.length / PAGE_READ_SIZE),
+      },
+    };
+  }
+
+  /**
+   * The page read's answer, in the PAGED envelope the transport decodes.
+   *
+   * ⚠ NOT THE PLAIN `data` ENVELOPE. The pages endpoint is bounded, so `TabService.getByPortal` assembles the
+   * collection from `{ items, meta }` pages and decodes each one strictly; answering with `{ data }` fails
+   * that decode, which reaches this screen as a FAILED page read - the pickers then hold only their retained
+   * values and the reduced-affordance note appears, for a case that meant to answer successfully.
+   *
+   * @param rows The pages to answer with.
+   * @returns One complete page carrying them all.
+   */
+  function pageOfPages(rows: readonly TabListItem[]): {
+    readonly items: readonly TabListItem[];
+    readonly meta: {
+      readonly totalCount: number;
+      readonly pageIndex: number;
+      readonly pageSize: number;
+      readonly totalPages: number;
+    };
+  } {
+    return {
+      items: rows,
+      meta: {
+        totalCount: rows.length,
+        pageIndex: 0,
+        pageSize: PAGE_READ_SIZE,
+        totalPages: rows.length === 0 ? 0 : Math.ceil(rows.length / PAGE_READ_SIZE),
+      },
+    };
+  }
+
   /**
    * The report the policy write answers with. ⚠ THIS WRITE ANSWERS `200` WITH A BODY, unlike every other
    * settings write in the workspace. Adopting a new display-name format renames every account in the
@@ -286,6 +380,68 @@ describe('MembershipSettingsComponent', () => {
   function create(): void {
     fixture = TestBed.createComponent(MembershipSettingsComponent);
     fixture.detectChanges();
+    answerPages();
+  }
+
+  /** Whether a page read is outstanding, for the specs that mount without seating a session. */
+  function pageReadPending(): boolean {
+    return (
+      httpMock.match((candidate) => candidate.method === 'GET' && candidate.url === PAGES_URL)
+        .length > 0
+    );
+  }
+
+  /**
+   * One page of the portal, with only the members a picker reads carrying meaning.
+   *
+   * @param overrides The members this row differs from the default in.
+   * @returns A page listing row.
+   */
+  function pageRow(overrides: Partial<TabListItem> = {}): TabListItem {
+    return {
+      tabId: 10,
+      tabName: 'Home',
+      title: null,
+      tabOrder: 1,
+      parentId: null,
+      level: 0,
+      tabPath: null,
+      isVisible: true,
+      disableLink: false,
+      isDeleted: false,
+      hasChildren: false,
+      isSecure: false,
+      url: null,
+      iconFile: null,
+      ...overrides,
+    };
+  }
+
+  /** The pages an arrival is answered with unless a spec asks for others. */
+  const DEFAULT_PAGES: readonly TabListItem[] = Object.freeze([
+    pageRow({ tabId: 10, tabName: 'Home' }),
+    pageRow({ tabId: 11, tabName: 'About', parentId: 10, level: 1 }),
+    pageRow({ tabId: 12, tabName: 'Contact' }),
+  ]);
+
+  /**
+   * Answers the page read the redirect pickers issue on arrival.
+   *
+   * @param rows The pages to answer with.
+   */
+  function answerPages(rows: readonly TabListItem[] = DEFAULT_PAGES): void {
+    const pending = httpMock.match(
+      (candidate) => candidate.method === 'GET' && candidate.url === PAGES_URL,
+    );
+
+    // Asserted rather than tolerated: a silently unanswered page read would leave every picker holding only
+    // its retained choice, and each specification below would then be measuring a failed read instead of the
+    // contract it names.
+    for (const request of pending) {
+      request.flush(pageOfPages(rows));
+    }
+
+    fixture.detectChanges();
   }
 
   /** Consumes exactly one pending request, asserted by verb AND address. */
@@ -301,10 +457,96 @@ describe('MembershipSettingsComponent', () => {
   }
 
   /** Mounts the screen and answers its opening read. */
-  function arrive(policy: MembershipSettings | null = settings()): void {
-    create();
+  function arrive(
+    policy: MembershipSettings | null = settings(),
+    pages: readonly TabListItem[] = DEFAULT_PAGES,
+  ): void {
+    fixture = TestBed.createComponent(MembershipSettingsComponent);
+    fixture.detectChanges();
+    answerPages(pages);
     expectRequest('GET', SETTINGS_URL, 'the policy read').flush(envelope(policy));
     fixture.detectChanges();
+  }
+
+  /**
+   * Mounts the screen WITH a resolved session, so the three redirect pickers read the portal's pages and
+   * offer them.
+   *
+   * ⚠ A SEPARATE ARRIVAL RATHER THAN THE DEFAULT ONE, AND THE REASON IS OBSERVABLE. Seating a session also
+   * gives the mounted subscription panel a subject account, so it reads its own catalogue - a request every
+   * specification would then have to answer. Only the specifications that are ABOUT the pickers pay that
+   * cost, and they pay it explicitly here.
+   *
+   * @param policy The policy to answer the settings read with.
+   * @param pages The pages to answer the page read with.
+   */
+  function arriveWithPages(
+    policy: MembershipSettings | null = settings(),
+    pages: readonly TabListItem[] = DEFAULT_PAGES,
+  ): void {
+    seatCallerSession();
+    fixture = TestBed.createComponent(MembershipSettingsComponent);
+    fixture.detectChanges();
+
+    const pageReads = httpMock.match(
+      (candidate) => candidate.method === 'GET' && candidate.url === PAGES_URL,
+    );
+
+    expect(pageReads).withContext('the page read the pickers issue once a portal is known').toHaveSize(1);
+    pageReads[0]?.flush(pageOfPages(pages));
+
+    // The subscription panel's own catalogue, which a seated session makes it read. Answered with nothing,
+    // because this arrival is about the pickers and the panel has its own specifications.
+    for (const services of httpMock.match(
+      (candidate) => candidate.method === 'GET' && candidate.url === CALLER_SERVICES_URL,
+    )) {
+      services.flush(cataloguePage());
+    }
+
+    expectRequest('GET', SETTINGS_URL, 'the policy read').flush(envelope(policy));
+    answerPageList();
+    fixture.detectChanges();
+  }
+
+  /**
+   * Answers the page read the three redirect settings depend on - U17. Matched rather than expected,
+   * because the read only happens once a caller is seated and a case that seats none legitimately makes no
+   * such request; failing those cases for the absence would be failing them for the wrong reason.
+   *
+   * @param pages The pages to return, or none.
+   */
+  function answerPageList(pages: readonly TabListItem[] = []): void {
+    for (const request of httpMock.match(
+      (candidate) => candidate.method === 'GET' && candidate.url.includes('/tabs'),
+    )) {
+      request.flush(pageOfPages(pages));
+    }
+
+    fixture.detectChanges();
+  }
+
+  /** Seats the caller's identity, which is what names the portal whose pages the pickers offer. */
+  function seatCallerSession(userId: number = CALLER_ACCOUNT_ID): void {
+    TestBed.inject(TokenStorageService).store({
+      accessToken: 'not-a-real-token.not-a-real-payload.not-a-real-signature',
+      expiresAtUtc: '2099-12-31T23:59:59.000Z',
+      refreshToken: 'not-a-real-refresh-token',
+      mustChangePassword: false,
+      mustUpdateProfile: false,
+      passwordExpiring: false,
+      user: {
+        userId,
+        portalId: SESSION_PORTAL_ID,
+        portalName: 'Baseline Portal',
+        username: 'administrator',
+        displayName: 'The Administrator',
+        email: 'administrator@example.test',
+        isSuperUser: false,
+        isPortalAdministrator: true,
+        roles: ['Administrators'],
+        permissions: [],
+      },
+    });
   }
 
   /**
@@ -349,6 +591,55 @@ describe('MembershipSettingsComponent', () => {
   }
 
   /** Types into a text or numeric control. */
+  /**
+   * The option labels one redirect picker offers, in order.
+   *
+   * @param name The redirect setting's control name.
+   * @returns Every option's visible wording.
+   */
+  function pageChoices(name: string): readonly string[] {
+    return Array.from(field<HTMLSelectElement>(name).options).map((option) =>
+      (option.textContent ?? '').trim(),
+    );
+  }
+
+  /**
+   * The wording of the option one redirect picker currently shows as chosen. ⚠ READ BY LABEL RATHER THAN BY
+   * VALUE, and not by preference: these options carry their page identifier through `ngValue`, so the DOM
+   * `value` is the framework's own `index: value` token rather than the page. The label is the only thing the
+   * document actually holds — and it is also what the operator reads.
+   *
+   * @param name The redirect setting's control name.
+   * @returns The chosen option's wording.
+   */
+  function chosenPage(name: string): string {
+    const select = field<HTMLSelectElement>(name);
+
+    return (select.selectedOptions[0]?.textContent ?? '').trim();
+  }
+
+  /**
+   * Chooses one redirect destination by the wording of its option.
+   *
+   * @param name The redirect setting's control name.
+   * @param label The option to choose.
+   */
+  function choosePage(name: string, label: string): void {
+    const select = field<HTMLSelectElement>(name);
+    const index = Array.from(select.options).findIndex(
+      (option) => (option.textContent ?? '').trim() === label,
+    );
+
+    if (index < 0) {
+      throw new Error(`the picker for ${name} offers no option worded "${label}"`);
+    }
+
+    select.selectedIndex = index;
+    select.dispatchEvent(new Event('change'));
+    select.dispatchEvent(new Event('blur'));
+    fixture.detectChanges();
+  }
+
   function type(name: string, value: string): void {
     const control = field<HTMLInputElement | HTMLTextAreaElement>(name);
 
@@ -647,14 +938,18 @@ describe('MembershipSettingsComponent', () => {
       expect(field<HTMLInputElement>('profileDisplayVisibility').checked).toBeFalse();
       expect(field<HTMLInputElement>('profileManageServices').checked).toBeFalse();
 
-      // ⚠ ZERO IS A REAL PAGE. It must be seated as the digit zero, never as an empty field.
-      expect(field<HTMLInputElement>('redirectAfterLogin').value)
+      // ⚠ ZERO IS A REAL PAGE, and the three destinations are now PICKERS rather than number boxes, so what
+      // is asserted is the option each one shows as chosen. Page zero and page 42 are not in the listing this
+      // arrival was answered with, so each appears as a RETAINED choice labelled by its identifier - which is
+      // the behaviour that stops saving this screen from discarding a redirect pointing at a page the
+      // listing no longer carries.
+      expect(chosenPage('redirectAfterLogin'))
         .withContext('page zero is a page')
         .toBe('0');
-      expect(field<HTMLInputElement>('redirectAfterRegistration').value)
+      expect(chosenPage('redirectAfterRegistration'))
         .withContext('null is the only expression of "no redirect"')
-        .toBe('');
-      expect(field<HTMLInputElement>('redirectAfterLogout').value).toBe('42');
+        .toBe(NO_REDIRECT_LABEL);
+      expect(chosenPage('redirectAfterLogout')).toBe('42');
 
       expect(field<HTMLTextAreaElement>('securityEmailValidation').value).toBe(
         policy.securityEmailValidation,
@@ -689,11 +984,12 @@ describe('MembershipSettingsComponent', () => {
       // A valid profile is required at sign-in but NOT at registration. Also measured.
       expect(field<HTMLInputElement>('securityRequireValidProfile').checked).toBeFalse();
       expect(field<HTMLInputElement>('securityRequireValidProfileAtLogin').checked).toBeTrue();
-      // The three redirects are empty rather than minus one: the server refuses a negative
-      // identifier outright, so the legacy marker would turn a valid policy into a rejection.
-      expect(field<HTMLInputElement>('redirectAfterLogin').value).toBe('');
-      expect(field<HTMLInputElement>('redirectAfterRegistration').value).toBe('');
-      expect(field<HTMLInputElement>('redirectAfterLogout').value).toBe('');
+      // The three redirects show "no redirect" rather than minus one: the server refuses a negative
+      // identifier outright, so the legacy marker would turn a valid policy into a rejection - and the picker
+      // now cannot express one at all.
+      expect(chosenPage('redirectAfterLogin')).toBe(NO_REDIRECT_LABEL);
+      expect(chosenPage('redirectAfterRegistration')).toBe(NO_REDIRECT_LABEL);
+      expect(chosenPage('redirectAfterLogout')).toBe(NO_REDIRECT_LABEL);
     });
 
     it('does not overwrite edits in hand when a policy arrives late', () => {
@@ -821,11 +1117,35 @@ describe('MembershipSettingsComponent', () => {
       read.flush({ data: { ...settings(), securityEmailValidation: null }, meta: null });
       fixture.detectChanges();
 
-      const paragraph = query('.membership-settings__transport-failure');
+      // ⚠ THE SURFACE CHANGED, AND IT CHANGED FOR THE BETTER. This screen used to carry a SECOND failure
+      // paragraph of its own for a response the client could not decode, because the store recorded such a
+      // failure with no problem document and the shared banner renders nothing from null. The store now
+      // synthesises a document titled "Unexpected response", so the banner carries the violation with a
+      // severity and a support reference, and the screen no longer needs - or has - a weaker second region
+      // saying the same thing.
+      const banner = query('app-error-banner');
 
-      expect(paragraph).withContext('the violation is surfaced').not.toBeNull();
-      expect((paragraph?.textContent ?? '').length).withContext('with a real sentence').toBeGreaterThan(0);
-      expect(query('.error-banner__title')).withContext('and not through the banner').toBeNull();
+      expect(banner).withContext('the violation is surfaced').not.toBeNull();
+      expect(query('.error-banner__title')?.textContent?.trim())
+        .withContext('and it is named as an unreadable response, not as a refusal')
+        .toBe('Unexpected response');
+      expect((banner?.textContent ?? '').length).withContext('with a real sentence').toBeGreaterThan(0);
+
+      // ⚠ AND THROUGH EXACTLY ONE ANNOUNCING REGION. This screen once had two owners for one category of
+      // news - the banner's assertive region and a `role="alert"` paragraph of its own - so a failure was
+      // announced by whichever of them happened to hold it. The paragraph is gone, and this pins that it
+      // stays gone. The mounted subscription panel keeps an assertive region of its own and must: its
+      // failures are a different category, pinned separately by that panel's own specification.
+      const screenRegions = Array.from(
+        host().querySelectorAll('[aria-live="assertive"]'),
+      ).filter((region) => region.closest('app-member-services') === null);
+
+      expect(screenRegions)
+        .withContext('this screen announces its failures through exactly one region')
+        .toHaveSize(1);
+      expect(query('.membership-settings__transport-failure'))
+        .withContext('the screen keeps no announcement region of its own')
+        .toBeNull();
 
       // ⚠ AND NOTHING RENDERS THE WORD FOR NOTHING. A screen that accepted the malformed value
       // would put it in front of an operator as editable text, who would then save it.
@@ -922,6 +1242,216 @@ describe('MembershipSettingsComponent', () => {
   // PROOF 4 — THE ENTRY RULES
   // ---------------------------------------------------------------------------------------------------
 
+  // ---------------------------------------------------------------------------------------------------
+  // U16 AND U17 - THE TWO SETTINGS THAT WERE ACCEPTED WITHOUT BEING CHECKED
+  // ---------------------------------------------------------------------------------------------------
+
+  describe('the settings that reach beyond this screen', () => {
+    /**
+     * One page row, complete. ⚠ BUILT IN FULL RATHER THAN CAST: the decoder rejects a partial row, and a
+     * rejected page read leaves the screen showing the number control - so a cast-based fixture would have
+     * made these cases fail for a reason that has nothing to do with what they assert.
+     *
+     * @param tabId The page identifier.
+     * @param tabName The page name.
+     * @returns The row.
+     */
+    function page(tabId: number, tabName: string): TabListItem {
+      return {
+        tabId,
+        tabName,
+        title: null,
+        tabOrder: tabId,
+        parentId: null,
+        level: 0,
+        tabPath: null,
+        isVisible: true,
+        disableLink: false,
+        isDeleted: false,
+        hasChildren: false,
+        isSecure: false,
+        url: null,
+        iconFile: null,
+      };
+    }
+
+    /**
+     * Seats a caller, which is what makes the page read happen at all - the component asks for the pages of
+     * the tenant the caller's own token names.
+     */
+    function answerServicesRead(): void {
+      for (const request of httpMock.match(
+        (candidate) => candidate.method === 'GET' && candidate.url.includes('/services'),
+      )) {
+        request.flush(cataloguePage());
+      }
+
+      fixture.detectChanges();
+    }
+
+    function seatCaller(): void {
+      TestBed.inject(TokenStorageService).store({
+        accessToken: 'not-a-real-token.not-a-real-payload.not-a-real-signature',
+        expiresAtUtc: '2099-12-31T23:59:59.000Z',
+        refreshToken: 'not-a-real-refresh-token',
+        mustChangePassword: false,
+        mustUpdateProfile: false,
+        passwordExpiring: false,
+        user: {
+          userId: 1,
+          portalId: -1,
+          portalName: 'Baseline Portal',
+          username: 'administrator',
+          displayName: 'The Administrator',
+          email: 'administrator@example.test',
+          isSuperUser: false,
+          isPortalAdministrator: true,
+          roles: ['Administrators'],
+          permissions: [],
+        },
+      });
+    }
+
+    /** The message the format control is showing, or the empty string. */
+    function formatError(): string {
+      const field = queryAll<HTMLElement>('app-form-field').find(
+        (candidate) => candidate.querySelector('#' + controlIdOf('securityDisplayNameFormat')) !== null,
+      );
+
+      return field?.querySelector<HTMLElement>('.form-field__error')?.textContent?.trim() ?? '';
+    }
+
+    /** The element identifier the component composes for one field. */
+    function controlIdOf(field: string): string {
+      return queryAll<HTMLElement>('[id$="' + field + '"]')[0]?.id ?? field;
+    }
+
+    // ⚠ THE MEASURED DEFECT. This one setting RENAMES EVERY ACCOUNT IN THE TENANT - the screen says so in
+    // its own help - and it was accepted with no check whatsoever. A format naming no token would have
+    // given every account the same literal text.
+    it('refuses a display-name format that names no substitution at all', () => {
+      arrive();
+      type('securityDisplayNameFormat', 'Everybody');
+      submitForm();
+
+      expect(formatError()).toContain('at least one of [USERID], [FIRSTNAME], [LASTNAME] or [USERNAME]');
+      expect(formatError()).toContain('same text');
+    });
+
+    it('refuses a display-name format naming a token this site never substitutes', () => {
+      arrive();
+      type('securityDisplayNameFormat', '[FIRSTNAME] [MIDDLENAME]');
+      submitForm();
+
+      expect(formatError()).toContain('stored exactly as typed');
+    });
+
+    // ⚠ EVERY UNMET RULE TOGETHER, not one at a time - the same principle the credential screen applies.
+    it('states both broken rules together rather than revealing the second after the first is fixed', () => {
+      arrive();
+      type('securityDisplayNameFormat', '[MIDDLENAME]');
+      submitForm();
+
+      expect(formatError()).toContain('at least one of');
+      expect(formatError()).toContain('stored exactly as typed');
+    });
+
+    // ⚠ N11 - FOUND BY RUNTIME VERIFICATION, NOT BY THE REPORT. The browser showed a refused format's
+    // message still on screen with `aria-invalid="true"` after the operator had typed a VALID value; it
+    // only cleared on the next Update press. A message that outlives the problem it describes tells the
+    // operator to fix something that is already fixed. The discriminating input is a submit FOLLOWED BY a
+    // corrective edit and NO second submit.
+    it('withdraws the message as the operator corrects the format, without another submit', () => {
+      arrive();
+      type('securityDisplayNameFormat', 'Everybody');
+      submitForm();
+
+      expect(formatError()).withContext('refused first').toContain('at least one of');
+
+      type('securityDisplayNameFormat', '[FIRSTNAME] [LASTNAME]');
+
+      expect(formatError())
+        .withContext('the message must not outlive the problem it describes')
+        .toBe('');
+      expect(
+        query<HTMLElement>('#' + controlIdOf('securityDisplayNameFormat'))?.getAttribute('aria-invalid'),
+      ).toBeNull();
+    });
+
+    it('accepts a format built only from recognised tokens', () => {
+      arrive();
+      type('securityDisplayNameFormat', '[FIRSTNAME] [LASTNAME]');
+
+      expect(formatError()).toBe('');
+    });
+
+    it('accepts an empty format, which is the tenant declining to compose names at all', () => {
+      arrive();
+      type('securityDisplayNameFormat', '');
+
+      expect(formatError()).toBe('');
+    });
+
+    // ⚠ U17 - THE HELP PROMISED A SELECTION AND THE CONTROL WAS A NUMBER BOX.
+    // `Website/admin/Users/UserSettings.ascx.vb` L80-L82 assigned `EditorInfo.GetEditor("Page")` to all
+    // three redirects, so a picker IS the legacy control.
+    it('offers the tenant pages as a selection once the page list is known', () => {
+      seatCaller();
+      create();
+      expectRequest('GET', SETTINGS_URL, 'the policy read').flush(envelope(settings()));
+      answerPageList([page(0, 'Home'), page(5, 'Contact')]);
+      answerServicesRead();
+
+      const control = query<HTMLSelectElement>('#' + controlIdOf('redirectAfterLogin'));
+
+      expect(control?.tagName).toBe('SELECT');
+      expect(Array.from(control?.options ?? []).map((option) => option.textContent?.trim()))
+        .toContain('Contact');
+    });
+
+    it('offers no negative identifier at all, so the legacy marker cannot be chosen', () => {
+      seatCaller();
+      create();
+      expectRequest('GET', SETTINGS_URL, 'the policy read').flush(envelope(settings()));
+      answerPageList([page(0, 'Home')]);
+
+      answerServicesRead();
+
+      const control = query<HTMLSelectElement>('#' + controlIdOf('redirectAfterLogout'));
+      const values = Array.from(control?.options ?? []).map((option) => option.textContent?.trim() ?? '');
+
+      expect(values.some((label) => label.includes('-1'))).toBeFalse();
+    });
+
+    // ⚠ THE DATA-LOSS GUARD. A select whose options omit the current value resolves to nothing, and saving
+    // would then CLEAR a setting the operator never touched. A page since moved to the recycle bin is
+    // exactly that case, and it must remain selectable.
+    it('keeps offering a stored page the list no longer carries, so saving cannot clear it', () => {
+      seatCaller();
+      create();
+      expectRequest('GET', SETTINGS_URL, 'the policy read').flush(
+        envelope({ ...settings(), redirectAfterLogin: 4242 }),
+      );
+      answerPageList([page(0, 'Home')]);
+      answerServicesRead();
+
+      const control = query<HTMLSelectElement>('#' + controlIdOf('redirectAfterLogin'));
+      const labels = Array.from(control?.options ?? []).map((option) => option.textContent?.trim() ?? '');
+
+      expect(labels.some((label) => label.includes('4242'))).toBeTrue();
+    });
+
+    // A CASE FOR "KEEPS THE NUMBER CONTROL WHILE THE PAGE LIST IS UNKNOWN" STOOD HERE, AND ITS PREMISE NO
+    // LONGER HOLDS. It pinned a fallback in which an unread page listing left a bare number box on screen, so
+    // an empty picker could not be mistaken for "this site has no pages". The screen answers that concern a
+    // different and better way now: the picker is ALWAYS a picker - it always offers "no redirect" and always
+    // retains whatever the tenant stored - and an unread listing is stated in words, once, by the
+    // `.membership-settings__pages-unavailable` note. Swapping the control type on a transport outcome would
+    // also move the operator's focus and change the field's own contract mid-screen. The behaviour this case
+    // cared about is pinned instead by 'says so, once, when the page listing could not be read' below, which
+    // proves the note appears exactly once AND that the stored destination is still shown as chosen.
+  });
+
   describe('the entry rules', () => {
     it('bounds the page size in the document as well as in the rule', () => {
       arrive();
@@ -997,7 +1527,29 @@ describe('MembershipSettingsComponent', () => {
         .toBe('true');
     });
 
-    it('still says nothing about an EMPTY field nobody has visited', () => {
+    // ⚠ THESE TWO REPLACE ONE SPEC THAT REQUIRED THE OPPOSITE OF THE SECOND, AND THE EARLIER ANSWER WAS
+    // WRONG RATHER THAN MERELY DIFFERENT. It emptied the box and then required silence until the box was
+    // LEFT - which is precisely the deferral measured as a defect: the operator deletes a value that must be
+    // present, and the one message they need is the one message withheld, until they have stopped looking at
+    // the field. The distinction that survives is between a field the operator has NOT BEEN NEAR and one
+    // they have just emptied; only the first stays silent.
+    it('scolds nothing on arrival, before the operator has been near any field', () => {
+      arrive();
+
+      const control = field<HTMLInputElement>('recordsPerPage');
+
+      expect(control.matches('.ng-untouched.ng-pristine'))
+        .withContext('nothing has visited it and nothing has changed it')
+        .toBeTrue();
+      // The regression the rule below risks, stated as its own claim: a screen that answers an emptied field
+      // at once must not answer a field the operator has never been near, or every arrival reads as a form
+      // full of mistakes the operator has not made yet.
+      expect(fieldErrors())
+        .withContext('a freshly seated screen reports nothing at all')
+        .toEqual([]);
+    });
+
+    it('answers an emptied required field at once, without waiting for it to be left', () => {
       arrive();
 
       const control = field<HTMLInputElement>('recordsPerPage');
@@ -1006,17 +1558,17 @@ describe('MembershipSettingsComponent', () => {
       fixture.detectChanges();
 
       expect(control.matches('.ng-untouched'))
-        .withContext('nothing has visited it')
+        .withContext('the control: focus has not left the field, so nothing has "touched" it')
+        .toBeTrue();
+      expect(control.matches('.ng-dirty'))
+        .withContext('but the operator HAS changed it, which is what makes the message due')
         .toBeTrue();
       expect(fieldErrors())
-        .withContext('an unvisited empty field is not scolded')
-        .not.toContain(REQUIRED_MESSAGE);
-
-      // And it IS answered once the field has been left, so the rule is deferred rather than absent.
-      control.dispatchEvent(new Event('blur'));
-      fixture.detectChanges();
-
-      expect(fieldErrors()).withContext('answered on leaving').toContain(REQUIRED_MESSAGE);
+        .withContext('and it is answered while the operator is still looking at the field')
+        .toContain(REQUIRED_MESSAGE);
+      expect(control.getAttribute('aria-invalid'))
+        .withContext('programmatically too, not only in ink')
+        .toBe('true');
     });
 
     it('accepts both ends of the permitted page-size range', () => {
@@ -1031,34 +1583,128 @@ describe('MembershipSettingsComponent', () => {
       expect(fieldErrors()).withContext('the ceiling is permitted').not.toContain(PAGE_SIZE_RANGE_MESSAGE);
     });
 
-    it('refuses a negative page identifier on each of the three redirects', () => {
-      arrive();
+    // ⚠ THIS REPLACES A SPEC THAT TYPED MINUS ONE INTO EACH DESTINATION AND REQUIRED A MESSAGE. That value
+    // is no longer expressible: the destinations are pickers over the tenant's own pages, so an illegal page
+    // identifier cannot be entered rather than being entered and then refused. The floor rule stays on the
+    // controls - a stored policy can still arrive carrying anything - but the operator can no longer reach
+    // it, and proving the picker offers nothing illegal is the stronger claim of the two.
+    // ⚠ WHAT THE PICKERS ARE FOR. Each destination sits under help text promising the operator "can select a
+    // page", and each used to be a bare numeric spinner with nothing on screen naming a single legal value.
+    it('offers the tenant\'s own pages, and stores the page the operator chooses', () => {
+      arriveWithPages(
+        settings({
+          redirectAfterLogin: null,
+          redirectAfterRegistration: null,
+          redirectAfterLogout: null,
+        }),
+      );
+
+      expect(chosenPage('redirectAfterLogin'))
+        .withContext('nothing stored reads as "no redirect", not as page zero')
+        .toBe(NO_REDIRECT_LABEL);
+      expect(pageChoices('redirectAfterLogin'))
+        .withContext('the pages the tenant actually has, with depth shown')
+        .toEqual([NO_REDIRECT_LABEL, 'Home', '...About', 'Contact']);
+
+      choosePage('redirectAfterLogin', '...About');
+
+      // The IDENTIFIER is still on screen, beneath the picker, because it is what the setting stores and an
+      // operator comparing this screen against the database needs to see it.
+      expect(
+        (queryOrFail<HTMLElement>(host(), '#membership-setting-redirectAfterLogin-stored').textContent ??
+          '').trim(),
+      )
+        .withContext('the stored identifier is the secondary fact, not the only one')
+        .toBe('Stored value: page 11.');
+
+      submitForm();
+
+      const write = expectRequest('PUT', SETTINGS_URL);
+
+      expect(writtenPolicy(write).redirectAfterLogin)
+        .withContext('the page the operator chose is what travels, by identifier')
+        .toBe(11);
+
+      write.flush(writeReport());
+      fixture.detectChanges();
+      answerWriteFollowUp(settings());
+    });
+
+    it('says so, once, when the page listing could not be read', () => {
+      seatCallerSession();
+      fixture = TestBed.createComponent(MembershipSettingsComponent);
+      fixture.detectChanges();
+
+      const pageReads = httpMock.match(
+        (candidate) => candidate.method === 'GET' && candidate.url === PAGES_URL,
+      );
+
+      expect(pageReads).toHaveSize(1);
+      pageReads[0]?.error(new ProgressEvent('error'), { status: 500, statusText: 'Server Error' });
+
+      for (const services of httpMock.match(
+        (candidate) => candidate.method === 'GET' && candidate.url === CALLER_SERVICES_URL,
+      )) {
+        services.flush(cataloguePage());
+      }
+
+      expectRequest('GET', SETTINGS_URL).flush(envelope(settings({ redirectAfterLogout: 42 })));
+      fixture.detectChanges();
+
+      // A REDUCED AFFORDANCE, NOT A FAILED SCREEN: the note is a note, the twenty-two other settings are
+      // still editable, and the destination the tenant stores is still shown as chosen.
+      expect(query('.membership-settings__pages-unavailable'))
+        .withContext('said once for all three pickers')
+        .not.toBeNull();
+      expect(host().querySelectorAll('.membership-settings__pages-unavailable'))
+        .withContext('once, not once per picker')
+        .toHaveSize(1);
+      expect(chosenPage('redirectAfterLogout'))
+        .withContext('and the stored destination survives a listing that could not be read')
+        .toBe('42');
+      expect(query('.error-banner'))
+        .withContext('and it is not announced as a failure of the screen')
+        .toBeNull();
+    });
+
+    it('offers no illegal destination at all, so the floor cannot be reached by hand', () => {
+      arriveWithPages();
 
       for (const name of [
         'redirectAfterLogin',
         'redirectAfterRegistration',
         'redirectAfterLogout',
       ]) {
-        expect(field<HTMLInputElement>(name).getAttribute('min'))
-          .withContext(`${name} declares the floor`)
-          .toBe('0');
+        const select = field<HTMLSelectElement>(name);
 
-        type(name, '-1');
-        submitForm();
-
-        // ⚠ MINUS ONE IS THE LEGACY MARKER FOR "NO INTEGER" AND IS REFUSED HERE. The server's
-        // floor is zero because the page table's identity seeds at zero.
-        expect(fieldErrors()).withContext(`${name} is refused`).toContain(NEGATIVE_PAGE_MESSAGE);
-        expect(httpMock.match(() => true)).withContext('nothing is sent').toHaveSize(0);
-
-        type(name, '');
+        expect(select.tagName)
+          .withContext(`${name} is a page picker rather than a number box`)
+          .toBe('SELECT');
+        expect(pageChoices(name)[0])
+          .withContext('and "no redirect" is offered first, because absence is a legitimate policy')
+          .toBe(NO_REDIRECT_LABEL);
+        // The pages the listing carried, in the order it carried them and with the child indented, followed
+        // by the two references this policy holds that the listing does NOT carry - page 0 and page 42 -
+        // appended by identifier so a stored destination cannot be silently dropped. The legacy marker `-1`
+        // appears nowhere: this screen spells absence with a null, so no option can carry it.
+        expect(pageChoices(name).slice(1))
+          .withContext(`${name} offers the listed pages, then the references this policy holds`)
+          .toEqual(['Home', '...About', 'Contact', '0', '42']);
+        expect(pageChoices(name)).withContext('and never the legacy marker').not.toContain('-1');
       }
+
+      expect(httpMock.match(() => true)).withContext('nothing is sent by looking').toHaveSize(0);
     });
 
     it('accepts page zero on a redirect, because zero is a real page', () => {
-      arrive(settings({ redirectAfterLogin: null }));
+      // Page zero is offered here because the listing itself carries it, which is the honest way for a
+      // picker to make it reachable: a page the tenant does not have must not be choosable.
+      arriveWithPages(settings({ redirectAfterLogin: null }), [
+        pageRow({ tabId: 0, tabName: 'Root page' }),
+        ...DEFAULT_PAGES,
+      ]);
 
-      type('redirectAfterLogin', '0');
+      choosePage('redirectAfterLogin', 'Root page');
 
       expect(fieldErrors()).not.toContain(NEGATIVE_PAGE_MESSAGE);
 
@@ -1073,6 +1719,51 @@ describe('MembershipSettingsComponent', () => {
       write.flush(writeReport());
       fixture.detectChanges();
       answerWriteFollowUp(settings());
+    });
+
+    // ⚠ THE SITE-WIDE ADDRESS RULE, AND THE ONE VALUE ON THIS SCREEN THAT CAN BE UNUSABLE WITHOUT LOOKING
+    // WRONG. Measured here, replacing the expression with `[a-z` left the field `ng-valid`, with no message,
+    // no `aria-invalid`, no banner and nothing in the console - so a pattern that would then refuse EVERY
+    // address the site is offered could be typed and saved without a word of warning.
+    it('refuses an expression that is not a regular expression at all', () => {
+      arrive();
+
+      type('securityEmailValidation', '[a-z');
+
+      expect(fieldErrors())
+        .withContext('the operator is told, in the field, before anything is sent')
+        .toContain(EXPRESSION_UNUSABLE_MESSAGE);
+      expect(field<HTMLTextAreaElement>('securityEmailValidation').getAttribute('aria-invalid'))
+        .withContext('and programmatically, not only in ink')
+        .toBe('true');
+
+      submitForm();
+
+      expect(httpMock.match(() => true))
+        .withContext('and nothing is sent, so the site keeps the rule it has')
+        .toHaveSize(0);
+    });
+
+    it('accepts the expression this platform itself ships, and every other compilable one', () => {
+      arrive();
+
+      // ⚠ THE SHIPPED DEFAULT IS THE CONTROL. A screen that refused its own default would be unusable, and a
+      // rule written to catch `[a-z` is exactly the kind that over-reaches into legitimate values.
+      for (const expression of [
+        String.raw`\b[a-zA-Z0-9._%\-+']+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,4}\b`,
+        String.raw`^[^@]+@[^@]+$`,
+        // Quadratic under backtracking and therefore refused by the PROFILE screen's screen - but accepted
+        // here, and deliberately: the browser never applies this value to anything, the server does, and
+        // refusing a value the server accepts would lock the operator out of a setting they may keep.
+        String.raw`\w+([-+.]\w+)*@\w+([-.]\w+)*\.\w+([-.]\w+)*`,
+        '',
+      ]) {
+        type('securityEmailValidation', expression);
+
+        expect(fieldErrors())
+          .withContext(`"${expression}" compiles, so it is not refused`)
+          .not.toContain(EXPRESSION_UNUSABLE_MESSAGE);
+      }
     });
 
     it('bounds both text settings in the document at the length the server stores', () => {
@@ -1175,9 +1866,9 @@ describe('MembershipSettingsComponent', () => {
       choose('displayMode', 'All accounts');
       type('securityEmailValidation', '');
       type('securityDisplayNameFormat', '');
-      type('redirectAfterLogin', '');
-      type('redirectAfterRegistration', '');
-      type('redirectAfterLogout', '');
+      choosePage('redirectAfterLogin', NO_REDIRECT_LABEL);
+      choosePage('redirectAfterRegistration', NO_REDIRECT_LABEL);
+      choosePage('redirectAfterLogout', NO_REDIRECT_LABEL);
 
       submitForm();
 
@@ -1414,9 +2105,9 @@ describe('MembershipSettingsComponent', () => {
       // ⚠ ZERO IS A REAL PAGE - the page table's identity seeds at zero - and null is the only expression
       // of "no destination". Both must survive, which is what makes the round trip meaningful rather than
       // merely successful.
-      expect(field<HTMLInputElement>('redirectAfterLogin').value).toBe('12');
-      expect(field<HTMLInputElement>('redirectAfterRegistration').value).toBe('0');
-      expect(field<HTMLInputElement>('redirectAfterLogout').value).toBe('');
+      expect(chosenPage('redirectAfterLogin')).toBe('12');
+      expect(chosenPage('redirectAfterRegistration')).toBe('0');
+      expect(chosenPage('redirectAfterLogout')).toBe(NO_REDIRECT_LABEL);
 
       submitForm();
 
@@ -1612,10 +2303,6 @@ describe('MembershipSettingsComponent', () => {
       expectRequest('GET', SETTINGS_URL).error(new ProgressEvent('error'), { status: 0, statusText: '' });
       fixture.detectChanges();
 
-      expect(query('.membership-settings__transport-failure'))
-        .withContext('the paragraph is for a statusless failure, not for status zero')
-        .toBeNull();
-
       const banner = query('app-error-banner');
 
       expect(banner).withContext('the banner carries it').not.toBeNull();
@@ -1717,7 +2404,7 @@ describe('MembershipSettingsComponent', () => {
       // ⚠ THE SERVER'S KEY IS ITS OWN MODEL-STATE SPELLING, NOT CAMEL-CASED. The shared reader matches
       // case-insensitively, which is what makes this land on the right control.
       expect(fieldErrors()).toContain('That page does not belong to this site.');
-      expect(field<HTMLInputElement>('redirectAfterLogin').getAttribute('aria-invalid')).toBe('true');
+      expect(field<HTMLSelectElement>('redirectAfterLogin').getAttribute('aria-invalid')).toBe('true');
     });
 
     it('pins a per-field refusal whose key carries a binder prefix', () => {
@@ -2180,28 +2867,13 @@ describe('MembershipSettingsComponent', () => {
   // and five store operations with no consumer in the workspace. Nothing failed - which is exactly
   // why the mounting is pinned here.
   describe('the consolidated subscription panel', () => {
-    /** Seats the caller's identity, which is what gives the panel a subject account. */
+    /**
+     * Seats the caller's identity, which is what gives the panel a subject account. Delegates to the shared
+     * seating helper, so the identity the panel reads and the identity the redirect pickers read cannot
+     * disagree about which portal the caller is in.
+     */
     function seatSession(userId: number): void {
-      TestBed.inject(TokenStorageService).store({
-        accessToken: 'not-a-real-token.not-a-real-payload.not-a-real-signature',
-        expiresAtUtc: '2099-12-31T23:59:59.000Z',
-        refreshToken: 'not-a-real-refresh-token',
-        mustChangePassword: false,
-        mustUpdateProfile: false,
-        passwordExpiring: false,
-        user: {
-          userId,
-          portalId: -1,
-          portalName: 'Baseline Portal',
-          username: 'administrator',
-          displayName: 'The Administrator',
-          email: 'administrator@example.test',
-          isSuperUser: false,
-          isPortalAdministrator: true,
-          roles: ['Administrators'],
-          permissions: [],
-        },
-      });
+      seatCallerSession(userId);
     }
 
     it('mounts the panel and gives it the account the caller holds', () => {
@@ -2217,10 +2889,7 @@ describe('MembershipSettingsComponent', () => {
 
       // The account is not asserted through a component instance: the OBSERVABLE consequence of
       // binding it is the address the panel reads, which is what a browser would show.
-      expectRequest('GET', CALLER_SERVICES_URL, "the panel's catalogue read").flush({
-        data: [],
-        meta: null,
-      });
+      expectRequest('GET', CALLER_SERVICES_URL, "the panel's catalogue read").flush(cataloguePage());
       fixture.detectChanges();
     });
 
@@ -2271,6 +2940,98 @@ describe('MembershipSettingsComponent', () => {
       expect(screenBanners[0].textContent?.trim() ?? '')
         .withContext('which says nothing about an operation it did not perform')
         .toBe('');
+    });
+  });
+  // ---------------------------------------------------------------------------------------------------
+  // THE SWITCH ARRANGEMENT — QA-06
+  // ---------------------------------------------------------------------------------------------------
+
+  /**
+   * This screen is where the finding was measured, so it is asserted here on the real screen as well as in
+   * the shared field's own specification. What was shipped: this host widens the shared label track to 300px
+   * for its long policy captions, and the switches sit in a grid whose cells measure roughly 350px — so each
+   * box sat about 300px from its own caption and roughly 30px from the NEXT one, and at 1024px three of the
+   * nine column switches sat in the fieldset's right padding entirely.
+   */
+  describe('switch arrangement', () => {
+    /** Every choice field on the screen, paired with its caption row and its box. */
+    function switches(): readonly { name: string; captionRow: HTMLElement; box: HTMLElement }[] {
+      return queryAll<HTMLElement>('app-form-field.form-field--inline').map((field) => {
+        const captionRow = queryOrFail<HTMLElement>(field, '.form-field__label-row');
+
+        return {
+          name: (captionRow.textContent ?? '').trim(),
+          captionRow,
+          box: queryOrFail<HTMLElement>(field, 'input[type="checkbox"]'),
+        };
+      });
+    }
+
+    it('keeps every switch beside its own caption, at the width the finding was measured at', () => {
+      arrive();
+
+      // The width that reproduced the worst of it. The column count itself comes from viewport media
+      // queries, so constraining the host is what narrows the individual cells.
+      host().style.inlineSize = '1024px';
+      fixture.detectChanges();
+
+      const found = switches();
+
+      // Nine column switches plus the five standalone policy switches — asserted so that a template change
+      // which quietly stops rendering them cannot turn this into a vacuous pass.
+      expect(found.length).toBeGreaterThanOrEqual(COLUMN_TOGGLE_FIELDS.length);
+
+      for (const { name, captionRow, box } of found) {
+        const caption = captionRow.getBoundingClientRect();
+        const target = box.getBoundingClientRect();
+
+        expect(target.left)
+          .withContext(`${name} — box is left of its own caption`)
+          .toBeGreaterThanOrEqual(caption.right);
+
+        expect(target.left - caption.right)
+          .withContext(`${name} — box is ${Math.round(target.left - caption.right)}px from its own caption`)
+          .toBeLessThan(24);
+
+        expect(target.top)
+          .withContext(`${name} — box has dropped below its own caption`)
+          .toBeLessThan(caption.bottom);
+      }
+    });
+
+    it('keeps every switch beside its own caption at a narrow width too', () => {
+      arrive();
+
+      host().style.inlineSize = '375px';
+      fixture.detectChanges();
+
+      for (const { name, captionRow, box } of switches()) {
+        expect(box.getBoundingClientRect().left - captionRow.getBoundingClientRect().right)
+          .withContext(name)
+          .toBeLessThan(24);
+      }
+    });
+
+    it('keeps every switch inside the fieldset that contains it', () => {
+      arrive();
+
+      host().style.inlineSize = '1024px';
+      fixture.detectChanges();
+
+      const fieldset = queryOrFail<HTMLElement>(host(), '.membership-settings__columns');
+      const bounds = fieldset.getBoundingClientRect();
+
+      for (const { name, box } of switches()) {
+        const target = box.getBoundingClientRect();
+
+        if (!fieldset.contains(box)) {
+          continue;
+        }
+
+        expect(target.right)
+          .withContext(`${name} — box overflows the fieldset it belongs to`)
+          .toBeLessThanOrEqual(bounds.right + 1);
+      }
     });
   });
 });

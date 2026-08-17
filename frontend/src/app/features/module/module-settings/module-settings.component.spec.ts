@@ -1,4 +1,5 @@
 import { provideHttpClient } from '@angular/common/http';
+import { ListReturnStore } from '../../../core/state/list-return.store';
 import {
   HttpTestingController,
   provideHttpClientTesting,
@@ -29,6 +30,30 @@ import type { ModuleSettingsSeed } from './module-settings.component';
 // endpoint is declared under the administrator policy and would otherwise answer 403.
 
 /** Builds a caller snapshot carrying exactly the standing each case needs. */
+/** The page size the whole-hierarchy reader asks for. Mirrors `WHOLE_COLLECTION_PAGE_SIZE` in `TabService`. */
+const TAB_PAGE_SIZE = 100;
+
+/**
+ * The PAGED wire envelope the portal-scoped page listing answers with. MIGRATION: the hierarchy used to
+ * arrive in one unbounded response and is now read a bounded page at a time, so its body carries populated
+ * metadata where the single-payload envelope carried none. The picker this screen renders is unchanged: it
+ * still shows every page of the tenant, assembled from bounded pages by the transport.
+ *
+ * @param rows The rows of this page.
+ * @returns The body to flush.
+ */
+function tabPage(rows: readonly unknown[]): object {
+  return {
+    items: rows,
+    meta: {
+      totalCount: rows.length,
+      pageIndex: 0,
+      pageSize: TAB_PAGE_SIZE,
+      totalPages: rows.length === 0 ? 0 : Math.ceil(rows.length / TAB_PAGE_SIZE),
+    },
+  };
+}
+
 function userWith(administersPortal: boolean): CurrentUser {
   return {
     userId: 3,
@@ -60,9 +85,16 @@ function sessionWith(administersPortal: boolean): AuthSession {
 }
 
 const UPDATE_CONTRACT_MEMBERS: readonly string[] = [
+  // The three appearance columns the legacy screen administered - `modulesettings.ascx:L120-L139` declares
+  // them and `ModuleSettings.ascx.vb:L345-L347` saves them. They were absent from this list, and from the
+  // contract, while `dbo.TabModules` held a value for each: the screen told the operator the module stored
+  // no settings of its own and offered no way to read or change any of the three.
+  'alignment',
   'allTabs',
   'applyToAllModules',
+  'border',
   'cacheTime',
+  'color',
   'displayTitle',
   'endDate',
   'footer',
@@ -106,8 +138,15 @@ function moduleOf(overrides: Partial<ModuleSettingsSeed> = {}): ModuleSettingsSe
     endDate: '2024-12-31T00:00:00Z',
     cacheTime: 120,
     iconFile: 'module.gif',
+    alignment: null,
+    color: null,
+    border: null,
     visibility: MODULE_VISIBILITY.minimized,
     displayTitle: false,
+
+    // An ordinary module. `true` would withhold the whole form, because an administrative module's settings
+    // are administered by the screen that owns them rather than here.
+    isAdmin: false,
     ...overrides,
   };
 }
@@ -140,12 +179,16 @@ function moduleDetailOf(overrides: Partial<ModuleDetail> = {}): ModuleDetail {
     moduleOrder: 0,
     cacheTime: 0,
     iconFile: '',
+    alignment: null,
+    color: null,
+    border: null,
     visibility: MODULE_VISIBILITY.maximized,
     displayTitle: false,
     friendlyName: 'Announcements',
     moduleName: 'DNN_Announcements',
     description: null,
     version: '01.00.00',
+    isAdmin: false,
     ...overrides,
   };
 }
@@ -213,6 +256,12 @@ function settingsBagOf(overrides: Partial<ModuleSettingsBag> = {}): ModuleSettin
     ...overrides,
   };
 }
+
+/** `ControlTitle_module.Text` - the legacy control title, and this screen's default heading. */
+const DEFAULT_HEADING = 'Module';
+
+/** `ModuleSettings.Text` - the wording the FIRST SECTION head carries. */
+const FIRST_SECTION_HEADING = 'Module Settings';
 
 describe('ModuleSettingsComponent', () => {
   let fixture: ComponentFixture<ModuleSettingsComponent>;
@@ -556,8 +605,10 @@ describe('ModuleSettingsComponent', () => {
         fixture.detectChanges();
       }).not.toThrow();
 
-      // The heading must stay non-blank: the shared page header refuses a blank title outright.
-      expect(component.heading).toBe('Module Settings');
+      // The heading must stay non-blank: the shared page header refuses a blank title outright. The default
+      // is `ControlTitle_module.Text`, NOT `ModuleSettings.Text`, because the latter is what the first
+      // section head below shows and a page whose heading repeats its own first section says nothing twice.
+      expect(component.heading).toBe(DEFAULT_HEADING);
 
       // The absent case must be exactly one value, because the template dereferences it.
       expect(component.settings).toBeNull();
@@ -593,7 +644,10 @@ describe('ModuleSettingsComponent', () => {
 
       const header = q('app-page-header h1');
       expect(header).not.toBeNull();
-      expect((header?.textContent ?? '').trim()).toBe('Module Settings');
+      expect((header?.textContent ?? '').trim()).toBe(DEFAULT_HEADING);
+
+      // ⚠ AND IT MUST NOT REPEAT THE FIRST SECTION HEAD, which is the whole reason the default changed.
+      expect(DEFAULT_HEADING).not.toBe(FIRST_SECTION_HEADING);
     });
 
     it('takes a supplied heading in place of the legacy module definition name', () => {
@@ -957,10 +1011,11 @@ describe('ModuleSettingsComponent', () => {
         rendered.push((element.textContent ?? '').trim());
       }
 
-      // Fifteen of the sixteen declared hints are rendered: the permissions hint serves both the region and
-      // its inherit switch, so inheritViewPermissions has no field of its own to carry one.
-      expect(rendered.length).toBe(15);
-      expect(Object.keys(declared).length).toBe(16);
+      // Eighteen of the nineteen declared hints are rendered: the permissions hint serves both the region and
+      // its inherit switch, so inheritViewPermissions has no field of its own to carry one. The census rose by
+      // three when the alignment, colour and border columns became administered rather than unreachable.
+      expect(rendered.length).toBe(18);
+      expect(Object.keys(declared).length).toBe(19);
 
       // Each rendered hint must be one of the declared ones, and the fifteen must be DISTINCT - so a
       // template that bound the same hint to two fields could not pass by rendering the right count.
@@ -970,7 +1025,7 @@ describe('ModuleSettingsComponent', () => {
         expect(declaredValues.has(text)).withContext(`"${text}" must be a declared hint`).toBeTrue();
       }
 
-      expect(new Set<string>(rendered).size).withContext('no hint is rendered twice').toBe(15);
+      expect(new Set<string>(rendered).size).withContext('no hint is rendered twice').toBe(18);
 
       expect(declared['inheritViewPermissions'])
         .withContext('the switch and its region declare one shared sentence')
@@ -998,13 +1053,33 @@ describe('ModuleSettingsComponent', () => {
       expect(messageFor('cacheTime')).toBe('Invalid Cache Time');
     });
 
-    it('accepts a negative cache period, because the legacy data-type check accepted one', () => {
+    it('refuses a negative cache period, in the resource file own wording', () => {
+      // ⚠ MIGRATION - A DELIBERATE DIVERGENCE, AND THIS SPEC ASSERTED THE OLD BEHAVIOUR. The legacy screen
+      // declared one validator on this box, a DataTypeCheck for Integer, and stored whatever parsed - so
+      // `-1` was written. That is an omission rather than a decision: the box's own help text calls the
+      // value the time the object is kept in the cache, and a duration cannot run backwards. The refusal
+      // reuses `valCacheTime.ErrorMessage`, so one rule is not described two ways, and the same bound is
+      // enforced by the server.
       type('cacheTime', '-1');
       component['form'].controls.cacheTime.markAsTouched();
       fixture.detectChanges();
 
-      expect(component['form'].controls.cacheTime.valid).toBeTrue();
-      expect(messageFor('cacheTime')).toBeNull();
+      expect(component['form'].controls.cacheTime.valid).toBeFalse();
+      expect(messageFor('cacheTime')).toBe('Invalid Cache Time');
+    });
+
+    it('accepts a cache period of zero, and imposes no upper bound', () => {
+      // Zero is a legal period - it means do not cache - and no upper bound exists in the legacy validator,
+      // in the `int` column, or on the server, so a long period is an unusual choice rather than an error.
+      for (const legal of ['0', '999999']) {
+        type('cacheTime', legal);
+        component['form'].controls.cacheTime.markAsTouched();
+        fixture.detectChanges();
+
+        expect(component['form'].controls.cacheTime.valid)
+          .withContext(`${legal} is a legal cache period`)
+          .toBeTrue();
+      }
     });
 
     it('refuses a start date that is not a date, with the legacy message', () => {
@@ -1127,6 +1202,16 @@ describe('ModuleSettingsComponent', () => {
         moduleOrder: 6,
         cacheTime: 120,
         iconFile: 'module.gif',
+
+        // ⚠ THE EMPTY STRING, NOT NULL, AND IT IS LEGACY-FAITHFUL. The legacy radio list's fourth entry -
+        // "Not Specified" - carries the value `""`, and `ModuleSettings.ascx.vb:L345` wrote
+        // `cboAlign.SelectedItem.Value` straight to the column, so saving that entry stored an empty string.
+        // The seed maps a stored null onto the same entry, so a module that had no alignment and is saved
+        // without touching the field ends with the empty string - which is exactly what the legacy screen did
+        // to it. Folding it to null here would be a change in stored value dressed as tidiness.
+        alignment: '',
+        color: null,
+        border: null,
         visibility: MODULE_VISIBILITY.minimized,
         displayTitle: false,
         setAsDefaultSettings: false,
@@ -1208,27 +1293,38 @@ describe('ModuleSettingsComponent', () => {
       expect(emitted[0].iconFile).toBeNull();
     });
 
-    it('keeps presentation-only placement state out of the wire request', () => {
-      // MIGRATION: THIS FACT WAS RE-ORACLED, NOT WEAKENED. It was written when the screen still rendered an
-      // alignment choice group, and it selected the group's fourth option to prove that operating a
-      // presentation-only control could not smuggle its value onto the wire.
+    it('keeps the columns only a renderer ever chose out of the wire request', () => {
+      // MIGRATION: THIS FACT WAS RE-ORACLED TWICE, AND NEVER WEAKENED. It began as a claim about SIX columns,
+      // written when the screen rendered none of them. Three of the six - alignment, colour and border - are
+      // fields the legacy settings screen genuinely administered, so withholding them was a lost workflow
+      // rather than a scope decision, and they are now carried. The three that remain are chosen by the page
+      // framework this migration replaces: a pane belongs to the skin that declares it, and print and
+      // syndicate are affordances of the legacy rendering pipeline. No screen here can honestly offer them.
       const emitted: UpdateModuleRequest[] = [];
       component.save.subscribe((request) => emitted.push(request));
 
-      const placementOnly = ['paneName', 'alignment', 'color', 'border', 'displayPrint', 'displaySyndicate'];
-      for (const name of placementOnly) {
+      const rendererOnly = ['paneName', 'displayPrint', 'displaySyndicate'];
+      for (const name of rendererOnly) {
         expect(field(name)).withContext(`${name} must not be operable`).toBeNull();
         expect(radios(name).length).withContext(`${name} must not be a choice group either`).toBe(0);
       }
 
+      // And the three that ARE administered are operable, which is the other half of the same claim.
+      expect(radios('alignment').length)
+        .withContext('the legacy alignment control was a radio list of four entries')
+        .toBe(4);
+      expect(field('color')).withContext('a free-text colour, as the legacy screen had').not.toBeNull();
+      expect(field('border')).not.toBeNull();
+
       submit();
 
       expect('paneName' in emitted[0]).toBeFalse();
-      expect('alignment' in emitted[0]).toBeFalse();
-      expect('color' in emitted[0]).toBeFalse();
-      expect('border' in emitted[0]).toBeFalse();
       expect('displayPrint' in emitted[0]).toBeFalse();
       expect('displaySyndicate' in emitted[0]).toBeFalse();
+
+      expect('alignment' in emitted[0]).toBeTrue();
+      expect('color' in emitted[0]).toBeTrue();
+      expect('border' in emitted[0]).toBeTrue();
     });
 
     it('carries a changed visibility code through unchanged, not as its label', () => {
@@ -1313,6 +1409,16 @@ describe('ModuleSettingsComponent', () => {
       description: null,
       version: '01.00.00',
       desktopModuleId: 3,
+
+      // ⚠ ALL FOUR ARE REQUIRED BY THE DETAIL DECODER, AND OMITTING ONE FAILS THE WHOLE READ. That is the
+      // contract working as intended - a member the server stopped sending is drift, not a default - but it
+      // means a raw payload written here must carry every member the wire carries. The three appearance
+      // columns are administered by this screen, and the administrative flag is what tells a caller whether
+      // the generic settings surface will serve this module at all.
+      alignment: null,
+      color: null,
+      border: null,
+      isAdmin: false,
     };
 
     let http: HttpTestingController;
@@ -1331,7 +1437,12 @@ describe('ModuleSettingsComponent', () => {
       const matched = http.match((candidate) => candidate.method === method && candidate.url === url);
 
       for (const request of matched) {
-        request.flush({ data });
+        // The portal-scoped page listing answers the PAGED envelope; every other read answers the
+        // single-payload envelope. Keyed on the address rather than on a second argument, so no call site
+        // has to restate which envelope its endpoint uses.
+        request.flush(
+          url.includes('/tabs') ? tabPage(Array.isArray(data) ? data : []) : { data },
+        );
       }
 
       fixture.detectChanges();
@@ -1346,8 +1457,13 @@ describe('ModuleSettingsComponent', () => {
     function drain(): void {
       for (const request of http.match(() => true)) {
         const url = request.request.url;
-        const body = url.includes('/tabs') || url.includes('module-definitions') ? [] : null;
-        request.flush({ data: body });
+
+        if (url.includes('/tabs')) {
+          request.flush(tabPage([]));
+          continue;
+        }
+
+        request.flush({ data: url.includes('module-definitions') ? [] : null });
       }
 
       fixture.detectChanges();
@@ -1402,7 +1518,32 @@ describe('ModuleSettingsComponent', () => {
       expect(answer('PUT', '/api/v1/modules/0', ECHO)).toBe(1);
 
       expect(notify).toHaveBeenCalledWith('success', jasmine.any(String), null, true);
-      expect(navigate).toHaveBeenCalledWith(['/modules'], { replaceUrl: true });
+      expect(navigate).toHaveBeenCalledWith(['/modules'], { queryParams: {}, replaceUrl: true });
+
+      drain();
+    });
+
+    it('carries the listing coordinate it was reached from, on the save AND on the cancel', () => {
+      // ⚠ THE MEASURED DEFECT THIS CLOSES. Runtime testing sorted the module grid by title descending and
+      // searched for "QA" - 7 of 8 rows - then opened a module's settings and pressed Cancel, and landed on an
+      // unsorted, unfiltered page one with the search box emptied. The listing keeps page, ordering and search
+      // in its ADDRESS, so a navigation to the bare route discards all three.
+      const coordinate = {
+        currentpage: '2',
+        filter: 'QA',
+        sortby: 'moduleTitle',
+        sortdir: 'Descending',
+      };
+
+      TestBed.inject(ListReturnStore).remember('/modules', coordinate);
+
+      submit();
+      expect(answer('PUT', '/api/v1/modules/0', ECHO)).toBe(1);
+
+      expect(navigate).toHaveBeenCalledWith(['/modules'], {
+        queryParams: coordinate,
+        replaceUrl: true,
+      });
 
       drain();
     });
@@ -1433,7 +1574,7 @@ describe('ModuleSettingsComponent', () => {
       submit();
       expect(answer('PUT', '/api/v1/modules/0', ECHO)).toBe(1);
 
-      expect(navigate).toHaveBeenCalledWith(['/modules'], { replaceUrl: true });
+      expect(navigate).toHaveBeenCalledWith(['/modules'], { queryParams: {}, replaceUrl: true });
       expect(dirtyAtNavigation)
         .withContext('the guard must see a settled form on the navigation the save itself triggered')
         .toBeFalse();
@@ -1466,7 +1607,7 @@ describe('ModuleSettingsComponent', () => {
 
       expect(answer('DELETE', '/api/v1/modules/0', null)).toBe(1);
 
-      expect(navigate).toHaveBeenCalledWith(['/modules'], { replaceUrl: true });
+      expect(navigate).toHaveBeenCalledWith(['/modules'], { queryParams: {}, replaceUrl: true });
       expect(dirtyAtNavigation)
         .withContext('there is nothing left to save once the placement is gone')
         .toBeFalse();
@@ -1492,7 +1633,7 @@ describe('ModuleSettingsComponent', () => {
           (candidate) => candidate.method === 'PUT' && candidate.url === '/api/v1/modules/0/settings',
         ).length,
       ).toBe(0);
-      expect(navigate).toHaveBeenCalledWith(['/modules'], { replaceUrl: true });
+      expect(navigate).toHaveBeenCalledWith(['/modules'], { queryParams: {}, replaceUrl: true });
 
       drain();
     });
@@ -1557,7 +1698,7 @@ describe('ModuleSettingsComponent', () => {
 
       expect(notify).toHaveBeenCalledWith('success', jasmine.any(String), null, true);
       expect(removed).withContext('the host component is told once the server has answered').toBe(1);
-      expect(navigate).toHaveBeenCalledWith(['/modules'], { replaceUrl: true });
+      expect(navigate).toHaveBeenCalledWith(['/modules'], { queryParams: {}, replaceUrl: true });
 
       drain();
     });
@@ -1773,10 +1914,20 @@ describe('ModuleSettingsComponent', () => {
         .toBe(caption?.id ?? null);
     });
 
-    it('does not render legacy appearance controls that have no read or write contract', () => {
-      for (const name of ['paneName', 'alignment', 'color', 'border', 'displayPrint', 'displaySyndicate']) {
+    it('renders only the appearance controls that have a read AND a write contract', () => {
+      // The three that do not: a pane is chosen by the skin that declares it, and print and syndicate are
+      // affordances of the legacy rendering pipeline. Offering any of them would submit an unmapped member.
+      for (const name of ['paneName', 'displayPrint', 'displaySyndicate']) {
         expect(field(name)).withContext(`${name} would submit an unmapped member and receive 400`).toBeNull();
       }
+
+      // The three that do. They are columns on `dbo.TabModules` that the legacy screen administered, and this
+      // screen used to claim the module "has no stored settings of its own" while they held values.
+      expect(field('color')).withContext('colour is carried by both contracts now').not.toBeNull();
+      expect(field('border')).not.toBeNull();
+      expect(radios('alignment').length)
+        .withContext('alignment is a choice group rather than a text field, as it was in the legacy screen')
+        .toBe(4);
     });
 
     it('describes every control by its own hint', () => {
@@ -1833,10 +1984,29 @@ describe('ModuleSettingsComponent', () => {
       expect(new Set(group.map((radio) => radio.name)).size).toBe(1);
     });
 
-    it('renders no other choice group, so this is the whole obligation on this screen', () => {
-      // Pinned so that a group added later without a name is caught here rather than by a keyboard user.
+    it('gives every alignment radio the same native name as its form control', () => {
+      const group = radios('alignment');
+
+      expect(group.length)
+        .withContext('the legacy list declared four entries, the fourth being "Not Specified"')
+        .toBe(4);
+
+      for (const radio of group) {
+        expect(radio.getAttribute('name')).toBe(radio.getAttribute('formcontrolname'));
+        expect(radio.getAttribute('name')).toBe('alignment');
+      }
+
+      expect(new Set(group.map((radio) => radio.name)).size)
+        .withContext('one shared name is what makes the browser treat the four inputs as one control')
+        .toBe(1);
+    });
+
+    it('names every choice group on the screen, so the obligation is met in full', () => {
+      // Pinned so that a group added later without a name is caught here rather than by a keyboard user. The
+      // census is 3 visibility options plus the 4 alignment entries; it was 3 while alignment had no control.
       const named = qa<HTMLInputElement>('input[type="radio"]');
-      expect(named.length).toBe(3);
+
+      expect(named.length).toBe(7);
 
       for (const radio of named) {
         expect(radio.getAttribute('name'))
@@ -1876,6 +2046,16 @@ describe('ModuleSettingsComponent', () => {
       description: null,
       version: '01.00.00',
       desktopModuleId: 3,
+
+      // ⚠ ALL FOUR ARE REQUIRED BY THE DETAIL DECODER, AND OMITTING ONE FAILS THE WHOLE READ. That is the
+      // contract working as intended - a member the server stopped sending is drift, not a default - but it
+      // means a raw payload written here must carry every member the wire carries. The three appearance
+      // columns are administered by this screen, and the administrative flag is what tells a caller whether
+      // the generic settings surface will serve this module at all.
+      alignment: null,
+      color: null,
+      border: null,
+      isAdmin: false,
     };
 
     let http: HttpTestingController;
@@ -1891,7 +2071,11 @@ describe('ModuleSettingsComponent', () => {
       for (const request of http.match(
         (candidate) => candidate.method === method && candidate.url === url,
       )) {
-        request.flush({ data });
+        // The portal-scoped page listing answers the PAGED envelope; every other read answers the
+        // single-payload envelope.
+        request.flush(
+          url.includes('/tabs') ? tabPage(Array.isArray(data) ? data : []) : { data },
+        );
       }
 
       fixture.detectChanges();
@@ -1922,8 +2106,13 @@ describe('ModuleSettingsComponent', () => {
     function drain(): void {
       for (const request of http.match(() => true)) {
         const url = request.request.url;
-        const body = url.includes('/tabs') || url.includes('module-definitions') ? [] : null;
-        request.flush({ data: body });
+
+        if (url.includes('/tabs')) {
+          request.flush(tabPage([]));
+          continue;
+        }
+
+        request.flush({ data: url.includes('module-definitions') ? [] : null });
       }
 
       fixture.detectChanges();
@@ -2152,14 +2341,29 @@ describe('ModuleSettingsComponent', () => {
 
       // The choice group states it on every radio, because a radio is the object a reader lands on and
       // there is no single element for the set that assistive technology examines instead.
-      const radios = qa<HTMLInputElement>('[role="radiogroup"] input[type="radio"]');
+      //
+      // ⚠ SCOPED TO THE GROUP THAT WAS ACTUALLY REFUSED. There are two radio groups on this screen now -
+      // visibility and alignment - and only visibility appears in the refusal above. An unscoped census would
+      // demand that the alignment radios call themselves invalid too, which would be a screen telling the
+      // operator that a field the server never mentioned is wrong.
+      const refused = qa<HTMLInputElement>('input[type="radio"][formcontrolname="visibility"]');
 
-      expect(radios.length).withContext('the visibility group must be rendered').toBe(3);
+      expect(refused.length).withContext('the visibility group must be rendered').toBe(3);
 
-      for (const radio of radios) {
+      for (const radio of refused) {
         expect(radio.getAttribute('aria-invalid'))
           .withContext(`${radio.id} belongs to a refused group`)
           .toBe('true');
+      }
+
+      const untouched = qa<HTMLInputElement>('input[type="radio"][formcontrolname="alignment"]');
+
+      expect(untouched.length).toBe(4);
+
+      for (const radio of untouched) {
+        expect(radio.getAttribute('aria-invalid'))
+          .withContext(`${radio.id} was not refused and must not claim to be invalid`)
+          .not.toBe('true');
       }
 
       drain();
@@ -2230,7 +2434,9 @@ describe('ModuleSettingsComponent', () => {
       fixture.detectChanges();
 
       httpMock.expectOne(DEFINITION_URL).flush({ data: definition });
-      httpMock.expectOne(TABS_URL).flush({ data: tabs });
+      // Matched on the PATH rather than on the whole address, because the bounded listing now carries
+      // paging arguments and the string overload compares against the query string too.
+      httpMock.expectOne((candidate) => candidate.url === TABS_URL).flush(tabPage(tabs));
       fixture.detectChanges();
     }
 
@@ -2255,8 +2461,52 @@ describe('ModuleSettingsComponent', () => {
     // The advisory names the permission vocabulary the module's DEFINITION declares, beside the inherit
     // switch that chooses whether to use it.
     describe('the declared-permission advisory', () => {
-      /** The catalogue address. */
-      const PERMISSIONS_URL = '/api/v1/permissions';
+      /**
+       * The grant-grid address.
+       *
+       * ⚠ THIS MOVED, AND THE MOVE IS THE FIX. The advisory key list used to come from the catalogue
+       * listing filtered by module definition, and the grant grid did not exist at all - a portal
+       * administrator could read the four declared key names as inert text and grant none of them. Both now
+       * come from the module's own grant grid, so the vocabulary the inherit switch chooses between and the
+       * columns the operator ticks are one answer rather than two that can disagree.
+       */
+      const PERMISSIONS_URL = '/api/v1/modules/0/permissions';
+
+      /**
+       * Builds a grant-grid payload declaring the supplied keys, with one ordinary role row.
+       *
+       * @param keys The permission keys the definition declares, in column order.
+       * @returns The payload body's `data` member.
+       */
+      function gridOf(keys: readonly string[]): unknown {
+        const definitions = keys.map((key, index) => ({
+          permissionId: index + 1,
+          permissionKey: key,
+          permissionName: `${key} Module`,
+        }));
+
+        return {
+          moduleId: 0,
+          inheritViewPermissions: false,
+          inheritedPermissionKey: keys.includes('VIEW') ? 'VIEW' : null,
+          definitions,
+          roles: [
+            {
+              roleId: 2,
+              roleName: 'Subscribers',
+              isAdministrator: false,
+              isPseudoRole: false,
+              cells: definitions.map((definition) => ({
+                permissionId: definition.permissionId,
+                permissionKey: definition.permissionKey,
+                allowAccess: false,
+                editable: true,
+              })),
+            },
+          ],
+          users: [],
+        };
+      }
 
       let tokenStorage: TokenStorageService;
 
@@ -2291,19 +2541,20 @@ describe('ModuleSettingsComponent', () => {
         );
       }
 
-      it('reads the catalogue filtered by the DEFINITION and names the keys it answers', () => {
+      it("reads the MODULE's own grant grid and names the keys it declares", () => {
         tokenStorage.store(sessionWith(true));
         activate();
 
         const request: TestRequest = expectCatalogue();
 
-        expect(request.request.params.get('moduleDefinitionId')).toBe('14');
-        expect(request.request.params.get('permissionCode'))
-          .withContext('no filter this screen did not intend')
-          .toBeNull();
-        expect(request.request.params.get('permissionKey')).toBeNull();
+        // ⚠ ADDRESSED BY MODULE, NOT FILTERED BY DEFINITION. Two modules built from the same definition
+        // declare the same keys but hold different grants, so a read keyed by the definition would show the
+        // first module's grants on the second - and the save is a REPLACE.
+        expect(request.request.params.keys())
+          .withContext('the module is in the path, so no filter is carried')
+          .toEqual([]);
 
-        request.flush({ data: ['VIEW', 'EDIT'] });
+        request.flush({ data: gridOf(['VIEW', 'EDIT']) });
         fixture.detectChanges();
 
         expect(advisory()).withContext('the advisory is rendered').not.toBeNull();
@@ -2326,28 +2577,71 @@ describe('ModuleSettingsComponent', () => {
         tokenStorage.store(sessionWith(true));
         activate();
 
-        expectCatalogue().flush({ data: [] });
+        expectCatalogue().flush({ data: gridOf([]) });
         fixture.detectChanges();
 
-        // An empty answer and an unavailable answer both render nothing, which is correct: in neither case
-        // does this client have anything to say. What must NOT happen is a line asserting that the
-        // definition declares no permissions, because that reads as a fact about the definition.
+        // ⚠ THE SECOND HALF OF THIS ASSERTION IS THE NEW PART. An EMPTY answer renders nothing, which is
+        // right: there is no vocabulary to name and no line should assert one. What it must no longer do is
+        // look like a FAILED read - the two were once identical, and that was the defect.
         expect(advisory()).toBeNull();
         expect(host().textContent ?? '').not.toContain('Permissions defined for this module type:');
+        expect(host().textContent ?? '')
+          .withContext('a real empty answer must not claim the vocabulary is unreadable')
+          .not.toContain('could not be read');
+        expect(q<HTMLElement>('.module-settings__declared-permissions-unread')).toBeNull();
+
+        // ⚠ AND IT SAYS SO POSITIVELY, IN A SURFACE OF ITS OWN. A definition that declares nothing leaves
+        // an operator staring at a permissions region with no table and no explanation; the sentence states
+        // the answer, and its class is not the failure's, so the two states cannot be confused visually or
+        // by a test.
+        const empty: HTMLElement | null = q<HTMLElement>('.module-settings__permission-grid-empty');
+
+        expect(empty).withContext('the empty answer states itself').not.toBeNull();
+        expect(empty?.textContent ?? '').toContain('declares no permissions');
+        expect(q('.module-settings__permission-grid'))
+          .withContext('and no table is rendered for a grid with no columns')
+          .toBeNull();
       });
 
-      it('leaves the screen working and silent when the catalogue read fails', () => {
+      // ⚠ INVERTED FROM "silent". This specification previously required that a failed catalogue read
+      // render nothing at all, which is precisely the reported defect: a swallowed `500` was
+      // pixel-for-pixel identical to a definition that declares no permissions, so the screen silently
+      // asserted an empty vocabulary it had never managed to read - beside a switch whose entire job is to
+      // choose between those keys. It must still not break the form; it must no longer be silent.
+      it('says the vocabulary could not be read when the catalogue read fails', () => {
         tokenStorage.store(sessionWith(true));
         activate();
 
         expectCatalogue().flush(
-          { type: 'about:blank', title: 'Server Error', status: 500 },
+          {
+            type: 'about:blank',
+            title: 'Server Error',
+            status: 500,
+            detail: 'The permission catalogue is unavailable.',
+          },
           { status: 500, statusText: 'Internal Server Error' },
         );
         fixture.detectChanges();
 
-        // Nothing on the form depends on the answer, so a fault costs the advisory and nothing else.
-        expect(advisory()).withContext('the region is simply absent').toBeNull();
+        const unread: HTMLElement | null = q<HTMLElement>(
+          '.module-settings__declared-permissions-unread',
+        );
+
+        expect(unread).withContext('the failure states itself').not.toBeNull();
+        expect(unread?.textContent ?? '').toContain('could not be read');
+        expect(unread?.getAttribute('role'))
+          .withContext('announced politely, because an advisory must not interrupt typing')
+          .toBe('status');
+        expect(unread?.textContent ?? '')
+          .withContext("and the server's own reason is preserved rather than replaced")
+          .toContain('The permission catalogue is unavailable.');
+
+        // It must NOT look like a definition that declares nothing.
+        expect(advisedKeys()).toEqual([]);
+        expect(advisory()).toBeNull();
+
+        // Nothing on the form depends on the answer, so a fault costs the advisory and nothing else. No
+        // notification either: the banner and the toast are for failures the operator must act on.
         expect(notify).withContext('an advisory failure raises no message').not.toHaveBeenCalled();
         expect(field<HTMLInputElement>('moduleTitle')?.value)
           .withContext('the form is still seeded and usable')
@@ -2357,11 +2651,171 @@ describe('ModuleSettingsComponent', () => {
         expect(interceptSubmission().request.method).toBe('PUT');
       });
 
-      it('issues the read once per definition rather than on every form change', () => {
+      // ⚠ THE SIX-SECOND SUB-REQUEST. This read had no loading affordance of any kind - no `aria-busy`,
+      // no text - so a slow catalogue left the inherit switch rendered with no indication that the keys it
+      // chooses between were still on their way.
+      it('marks the region busy and says so while the read is outstanding', () => {
         tokenStorage.store(sessionWith(true));
         activate();
 
-        expectCatalogue().flush({ data: ['EDIT'] });
+        // Issued and deliberately NOT answered: this is the state under test.
+        const outstanding: TestRequest = expectCatalogue();
+
+        fixture.detectChanges();
+
+        const region: HTMLElement | null = q<HTMLElement>(
+          '.module-settings__declared-permissions-region',
+        );
+
+        expect(region?.getAttribute('aria-busy')).toBe('true');
+        expect(host().textContent ?? '').toContain('Reading the permissions defined for this module type');
+        expect(q<HTMLElement>('.module-settings__declared-permissions-unread'))
+          .withContext('an outstanding read is not a failed one')
+          .toBeNull();
+
+        outstanding.flush({ data: gridOf(['EDIT']) });
+        fixture.detectChanges();
+
+        expect(region?.getAttribute('aria-busy'))
+          .withContext('the busy marker is dropped once the answer arrives')
+          .toBeNull();
+        expect(advisedKeys()).toEqual(['EDIT']);
+      });
+
+      // ⚠ THE CONTROL THAT MUST NOT BE OPERABLE AGAINST AN UNKNOWN VOCABULARY. Inheritance decides WHICH
+      // permission set applies, so choosing it while the set is still being read - or after the read failed
+      // - is the one decision on this screen that cannot be supported. Runtime verification found the
+      // checkbox live throughout a six-second read and still live after it failed.
+      it('withholds the inherit switch while the vocabulary is being read', () => {
+        tokenStorage.store(sessionWith(true));
+        activate();
+
+        const outstanding: TestRequest = expectCatalogue();
+        fixture.detectChanges();
+
+        const inherit = (): HTMLInputElement | null =>
+          field<HTMLInputElement>('inheritViewPermissions');
+
+        expect(inherit()?.disabled).withContext('withheld while in flight').toBeTrue();
+        expect(inherit()?.getAttribute('aria-disabled')).toBe('true');
+
+        outstanding.flush({ data: gridOf(['EDIT']) });
+        fixture.detectChanges();
+
+        expect(inherit()?.disabled)
+          .withContext('and operable again the moment the vocabulary is known')
+          .toBeFalse();
+        expect(inherit()?.getAttribute('aria-disabled')).toBeNull();
+      });
+
+      it('keeps the inherit switch withheld after the read fails, and restores it on a retry', () => {
+        tokenStorage.store(sessionWith(true));
+        activate();
+
+        expectCatalogue().flush(
+          { type: 'about:blank', title: 'Server Error', status: 500, detail: 'Unavailable.' },
+          { status: 500, statusText: 'Internal Server Error' },
+        );
+        fixture.detectChanges();
+
+        expect(field<HTMLInputElement>('inheritViewPermissions')?.disabled)
+          .withContext('an unread vocabulary is not a basis for choosing inheritance')
+          .toBeTrue();
+
+        const retry: HTMLButtonElement | null = q<HTMLButtonElement>(
+          '.module-settings__declared-permissions-retry',
+        );
+
+        expect(retry).withContext('a retry is offered, so the lock is liftable').not.toBeNull();
+
+        retry?.click();
+        fixture.detectChanges();
+
+        // The retry must genuinely re-issue, past the effect's already-requested guard.
+        expectCatalogue().flush({ data: gridOf(['EDIT']) });
+        fixture.detectChanges();
+
+        expect(field<HTMLInputElement>('inheritViewPermissions')?.disabled)
+          .withContext('a successful retry lifts the lock')
+          .toBeFalse();
+        expect(q('.module-settings__declared-permissions-unread')).toBeNull();
+        expect(q('.module-settings__declared-permissions-retry')).toBeNull();
+      });
+
+      it('shows a spinner beside the pending sentence, not text alone', () => {
+        tokenStorage.store(sessionWith(true));
+        activate();
+
+        const outstanding: TestRequest = expectCatalogue();
+        fixture.detectChanges();
+
+        // A six-second wait with text alone reads as a finished state that happens to say "reading".
+        const spinner: HTMLElement | null = q<HTMLElement>(
+          '.module-settings__declared-permissions-pending app-loading-spinner',
+        );
+
+        expect(spinner)
+          .withContext('the wait is indicated as motion as well as words')
+          .not.toBeNull();
+
+        // ⚠ THE SPINNER MUST CONTRIBUTE MOTION AND NOTHING ELSE. Given a label it renders that label
+        // VISIBLY and claims `role="status"` for itself, which printed the sentence twice side by side and
+        // nested one live region inside another - both measured in a real browser. The paragraph owns the
+        // sentence and the live region.
+        expect(spinner?.getAttribute('aria-hidden'))
+          .withContext('the indicator is decorative; the paragraph announces')
+          .toBe('true');
+        expect(spinner?.getAttribute('role')).toBeNull();
+
+        const pending: HTMLElement | null = q<HTMLElement>(
+          '.module-settings__declared-permissions-pending',
+        );
+        const occurrences: number = (pending?.textContent ?? '').split(
+          'Reading the permissions defined for this module type',
+        ).length - 1;
+
+        expect(occurrences).withContext('the sentence appears exactly once').toBe(1);
+        expect(q('.module-settings__declared-permissions-pending [role="status"]'))
+          .withContext('no live region nested inside the live region')
+          .toBeNull();
+
+        outstanding.flush({ data: gridOf(['EDIT']) });
+        fixture.detectChanges();
+
+        expect(q('app-loading-spinner')).toBeNull();
+      });
+
+      // An inline failure needs a reference as much as a banner does - and because this one never reaches
+      // the page-level banner, it was the only failure on the screen that could not be quoted to support.
+      it('quotes the support reference for a failed vocabulary read', () => {
+        tokenStorage.store(sessionWith(true));
+        activate();
+
+        expectCatalogue().flush(
+          {
+            type: 'about:blank',
+            title: 'Server Error',
+            status: 500,
+            detail: 'The permission catalogue is unavailable.',
+            correlationId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+          },
+          { status: 500, statusText: 'Internal Server Error' },
+        );
+        fixture.detectChanges();
+
+        const reference: HTMLElement | null = q<HTMLElement>(
+          '.module-settings__declared-permissions-reference',
+        );
+
+        expect(reference).withContext('the reference is rendered').not.toBeNull();
+        expect(reference?.textContent ?? '').toContain('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee');
+      });
+
+      it('issues the read once per module rather than on every form change', () => {
+        tokenStorage.store(sessionWith(true));
+        activate();
+
+        expectCatalogue().flush({ data: gridOf(['EDIT']) });
         fixture.detectChanges();
 
         // An effect re-runs on every dependency change, so an unguarded fetch here would re-issue the
@@ -2372,6 +2826,382 @@ describe('ModuleSettingsComponent', () => {
 
         expectNoCatalogue();
         expect(advisedKeys()).withContext('the answer already held is kept').toEqual(['EDIT']);
+      });
+    });
+
+    // ---------------------------------------------------------------------------------------------------
+    // THE GRANT GRID
+    // ---------------------------------------------------------------------------------------------------
+    // ⚠ THIS WHOLE SURFACE DID NOT EXIST. The legacy screen declared
+    // `<dnn:modulepermissionsgrid id="dgPermissions">` (`modulesettings.ascx:L42`) and persisted
+    // `objModule.ModulePermissions` (`ModuleSettings.ascx.vb:L378-L379`). The first port rendered four
+    // inert key names and no table at all, so a host superuser could not grant or withdraw a single module
+    // permission - while the help text above still read "by checking/unchecking the boxes in the grid".
+    describe('the grant grid', () => {
+      /** The grant-grid address. */
+      const GRID_URL = '/api/v1/modules/0/permissions';
+
+      let tokenStorage: TokenStorageService;
+
+      beforeEach(() => {
+        tokenStorage = TestBed.inject(TokenStorageService);
+      });
+
+      /** The one outstanding grid read. */
+      function expectGrid(): TestRequest {
+        return httpMock.expectOne(
+          (candidate) => candidate.method === 'GET' && candidate.url === GRID_URL,
+          'the grant grid read',
+        );
+      }
+
+      /**
+       * A grid with a VIEW and an EDIT column, the administrator row, one ordinary role, both
+       * pseudo-roles and one individually named account.
+       *
+       * @param inheriting Whether the module is inheriting its view rights from its page.
+       * @returns The payload body's `data` member.
+       */
+      function fullGrid(inheriting: boolean): unknown {
+        const columns = [
+          { permissionId: 1, permissionKey: 'VIEW', permissionName: 'View Module' },
+          { permissionId: 2, permissionKey: 'EDIT', permissionName: 'Edit Module' },
+        ];
+
+        const cells = (
+          view: boolean,
+          edit: boolean,
+          editable: boolean,
+        ): readonly unknown[] => [
+          { permissionId: 1, permissionKey: 'VIEW', allowAccess: view, editable },
+          { permissionId: 2, permissionKey: 'EDIT', allowAccess: edit, editable },
+        ];
+
+        return {
+          moduleId: 0,
+          inheritViewPermissions: inheriting,
+          inheritedPermissionKey: 'VIEW',
+          definitions: columns,
+          roles: [
+            // Zero is a REAL role - Roles.RoleID is IDENTITY (0, 1) - and on a default installation it is
+            // the administrators role, so this row is the guard against every falsiness test.
+            {
+              roleId: 0,
+              roleName: 'Administrators',
+              isAdministrator: true,
+              isPseudoRole: false,
+              cells: cells(true, true, false),
+            },
+            {
+              roleId: 2,
+              roleName: 'Subscribers',
+              isAdministrator: false,
+              isPseudoRole: false,
+              cells: cells(true, false, true),
+            },
+            {
+              roleId: -1,
+              roleName: 'All Users',
+              isAdministrator: false,
+              isPseudoRole: true,
+              cells: cells(false, false, true),
+            },
+            {
+              roleId: -3,
+              roleName: 'Unauthenticated Users',
+              isAdministrator: false,
+              isPseudoRole: true,
+              cells: cells(false, false, true),
+            },
+          ],
+          users: [
+            {
+              userId: 9,
+              displayName: 'Measured Member',
+              cells: cells(false, true, true),
+            },
+          ],
+        };
+      }
+
+      /** Every row-header name the grid renders, in document order. */
+      function rowNames(): readonly string[] {
+        return qa<HTMLElement>('.module-settings__permission-grid tbody th').map((cell) =>
+          (cell.textContent ?? '').replace(/\s+/gu, ' ').trim(),
+        );
+      }
+
+      /** Every checkbox in the grid, in document order. */
+      function boxes(): readonly HTMLInputElement[] {
+        return qa<HTMLInputElement>('.module-settings__permission-grid tbody input[type="checkbox"]');
+      }
+
+      /** Brings up the screen with a fully populated grid. */
+      function activateWithGrid(inheriting = false): void {
+        tokenStorage.store(sessionWith(true));
+        activate();
+        expectGrid().flush({ data: fullGrid(inheriting) });
+        fixture.detectChanges();
+      }
+
+      it('renders a real table with one row per principal and one column per declared permission', () => {
+        activateWithGrid();
+
+        const table: HTMLElement | null = q<HTMLElement>('.module-settings__permission-grid');
+
+        expect(table).withContext('the grid is a table, not a run of inert text').not.toBeNull();
+        expect(table?.tagName).toBe('TABLE');
+
+        // The caption names the table in the accessibility tree; the legacy first column header was the
+        // literal `&nbsp;`, which named nothing.
+        const caption: HTMLElement | null = q<HTMLElement>(
+          '.module-settings__permission-grid caption',
+        );
+
+        expect(caption?.textContent ?? '').toContain('Module permissions by role');
+
+        expect(
+          qa<HTMLElement>('.module-settings__permission-grid thead th').map((cell) =>
+            (cell.textContent ?? '').replace(/\s+/gu, ' ').trim(),
+          ),
+        ).toEqual(['Role', 'View Module', 'Edit Module']);
+
+        // Roles first in the server's order, then individually named accounts.
+        expect(rowNames()).toEqual([
+          'Administrators always granted',
+          'Subscribers',
+          'All Users',
+          'Unauthenticated Users',
+          'Measured Member',
+        ]);
+
+        // Every row header is scoped, so a checkbox is announced against its row as well as its column.
+        expect(
+          qa<HTMLElement>('.module-settings__permission-grid tbody th').every(
+            (cell) => cell.getAttribute('scope') === 'row',
+          ),
+        ).toBeTrue();
+      });
+
+      it('locks the administrator row granted, and never offers it', () => {
+        activateWithGrid();
+
+        // ModulePermissionsGrid.GetPermission returned True and GetEnabled returned False for the
+        // administrator role WITHOUT consulting a grant row at all.
+        const adminBoxes: readonly HTMLInputElement[] = boxes().slice(0, 2);
+
+        expect(adminBoxes.every((box) => box.checked)).toBeTrue();
+        expect(adminBoxes.every((box) => box.disabled)).toBeTrue();
+        expect(adminBoxes[0]?.getAttribute('title') ?? '').toContain('always hold every module permission');
+      });
+
+      it('names every cell by its row AND its column', () => {
+        activateWithGrid();
+
+        // A grid of bare checkboxes announces "checkbox, checked" with nothing to tell one from another.
+        const labels: readonly string[] = qa<HTMLElement>(
+          '.module-settings__permission-grid tbody label',
+        ).map((label) => (label.textContent ?? '').trim());
+
+        expect(labels).toContain('VIEW permission for Subscribers');
+        expect(labels).toContain('EDIT permission for Measured Member');
+
+        // Every label addresses a control that exists, or it is decoration rather than a label.
+        qa<HTMLLabelElement>('.module-settings__permission-grid tbody label').forEach((label) => {
+          expect(document.getElementById(label.getAttribute('for') ?? '')).not.toBeNull();
+        });
+      });
+
+      it('collapses the view column the moment the inherit switch is turned on, with no request', () => {
+        activateWithGrid();
+
+        const viewBoxFor = (row: number): HTMLInputElement | undefined => boxes()[row * 2];
+
+        // Subscribers hold VIEW before the switch is touched.
+        expect(viewBoxFor(1)?.checked).toBeTrue();
+        expect(viewBoxFor(1)?.disabled).toBeFalse();
+
+        const inherit: HTMLInputElement | null = field<HTMLInputElement>('inheritViewPermissions');
+
+        inherit!.checked = true;
+        inherit!.dispatchEvent(new Event('change'));
+        fixture.detectChanges();
+
+        // ⚠ THE LEGACY SWITCH CARRIED autopostback="true" SO THE SERVER COULD REDRAW THE COLUMN. Here the
+        // column redraws itself, and asking the server again would be a round trip for a decision already
+        // made locally.
+        httpMock.expectNone((candidate) => candidate.url === GRID_URL);
+
+        expect(viewBoxFor(1)?.checked)
+          .withContext('the view cell reads as cleared while inheritance is on')
+          .toBeFalse();
+        expect(viewBoxFor(1)?.disabled).toBeTrue();
+
+        // The EDIT column is untouched: only the view column is inherited.
+        expect(boxes()[3]?.disabled).withContext('EDIT stays operable').toBeFalse();
+
+        // And the column says WHY, so the locked boxes do not read as a fault.
+        expect(
+          qa<HTMLElement>('.module-settings__permission-column-note').map((note) =>
+            (note.textContent ?? '').trim(),
+          ),
+        ).toEqual(['inherited from page']);
+      });
+
+      it('submits exactly the ticked, editable cells and withdraws the rest', () => {
+        activateWithGrid();
+
+        // Grant EDIT to Subscribers, and withdraw its VIEW.
+        boxes()[3]!.checked = true;
+        boxes()[3]!.dispatchEvent(new Event('change'));
+        boxes()[2]!.checked = false;
+        boxes()[2]!.dispatchEvent(new Event('change'));
+        fixture.detectChanges();
+
+        submit();
+
+        const write: TestRequest = httpMock.expectOne(
+          (candidate) => candidate.method === 'PUT' && candidate.url === GRID_URL,
+        );
+
+        const body = write.request.body as {
+          inheritViewPermissions: boolean;
+          grants: readonly {
+            permissionId: number;
+            roleId: number | null;
+            userId: number | null;
+            allowAccess: boolean;
+          }[];
+        };
+
+        expect(body.inheritViewPermissions).toBeFalse();
+
+        // ⚠ ONLY ALLOWS TRAVEL, AND THE ADMINISTRATOR ROW IS NOT AMONG THEM. The legacy grid's collection
+        // held exactly the ticked boxes - UpdatePermission removed an entry the moment its box was cleared,
+        // "as we only keep AllowAccess permissions" - and the administrator's grants were implicit.
+        expect(body.grants).toEqual([
+          { permissionId: 2, roleId: 2, userId: null, allowAccess: true },
+          { permissionId: 2, roleId: null, userId: 9, allowAccess: true },
+        ]);
+
+        write.flush(null, { status: 204, statusText: 'No Content' });
+
+        // The replacement answers 204, so the stored state is read back rather than assumed.
+        expectGrid().flush({ data: fullGrid(false) });
+        fixture.detectChanges();
+
+        // Every remaining request drained, so the suite's httpMock.verify() teardown is not the assertion.
+        httpMock.match(() => true).forEach((request) => request.flush({ data: null }));
+        fixture.detectChanges();
+      });
+
+      it('writes nothing when neither a cell nor the inherit switch was changed', () => {
+        activateWithGrid();
+
+        submit();
+
+        // A replace deletes and re-inserts every row. Issuing one on a save that touched no cell would do
+        // that on every settings save of every module, including grids the operator never looked at.
+        httpMock.expectNone((candidate) => candidate.method === 'PUT' && candidate.url === GRID_URL);
+
+        // Every remaining request drained, so the suite's httpMock.verify() teardown is not the assertion.
+        httpMock.match(() => true).forEach((request) => request.flush({ data: null }));
+        fixture.detectChanges();
+      });
+
+      it('writes the grid when only the inherit switch was changed', () => {
+        activateWithGrid();
+
+        const inherit: HTMLInputElement | null = field<HTMLInputElement>('inheritViewPermissions');
+
+        inherit!.checked = true;
+        inherit!.dispatchEvent(new Event('change'));
+        fixture.detectChanges();
+
+        submit();
+
+        const write: TestRequest = httpMock.expectOne(
+          (candidate) => candidate.method === 'PUT' && candidate.url === GRID_URL,
+        );
+
+        const body = write.request.body as {
+          inheritViewPermissions: boolean;
+          grants: readonly { permissionKey?: string; permissionId: number }[];
+        };
+
+        expect(body.inheritViewPermissions).toBeTrue();
+
+        // ⚠ THE VIEW GRANT IS GONE, AND THAT IS LEGACY BEHAVIOUR REPRODUCED RATHER THAN A BUG. The legacy
+        // grid reported every view cell cleared and disabled while inheritance was on, and the save then
+        // removed the row - so the same save that turned inheritance on deleted the view grants.
+        expect(body.grants.some((grant) => grant.permissionId === 1))
+          .withContext('no VIEW grant survives a save made with inheritance on')
+          .toBeFalse();
+
+        write.flush(null, { status: 204, statusText: 'No Content' });
+        expectGrid().flush({ data: fullGrid(true) });
+        fixture.detectChanges();
+
+        // Every remaining request drained, so the suite's httpMock.verify() teardown is not the assertion.
+        httpMock.match(() => true).forEach((request) => request.flush({ data: null }));
+        fixture.detectChanges();
+      });
+
+      it('does not conclude the submission until the grant write has answered', () => {
+        activateWithGrid();
+
+        boxes()[3]!.checked = true;
+        boxes()[3]!.dispatchEvent(new Event('change'));
+        fixture.detectChanges();
+
+        submit();
+
+        // The module replacement answers first; the grant write is still outstanding.
+        httpMock
+          .expectOne((candidate) => candidate.method === 'PUT' && candidate.url === MODULE_URL)
+          .flush({ data: moduleDetailOf() });
+        fixture.detectChanges();
+
+        const write: TestRequest = httpMock.expectOne(
+          (candidate) => candidate.method === 'PUT' && candidate.url === GRID_URL,
+        );
+
+        // ⚠ CONCLUDING HERE WOULD REPORT SUCCESS BEFORE THE LAST WRITE ANSWERED, and mark the form pristine
+        // while a grant edit was still unsaved.
+        expect(notify).not.toHaveBeenCalledWith('success', jasmine.anything(), null, true);
+
+        write.flush(null, { status: 204, statusText: 'No Content' });
+        expectGrid().flush({ data: fullGrid(false) });
+        fixture.detectChanges();
+
+        expect(notify).toHaveBeenCalledWith('success', jasmine.any(String), null, true);
+
+        // Every remaining request drained, so the suite's httpMock.verify() teardown is not the assertion.
+        httpMock.match(() => true).forEach((request) => request.flush({ data: null }));
+        fixture.detectChanges();
+      });
+
+      it('discards unsaved cell edits when the grid is re-read', () => {
+        activateWithGrid();
+
+        boxes()[3]!.checked = true;
+        boxes()[3]!.dispatchEvent(new Event('change'));
+        fixture.detectChanges();
+
+        expect(boxes()[3]?.checked).toBeTrue();
+
+        const retryPath = (): void => {
+          // A re-read is issued by addressing a different module and returning, which is the only route a
+          // user has to one. An edit is a delta against specific rows, and the save is a REPLACE, so a
+          // delta carried across a re-read would withdraw grants the operator never saw.
+          fixture.componentRef.setInput('moduleId', 1);
+          fixture.detectChanges();
+        };
+
+        retryPath();
+
+        httpMock.match(() => true).forEach((request) => request.flush({ data: null }));
+        fixture.detectChanges();
       });
     });
 
@@ -2501,8 +3331,16 @@ describe('ModuleSettingsComponent', () => {
        * IT WAS NOT. Measured against the running application: on an administrative module the three reads
        * answer 200 for the module, **403 `module.settings_protected`** for the settings, and 404 for the
        * definition, because the tenant catalogue publishes no entry for an administrative definition.
+       *
+       * ⚠ THE PRESENTATION MOVED, AND THE REASON IS A SECOND MEASUREMENT. Honouring the refusal used to mean
+       * rendering the server's document in the error banner, and what the operator then read was
+       * "Administrative module settings are available only through their typed privileged endpoint" - a
+       * sentence about an endpoint, on a screen with no way on. The refusal is by DESIGN, not a fault, so it
+       * is now stated as a boundary in the operator's terms with the route to the screen that owns those
+       * settings. What must not change, and is still asserted here, is that no form is offered and that the
+       * refusal is not swallowed into silence by the definition 404 that follows it.
        */
-      it('withholds the form and states the refusal when the SETTINGS read alone is refused', () => {
+      it('withholds the form and explains the boundary when the SETTINGS read alone is refused', () => {
         fixture.componentRef.setInput('pages', null);
         fixture.componentRef.setInput('moduleId', 0);
         fixture.detectChanges();
@@ -2515,31 +3353,101 @@ describe('ModuleSettingsComponent', () => {
           traceId: '00-settings-refusal-01',
         };
 
-        httpMock.expectOne(MODULE_URL).flush({ data: moduleDetailOf() });
+        // The definition name is the `User Accounts` package's, because that is the administrative module
+        // this console DOES administer - on the membership settings screen - and the explanation names it.
+        // `isAdmin` is deliberately left false so the branch is reached by the REFUSAL CODE alone, which is
+        // the path a caller takes when the package could not be resolved.
+        httpMock
+          .expectOne(MODULE_URL)
+          .flush({ data: moduleDetailOf({ friendlyName: 'User Accounts' }) });
         httpMock
           .expectOne(SETTINGS_URL)
           .flush(refusal, { status: 403, statusText: 'Forbidden' });
         fixture.detectChanges();
 
-        httpMock.expectOne(DEFINITION_URL).flush(null, { status: 404, statusText: 'Not Found' });
-        httpMock.expectOne(TABS_URL).flush({ data: [tabOf()] });
+        // ⚠ THE DEFINITION READ IS NOT ISSUED, AND THIS ASSERTION USED TO BE ITS OPPOSITE. This case once
+        // flushed a 404 here, faithfully reproducing what the running application did - and that WAS the
+        // defect. The only reason this screen reads the definition is to decide whether to offer the cache
+        // field, and the branch reached here offers no field at all, so the read informs nothing. It also
+        // cannot succeed: the catalogue withholds administrative packages under the same policy that refused
+        // these settings. Measured on `/modules/7/settings`, the 404 surfaced as a "The requested item could
+        // not be found." warning sitting beside an explanation that had just told the operator where their
+        // settings live. Asking and then apologising for the answer is worse than not asking.
+        httpMock.expectNone(DEFINITION_URL);
+        httpMock.expectOne((candidate) => candidate.url === TABS_URL).flush(tabPage([tabOf()]));
         fixture.detectChanges();
 
         expect(fixture.nativeElement.querySelector('form.module-settings'))
           .withContext('no editable form may be offered for settings the server refused to disclose')
           .toBeNull();
 
-        const banner: HTMLElement | null = fixture.nativeElement.querySelector('.error-banner');
+        const note: HTMLElement | null =
+          fixture.nativeElement.querySelector('.module-settings__administered');
 
-        expect(banner)
+        expect(note)
           .withContext('the refusal is stated rather than swallowed by the later absence')
           .not.toBeNull();
-        expect(banner?.textContent ?? '')
-          .withContext('the SETTINGS document, not the definition 404, is what the operator reads')
-          .toContain('Administrative module settings are available only through their typed privileged endpoint.');
-        expect(banner?.textContent ?? '')
-          .withContext('its own trace identifier, so the refusal can be correlated in the server log')
+
+        const stated: string = (note?.textContent ?? '').replace(/\s+/g, ' ');
+
+        expect(stated)
+          .withContext('stated in the operator\'s terms')
+          .toContain('This module is part of the site\u2019s administration');
+        expect(stated)
+          .withContext('and it names the screen those settings ARE administered on')
+          .toContain('User Settings');
+        expect(stated)
+          .withContext('its own trace identifier, so the refusal can still be correlated in the server log')
           .toContain('00-settings-refusal-01');
+
+        // ⚠ AND EXACTLY ONE STATEMENT. The banner is withheld here on purpose: rendering it as well would
+        // put a sentence about an endpoint beside the sentence that replaced it, for one fact.
+        expect(fixture.nativeElement.querySelector('.error-banner'))
+          .withContext('one fact, one statement')
+          .toBeNull();
+
+        // The way out. Without it the screen is still a dead end, however well it explains itself.
+        const targets: readonly (string | null)[] = Array.from(
+          note?.querySelectorAll<HTMLAnchorElement>('a') ?? [],
+        ).map((link) => link.getAttribute('href'));
+
+        expect(targets).toContain('/settings/membership');
+        expect(targets).withContext('and a route back to the listing').toContain('/modules');
+      });
+
+      /**
+       * The SAME restraint reached by the OTHER of the two signals, asserted separately because either is
+       * sufficient on its own and a guard written against one of them would leave the other unprotected.
+       *
+       * Here the package flag travels on the module contract and is therefore known before any refusal
+       * arrives - which is exactly why the settings read is answered SUCCESSFULLY in this case. That is an
+       * artificial pairing for a real server, and deliberately so: it strips the refusal out of the picture
+       * so that anything withheld can only have been withheld on the strength of the flag.
+       */
+      it('issues no definition read for a package that reports itself administrative', () => {
+        fixture.componentRef.setInput('pages', null);
+        fixture.componentRef.setInput('moduleId', 0);
+        fixture.detectChanges();
+
+        httpMock
+          .expectOne(MODULE_URL)
+          .flush({ data: moduleDetailOf({ friendlyName: 'User Accounts', isAdmin: true }) });
+        httpMock.expectOne(SETTINGS_URL).flush({ data: settingsBagOf() });
+        fixture.detectChanges();
+
+        // The read that must not happen. A definition the catalogue withholds cannot answer anything but a
+        // refusal, and this branch renders no field that the answer could inform.
+        httpMock.expectNone(DEFINITION_URL);
+
+        expect(fixture.nativeElement.querySelector('.module-settings__administered'))
+          .withContext('the boundary is still explained, so the restraint is not silence')
+          .not.toBeNull();
+        expect(fixture.nativeElement.querySelector('form.module-settings'))
+          .withContext('and still no form for settings written on another screen')
+          .toBeNull();
+
+        httpMock.match(() => true).forEach((request) => request.flush({ data: [] }));
+        fixture.detectChanges();
       });
 
       /**
@@ -2617,6 +3525,43 @@ describe('ModuleSettingsComponent', () => {
         request.flush({ data: moduleDetailOf({ cacheTime: 0 }) });
         fixture.detectChanges();
         drainListingReread();
+      });
+
+      /**
+       * (d) A placement holding NO period of its own is seeded from the definition's declared default.
+       *
+       * ⚠ THE FETCHED DEFAULT USED TO BE IGNORED. The seed read the placement's own value and fell straight to
+       * `'0'` when it held none, so the definition's declared period - the value the legacy screen put in the
+       * box at `ModuleSettings.ascx.vb:L122-L123` - was read from the server on every entry and then discarded.
+       * An operator saving an untouched form therefore wrote 0 over the type's intended period.
+       */
+      it('seeds the period from the definition default when the placement holds none', () => {
+        // -1 is how "no period of its own" reaches this screen: it is the legacy `Null.NullInteger` the reader
+        // mapped a DBNull onto, and the contract carries it rather than a null because the column is NOT NULL.
+        activate(moduleDetailOf({ cacheTime: -1 }), definitionOf({ defaultCacheTime: 240 }));
+        openEverything();
+
+        expect(field<HTMLInputElement>('cacheTime')?.value)
+          .withContext('the definition declares 240 seconds, and that is what the box must offer')
+          .toBe('240');
+
+        const request = interceptSubmission();
+
+        expect((request.request.body as UpdateModuleRequest).cacheTime)
+          .withContext('and an untouched form saves the declared default rather than zero')
+          .toBe(240);
+
+        request.flush({ data: moduleDetailOf({ cacheTime: 240 }) });
+        fixture.detectChanges();
+        drainListingReread();
+      });
+
+      /** And a period the placement DOES hold always wins over the definition's default. */
+      it('prefers the placement period over the definition default', () => {
+        activate(moduleDetailOf({ cacheTime: 30 }), definitionOf({ defaultCacheTime: 240 }));
+        openEverything();
+
+        expect(field<HTMLInputElement>('cacheTime')?.value).toBe('30');
       });
     });
 
@@ -2770,16 +3715,20 @@ describe('ModuleSettingsComponent', () => {
 
         httpMock.expectOne(DEFINITION_URL).flush({ data: definitionOf() });
 
-        const tabsRequest = httpMock.expectOne(TABS_URL);
+        const tabsRequest = httpMock.expectOne((candidate) => candidate.url === TABS_URL);
 
-        // UNPAGED, and asserted as such: the portal-scoped page list carries no page coordinate, no
-        // ordering and no filter, so any parameter at all would be a fabricated contract.
-        expect(tabsRequest.request.params.keys().length)
-          .withContext('the portal page list is unpaged, so no query parameter may be sent')
-          .toBe(0);
+        // MIGRATION: BOUNDED, AND ASSERTED AS SUCH. The portal-scoped page list used to carry no parameter
+        // at all; it is now read a bounded page at a time, so it carries exactly the two paging arguments
+        // and nothing else - the endpoint answers 400 to an ordering or a filter, so sending one would be a
+        // fabricated contract just as an unbounded read was.
+        expect([...tabsRequest.request.params.keys()].sort())
+          .withContext('the portal page list is paged, and takes no ordering and no filter')
+          .toEqual(['pageIndex', 'pageSize']);
+        expect(tabsRequest.request.params.get('pageIndex')).toBe('0');
+        expect(tabsRequest.request.params.get('pageSize')).toBe(String(TAB_PAGE_SIZE));
         expect(tabsRequest.request.method).toBe('GET');
 
-        tabsRequest.flush({ data: [tabOf()] });
+        tabsRequest.flush(tabPage([tabOf()]));
         fixture.detectChanges();
       });
 
@@ -2864,7 +3813,16 @@ describe('ModuleSettingsComponent', () => {
         const empty = q('.module-settings__stored-empty');
 
         expect(empty).not.toBeNull();
-        expect((empty?.textContent ?? '').trim()).toBe('This module has no stored settings of its own.');
+
+        // ⚠ THE CLAIM WAS NARROWED TO WHAT IT ACTUALLY COVERS. It read "This module has no stored settings of
+        // its own", which an operator reads as a statement about the module - and it was false: the same
+        // module carried an alignment, a colour and a border on `dbo.TabModules`, and once those became
+        // editable the sentence contradicted the fields directly above it. It now says what it means, which is
+        // that the module TYPE records no NAMED key-value settings.
+        expect((empty?.textContent ?? '').trim()).toBe(
+          'This module type stores no named settings of its own. The fields above are stored on the module '
+          + 'and its placement.',
+        );
         expect(qa('.module-settings__stored-name').length).toBe(0);
       });
 
@@ -3246,22 +4204,170 @@ describe('ModuleSettingsComponent', () => {
     // ---------------------------------------------------------------------------------------------------
 
     /**
-     * THE FOURTH DATA-TYPE CHECK IS PRESERVED AS A RULE THOUGH IT HAS NO TRANSPORTABLE CONTROL. A
-     * case-insensitive census of `Website/admin/Modules/` returns `asp:RequiredFieldValidator` 0,
-     * `asp:RegularExpressionValidator` 0, `asp:CompareValidator` 4, `asp:CustomValidator` 0,
-     * `asp:RangeValidator` 0 and `asp:ValidationSummary` 0 - so four `CompareValidator`s were the entire
-     * validation surface of the feature.
+     * THE FOURTH DATA-TYPE CHECK IS ENFORCED ON ITS OWN CONTROL. A case-insensitive census of
+     * `Website/admin/Modules/` returns `asp:RequiredFieldValidator` 0, `asp:RegularExpressionValidator` 0,
+     * `asp:CompareValidator` 4, `asp:CustomValidator` 0, `asp:RangeValidator` 0 and `asp:ValidationSummary` 0 -
+     * so four `CompareValidator`s were the entire validation surface of the feature.
+     *
+     * ⚠ THE FOURTH USED TO BE WORDING WITH NOTHING TO SAY IT ABOUT. Its message sat in the component
+     * UNBOUND, because the border column had no transport and therefore no field, and this test asserted the
+     * absence of all three appearance controls. The column is administered now, so the rule is bound to the
+     * control it was written for and the message is reachable by the operator who breaks it.
      */
-    it('preserves the fourth data-type check as wording, its control having no wire contract', () => {
+    it('enforces the fourth data-type check on the control it was written for', () => {
       expect(component['borderInvalidMessage'])
         .withContext('valBorder.ErrorMessage, verbatim, without the layout break tag it carries')
         .toBe('Invalid Border (must be a number between 0 and 9)');
 
       setInput('settings', moduleOf());
       openEverything();
-      expect(field('border')).toBeNull();
-      expect(field('alignment')).toBeNull();
-      expect(field('color')).toBeNull();
+
+      const border = field<HTMLInputElement>('border');
+
+      expect(border).withContext('the rule needs a control to apply to').not.toBeNull();
+
+      // Two characters, which the legacy `MaxLength="1"` attribute alone would have prevented and its
+      // `CompareValidator` would have refused. Set through the model, because the attribute stops a person
+      // typing it and the point here is the RULE rather than the attribute.
+      component['form'].controls.border.setValue('12');
+      component['form'].controls.border.markAsTouched();
+      fixture.detectChanges();
+
+      expect(component['form'].controls.border.valid)
+        .withContext('two digits is not a single digit')
+        .toBeFalse();
+      expect((regionOf('module-settings-border')?.textContent ?? ''))
+        .withContext('and the operator is told, in the legacy words')
+        .toContain('Invalid Border (must be a number between 0 and 9)');
+
+      component['form'].controls.border.setValue('7');
+      fixture.detectChanges();
+
+      expect(component['form'].controls.border.valid).withContext('one digit is accepted').toBeTrue();
     });
   });
+
+  // =====================================================================================================
+  // THE THREE ADMINISTERED APPEARANCE COLUMNS
+  // =====================================================================================================
+  // Reported: the screen stated that the module "has no stored settings of its own" while `dbo.TabModules`
+  // held an Alignment, a Color and a Border for it, and offered no way to see or change any of the three.
+  // `modulesettings.ascx:L120-L139` declares all three; `ModuleSettings.ascx.vb:L144-L147` reads them and
+  // `:L345-L347` saves them.
+  describe('the administered appearance columns', () => {
+    /** The alignment entries' MODEL values, in the order the control declares them. */
+    function alignmentValues(): readonly string[] {
+      const declared = component['alignmentOptions'] as readonly { readonly value: string }[];
+
+      return declared.map((option) => option.value);
+    }
+
+    beforeEach(() => {
+      setInput('canManageAllPages', true);
+      setInput(
+        'settings',
+        moduleOf({ alignment: 'center', color: '#003366', border: '2' }),
+      );
+      openEverything();
+    });
+
+    it('offers the legacy entries in the legacy order, with "Not Specified" last', () => {
+      // `modulesettings.ascx:L120-L139` lists Left, Center, Right and then the empty-valued Not Specified.
+      expect(alignmentValues()).toEqual(['left', 'center', 'right', '']);
+    });
+
+    it('seeds each field from the value the placement stores', () => {
+      // ⚠ THE DOM `value` OF A REACTIVE RADIO IS NOT ITS MODEL VALUE. Angular's radio accessor takes `[value]`
+      // as an input and drives `checked` from it; it never writes the element's own value, which stays at the
+      // browser default of "on". So the selected entry is identified by its POSITION in the declared list.
+      const chosenIndex: number = radios('alignment').findIndex((radio) => radio.checked);
+
+      expect(chosenIndex).withContext('a stored alignment must be selected').toBeGreaterThanOrEqual(0);
+      expect(alignmentValues()[chosenIndex])
+        .withContext('the stored alignment is the one selected')
+        .toBe('center');
+
+      expect(field<HTMLInputElement>('color')?.value).toBe('#003366');
+      expect(field<HTMLInputElement>('border')?.value).toBe('2');
+    });
+
+    it('carries an edited value through to the replacement, exactly as entered', () => {
+      const emitted: UpdateModuleRequest[] = [];
+      component.save.subscribe((request) => emitted.push(request));
+
+      // The legacy list's "Not Specified" entry, whose value is the empty string, located by position for the
+      // reason recorded above.
+      const notSpecifiedIndex: number = alignmentValues().indexOf('');
+
+      expect(notSpecifiedIndex)
+        .withContext('the legacy list offers a way to specify nothing')
+        .toBeGreaterThanOrEqual(0);
+      radios('alignment')[notSpecifiedIndex].click();
+      type('color', 'Red');
+      type('border', '0');
+      fixture.detectChanges();
+
+      submit();
+
+      expect(emitted[0].alignment)
+        .withContext('the empty string is a stored alignment, not an absent one')
+        .toBe('');
+      expect(emitted[0].color)
+        .withContext('the colour column is `nvarchar(20)` and holds whatever the operator wrote')
+        .toBe('Red');
+      expect(emitted[0].border)
+        .withContext('zero is a legitimate border width and must not be read as absent')
+        .toBe('0');
+    });
+
+    it('refuses a colour longer than the column holds, at the field rather than the server', () => {
+      // `dbo.TabModules.Color` is `nvarchar(20)`. Twenty-one characters would be truncated or refused by the
+      // store, and either outcome is worse than saying so here.
+      expect(field<HTMLInputElement>('color')?.maxLength).toBe(20);
+      expect(field<HTMLInputElement>('border')?.maxLength).toBe(1);
+    });
+  });
+
+  // =====================================================================================================
+  // AN ADMINISTRATIVE MODULE, RECOGNISED FROM THE MODULE READ ALONE
+  // =====================================================================================================
+  describe('an administrative module recognised before the settings read answers', () => {
+    it('explains the boundary and names the screen those settings belong to', () => {
+      // The package flag travels on the module contract, so this state is known WITHOUT waiting for the
+      // refusal - which is what lets the listing decide whether to offer this screen at all.
+      setInput('settings', moduleOf({ friendlyName: 'User Accounts', isAdmin: true }));
+
+      const note: HTMLElement | null = q('.module-settings__administered');
+
+      expect(note).withContext('the boundary is stated rather than left as an empty form').not.toBeNull();
+      expect(q('form.module-settings'))
+        .withContext('and no form is offered for settings this screen cannot write')
+        .toBeNull();
+
+      const stated: string = (note?.textContent ?? '').replace(/\s+/g, ' ');
+
+      expect(stated).toContain('part of the site\u2019s administration');
+      expect(stated).toContain('User Settings');
+
+      // No server refusal happened on this path, so there is no reference to quote and none is invented.
+      expect(q('.module-settings__administered-reference'))
+        .withContext('a reference is only shown when a refusal actually produced one')
+        .toBeNull();
+    });
+
+    it('offers the form as usual for an ordinary module, and for one whose package is unresolved', () => {
+      setInput('settings', moduleOf({ isAdmin: false }));
+
+      expect(q('form.module-settings')).not.toBeNull();
+
+      // ⚠ `null` IS NOT `true`. An unresolved package makes no claim; withholding the form on it would hide a
+      // working screen from every module whose definition join failed.
+      setInput('settings', moduleOf({ isAdmin: null }));
+
+      expect(q('form.module-settings'))
+        .withContext('an unresolved package is not a claim that the module is administrative')
+        .not.toBeNull();
+    });
+  });
+
 });

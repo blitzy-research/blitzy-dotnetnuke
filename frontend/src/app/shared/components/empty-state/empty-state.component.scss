@@ -46,12 +46,13 @@
 // The weight is load-bearing, because the user-agent default for this element is bold and the intended
 // style is not. Zeroing the margin is too: the parent spaces its children with a gap, so a user-agent
 // margin would double it.
+// ⚠ #21 — NO SIZE IS DECLARED, DELIBERATELY. This is an `h2`, and it used to force `--font-size-xxl`, which
+// is the `h1` step - so on the fallback view the page's own `h1` and this heading rendered identically at
+// 24px and a reader could not tell the page from the region inside it. Taking the element ramp means this
+// heading is always one step below whatever page title sits above it.
 .empty-state__title {
   margin-block: 0;
-  font-size: var(--font-size-xxl);
-  font-weight: var(--font-weight-normal);
   line-height: var(--line-height-tight);
-  color: var(--color-primary);
 }
 
 .empty-state__message {

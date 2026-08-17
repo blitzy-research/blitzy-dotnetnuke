@@ -22,13 +22,23 @@
     action carrying the command argument "Delete", guarded by a browser confirmation and dispatching
     into `DeleteExpiredPortals()`.
   -->
-  <!--
-    ⚠ P-M9 — THE RANGE AND TOTAL, RESTATED HERE BECAUSE THE PAGER IS BELOW THE FOLD. Measured at y = 908
-    in a 900-tall viewport on page one.
-  -->
-  <app-page-header [title]="heading" [subtitle]="resultSummary()">
+  <app-page-header [title]="heading" [subtitle]="pageSubtitle">
     <a class="page-action portal-list__action" [routerLink]="addPortalLink">{{ addPortalLabel }}</a>
   </app-page-header>
+
+  <!--
+    ⚠ P-M9 — THE RANGE AND TOTAL, RESTATED ABOVE THE GRID BECAUSE THE PAGER IS BELOW THE FOLD. Measured at
+    y = 908 in a 900-tall viewport on page one, so nothing about paging was visible without scrolling.
+
+    ⚠ AND IT IS NO LONGER THE SUBTITLE. It sat in the header's subtitle slot, which under the application's
+    one subtitle rule states a screen's SCOPE and never a status - and a count stated in the header, in the
+    grid's own status line and in the pager is one fact with three owners. This line is deliberately NOT a
+    live region: the grid's status announces the page's rows and the pager announces the match set, so a
+    third announcement of the same change would be heard as an echo.
+  -->
+  @if (resultSummary(); as range) {
+    <p class="portal-list__range">{{ range }}</p>
+  }
 
   <!--
     The letter strip is rendered here rather than delegated: no shared component covers a first-letter
@@ -37,7 +47,21 @@
   <div class="portal-list__filters">
     <h2 data-visually-hidden>Filter Sites</h2>
 
-    <div class="portal-list__letters" role="group" [attr.aria-label]="filterStripLabel">
+    <!--
+      ⚠ ONE TAB STOP, NOT TWENTY-SEVEN, AND `role="toolbar"` IS WHAT MAKES THAT LEGIBLE RATHER THAN SURPRISING.
+      Measured before this change: every one of the twenty-seven entries sat in the sequential tab order - on the
+      account listing they were positions 7 to 33 of 82 stops, a third of the screen's whole keyboard traversal
+      for one filter - and a real ArrowRight press with an entry focused left focus exactly where it was, on this
+      strip and on its sibling. The shared roving-focus directive gives exactly one entry `tabindex="0"` and takes
+      it from the rest; the role is what tells a reader the arrow keys apply here at all, which a plain group
+      could not.
+    -->
+    <div
+      class="portal-list__letters"
+      role="toolbar"
+      appRovingFocus
+      [attr.aria-label]="filterStripLabel"
+    >
       <!-- TWENTY-SEVEN entries: A to Z, then the entry that CLEARS the filter. -->
       <!--
         MIGRATION: THE STRIP IS TWENTY-SEVEN ENTRIES, NOT THE LEGACY TWENTY-EIGHT, BECAUSE THE
@@ -57,15 +81,29 @@
         rendered identically whatever was applied, so the strip never reported its own state.
       -->
       <!--
-        ⚠ BLITZY [A11Y]: each entry's pointer target is smaller than the 44-by-44 recommendation,
-        measured in the browser at roughly 23 by 19 pixels for a single letter, and it is implemented
-        per the design source rather than silently enlarged.
+        ⚠ THE PREVIOUS NOTE HERE WAS FALSE AND IS CORRECTED RATHER THAN CARRIED. It recorded each entry as
+        "roughly 23 by 19 pixels" and short of the 44-by-44 recommendation. Re-measured in the browser, all
+        twenty-seven entries render EXACTLY 44 by 44 - the distinct sizes across the whole strip are a set of
+        one - because `_forms.scss` floors every button in the application on both axes, and that rule's own
+        comment records closing precisely this defect. Nothing was silently enlarged here; the floor arrived
+        from the shared vocabulary.
+
+        ⚠ EACH ENTRY IS NAMED, WHICH IT WAS NOT. Measured against the account listing's identical strip,
+        these entries carried NO `aria-label` at all, so a reader moving through twenty-seven controls heard a
+        single spoken character each while the sibling screen said what pressing it does. The name CONTAINS the
+        visible character, which is what keeps a spoken command matching what is seen, and the clearing entry
+        is left to its own visible word because "All" already says what it does - identified by its null
+        FILTER VALUE rather than by matching its label text, so the two cannot come apart if the wording
+        changes.
       -->
       @for (option of filterOptions; track option.label) {
         <button
           type="button"
           class="portal-list__letter"
           [attr.aria-pressed]="isFilterSelected(option)"
+          [attr.aria-label]="
+            option.value === null ? null : filterStripLabel + ' ' + option.label
+          "
           (click)="onFilterSelected(option)"
         >
           {{ option.label }}
@@ -95,10 +133,24 @@
     </div>
   }
 
-  <!-- Three mutually exclusive surfaces: the first read, an empty result, and the grid. -->
-  @if (showInitialSpinner()) {
-    <app-loading-spinner label="Loading portals…" />
-  } @else if (hasRows()) {
+  <!--
+    ONE SURFACE, AND IT IS THE GRID: it reports its own first read, its own refetch, its own failed read and
+    its own empty result. Nothing is substituted for it.
+
+    ⚠ THE FIRST READ NO LONGER REPLACES THE GRID WITH A BARE INDICATOR, and the change is about consistency
+    rather than taste. This screen used to substitute a full-width spinner for the whole table while the
+    other three listings kept their table and let the shared grid draw the indicator in its own placeholder
+    row - so a reader who moved between listings met two different loading shapes, and on this one the column
+    headings vanished and returned. The grid owns the waiting state for all four now: it replaces the ROWS on
+    a first read, keeps them and shows the refetch strip on a re-read, and paints the empty state only when a
+    settled read returned nothing.
+
+    ⚠ AND A FAILED READ IS NOT AN EMPTY ONE, which is why `[failed]` is bound below. A contract or transport
+    failure leaves `portals()` empty, so a branch keyed on row count alone sent every failure to
+    `app-empty-state` - which then asserted "No portals match the current filter." over a read that had in
+    fact returned rows this client could not decode. That is a false statement about the data. Keeping the
+    grid shell on failure lets it render its own "could not be read" placeholder and announcement instead.
+  -->
     <!--
       The DESCRIPTORS are assembled by the component, which is where a column's key, its heading, its
       bound member and its two alignments belong; four of the ten need a cell template and those four
@@ -143,13 +195,35 @@
     <app-data-table
       [columns]="columns()"
       [rows]="portals()"
+      [totalCount]="totalCount()"
+      [rowOffset]="pageIndex() * pageSize()"
       [rowKey]="portalRowKey"
       [loading]="loading()"
+      [loadingLabel]="loadingLabel"
+      [failed]="hasListFailure()"
+      [emptyMessage]="emptyMessage()"
       [sortBy]="sortBy()"
       [sortDir]="sortDir()"
       (sortChange)="onSortChange($event)"
     >
       <span dataTableCaption>{{ gridCaption }}</span>
+
+      <!--
+        ⚠ PROJECTED INTO THE TABLE'S OWN EMPTY ROW RATHER THAN RENDERED IN PLACE OF THE TABLE. This screen
+        used to substitute its own panel for the grid when nothing matched, which destroyed the polite
+        `role="status"` region along with it - so narrowing the listing to nothing announced NOTHING, the one
+        transition most in need of a report. The wording and the recovery affordance are unchanged; only
+        their home is.
+      -->
+      <ng-container dataTableEmptyAction>
+        @if (isPastEnd()) {
+          <button type="button" class="portal-list__action" (click)="onReturnToFirstPage()">
+            First page
+          </button>
+        } @else {
+          <a class="portal-list__action" [routerLink]="addPortalLink">{{ addPortalLabel }}</a>
+        }
+      </ng-container>
     </app-data-table>
 
     <!--
@@ -163,25 +237,22 @@
       `:L108-L114` shows suppression was hard-coded on with the real setting COMMENTED OUT at
       `:L110-L111`.
     -->
-    <app-pagination
-      [page]="pageIndex()"
-      [pageSize]="pageSize()"
-      [totalCount]="totalCount()"
-      [loading]="loading()"
-      (pageChange)="onPageChange($event)"
-    />
-  } @else {
-    <!-- Nothing to draw. -->
-    <app-empty-state [message]="emptyMessage()">
-      @if (isPastEnd()) {
-        <button type="button" class="portal-list__action" (click)="onReturnToFirstPage()">
-          First page
-        </button>
-      } @else {
-        <a class="portal-list__action" [routerLink]="addPortalLink">{{ addPortalLabel }}</a>
-      }
-    </app-empty-state>
-  }
+    <!--
+      ⚠ WITHHELD UNTIL A READ HAS PRODUCED A MATCH SET, AND WITHHELD WHEN ONE FAILED. The pager states a
+      range and a total, and after a failure neither is known - `totalCount()` is zero because nothing
+      decoded, not because the site has no portals. So it would claim "0-0 of 0" in a polite live region,
+      contradicting the failure the banner and the grid are both reporting. Saying nothing is the only
+      truthful option, which matches how the modules listing gates its own pager.
+    -->
+    @if (hasRows()) {
+      <app-pagination
+        [page]="pageIndex()"
+        [pageSize]="pageSize()"
+        [totalCount]="totalCount()"
+        [loading]="loading()"
+        (pageChange)="onPageChange($event)"
+      />
+    }
 </div>
 
 <!--
@@ -319,10 +390,26 @@
   lapsed in 2020 and one running to 2099 painted identically - same colour, same weight, no other mark -
   on the one screen whose purpose is administering hosting terms.
 -->
+<!--
+  ⚠ AN ABSENT EXPIRY USED TO PAINT NOTHING AT ALL, and it is the reason the shared absent-value rendering
+  exists. The display pipe answers the empty string for an absent instant, so six of seven rows rendered a cell
+  with empty text, whitespace-only content and no children - indistinguishable from a cell that had failed to
+  render, and silent to a screen reader. The date is now rendered only when there IS one.
+-->
 <ng-template #expiresCell let-portal>
-  {{ portal.expiryDate | dateDisplay }}
-  @if (expiryState(portal) === 'expired') {
-    <span class="portal-list__expired">{{ expiredQualifier }}</span>
+  @if (hasExpiry(portal)) {
+    <span data-atomic-value>{{ portal.expiryDate | dateDisplay }}</span>
+    @if (expiryState(portal) === 'expired') {
+      <!--
+        ⚠ `&ngsp;` IS A REAL SPACE AND IT IS LOAD-BEARING HERE. The compiler strips whitespace between
+        elements, so these two spans produced one text run — "6/30/2021Expired" — and the four-pixel gap a
+        sighted reader sees came from a margin, which assistive technology and copy-paste both ignore. The
+        entity emits an actual space, so the date and its qualifier read as two words in every medium.
+      -->
+      &ngsp;<span class="portal-list__expired">{{ expiredQualifier }}</span>
+    }
+  } @else {
+    <app-absent-value />
   }
 </ng-template>
 
@@ -336,32 +423,48 @@
   the cell stops painting it as a number.
 -->
 <!-- ⚠ MINOR (money differentiation) — THE HOSTING-FEE CELL. -->
+<!--
+  ⚠ THE `&nbsp;` ARE LOAD-BEARING - R7. Angular compiles with `preserveWhitespaces` disabled, and that pass
+  DELETES a whitespace-only text node standing between two elements. Both qualifiers below are
+  `visually-hidden`, so the damage is confined to the accessibility tree and is invisible on screen: the cell
+  announced one run-together token, measured as "-99.99negative". Contrast the expiry cell above, which reads
+  correctly as "1/1/2020 Expired" for one incidental reason only - its interpolation and the newline after it
+  occupy the SAME text node, so a collapsed space survives there.
+
+  ⚠ IT IS `&nbsp;` RATHER THAN `&ngsp;` DELIBERATELY, and that distinction was measured rather than reasoned.
+  An ordinary space reaches the DOM but is dropped from the ACCESSIBILITY TREE whenever Angular's anchor
+  comments leave it an isolated whitespace-only text node, because Blink builds no text box for one. On the
+  sibling role-assignment screen that produced a computed accessible name of "9/20/2027Active" behind a DOM
+  that read "9/20/2027 Active". U+00A0 is not collapsible, so it always produces a text box and always
+  reaches the tree. Both qualifiers here are 1x1 and clipped, so there is no visual consequence.
+-->
 <ng-template #hostFeeCell let-portal>
   @if (isFeeNegative(portal)) {
-    <span class="portal-list__fee--negative">{{ hostingFeeText(portal) }}</span>
-    <span class="portal-list__fee-qualifier">{{ negativeFeeQualifier }}</span>
+    <span class="portal-list__fee--negative" data-atomic-value>{{ hostingFeeText(portal) }}</span
+    >&nbsp;<span class="portal-list__fee-qualifier">{{ negativeFeeQualifier }}</span>
   } @else {
-    {{ hostingFeeText(portal) }}
+    <span data-atomic-value>{{ hostingFeeText(portal) }}</span>
   }
   <!--
     THE APPROXIMATION QUALIFIER, ON THE ROWS THAT NEED IT AND NOWHERE ELSE. `Portals.HostFee` is SQL
     `money` and crosses the wire as a JSON number, so above the exact-cents bound the figure painted
     above may already differ from the stored one.
   -->
-  @if (isHostFeeApproximate(portal)) {
-    <span class="portal-list__fee-qualifier">{{ approximateFeeQualifier }}</span>
+  @if (isHostFeeApproximate(portal)) {&nbsp;<span class="portal-list__fee-qualifier">{{ approximateFeeQualifier }}</span>
   }
 </ng-template>
 
 <ng-template #tallyCell let-portal let-column="column">
   @if (isTallyAbsent(portal, column.key)) {
     <!--
-      The mark is decorative and the words are the content: a reader who cannot see the dash is told
-      what it means, and a reader who can is not read a sentence on every row of a full page.
+      THE SHARED ABSENT-VALUE RENDERING, and it replaces a pair of spans this screen used to compose itself.
+      The mark is still decorative and the words are still the content - a reader who cannot see the dash is
+      told what it means, and a reader who can is not read a sentence on every row of a full page - but the
+      mark, its colour and the wording are now the SAME here as on every other listing, which is the defect
+      that pair could not fix on its own.
     -->
-    <span aria-hidden="true">{{ absentTallyMark }}</span>
-    <span class="portal-list__absent-tally">{{ absentTallyDescription }}</span>
+    <app-absent-value />
   } @else {
-    {{ tallyText(portal, column.key) }}
+    <span data-atomic-value>{{ tallyText(portal, column.key) }}</span>
   }
 </ng-template>

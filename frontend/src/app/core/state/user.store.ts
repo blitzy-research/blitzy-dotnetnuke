@@ -31,10 +31,13 @@ import type {
 } from '../models/user.model';
 import { UserService } from '../services/user.service';
 import {
+  contractProblem,
   failureCode,
   summarizeProblem,
+  transportProblem,
   type ProblemSummary,
 } from '../utils/form-errors.util';
+import { isContractViolation } from '../utils/decode.util';
 
 // THE TENANT'S OPENING-VIEW POLICY
 // The three values `Display_Mode` may hold, named rather than left as integers at the one place that
@@ -185,10 +188,16 @@ export interface UserFailure {
   readonly operation: UserOperation;
 
   /**
-   * The problem document exactly as it arrived, or null when the failure carried none. Held so that a
-   * caller needing the machine-readable detail has it.
+   * The problem document for this failure. The server's own document exactly as it arrived whenever it sent
+   * one, so a caller needing the machine-readable detail has it.
+   *
+   * ⚠ NEVER `null`, AND IT USED TO BE. A failure that carried no document — one that never arrived, or a
+   * response this client could not decode — is given one synthesised from what IS known. The nullable form
+   * was measured leaving the shared error banner with nothing to render at all, so a failed refresh looked
+   * indistinguishable from a successful one while every mutating control stayed enabled over the stale
+   * record it had just disclaimed.
    */
-  readonly problem: ProblemDetails | null;
+  readonly problem: ProblemDetails;
 
   /**
    * The failure summarised by the one function in the workspace that decides severity and wording. a
@@ -520,10 +529,36 @@ export class UserStore implements OnDestroy {
   private readonly _lastSettingsWrite = signal<MembershipSettingsUpdateResult | null>(null);
 
   private readonly _usersLoading = signal<boolean>(false);
+
+  /**
+   * Whether the LISTING QUESTION has been answered for the state on screen - a read has settled, or the
+   * tenant's policy has decided that nothing is to be asked for.
+   *
+   * ⚠ PUBLISHED, AND THE MEASURED DEFECT IT CLOSES IS THIS SCREEN'S WORST INSTANCE OF IT. A listing cannot
+   * otherwise tell "not asked yet" from "asked and matched nothing": both hold an empty page with nothing
+   * in flight, and the grid reads that as a genuine zero-result and paints "Nothing to Display". On this
+   * screen the window is not a change-detection pass but a WHOLE ROUND TRIP - `resetSearchCriteria` empties
+   * the page on arrival and `initialise` reads the tenant's membership policy FIRST, so the accounts read is
+   * only dispatched once that response lands. For the entire duration the grid claimed the tenant had no
+   * accounts.
+   *
+   * Lowered when the question is reopened (a fresh opening sequence, or criteria cleared) and raised when it
+   * is answered - on a read's success, on a read's failure, and on the policy's decision to ask for nothing,
+   * which is the state the no-query notice describes.
+   */
+  private readonly _listSettled = signal<boolean>(false);
   private readonly _selectedUserLoading = signal<boolean>(false);
   private readonly _profileLoading = signal<boolean>(false);
   private readonly _membershipSettingsLoading = signal<boolean>(false);
   private readonly _profileDefinitionsLoading = signal<boolean>(false);
+
+  /**
+   * Whether the tenant's profile declarations have been read successfully at least once. ⚠ A FLAG RATHER
+   * THAN AN EMPTINESS TEST ON THE HELD VALUE, because a tenant that declares NO properties is a legitimate
+   * answer and an emptiness test would re-ask the server on every screen entry forever. Set only on a
+   * successful read, so a failed one can still be retried.
+   */
+  private readonly _profileDefinitionsRead = signal<boolean>(false);
   private readonly _memberServicesLoading = signal<boolean>(false);
 
   /**
@@ -631,6 +666,12 @@ export class UserStore implements OnDestroy {
 
   /** Whether the listing is being read. */
   readonly usersLoading = this._usersLoading.asReadonly();
+
+  /**
+   * Whether the listing question has been answered, so a screen can tell an un-asked listing from an empty
+   * one. See {@link UserStore._listSettled} for why this is published.
+   */
+  readonly listSettled = this._listSettled.asReadonly();
 
   /** Whether the selected account is being read. */
   readonly selectedUserLoading = this._selectedUserLoading.asReadonly();
@@ -926,6 +967,22 @@ export class UserStore implements OnDestroy {
    */
   initialise(): void {
     this._failure.set(null);
+    // ⚠ THE QUESTION IS REOPENED HERE, BEFORE THE POLICY READ THAT WILL ANSWER IT. This sequence reads the
+    // policy first and only then decides what listing to ask for, so between this line and that decision
+    // there is no listing read in flight and no page in hand - and without this the grid spent the whole
+    // round trip asserting that the tenant has no accounts.
+    this._listSettled.set(false);
+
+    // ⚠ THE LISTING NEEDS THE POLICY ONLY FOR THE PAGE SIZE IT DECLARES, so a copy already held answers the
+    // question exactly. The policy was measured being re-read on every entry to the listing, which is a
+    // tenant-wide constant being fetched again to learn a number that had not changed. The editor's own read
+    // is `loadMembershipSettings`, which is deliberately NOT guarded: an editor must show current state.
+    if (this._membershipSettings() !== null && this._membershipSettingsLoading() === false) {
+      this.readListingAfterSettings();
+
+      return;
+    }
+
     this.dispatchSettings(true);
   }
 
@@ -1006,6 +1063,8 @@ export class UserStore implements OnDestroy {
 
     this._failure.set(null);
     this._users.set(emptyPagedResult<UserListItem>());
+    // Reopened with the page it describes: the rows this latch said were in hand have just been discarded.
+    this._listSettled.set(false);
     this._requestedPageIndex.set(0);
     this._search.set({ mode: 'none' });
     this._sortField.set(undefined);
@@ -1073,8 +1132,47 @@ export class UserStore implements OnDestroy {
   // COMMANDS — ONE ACCOUNT
   // -------------------------------------------------------------------------
 
-  /** @param userId The account to select. */
+  /**
+   * @param userId The account to select.
+   * @remarks
+   * ⚠ IDEMPOTENT FOR AN ACCOUNT ALREADY HELD OR ALREADY BEING READ, AND THIS GUARD MUST NOT BE REMOVED.
+   * Three screens select the same account from their own route effects, and an edit load was measured
+   * issuing the detail read TWICE: the second dispatch cancelled the first mid-flight and then asked the
+   * server the identical question, so the work was doubled and the answer was not improved. A caller that
+   * genuinely needs fresh state after a write goes through `reconcileSelectedAccount`, which is a separate
+   * path and is deliberately not guarded.
+   */
   selectUser(userId: number): void {
+    this._failure.set(null);
+
+    if (this._selectedUserId() === userId
+      && (this._selectedUser() !== null || this._selectedUserLoading())) {
+      return;
+    }
+
+    if (this._selectedUserId() !== userId) {
+      this._selectedUser.set(null);
+      this._profile.set(null);
+      this._selectedUserId.set(userId);
+    }
+
+    this.dispatchUser(userId);
+  }
+
+  /**
+   * Reads the selected account AGAIN, whatever is already held for it.
+   *
+   * @param userId The account to re-read.
+   * @remarks
+   * ⚠ DELIBERATELY UNGUARDED, WHICH IS THE ENTIRE REASON IT EXISTS BESIDE {@link selectUser}. That method is
+   * idempotent for an account already held, so that three screens selecting the same account from their own
+   * route effects cannot double the detail read. A RECOVERY control asks the opposite question: the record on
+   * screen is exactly what could not be confirmed, so the caller wants the read reissued precisely BECAUSE
+   * something is already held. Routing recovery through the guarded method made the control do nothing at
+   * all - the account was still held, so the guard returned and no request was sent, leaving the operator with
+   * an unconfirmed record, a retry that did not retry and no way forward.
+   */
+  rereadUser(userId: number): void {
     this._failure.set(null);
 
     if (this._selectedUserId() !== userId) {
@@ -1431,7 +1529,41 @@ export class UserStore implements OnDestroy {
    */
   loadProfileDefinitions(): void {
     this._failure.set(null);
+
+    // ⚠ REUSES WHAT IS HELD. The declarations are a tenant-wide catalogue that changes only when an operator
+    // edits it, and they were measured being re-read on every entry to the account listing and to the
+    // catalogue screen. A screen that must discard local state and re-ask goes through
+    // `refreshProfileDefinitions`, which states that intent in its name.
+    if (this._profileDefinitionsRead() && this._profileDefinitionsLoading() === false) {
+      return;
+    }
+
     this.dispatchDefinitions();
+  }
+
+  /**
+   * Re-reads the tenant's profile declarations unconditionally, discarding any held copy. For the explicit
+   * refresh commands, which must show what the server holds now rather than what was last seen.
+   */
+  refreshProfileDefinitions(): void {
+    this._failure.set(null);
+    this.dispatchDefinitions();
+  }
+
+  /**
+   * Re-reads the tenant's account policy unconditionally and then re-reads the listing. The counterpart of
+   * {@link UserStore.initialise} for a RETRY rather than for an arrival.
+   *
+   * @remarks
+   * ⚠ WHY A RETRY MUST NOT REUSE A HELD POLICY. The state a retry recovers from includes a policy read that
+   * FAILED: the listing then ran at the shared fallback page size beside a policy nobody could read, and
+   * reusing whatever was held - possibly nothing - would leave the screen in exactly the condition the
+   * reader pressed the control to escape. An arrival is different, and reuses what is held, because nothing
+   * failed.
+   */
+  refreshMembershipSettings(): void {
+    this._failure.set(null);
+    this.dispatchSettings(true);
   }
 
   /**
@@ -1789,6 +1921,9 @@ export class UserStore implements OnDestroy {
     this._lastSettingsWrite.set(null);
 
     this._usersLoading.set(false);
+    // ⚠ THE LATCH GOES WITH THE SLICE IT DESCRIBES. The page it spoke for was emptied above, so a latch left
+    // standing would tell the next session's first arrival that a listing is in hand when none is.
+    this._listSettled.set(false);
     this._selectedUserLoading.set(false);
     this._profileLoading.set(false);
     this._membershipSettingsLoading.set(false);
@@ -1896,6 +2031,10 @@ export class UserStore implements OnDestroy {
       this.listRequest?.unsubscribe();
       this.listRequest = null;
       this._usersLoading.set(false);
+      // ANSWERED, not unanswered: nothing is being read and nothing will be, which is exactly what the
+      // no-query notice states. Leaving the latch down here would leave a waiting indicator standing beside
+      // that notice for as long as the screen was open.
+      this._listSettled.set(true);
 
       return;
     }
@@ -1908,9 +2047,11 @@ export class UserStore implements OnDestroy {
       next: (page: PagedResult<UserListItem>) => {
         this._users.set(page);
         this._usersLoading.set(false);
+        this._listSettled.set(true);
       },
       error: (cause: unknown) => {
         this._usersLoading.set(false);
+        this._listSettled.set(true);
         this.recordFailure('loadUsers', cause);
       },
     });
@@ -2001,6 +2142,10 @@ export class UserStore implements OnDestroy {
     // `None` yields no opening search, and nothing is dispatched. The mode is already 'none',
     // so there is nothing to write either — the screen simply waits to be asked.
     if (opening === null) {
+      // The question IS answered by this decision: the tenant's policy is that nothing is listed until
+      // somebody asks. The no-query notice says so, and the grid must stop indicating that a read is coming.
+      this._listSettled.set(true);
+
       return;
     }
 
@@ -2046,6 +2191,7 @@ export class UserStore implements OnDestroy {
       next: (definitions: readonly ProfilePropertyDefinition[]) => {
         this._profileDefinitions.set(definitions);
         this._profileDefinitionsLoading.set(false);
+        this._profileDefinitionsRead.set(true);
       },
       error: (cause: unknown) => {
         this._profileDefinitionsLoading.set(false);
@@ -2174,9 +2320,25 @@ export class UserStore implements OnDestroy {
    * @returns The described failure.
    */
   private describeFailure(operation: UserOperation, cause: unknown): UserFailure {
+    // ⚠ A RESPONSE THIS CLIENT COULD NOT READ IS ITS OWN CLASS, tested first because it carries neither a
+    // status nor a body and would otherwise be reported as a server that could not be reached.
+    if (isContractViolation(cause)) {
+      const unreadable: ProblemDetails = contractProblem(cause.path);
+
+      return {
+        operation,
+        problem: unreadable,
+        summary: summarizeProblem(unreadable),
+        code: failureCode(unreadable),
+      };
+    }
+
     const document: ProblemDetails | null = readProblemDetails(cause);
     const status: number | null = resolveStatus(document, readTransportStatus(cause));
-    const problem: ProblemDetails | null = withObservedStatus(document, status);
+    const observed: ProblemDetails | null = withObservedStatus(document, status);
+
+    // Synthesised rather than left null, so the banner always has a title and a sentence to render.
+    const problem: ProblemDetails = observed ?? transportProblem(status);
 
     return {
       operation,

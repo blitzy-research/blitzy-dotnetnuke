@@ -14,7 +14,12 @@ import {
   decodePortalSettings,
 } from '../models/portal.model';
 import { arrayOf, decodeResponse, envelopeOf, pageOf } from '../utils/decode.util';
-import { emptyQueryParams, portalListParams } from '../utils/http-params.util';
+import {
+  carriesPortalSearchText,
+  emptyQueryParams,
+  portalListParams,
+  portalSearchBody,
+} from '../utils/http-params.util';
 import { presentedInContext } from './notification.service';
 
 import type { Decoder } from '../utils/decode.util';
@@ -68,6 +73,18 @@ export class PortalService {
     request: PagedRequestParams,
     filter?: PortalListFilter | null,
   ): Observable<PortalListPage> {
+    // ⚠ THE TRANSPORT IS CHOSEN BY WHETHER THE QUERY CARRIES A TERM A PERSON TYPED, AND THIS BRANCH MUST
+    // NOT BE COLLAPSED TO ONE CALL. Two members here can carry one - the paging contract's own free-text
+    // term and the site-name filter - and a query string is written into the reverse proxy's access log and
+    // into the API's own request log. The reasoning is set out in full on the module listing.
+    if (carriesPortalSearchText(request, filter)) {
+      return this.http
+        .post<unknown>(API_ENDPOINTS.portals.search(), portalSearchBody(request, filter), {
+          context: presentedInContext(),
+        })
+        .pipe(map((body) => decodeResponse(PORTAL_PAGE, body)));
+    }
+
     const params: HttpParams = portalListParams(request, filter);
 
     // Read as `unknown` and DECODED, not asserted.

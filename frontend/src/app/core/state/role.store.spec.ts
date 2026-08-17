@@ -2714,16 +2714,22 @@ describe('RoleStore', () => {
       expect(problem.detail).toBe('<br/>The role was not added.');
     });
 
-    it('records absence of a document when the server explained nothing', () => {
+    it('synthesises a document when the server explained nothing', () => {
+      // ⚠ THIS ASSERTION WAS INVERTED, AND THE INVERSION WAS A DEFECT RATHER THAN A CHOICE. It used to
+      // require `problem` to be NULL so that "a consumer must be able to tell that the server said
+      // nothing" - but every consumer binds this member to the shared error banner, and the banner renders
+      // nothing at all from null. A caller that needs to know whether the server spoke has `synthesised`
+      // wording to read in the document itself; a caller that needs to SHOW the failure needs a document.
       store.loadRoles();
       expectGet(ROLES_URL)
         .flush(null, { status: 503, statusText: 'Service Unavailable' });
 
       const failure: RoleStoreFailure = present(store.failure(), 'the held failure');
+      const problem: ProblemDetails = present(failure.problem, 'the synthesised document');
 
-      expect(failure.problem)
-        .withContext('a consumer must be able to tell that the server said nothing')
-        .toBeNull();
+      expect(problem.status).toBe(503);
+      expect(problem.title).withContext('a title the banner can render').toBe('Request failed');
+      expect((problem.detail ?? '').length).withContext('and a sentence').toBeGreaterThan(0);
       expect(failure.summary.status)
         .withContext('severity still resolves from the transport status alone')
         .toBe(503);
@@ -2767,15 +2773,19 @@ describe('RoleStore', () => {
         .toBeNull();
     });
 
-    it('records no document when the response never arrived at all', () => {
+    it('synthesises an unreachable-server document when the response never arrived at all', () => {
       store.loadRoles();
       expectGet(ROLES_URL).error(new ProgressEvent('error'));
 
       const failure: RoleStoreFailure = present(store.failure(), 'the held failure');
+      const problem: ProblemDetails = present(failure.problem, 'the synthesised document');
 
-      expect(failure.problem)
-        .withContext('a progress event is not a problem document')
-        .toBeNull();
+      // A progress event is not a problem document, which is exactly why one has to be composed: the
+      // banner has to say something, and "the server could not be reached" is the truthful sentence for a
+      // request that never arrived.
+      expect(problem.status).toBe(0);
+      expect(problem.title).toBe('Network error');
+      expect(problem.detail).toContain('could not be reached');
       expect(failure.summary.status).toBe(0);
       expect(failure.operation).toBe('loadRoles');
     });
@@ -2803,7 +2813,7 @@ describe('RoleStore', () => {
       expect(failure.conflict).toBe(CONFLICT_CODE.duplicateRoleName);
     });
 
-    it('records no document when a gateway answered with a page instead of one', () => {
+    it('synthesises a document when a gateway answered with a page instead of one', () => {
       store.loadRoles();
       expectGet(ROLES_URL).flush('<html><body>504 Gateway Time-out</body></html>', {
         status: 504,
@@ -2811,20 +2821,32 @@ describe('RoleStore', () => {
       });
 
       const failure: RoleStoreFailure = present(store.failure(), 'the held failure');
+      const problem: ProblemDetails = present(failure.problem, 'the synthesised document');
 
-      expect(failure.problem).toBeNull();
+      // The gateway's HTML is not a problem document and none of it is quoted; the status is all that
+      // survives, and it is enough to word a truthful failure from.
+      expect(problem.status).toBe(504);
+      expect(problem.detail).not.toContain('Gateway Time-out');
       expect(failure.summary.status).toBe(504);
       expect(failure.summary.severity).toBe('error');
     });
 
-    it('records no document when the text parsed but described something else', () => {
+    it('quotes nothing from a body that parsed but described something else', () => {
       store.loadRoles();
       expectGet(ROLES_URL).flush(JSON.stringify({ message: 'not a problem document' }), {
         status: 500,
         statusText: 'Internal Server Error',
       });
 
-      expect(present(store.failure(), 'the held failure').problem).toBeNull();
+      const problem: ProblemDetails = present(
+        present(store.failure(), 'the held failure').problem,
+        'the synthesised document',
+      );
+
+      // The unrecognised body is discarded rather than rendered - it may hold anything at all - and the
+      // document is composed from the status instead.
+      expect(problem.detail).not.toContain('not a problem document');
+      expect(problem.status).toBe(500);
     });
 
     it('attributes a failure in the opening sequence to the half that failed', () => {
@@ -3910,6 +3932,57 @@ describe('RoleStore', () => {
       expect(store.assignmentsRoleId()).toBe(0);
     });
   });
+  // =========================================================================
+  // THE SETTLED LATCH — "NOT ASKED YET" IS NOT "ASKED AND EMPTY"
+  // =========================================================================
+
+  // ⚠ THE MEASURED DEFECT THESE PROVE CLOSED. An un-asked listing and a listing that matched nothing are
+  // both an empty page with no request in flight, so a grid reading only the rows and the in-flight flag
+  // painted "No records found." over a listing nobody had read yet.
+  describe('the settled latch', () => {
+    it('is DOWN on a fresh store and nothing is in flight, which is what made the two states identical', () => {
+      expect(store.listSettled()).toBeFalse();
+      expect(store.roles().items).toEqual([]);
+      expect(store.rolesLoading()).toBeFalse();
+    });
+
+    it('stays DOWN across the opening chain until the ROLES read answers, not merely the groups read', () => {
+      store.loadRoleAdministration();
+
+      expectGet(ROLE_GROUPS_URL).flush(envelopeOf([aRoleGroup()]));
+      expect(store.listSettled())
+        .withContext('the groups have answered but the listing has not')
+        .toBeFalse();
+
+      expectGet(ROLES_URL).flush(pageOf([aRoleListItem()], 1));
+
+      expect(store.listSettled()).toBeTrue();
+    });
+
+    it('rises on a FAILED listing read too, so a waiting indicator cannot stand over a reportable failure', () => {
+      store.loadRoleAdministration();
+      expectGet(ROLE_GROUPS_URL).flush(envelopeOf([aRoleGroup()]));
+      expectGet(ROLES_URL).flush(aProblem(500, null, 'Unavailable.'), {
+        status: 500,
+        statusText: 'Internal Server Error',
+      });
+
+      expect(store.listSettled()).toBeTrue();
+      expect(store.failure()).not.toBeNull();
+    });
+
+    it('goes back DOWN on reset, because the page it spoke for is discarded with the session', () => {
+      store.loadRoles();
+      expectGet(ROLES_URL).flush(pageOf([aRoleListItem()], 1));
+      expect(store.listSettled()).toBeTrue();
+
+      store.reset();
+
+      expect(store.listSettled()).toBeFalse();
+      expect(store.roles().items).toEqual([]);
+    });
+  });
+
 });
 
 /**

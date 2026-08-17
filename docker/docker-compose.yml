@@ -59,8 +59,17 @@ version: '3.8'
 services:
   # THE SERVICE NAME IS A CONTRACT, NOT A LABEL. docker/nginx.conf proxies /api/
   # to this name and resolves it through the compose network's embedded DNS.
-  # Rename the service and every SPA request is answered 502 while both
-  # containers still report themselves healthy.
+  # Rename the service and every /api/ request is answered 503 - never 502 - with
+  # the RFC 7807 document urn:dnnmigration:error:gateway.api_unreachable and
+  # Retry-After: 5, while both containers still report themselves healthy. The
+  # status is 503 because docker/api-proxy.conf maps `error_page 502 503 504 =
+  # @api_unavailable`, so an unresolvable upstream is answered by that named
+  # location rather than by nginx's own bare 502. The failure is confined to
+  # /api/: the SPA document, its hashed assets and /nginx-health all keep
+  # answering 200, which is exactly what makes this misconfiguration quiet -
+  # nothing either health check probes ever touches the API's DNS name. The
+  # symptom is therefore a 503 that does NOT clear, as distinct from the
+  # transient one an api-only redeploy causes while a DNS entry ages out.
   api:
     build:
       context: ..

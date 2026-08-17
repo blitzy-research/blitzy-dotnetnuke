@@ -12,14 +12,21 @@ import {
   untracked,
 } from '@angular/core';
 import type { Signal, WritableSignal } from '@angular/core';
+import { ListReturnStore } from '../../../core/state/list-return.store';
+import { ROLE_LIST_ROUTE } from '../../../core/config/app-routes.config';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import type { AbstractControl, ValidationErrors, ValidatorFn } from '@angular/forms';
-import { Router } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 // `problemDetailsMessage` is deliberately NOT imported here any more: this screen no longer resolves a
 // document's sentence for itself. The banner does it, from the document and the fallback it is given — see
 // `reportFailure`.
 import { problemDetailsFieldErrors } from '../../../core/models/problem-details.model';
-import { failureCode } from '../../../core/utils/form-errors.util';
+import {
+  failureCode,
+  missingEntityMessage,
+  missingEntityProblem,
+  missingEntityRecoveryLabel,
+} from '../../../core/utils/form-errors.util';
 import {
   containedIconPathValidator,
   ICON_NOT_CONTAINED_ERROR,
@@ -53,6 +60,7 @@ import {
   FocusFirstInvalidDirective,
   INVALID_CONTROL_SELECTOR,
 } from '../../../shared/directives/focus-first-invalid.directive';
+import { BlockImplicitSubmitDirective } from '../../../shared/directives/block-implicit-submit.directive';
 import { SubmitGuardDirective } from '../../../shared/directives/submit-guard.directive';
 import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 import { requiredText } from '../../../core/utils/required-text.validator';
@@ -276,6 +284,18 @@ const EDIT_TITLE = 'Edit Security Roles';
  */
 const ADD_TITLE = 'Add New Role';
 
+/**
+ * The primary action's wording, one word per mode.
+ *
+ * ⚠ #22 — `EditRoles.ascx` declared a single `cmdUpdate` for both modes, so "Update" is the documented
+ * legacy wording for EDIT and there is no legacy wording for create at all. Applying "Update" to a role that
+ * does not exist yet is what made the four create screens read as three different vocabularies; the portal
+ * and user forms already name their subject on create, and this follows them.
+ */
+const EDIT_SUBMIT_LABEL = 'Update';
+
+const CREATE_SUBMIT_LABEL = 'Create Role';
+
 /** Confirmation after a successful create. Legacy severity `GreenSuccess`. */
 const ROLE_CREATED_MESSAGE = 'The role was created.';
 
@@ -290,7 +310,10 @@ const ROLE_DELETED_MESSAGE = 'The role was deleted.';
  * violation attempt to access item not related to this Module" and redirected to the Security Roles page
  * without telling the user anything.
  */
-const ROLE_NOT_FOUND_MESSAGE = 'That role could not be found.';
+const ROLE_NOT_FOUND_MESSAGE = missingEntityMessage('role');
+
+/** Where a reader is sent once the addressed role has gone, and the only action offered there. */
+const RECOVERY_LABEL = missingEntityRecoveryLabel('Security Roles');
 
 /** Fallback when a refusal carries neither a `detail` nor a `title`. */
 const SAVE_FAILED_MESSAGE = 'The role could not be saved.';
@@ -304,8 +327,6 @@ const LOAD_FAILED_MESSAGE = 'The role could not be loaded.';
 /** Last-resort per-field message, matching the sibling screens' wording. */
 const GENERIC_FIELD_MESSAGE = 'Correct this field and try again.';
 
-/** The route this screen returns to, mirroring `Response.Redirect(NavigateURL())`. */
-const ROLE_LIST_ROUTE = '/roles';
 
 // ---------------------------------------------------------------------------
 // HTTP STATUS CODES THIS SCREEN DISTINGUISHES
@@ -641,6 +662,48 @@ function isRoleOnTrial(role: Role): boolean {
 }
 
 /**
+ * Whether a stored frequency holds a code this console cannot set.
+ *
+ * Absence is NOT unnameable: a column holding nothing loses nothing when the write records `'N'`, so only a
+ * code that is present and outside the closed six qualifies.
+ *
+ * @param value The frequency exactly as the column holds it.
+ * @returns True when a real code is stored that the select cannot represent.
+ */
+function isUnnameableFrequency(value: StoredBillingFrequency | null | undefined): boolean {
+  if (value === null || value === undefined || String(value).trim() === '') {
+    return false;
+  }
+
+  return coerceFrequency(value) === NO_FREQUENCY && value !== NO_FREQUENCY;
+}
+
+/**
+ * How a stored frequency reads inside the withheld-values notice.
+ *
+ * A code the select offers reads as its caption, which is the word the operator would have seen in the box.
+ * A code it does not offer reads as the raw character, because that character IS the stored value and the
+ * caption for it does not exist. Absence reads as the empty string and is therefore never stated.
+ *
+ * @param value The frequency exactly as the column holds it.
+ * @returns The text to state, or the empty string when there is nothing stored.
+ */
+function storedFrequencyText(value: StoredBillingFrequency | null | undefined): string {
+  if (value === null || value === undefined || String(value).trim() === '') {
+    return '';
+  }
+
+  if (isUnnameableFrequency(value)) {
+    return String(value);
+  }
+
+  const named = coerceFrequency(value);
+
+  // `'N'` means "no recurring term", so stating it as a value held would report an absence as a setting.
+  return named === NO_FREQUENCY ? '' : frequencyCaption(named);
+}
+
+/**
  * Joins captioned values into the tail of one English sentence.
  *
  * @param parts The phrases, already in the order they should be read.
@@ -731,19 +794,30 @@ const WITHHELD_TERM_CAPTIONS = Object.freeze({
   billingFrequency: 'Billing Frequency',
   trialFee: 'Trial Fee',
   trialPeriod: 'Trial Period',
+  trialFrequency: 'Trial Frequency',
 });
 
 // ---------------------------------------------------------------------------
 // COMPONENT
 // ---------------------------------------------------------------------------
 
+/**
+ * THE SUBTITLE, UNDER THE APPLICATION'S ONE SUBTITLE RULE: exactly one per screen, stating that screen's
+ * SCOPE - the record it acts on when the title does not already name it, otherwise what the screen is for
+ * in one line - and never a status, a count or a progress readout.
+ */
+const CREATE_SUBTITLE =
+  'A role groups accounts together so permissions can be granted to all of them at once.';
+
 @Component({
   selector: 'app-role-form',
   standalone: true,
   imports: [
+    BlockImplicitSubmitDirective,
     FocusFirstInvalidDirective,
     SubmitGuardDirective,
     ReactiveFormsModule,
+    RouterLink,
     PageHeaderComponent,
     FormFieldComponent,
     ErrorBannerComponent,
@@ -761,9 +835,19 @@ export class RoleFormComponent {
    * navigation: Cancel, an in-application link and the browser's Back button are navigations a route
    * guard can refuse, while closing or reloading the tab is not, and only the browser's own unload prompt
    * covers that - which needs the dirty state at an arbitrary moment rather than at a navigation.
+   *
+   * ⚠ THE BUSY EXCLUSION WAS REMOVED, AND ITS REMOVAL CLOSES A MEASURED HOLE. This predicate used to read
+   * `dirty && busy === false`, which reported the screen CLEAN for exactly as long as a write was in flight -
+   * so navigating away mid-save was admitted in silence, the departure destroyed the component, and
+   * `takeUntilDestroyed` cancelled the request. The operator lost the write and was told nothing. A form
+   * holding an unfinished write is the LEAST safe moment to leave, not the safest.
+   *
+   * The exclusion was written to stop the application's OWN post-save navigation being challenged, and that
+   * case is already covered properly: every success path replaces the address imperatively, which
+   * `unsavedChangesGuard` admits explicitly. Nothing here has to approximate it a second time.
    */
   private readonly unsavedEntry = inject(UnsavedChangesTracker).watch(
-    () => this.form.dirty && this.saving() === false,
+    () => this.form.dirty,
   );
   // -------------------------------------------------------------------------
   // ROUTE INPUTS
@@ -824,6 +908,9 @@ export class RoleFormComponent {
   private readonly roleStore = inject(RoleStore);
   private readonly notifications = inject(NotificationService);
   private readonly router = inject(Router);
+
+  /** Where the listing stood when the operator left it. */
+  private readonly listReturn = inject(ListReturnStore);
 
   /**
    * Reports a write that settles after this screen has gone; see {@link
@@ -898,6 +985,13 @@ export class RoleFormComponent {
 
   /** True once the user has asked to delete and before the dialog is settled. */
   private readonly deletePending: WritableSignal<boolean> = signal<boolean>(false);
+
+  /**
+   * True once the addressed role has been read and answered 404. Held rather than derived because the
+   * store's failure is consumed and cleared by the arrival effect, so by render time there is nothing left
+   * to derive from.
+   */
+  private readonly roleMissingSignal: WritableSignal<boolean> = signal<boolean>(false);
 
   // -------------------------------------------------------------------------
   // THE FORM
@@ -982,12 +1076,26 @@ export class RoleFormComponent {
   /** True when this is the edit form. */
   protected readonly isEditMode: Signal<boolean> = computed(() => this.roleKey() !== null);
 
+  /** @see EDIT_SUBMIT_LABEL */
+  protected readonly submitLabel: Signal<string> = computed(() =>
+    this.isEditMode() ? EDIT_SUBMIT_LABEL : CREATE_SUBMIT_LABEL,
+  );
+
   protected readonly addressUnreadable: Signal<boolean> = computed(
     () => this.roleId() !== undefined && this.roleKey() === null,
   );
 
   /** The sentence shown when the address does not name a readable role. */
-  protected readonly unreadableAddressMessage = UNREADABLE_ADDRESS_MESSAGE;
+  /** The caption of the one way out offered once the addressed role cannot be shown. */
+  protected readonly recoveryLabel = RECOVERY_LABEL;
+
+  /** True once the addressed role has been read and is not there. */
+  protected readonly roleMissing: Signal<boolean> = this.roleMissingSignal.asReadonly();
+
+  /** Whether this screen can show nothing but a way out: the address is unusable, or the role is gone. */
+  protected readonly nothingToShow: Signal<boolean> = computed(
+    () => this.addressUnreadable() || this.roleMissing(),
+  );
 
   /**
    * The heading, which differs by mode. ⚠ AN UNREADABLE ADDRESS TAKES THE EDIT HEADING. Without the
@@ -998,6 +1106,21 @@ export class RoleFormComponent {
   protected readonly heading: Signal<string> = computed(() =>
     this.isEditMode() || this.addressUnreadable() ? EDIT_TITLE : ADD_TITLE,
   );
+
+  /**
+   * The one-line scope statement shown beneath the title. In edit mode it NAMES THE ROLE, because the
+   * heading cannot - this screen's resource file declares no create-mode title key, so both modes show the
+   * same "Edit Security Roles" heading and only the subtitle can say which role is on screen.
+   */
+  protected readonly pageSubtitle: Signal<string> = computed(() => {
+    if (this.isEditMode() === false) {
+      return CREATE_SUBTITLE;
+    }
+
+    const named: string = this.displayRoleName();
+
+    return named.length > 0 ? named : CREATE_SUBTITLE;
+  });
 
   /** The role name shown as read-only text in edit mode. */
   protected readonly displayRoleName: Signal<string> = computed(() =>
@@ -1041,7 +1164,12 @@ export class RoleFormComponent {
   protected readonly saving: Signal<boolean> = computed(() => this.awaitedMutation() !== null);
 
   /** The refusal to render in the shared error banner, or `null`. */
-  protected readonly problem: Signal<ProblemDetails | null> = this.failure.asReadonly();
+  protected readonly problem: Signal<ProblemDetails | null> = computed<ProblemDetails | null>(() =>
+    // An address that does not name a role is stated by the banner as well, and in the same place a
+    // missing role is stated. It used to be a paragraph of this screen's own, which meant the one region
+    // a reader's software watches said nothing at all about it.
+    this.addressUnreadable() ? missingEntityProblem(UNREADABLE_ADDRESS_MESSAGE) : this.failure(),
+  );
 
   /** The banner's fallback sentence for the current failure; empty when there is nothing to add. */
   protected readonly failureFallback: Signal<string> = this.failureFallbackMessage.asReadonly();
@@ -1108,19 +1236,59 @@ export class RoleFormComponent {
     if (!isRolePriced(role)) {
       state(WITHHELD_TERM_CAPTIONS.serviceFee, formatMoney(role.serviceFee));
       state(WITHHELD_TERM_CAPTIONS.billingPeriod, formatPeriod(role.billingPeriod));
-
-      const billingFrequency = coerceFrequency(role.billingFrequency);
-      if (billingFrequency !== NO_FREQUENCY) {
-        state(WITHHELD_TERM_CAPTIONS.billingFrequency, frequencyCaption(billingFrequency));
-      }
+      state(WITHHELD_TERM_CAPTIONS.billingFrequency, storedFrequencyText(role.billingFrequency));
     }
 
     if (!isRoleOnTrial(role)) {
       state(WITHHELD_TERM_CAPTIONS.trialFee, formatMoney(role.trialFee));
       state(WITHHELD_TERM_CAPTIONS.trialPeriod, formatPeriod(role.trialPeriod));
+      state(WITHHELD_TERM_CAPTIONS.trialFrequency, storedFrequencyText(role.trialFrequency));
     }
 
     return terms;
+  });
+
+  /**
+   * The stored frequency codes this console cannot set, each with the caption of the box that holds it.
+   *
+   * ⚠ THE GAP THIS CLOSES. `coerceFrequency` maps any code outside the six the select offers onto `'N'`,
+   * and the outgoing write initialises the frequency to `'N'` as well (`EditRoles.ascx.vb:L214`, `:L224`),
+   * so a role storing `'Q'` has that `'Q'` REPLACED the moment this form is saved. The withheld-values
+   * notice previously skipped such a code entirely - it only stated a frequency it could name - so the one
+   * stored value whose loss was certain was the one nothing mentioned.
+   */
+  protected readonly rewrittenFrequencies: Signal<readonly WithheldTerm[]> = computed(() => {
+    const role = this.loadedRole();
+    if (role === null) {
+      return NO_WITHHELD_TERMS;
+    }
+
+    const rewritten: WithheldTerm[] = [];
+
+    // ⚠ GATED ON REPRESENTABILITY ALONE, AND NOT ON WHETHER THE BOXES WERE WITHHELD. This condition was
+    // originally `!isRolePriced(role) && ...`, and that was WRONG for a reason runtime testing exposed: the
+    // rewrite does not depend on the bind gate at all. `coerceFrequency` maps any code outside the six the
+    // select offers onto `'N'`, so the select shows "None", and the outgoing write initialises the
+    // frequency to `'N'` (`EditRoles.ascx.vb:L214`, `:L224`) - both regardless of whether the fee boxes were
+    // populated. A role priced at 249.50 and storing `'Q'` therefore had its boxes filled, failed the old
+    // gate, and so received NO disclosure whatsoever of a loss that was certain. Measured in the browser on
+    // two roles: one lost `'Q'` in silence, the other disclosed its trial `'X'` while dropping its billing
+    // `'Z'` from the same sentence.
+    if (isUnnameableFrequency(role.billingFrequency)) {
+      rewritten.push({
+        caption: WITHHELD_TERM_CAPTIONS.billingFrequency,
+        value: String(role.billingFrequency),
+      });
+    }
+
+    if (isUnnameableFrequency(role.trialFrequency)) {
+      rewritten.push({
+        caption: WITHHELD_TERM_CAPTIONS.trialFrequency,
+        value: String(role.trialFrequency),
+      });
+    }
+
+    return rewritten;
   });
 
   /**
@@ -1130,7 +1298,12 @@ export class RoleFormComponent {
    */
   protected readonly withheldTermsNotice: Signal<string> = computed(() => {
     const terms = this.withheldTerms();
-    if (terms.length === 0) {
+    const rewritten = this.rewrittenFrequencies();
+
+    // ⚠ EITHER CONDITION IS ENOUGH TO SPEAK. Returning early on an empty `terms` list was the second half
+    // of the same defect: a role whose boxes were all filled had no withheld terms, so the notice was
+    // suppressed outright and its unnameable code went unmentioned even though saving would destroy it.
+    if (terms.length === 0 && rewritten.length === 0) {
       return '';
     }
 
@@ -1142,18 +1315,67 @@ export class RoleFormComponent {
     const billingWithheld = !isRolePriced(role);
     const trialWithheld = !isRoleOnTrial(role);
 
+    // ⚠ THE LEAD NAMES THE CONDITION, NOT AN ABSENCE, AND THAT IS THE CORRECTION. It previously opened
+    // "This role has no trial" and then went on to state "the values held for it are Trial Fee 5.00 and
+    // Trial Period 2" - a sentence that denies in its first clause what it reports in its second. The
+    // premise was drawn from the legacy BIND GATE, which is a narrower fact than the absence it was
+    // phrased as: `EditRoles.ascx.vb:L146` fills the billing boxes only when the service fee formats to
+    // something other than "0.00", and the trial boxes only for a trial frequency among the six the
+    // select offers. A role can therefore hold trial values and still fail that gate, which is exactly
+    // the state the notice was misdescribing.
     let lead: string;
     if (billingWithheld && trialWithheld) {
-      lead = 'This role has no paid-membership terms, so the boxes below are left empty.';
+      lead =
+        'The paid-membership boxes below stay empty. The legacy editor filled the billing boxes only for '
+        + 'a role with a service fee to charge, and the trial boxes only for a trial frequency it '
+        + 'recognised, and this role meets neither condition.';
     } else if (billingWithheld) {
-      lead = 'This role has no service fee, so the billing boxes below are left empty.';
+      // Phrased as failing the CONDITION rather than as an absence, matching the both-groups lead above.
+      // "...and this role has none" asserted a fact about the record while the sentence that followed
+      // listed the record's own stored values, which is the shape of wording this finding is about.
+      lead =
+        'The billing boxes below stay empty. The legacy editor filled them only for a role with a service '
+        + 'fee to charge, and this role does not meet that condition.';
     } else {
-      lead = 'This role has no trial, so the trial boxes below are left empty.';
+      lead =
+        'The trial boxes below stay empty. The legacy editor filled them only for a trial frequency it '
+        + 'recognises, and this role stores none it can name.';
     }
 
     const stated = joinPhrases(terms.map((term) => `${term.caption} ${term.value}`));
 
-    return `${lead} The values held for it are ${stated}.`;
+    // ⚠ THE CONSEQUENCE IS STATED, BECAUSE IT IS CERTAIN RATHER THAN HYPOTHETICAL. Saving replaces every
+    // value listed here, whether or not the operator typed anything, and that overwrite is deliberate
+    // parity with `EditRoles.ascx.vb:L212-L231`. Listing values while leaving their fate unsaid is what
+    // made the notice read as reassurance.
+    const consequence = `The values stored for it are ${stated}, and saving this form replaces them.`;
+
+    if (rewritten.length === 0) {
+      return `${lead} ${consequence}`;
+    }
+
+    // Named individually rather than counted, because the operator's only route to recovering the value is
+    // knowing what it was.
+    const codes = joinPhrases(rewritten.map((term) => `${term.caption} ${term.value}`));
+    const plural = rewritten.length > 1;
+    const rewriteSentence =
+      `${plural ? 'The stored codes' : 'The stored code'} ${codes} `
+      + `${plural ? 'are' : 'is'} not among the frequencies this console can set, so saving records `
+      + `${frequencyCaption(NO_FREQUENCY)} in ${plural ? 'their' : 'its'} place.`;
+
+    // ⚠ THE REWRITE CAN BE THE WHOLE NOTICE. A role whose boxes are all filled withholds nothing, so
+    // there is no "these boxes stay empty" lead to give and no withheld list to state - but its unnameable
+    // code is still destroyed on save, and that is the entire reason this branch exists. It opens by
+    // explaining the "None" the operator can see in the box, so the disclosure is anchored to something on
+    // screen rather than arriving unattached.
+    if (terms.length === 0) {
+      return (
+        `${plural ? 'The frequency boxes' : 'The frequency box'} below cannot show `
+        + `${plural ? 'the values' : 'the value'} this role stores. ${rewriteSentence}`
+      );
+    }
+
+    return `${lead} ${consequence} ${rewriteSentence}`;
   });
 
   /** True when this role is one of the two the portal protects. DEFECT 4. */
@@ -1251,14 +1473,17 @@ export class RoleFormComponent {
         this.awaitedRoleKey.set(null);
 
         if (failure !== null && failure.operation === 'loadRole') {
-          // `:L170-L172` treated an unreadable role as an attempt to reach an item outside the module and
-          // bounced to the Security Roles page. A missing role does the same here.
           if (failure.status === NOT_FOUND) {
-            // ⚠ EXEMPTED FROM THE NAVIGATION SWEEP, WITHOUT WHICH THIS MESSAGE IS NEVER SEEN. The shell
-            // retires notifications on a completed navigation, and this one is raised in the same task as
-            // the navigation below - so it was raised and swept before it could be painted.
-            this.notifications.notify('warning', ROLE_NOT_FOUND_MESSAGE, null, true);
-            this.navigateToList(true);
+            // ⚠ MIGRATION - THE LEGACY BOUNCE IS GONE, DELIBERATELY. `:L170-L172` treated an unreadable
+            // role as an attempt to reach an item outside the module and redirected to the Security Roles
+            // page, which this screen reproduced with a surviving toast and a replaced history entry. It
+            // was the only one of the four detail screens that moved the reader, it needed an explicit
+            // exemption from the shell's navigation sweep for its own explanation to survive the
+            // navigation it caused, and it threw away the address a reader had followed. A role that is
+            // not there is now stated where it was asked for, in the shared wording, with the same one
+            // way out the other three offer.
+            this.roleMissingSignal.set(true);
+            this.failure.set(missingEntityProblem(ROLE_NOT_FOUND_MESSAGE));
 
             return;
           }
@@ -1668,6 +1893,8 @@ export class RoleFormComponent {
 
   /** @param key The role id, which may legitimately be `0`. */
   private loadRole(key: number): void {
+    // Whatever was missing, a new read has been asked for and the answer is not known yet.
+    this.roleMissingSignal.set(false);
     this.clearFailure();
     this.awaitedRoleKey.set(key);
     this.roleStore.selectRole(key);
@@ -1764,12 +1991,18 @@ export class RoleFormComponent {
   /** Returns to the role list, the destination of every `NavigateURL()` on this screen. */
   private navigateToList(replaceEntry = false): void {
     if (replaceEntry) {
-      void this.router.navigate([ROLE_LIST_ROUTE], { replaceUrl: true });
+      void this.router.navigate([ROLE_LIST_ROUTE], {
+        // The listing's own place, so a save does not cost the operator the page they were working on.
+        queryParams: this.listReturn.coordinateFor(ROLE_LIST_ROUTE),
+        replaceUrl: true,
+      });
 
       return;
     }
 
-    void this.router.navigate([ROLE_LIST_ROUTE]);
+    void this.router.navigate([ROLE_LIST_ROUTE], {
+      queryParams: this.listReturn.coordinateFor(ROLE_LIST_ROUTE),
+    });
   }
 
   // -------------------------------------------------------------------------

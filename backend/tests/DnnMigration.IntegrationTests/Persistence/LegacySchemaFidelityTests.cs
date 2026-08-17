@@ -682,10 +682,22 @@ public sealed class LegacySchemaFidelityTests
     /// <param name="length">A key length the terminal column admits and the baseline did not.</param>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The row is planted by direct statement rather than through the repository, and that is a property of
-    /// the contract rather than a shortcut: <see cref="Permission.PermissionKey"/> is the closed <see
-    /// cref="PermissionKey"/> enumeration whose widest member spells five characters, so no code path in
-    /// the target can produce a longer value.
+    /// <para>
+    /// The row is planted by direct statement because that is how a real installation acquires one:
+    /// DotNetNuke's <c>AddPermission</c> procedure accepts <c>@PermissionKey varchar(50)</c>
+    /// (<c>04.06.00.SqlDataProvider</c> line 407) and a third-party module calls it at install time to
+    /// register keys of its own. The column carries no check constraint, so every width and spelling below is
+    /// legal stored data whatever this solution happens to name.
+    /// </para>
+    /// <para>
+    /// It is then read back THROUGH THE MODEL, and that half is the point. <see
+    /// cref="Permission.PermissionKey"/> was once typed as the closed <see cref="PermissionKey"/>
+    /// enumeration, whose widest member spells five characters; every row here was therefore unreadable, and
+    /// because the provider's converter throws from inside the materialiser the failure could not be caught
+    /// as a result - it surfaced as an unhandled fault on the catalogue read and on the module authorisation
+    /// path alike. Asserting only what a raw <c>SELECT</c> returns would have missed that entirely, which is
+    /// why this test now goes through the repository.
+    /// </para>
     /// </remarks>
     [Theory]
     [Trait("Category", "Integration")]
@@ -698,10 +710,11 @@ public sealed class LegacySchemaFidelityTests
 
         try
         {
-            int inserted = await _fixture.Database.ExecuteAsync(
+            int permissionId = await _fixture.Database.ScalarAsync<int>(
                 "INSERT INTO [dbo].[Permission] "
                 + "([PermissionCode], [ModuleDefID], [PermissionKey], [PermissionName]) "
-                + "VALUES (@permissionCode, @moduleDefId, @permissionKey, @permissionName)",
+                + "VALUES (@permissionCode, @moduleDefId, @permissionKey, @permissionName); "
+                + "SELECT CAST(SCOPE_IDENTITY() AS int);",
                 new Dictionary<string, object?>
                 {
                     ["permissionCode"] = permissionCode,
@@ -710,8 +723,7 @@ public sealed class LegacySchemaFidelityTests
                     ["permissionName"] = "Legacy width probe",
                 });
 
-            inserted.Should().Be(
-                1,
+            permissionId.Should().BePositive(
                 "the terminal column is varchar(50), so a key of this length is a row a real installation "
                 + "can already hold");
 
@@ -721,6 +733,83 @@ public sealed class LegacySchemaFidelityTests
 
             stored.Should().Be(permissionKey, "the stored value is neither truncated nor padded");
             stored.Length.Should().Be(length);
+
+            using IServiceScope reading = _fixture.Services.CreateScope();
+            IPermissionRepository permissions =
+                reading.ServiceProvider.GetRequiredService<IPermissionRepository>();
+
+            Permission? readBack = await permissions.GetByIdAsync(permissionId);
+
+            readBack.Should().NotBeNull(
+                "a row the schema admits must materialise through the model, not fault while being read");
+            readBack!.PermissionKey.Should().Be(
+                permissionKey,
+                "the key is bound as free text, so it arrives exactly as the column holds it");
+            readBack.PermissionCode.Should().Be(permissionCode);
+        }
+        finally
+        {
+            await _fixture.Database.ExecuteAsync(
+                "DELETE FROM [dbo].[Permission] WHERE [PermissionCode] = @permissionCode",
+                new Dictionary<string, object?> { ["permissionCode"] = permissionCode });
+        }
+    }
+
+    /// <summary>
+    /// A permission key outside the four spellings the upgrade chain seeds materialises verbatim through the
+    /// model, and a definition-scoped read reports it.
+    /// </summary>
+    /// <param name="storedKey">A key spelling the free-text column admits and the enumeration does not.</param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The width test above proves the column's declared size; this one proves its VALUE DOMAIN, which is a
+    /// separate and independently regressible fact. The upgrade chain seeds only <c>VIEW</c>, <c>EDIT</c>,
+    /// <c>READ</c> and <c>WRITE</c>, so a clean-baseline database cannot exercise this at all - which is
+    /// precisely why the mapping defect it guards against survived a full runtime campaign against one.
+    /// Lower case is included deliberately: the column's collation does not distinguish casing, so a row
+    /// spelled that way is one a real installation can hold and must be read back unfolded.
+    /// </remarks>
+    [Theory]
+    [Trait("Category", "Integration")]
+    [InlineData("CUSTOM")]
+    [InlineData("MANAGE_SUBSCRIPTIONS")]
+    [InlineData("view")]
+    public async Task Permission_MaterialisesAKeyOutsideTheSeededSpellings(string storedKey)
+    {
+        string permissionCode = FormattableString.Invariant($"PROBE_{Suffix()}");
+
+        try
+        {
+            int permissionId = await _fixture.Database.ScalarAsync<int>(
+                "INSERT INTO [dbo].[Permission] "
+                + "([PermissionCode], [ModuleDefID], [PermissionKey], [PermissionName]) "
+                + "VALUES (@permissionCode, @moduleDefId, @permissionKey, @permissionName); "
+                + "SELECT CAST(SCOPE_IDENTITY() AS int);",
+                new Dictionary<string, object?>
+                {
+                    ["permissionCode"] = permissionCode,
+                    ["moduleDefId"] = UnreachableModuleDefinitionId,
+                    ["permissionKey"] = storedKey,
+                    ["permissionName"] = "Legacy value-domain probe",
+                });
+
+            using IServiceScope reading = _fixture.Services.CreateScope();
+            IPermissionRepository permissions =
+                reading.ServiceProvider.GetRequiredService<IPermissionRepository>();
+
+            Permission? byId = await permissions.GetByIdAsync(permissionId);
+
+            byId.Should().NotBeNull();
+            byId!.PermissionKey.Should().Be(
+                storedKey,
+                "nothing re-cases the key and nothing substitutes an enumeration member for it");
+
+            IReadOnlyList<Permission> byDefinition =
+                await permissions.GetByModuleDefinitionIdAsync(UnreachableModuleDefinitionId);
+
+            byDefinition.Should().Contain(
+                entry => entry.PermissionId == permissionId && entry.PermissionKey == storedKey,
+                "a set-returning read materialises the same row, so the whole read is not lost with it");
         }
         finally
         {

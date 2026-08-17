@@ -17,6 +17,51 @@ import type { ModuleListItem } from '../../../core/models/module.model';
 import type { ApiMeta, PagedResponse } from '../../../core/models/paged-result.model';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
 
+import { HttpParams } from '@angular/common/http';
+
+import type { HttpRequest } from '@angular/common/http';
+
+/**
+ * The filters a request carried, presented as ONE parameter bag whichever transport carried them. ⚠ A
+ * LISTING READ THAT CARRIES A TERM A PERSON TYPED SENDS ITS FILTERS IN THE BODY, because a query string is
+ * written into the reverse proxy's access log and into the API's own request log; a term-free read keeps
+ * them in the query string. Specifications below are about WHAT was sent, not about WHERE, so they read
+ * through here and stay true across both transports.
+ *
+ * @param request The request to read, or the raw request it wraps.
+ * @returns Every filter it carried, as query-parameter-shaped strings.
+ */
+function sentFilters(request: TestRequest | HttpRequest<unknown>): HttpParams {
+  const raw: HttpRequest<unknown> = 'request' in request ? request.request : request;
+  const body = raw.body as Record<string, unknown> | null | undefined;
+
+  if (body === null || body === undefined) {
+    return raw.params;
+  }
+
+  let carried: HttpParams = new HttpParams();
+
+  for (const [name, value] of Object.entries(body)) {
+    if (value !== null && value !== undefined) {
+      carried = carried.set(name, String(value));
+    }
+  }
+
+  return carried;
+}
+
+
+/**
+ * Whether a request is a listing read, on EITHER transport.
+ *
+ * @param candidate The request to test.
+ * @returns True for the term-free read and for the body-bound search alike.
+ */
+function isListingRead(candidate: HttpRequest<unknown>): boolean {
+  return candidate.url === MODULES_URL || candidate.url === MODULES_SEARCH_URL;
+}
+
+
 // THE SESSION THE ROW COMMANDS ARE GATED ON
 // The row commands are behind an `administration OR EDIT` gate, so a case that asserts anything about them
 // has to state which of those two things the caller is.
@@ -76,6 +121,12 @@ function requireElement(root: Element, selector: string): Element {
 
 /** The listing address. */
 const MODULES_URL = '/api/v1/modules';
+
+/**
+ * The body-bound search address. ⚠ A SEPARATE ADDRESS FROM {@link MODULES_URL} ON PURPOSE: a listing read that
+ * carries a term a person typed goes here, so the term never appears in a logged request line.
+ */
+const MODULES_SEARCH_URL = '/api/v1/modules/search';
 
 /** The per-placement address, which the removal addresses. */
 function moduleUrl(moduleId: number): string {
@@ -157,6 +208,7 @@ function moduleRow(overrides: Partial<ModuleListItem> = {}): ModuleListItem {
     moduleName: 'DNN_Announcements',
     description: 'Displays announcements',
     version: '01.00.00',
+    isAdmin: false,
     moduleOrder: 1,
     allTabs: false,
     visibility: ModuleVisibility.Maximized,
@@ -258,7 +310,10 @@ describe('ModuleListComponent', () => {
 
   /** The one outstanding listing read. */
   function expectList(description?: string): TestRequest {
-    return expectRequest('GET', MODULES_URL, description ?? 'the listing read');
+    return httpMock.expectOne(
+      (candidate) => isListingRead(candidate),
+      description ?? 'the listing read',
+    );
   }
 
   /** Answers the outstanding listing read. */
@@ -380,14 +435,14 @@ describe('ModuleListComponent', () => {
       const call = expectList();
 
       expect(call.request.url.startsWith('http')).withContext('relative address').toBeFalse();
-      expect(call.request.params.get('pageIndex')).toBe('0');
-      expect(call.request.params.get('pageSize')).toBe(DEFAULT_PAGE_SIZE);
+      expect(sentFilters(call).get('pageIndex')).toBe('0');
+      expect(sentFilters(call).get('pageSize')).toBe(DEFAULT_PAGE_SIZE);
 
       // No filter and no ordering are sent on the first read: both are the server's to choose until an
       // operator states one.
-      expect(call.request.params.has('query')).withContext('no filter').toBeFalse();
-      expect(call.request.params.has('sortBy')).withContext('no ordering').toBeFalse();
-      expect(call.request.params.has('sortDir')).withContext('no direction').toBeFalse();
+      expect(sentFilters(call).has('query')).withContext('no filter').toBeFalse();
+      expect(sentFilters(call).has('sortBy')).withContext('no ordering').toBeFalse();
+      expect(sentFilters(call).has('sortDir')).withContext('no direction').toBeFalse();
 
       call.flush(pageOf([moduleRow()]));
       fixture.detectChanges();
@@ -524,16 +579,94 @@ describe('ModuleListComponent', () => {
         .toHaveSize(1);
     });
 
-    it('renders an absent date and the legacy marker date as empty cells alike', () => {
+    // ⚠ THIS REPLACES A FACT THAT REQUIRED BOTH CELLS TO RENDER EMPTY, AND THE EMPTINESS WAS THE DEFECT —
+    // QA-15. Two different absences on the wire — a null and the legacy minimum-date marker — still produce
+    // ONE rendering, because to a person they mean the same thing, and that half of the claim is unchanged.
+    // What changed is what that one rendering IS: a cell with no text and no children told a sighted reader
+    // nothing distinguishable from a failed render and told a screen reader nothing at all. Both now render
+    // the shared absent value, identically to an absent tally on the portal listing and an absent period on
+    // the role listing.
+    // ⚠ EXACTLY ONE COLUMN TRACK IS LEFT FLEXIBLE, AND THAT IS A REQUIREMENT RATHER THAN AN OMISSION — QA-09.
+    //
+    // Under `table-layout: fixed` the percentage tracks resolve against the table width and whatever is LEFT
+    // OVER goes to the columns that declared something else. With every column weighted, that leftover went to
+    // the command columns: the single commands column was left one percent, so its four commands stacked one per line and made every row 196px tall. One unweighted column absorbs the slack instead, so every
+    // other track resolves to exactly the share it declares.
+    it('leaves exactly one column track flexible so the declared tracks resolve as written', () => {
+      arrive([moduleRow()]);
+
+      const tracks = queryAll<HTMLTableColElement>('colgroup col');
+
+      expect(tracks.length).withContext('one track per rendered column').toBeGreaterThan(0);
+      expect(tracks.length).toBe(queryAll<Element>('thead th').length);
+
+      const flexible: readonly number[] = tracks
+        .map((track, index) => ({ index, declared: track.style.inlineSize }))
+        .filter((entry) => entry.declared === '')
+        .map((entry) => entry.index);
+
+      expect(flexible.length).withContext('one and only one flexible track').toBe(1);
+
+      // The command tracks declare their own token rather than inheriting the slack.
+      for (let index = 0; index < 1; index += 1) {
+        expect(tracks[index]?.style.inlineSize).toContain('--table-commands-column-inline-size');
+      }
+
+      // Every remaining track declares a percentage, so nothing else can quietly become flexible.
+      tracks.forEach((track, index) => {
+        if (index < 1 || flexible.includes(index)) {
+          return;
+        }
+
+        expect(track.style.inlineSize).withContext(`track ${index}`).toMatch(/%$/);
+      });
+    });
+
+    // ⚠ AN ENDED PLACEMENT IS QUALIFIED IN WORDS — QA-19, and it is a consistency correction rather than a
+    // flourish. Measured before it existed: a placement whose term ended in 2021 and one running to 2027
+    // rendered byte-identically — same colour, same weight, no other mark — on the listing whose purpose is
+    // administering placements, while the portal listing beside it had already grown exactly this qualifier
+    // for exactly this fact. The word, the class name and the judgement point (the start of today, so a term
+    // ending today reads as ended on both screens) are shared with that listing deliberately.
+    it('qualifies an ended term in words, and leaves a running one unqualified', () => {
+      arrive([moduleRow({ startDate: '2020-01-01T00:00:00Z', endDate: '2021-01-01T00:00:00Z' })]);
+
+      const qualifiers = queryAll<HTMLElement>('.module-list__expired');
+
+      expect(qualifiers.map((node) => (node.textContent ?? '').trim())).toEqual(['Expired']);
+
+      // ⚠ AND THE TWO VALUES ARE SEPARATED BY A REAL SPACE CHARACTER, not by a margin. The compiler strips
+      // whitespace between elements, so without the explicit entity the cell's text content was the single
+      // run "1/1/2021Expired" — one word to a screen reader, to a copy-paste and to any text extraction,
+      // while a sighted reader saw a gap that exists only in paint.
+      const cells: readonly string[] = cellsOf(0);
+      const endCell: string = cells.at(-1) ?? '';
+
+      expect(endCell).toBe('1/1/2021 Expired');
+      expect(endCell).withContext('the date itself is untouched').toContain('1/1/2021');
+    });
+
+    it('leaves a running term unqualified', () => {
+      arrive([moduleRow({ startDate: '2026-01-01T00:00:00Z', endDate: '2099-01-01T00:00:00Z' })]);
+
+      expect(queryAll<Element>('.module-list__expired')).toHaveSize(0);
+      expect(cellsOf(0).at(-1)).toBe('1/1/2099');
+    });
+
+    it('renders an absent date and the legacy marker date as the shared absent value alike', () => {
       arrive([moduleRow({ startDate: null, endDate: '0001-01-01T00:00:00Z' })]);
 
       const cells: readonly string[] = cellsOf(0);
 
-      // Two different absences on the wire — a null and the legacy minimum-date marker — and one
-      // rendering, because to a person they mean the same thing. The shared pipe owns that decision.
-      expect(cells.filter((text) => text.length === 0).length)
-        .withContext('both absences render empty')
-        .toBeGreaterThanOrEqual(2);
+      expect(cells.filter((text) => text === '\u2014not recorded').length)
+        .withContext('both absences render the shared mark and its shared wording')
+        .toBe(2);
+
+      const absent = queryAll<HTMLElement>('tbody app-absent-value');
+      expect(absent).toHaveSize(2);
+      expect(
+        absent.map((node) => node.querySelector('span[aria-hidden="true"]')?.textContent),
+      ).toEqual(['\u2014', '\u2014']);
 
       const rowText: string = cells.join(' ');
 
@@ -817,7 +950,7 @@ describe('ModuleListComponent', () => {
 
       const retried = expectList('the retried read');
 
-      expect(retried.request.params.get('query'))
+      expect(sentFilters(retried).get('query'))
         .withContext('the retry resumes the filter the failure interrupted')
         .toBe('news');
     }));
@@ -894,9 +1027,9 @@ describe('ModuleListComponent', () => {
       // GetSearchModules(ByVal PortalId As Integer) As ArrayList`, which is the search-INDEXING surface of
       // the legacy searchable-module contract — it returns the modules that SUPPORT search so an indexer
       // can walk them — and is emphatically not a user-facing query.
-      expect(call.request.params.get('query')).toBe('news');
+      expect(sentFilters(call).get('query')).toBe('news');
 
-      const sent: string = call.request.params.get('query') ?? '';
+      const sent: string = sentFilters(call).get('query') ?? '';
 
       expect(sent).withContext('no wildcard is added by the client').not.toContain('%');
       expect(sent.length).withContext('the text travels byte-for-byte').toBe('news'.length);
@@ -906,7 +1039,7 @@ describe('ModuleListComponent', () => {
 
       // A changed filter returns to the first page: a coordinate measured against one match set does
       // not address the same rows once the set changes.
-      expect(call.request.params.get('pageIndex')).toBe('0');
+      expect(sentFilters(call).get('pageIndex')).toBe('0');
 
       call.flush(pageOf([moduleRow()]));
       fixture.detectChanges();
@@ -933,7 +1066,7 @@ describe('ModuleListComponent', () => {
 
       const cleared = expectList('the unfiltered read');
 
-      expect(cleared.request.params.has('query')).withContext('the parameter is omitted').toBeFalse();
+      expect(sentFilters(cleared).has('query')).withContext('the parameter is omitted').toBeFalse();
 
       cleared.flush(pageOf([moduleRow()]));
       fixture.detectChanges();
@@ -972,10 +1105,10 @@ describe('ModuleListComponent', () => {
 
       const call = expectList('the ordered read');
 
-      expect(call.request.params.get('sortBy')).withContext('a permitted key').not.toBeNull();
+      expect(sentFilters(call).get('sortBy')).withContext('a permitted key').not.toBeNull();
       // The direction arrives in the server's own spelling and needs no translation.
-      expect(call.request.params.get('sortDir')).toBe('Ascending');
-      expect(call.request.params.get('pageIndex')).toBe('0');
+      expect(sentFilters(call).get('sortDir')).toBe('Ascending');
+      expect(sentFilters(call).get('pageIndex')).toBe('0');
 
       call.flush(pageOf([moduleRow()], 40));
       fixture.detectChanges();
@@ -996,7 +1129,7 @@ describe('ModuleListComponent', () => {
 
       const reversed = expectList('the reversed read');
 
-      expect(reversed.request.params.get('sortDir')).toBe('Descending');
+      expect(sentFilters(reversed).get('sortDir')).toBe('Descending');
 
       reversed.flush(pageOf([moduleRow()]));
       fixture.detectChanges();
@@ -1023,9 +1156,9 @@ describe('ModuleListComponent', () => {
 
       const cleared = expectList('the unordered read');
 
-      expect(cleared.request.params.has('sortBy')).withContext('no key is sent').toBeFalse();
-      expect(cleared.request.params.has('sortDir')).withContext('no direction is sent').toBeFalse();
-      expect(cleared.request.params.get('pageIndex')).toBe('0');
+      expect(sentFilters(cleared).has('sortBy')).withContext('no key is sent').toBeFalse();
+      expect(sentFilters(cleared).has('sortDir')).withContext('no direction is sent').toBeFalse();
+      expect(sentFilters(cleared).get('pageIndex')).toBe('0');
 
       cleared.flush(pageOf([moduleRow()]));
       fixture.detectChanges();
@@ -1205,7 +1338,7 @@ describe('ModuleListComponent', () => {
       // ⚠ NO `+ 1` AND NO `- 1`, ANYWHERE. The wire coordinate is zero-based, the pager's input IS that
       // index and its event emits that index back. Any adjustment on either side would serve the
       // NEIGHBOURING page behind a perfectly successful response, which no status code would reveal.
-      expect(call.request.params.get('pageIndex')).toBe('1');
+      expect(sentFilters(call).get('pageIndex')).toBe('1');
 
       call.flush(pageOf([moduleRow()], 40, 1));
       fixture.detectChanges();
@@ -1230,7 +1363,7 @@ describe('ModuleListComponent', () => {
 
       const call = expectList('the first page');
 
-      expect(call.request.params.get('pageIndex')).toBe('0');
+      expect(sentFilters(call).get('pageIndex')).toBe('0');
 
       call.flush(pageOf([moduleRow()], 40, 0));
       fixture.detectChanges();
@@ -1255,9 +1388,18 @@ describe('ModuleListComponent', () => {
       // ⚠ ASSERTED WITH ITS SPACE BEFORE THE QUESTION MARK. The wording constant lives on the component
       // precisely so the significant spacing survives the template compiler's whitespace collapsing, and
       // this is the assertion that would catch it being tidied.
-      expect((query('.confirm-dialog__message')?.textContent ?? '').trim()).toBe(
-        REMOVE_CONFIRM_MESSAGE,
-      );
+      // ⚠ THE QUESTION IS ASSERTED AS A PREFIX AND THE RECORD BY NAME, WHICH IS STRONGER THAN THE EQUALITY
+      // THIS REPLACES. The body used to be the bare legacy sentence and named nothing - searched against
+      // every identifier on the page it matched none of them - while the dialog is a real modal that covers
+      // the grid, including the row being destroyed. Keeping the sentence as a PREFIX is what still proves
+      // the measured wording survives verbatim; asserting the name is what proves the operator can tell
+      // which record is at risk without seeing the row.
+      const body: string = (query('.confirm-dialog__message')?.textContent ?? '').trim();
+
+      expect(body.startsWith(REMOVE_CONFIRM_MESSAGE))
+        .withContext(`the measured question, spacing included, at the front of: ${body}`)
+        .toBeTrue();
+      expect(body).toContain('Announcements');
 
       // A destructive action, and the dialogue is told so, which is what marks its confirming button.
       expect(query('.confirm-dialog__button--danger'))
@@ -1287,7 +1429,7 @@ describe('ModuleListComponent', () => {
 
       // ⚠ BOTH IDENTITIES TRAVEL, and that is the whole contract. A module placed on every page has one
       // placement per page, so the module identity alone does not name a single row.
-      expect(call.request.params.get('tabModuleId')).toBe('11');
+      expect(sentFilters(call).get('tabModuleId')).toBe('11');
 
       // The dialogue is dismissed the moment the command is issued, so the screen is not left holding
       // a modal over an in-flight request.
@@ -1348,7 +1490,7 @@ describe('ModuleListComponent', () => {
       // Both seeds are legitimate values, and a truthiness test on either would send a request that
       // addressed a different placement or none at all.
       expect(call.request.url).toBe('/api/v1/modules/0');
-      expect(call.request.params.get('tabModuleId')).toBe('0');
+      expect(sentFilters(call).get('tabModuleId')).toBe('0');
 
       call.flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
@@ -1377,21 +1519,26 @@ describe('ModuleListComponent', () => {
 
       expect(notifications()).toEqual([{ severity: 'success', message: REMOVE_SUCCESS_MESSAGE }]);
 
-      // Meanwhile the re-read is outstanding, and the wait for it is reported by the shared table's own
-      // busy state - not by a second indicator of this screen's own, and NOT by replacing the rows the
-      // operator is looking at.
+      // Meanwhile the re-read is outstanding, and the wait for it is reported by the shared table - both
+      // programmatically, through its busy state, and visibly, through its own refetch strip - and NOT by
+      // replacing the rows the operator is looking at, nor by an indicator of this screen's own.
       expect(query('table.data-table')?.getAttribute('aria-busy'))
         .withContext('the re-read is reported as a busy region')
         .toBe('true');
       expect(query('td.data-table__message[data-placeholder]'))
         .withContext('and the rows are not torn down to say so')
         .toBeNull();
+      expect(query('.data-table__refetch app-loading-spinner'))
+        .withContext('the shared table reports the re-read visibly as well as programmatically')
+        .not.toBeNull();
       expect(
         queryAll<HTMLElement>('app-loading-spinner').filter(
-          (indicator) => indicator.closest('td.data-table__message') === null,
+          (indicator) =>
+            indicator.closest('td.data-table__message') === null &&
+            indicator.closest('.data-table__refetch') === null,
         ),
       )
-        .withContext('still no second indicator')
+        .withContext('no indicator of this screen\u2019s own, outside the shared table\u2019s two')
         .toHaveSize(0);
 
       answerList([moduleRow({ moduleId: 4, tabModuleId: 12 })]);
@@ -1814,6 +1961,89 @@ describe('ModuleListComponent', () => {
   }
   // PROOF — THE ADDRESS CARRIES THE SEARCH, THE ORDERING AND THE PAGE
 
+  // ⚠ #36 — A FILTERED LISTING MUST SAY SO. The term lived in the address and in the search box, and the box
+  // is cleared on every return to the screen, so a filtered grid was indistinguishable from a short one: three
+  // rows with nothing on the page saying the other 247 were withheld rather than absent.
+  describe('the active filter, stated', () => {
+    /** The disclosure sentence, or null when the screen shows none. */
+    function disclosure(): string | null {
+      const node = query<HTMLElement>('.module-list__filter-disclosure');
+
+      return node === null ? null : (node.textContent ?? '').trim();
+    }
+
+    /** Types a term into the shared control and settles the navigation it starts. */
+    async function search(term: string): Promise<void> {
+      const control = query<HTMLInputElement>('app-search-input input');
+
+      expect(control).withContext('the filter control is offered').not.toBeNull();
+
+      (control as HTMLInputElement).value = term;
+      (control as HTMLInputElement).dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+
+      const form = query<HTMLFormElement>('app-search-input form');
+
+      form?.dispatchEvent(new Event('submit'));
+      fixture.detectChanges();
+      await settleAddress();
+    }
+
+    it('says nothing while the listing is unfiltered', () => {
+      arrive([moduleRow()], 40);
+
+      expect(disclosure()).toBeNull();
+    });
+
+    it('names the term the rows on screen answer', async () => {
+      arrive([moduleRow()], 40);
+      await search('announce');
+      expectList('the filtered read').flush(pageOf([moduleRow()], 1));
+      fixture.detectChanges();
+
+      expect(disclosure())
+        .withContext('the same wording the user listing uses for the same statement')
+        .toBe('Filtered: module title or name contains \u201cannounce\u201d.');
+      expect(query<HTMLElement>('.module-list__filter-disclosure')?.getAttribute('aria-live'))
+        .withContext('and it is announced, not only painted')
+        .toBe('polite');
+    });
+
+    it('reports a term of nothing but spaces as ignored, and does not send it', async () => {
+      arrive([moduleRow()], 40);
+
+      // A real filter first, so the whitespace entry has something to undo and the read it provokes can be
+      // inspected. Entering spaces from an already-unfiltered listing changes the address not at all, which
+      // is why the sequence starts here.
+      await search('announce');
+      expectList('the filtered read').flush(pageOf([moduleRow()], 1));
+      fixture.detectChanges();
+
+      await search('   ');
+
+      const call = expectList('the read that returns to unfiltered');
+
+      expect(sentFilters(call).get('searchtext'))
+        .withContext('a term with nothing to match on is not transmitted')
+        .toBeNull();
+
+      call.flush(pageOf([moduleRow()], 40));
+      fixture.detectChanges();
+
+      // ⚠ THE EXPLANATION COMES FROM THE SHARED CONTROL, NOT FROM THIS SCREEN, AND THAT IS WHERE IT BELONGS.
+      // This listing once composed a sentence of its own for an ignored entry. The shared search control now
+      // recognises a term with nothing to match on, emits the EMPTY term - which is why no filter travels -
+      // and states the reason itself in a polite region, so every listing that uses the control says the same
+      // thing in the same words instead of each one wording it differently or not at all.
+      expect(query<HTMLElement>('app-search-input .search-input__advisory')?.textContent?.trim())
+        .withContext('the screen says the entry was ignored rather than looking filtered')
+        .toBe('A search of only spaces matches every record, so no filter was applied.');
+      expect(disclosure())
+        .withContext('and it is not ALSO claimed as a filter in force')
+        .toBeNull();
+    });
+  });
+
   describe('the address', () => {
     /** Presses a pager step by its accessible name and settles the navigation it starts. */
     async function pressStep(name: string): Promise<void> {
@@ -1869,10 +2099,10 @@ describe('ModuleListComponent', () => {
 
       const read: TestRequest = expectList('the restored read');
 
-      expect(read.request.params.get('query')).toBe('news');
-      expect(read.request.params.get('sortBy')).toBe('moduleTitle');
-      expect(read.request.params.get('sortDir')).toBe('Descending');
-      expect(read.request.params.get('pageIndex'))
+      expect(sentFilters(read).get('query')).toBe('news');
+      expect(sentFilters(read).get('sortBy')).toBe('moduleTitle');
+      expect(sentFilters(read).get('sortDir')).toBe('Descending');
+      expect(sentFilters(read).get('pageIndex'))
         .withContext('the page survived both resets')
         .toBe('2');
 
@@ -1897,10 +2127,10 @@ describe('ModuleListComponent', () => {
 
       const read: TestRequest = expectList('the fresh read');
 
-      expect(read.request.params.get('pageIndex'))
+      expect(sentFilters(read).get('pageIndex'))
         .withContext('the bare address means the first page, whatever the store still held')
         .toBe('0');
-      expect(read.request.params.has('query'))
+      expect(sentFilters(read).has('query'))
         .withContext('and no filter, whatever the store still held')
         .toBeFalse();
 
@@ -1922,7 +2152,7 @@ describe('ModuleListComponent', () => {
 
       const read: TestRequest = expectList('the corrected read');
 
-      expect(read.request.params.get('pageIndex')).toBe('0');
+      expect(sentFilters(read).get('pageIndex')).toBe('0');
       read.flush(pageOf([moduleRow()]));
       fixture.detectChanges();
     });
@@ -1938,7 +2168,7 @@ describe('ModuleListComponent', () => {
 
       const read: TestRequest = expectList('the read with no ordering');
 
-      expect(read.request.params.has('sortDir')).toBeFalse();
+      expect(sentFilters(read).has('sortDir')).toBeFalse();
       read.flush(pageOf([moduleRow()]));
       fixture.detectChanges();
     });
@@ -1955,9 +2185,317 @@ describe('ModuleListComponent', () => {
 
       const read: TestRequest = expectList('the read with no ordering');
 
-      expect(read.request.params.has('sortBy')).toBeFalse();
+      expect(sentFilters(read).has('sortBy')).toBeFalse();
       read.flush(pageOf([moduleRow()]));
       fixture.detectChanges();
     });
   });
+
+  // ---------------------------------------------------------------------------------------------------
+  // THE EMPTY-TABLE FLASH
+  // ---------------------------------------------------------------------------------------------------
+
+  // ⚠ THE MEASURED DEFECT THESE PROVE CLOSED. An un-asked listing and a listing that matched nothing are
+  // both an empty page with no request in flight, so the grid painted "Nothing to Display" over a listing it
+  // had not yet asked about - reported as an empty-table flash on every post-save return to a listing.
+  describe('an un-asked listing waits rather than claiming to be empty', () => {
+    it('shows the waiting placeholder, and NO zero-result surface, while the address correction is in flight', async () => {
+      // An unusable address takes the correction arm, which replaces the address and returns WITHOUT
+      // reading. The replacement navigation happens a task later, so this is exactly the window in which
+      // nothing is in flight and nothing is held.
+      await enterAt('/modules?currentpage=abc');
+      create();
+
+      expect(httpMock.match(() => true))
+        .withContext('the precondition: the uncorrected address reads nothing')
+        .toHaveSize(0);
+
+      expect(queryAll('td[data-placeholder] app-loading-spinner').length)
+        .withContext('the listing has not been asked about, so the grid is waiting')
+        .toBe(1);
+      expect(queryAll('app-empty-state').length)
+        .withContext('nothing may assert that this tenant has no modules before one has been read')
+        .toBe(0);
+
+      await settleAddress();
+      answerList([moduleRow()]);
+    });
+
+    it('shows the zero-result surface once a read has genuinely answered with nothing', () => {
+      arrive([]);
+
+      expect(queryAll('td[data-placeholder] app-loading-spinner').length).toBe(0);
+      expect(queryAll('app-empty-state').length)
+        .withContext('a settled read that matched nothing IS the empty state')
+        .toBe(1);
+    });
+  });
+
+  // ---------------------------------------------------------------------------------------------------
+  // CLEARING THE SEARCH
+  // ---------------------------------------------------------------------------------------------------
+  // Reported as a NO-OP: with a term in force, emptying the box and submitting left the address carrying
+  // the term, the rows filtered and no request issued. Reproduced here through the control's own submit
+  // path rather than by calling the handler, so a break anywhere between the button and the read is caught.
+  describe('clearing the search', () => {
+    /** Presses the search control's own submit button. */
+    function pressSearch(): void {
+      const button: HTMLButtonElement | null = query<HTMLButtonElement>('.search-input__submit');
+
+      expect(button).withContext('the control offers a submit affordance').not.toBeNull();
+      button?.click();
+      fixture.detectChanges();
+    }
+
+    /** Types into the search control's own field. */
+    function typeSearch(value: string): void {
+      const field: HTMLInputElement | null = query<HTMLInputElement>('.search-input__field');
+
+      expect(field).not.toBeNull();
+      field!.value = value;
+      field!.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+    }
+
+    it('drops the term from the address and re-reads unfiltered', async () => {
+      await enterAt('/modules?filter=Links');
+      create();
+      answerList([moduleRow()]);
+
+      expect(addressParams()['filter']).withContext('the term is in force').toBe('Links');
+
+      typeSearch('');
+      pressSearch();
+      await settleAddress();
+
+      expect(addressParams()['filter'])
+        .withContext('an emptied box withdraws the term from the address')
+        .toBeUndefined();
+
+      // ⚠ THE READ IS THE POINT. A cleared box that leaves the rows filtered is worse than one that does
+      // nothing: the caption asserts a total the rows do not match.
+      const reread: TestRequest = expectList('the unfiltered re-read');
+
+      expect(reread.request.params.get('query'))
+        .withContext('and the re-read carries no term at all')
+        .toBeNull();
+
+      reread.flush(pageOf([moduleRow()], 1, 0));
+      fixture.detectChanges();
+    });
+
+    it('shows the term the address carries, so an emptied box is a deliberate act', async () => {
+      // Without this the box reads blank while the grid is filtered, and "clearing" it is a no-op because
+      // there was nothing in it to clear.
+      await enterAt('/modules?filter=Links');
+      create();
+      answerList([moduleRow()]);
+
+      expect(query<HTMLInputElement>('.search-input__field')?.value)
+        .withContext('the box reflects the term in force')
+        .toBe('Links');
+    });
+
+    it('offers a clear affordance beside a zero-result search, and it works', async () => {
+      await enterAt('/modules?filter=nothingmatches');
+      create();
+      answerList([], 0);
+
+      const clear: HTMLButtonElement | null = query<HTMLButtonElement>('.module-list__clear-search');
+
+      expect(clear)
+        .withContext('a search that matched nothing must offer a way back to everything')
+        .not.toBeNull();
+
+      clear?.click();
+      await settleAddress();
+
+      expect(addressParams()['filter']).toBeUndefined();
+
+      const reread: TestRequest = expectList('the unfiltered re-read');
+
+      expect(reread.request.params.get('query')).toBeNull();
+      reread.flush(pageOf([moduleRow()], 1, 0));
+      fixture.detectChanges();
+    });
+
+    /**
+     * ⚠ THE OTHER HALF OF THE AFFORDANCE ABOVE, AND IT WAS MISSING. Runtime testing measured the gap: the
+     * button dropped the term from the address and brought every row back, and then the box went on showing
+     * `nothingmatches` - a populated search field disagreeing with both the address bar and the grid beneath
+     * it, so the one recovery offered to an operator left the screen contradicting itself.
+     *
+     * The cause was the echo guard that protects live typing when the term came FROM the box. This button is
+     * a SECOND affordance over the same term, so nothing in the box needs protecting and the guard has to be
+     * answered by writing the box explicitly. The hand-clear path is asserted alongside it, because that is
+     * the path the guard is genuinely for and it must not regress.
+     */
+    it('empties the box as well as the address, so the screen cannot contradict itself', async () => {
+      await enterAt('/modules?filter=nothingmatches');
+      create();
+      answerList([], 0);
+
+      expect(query<HTMLInputElement>('.search-input__field')?.value)
+        .withContext('precondition: the box shows the term that matched nothing')
+        .toBe('nothingmatches');
+
+      query<HTMLButtonElement>('.module-list__clear-search')?.click();
+      await settleAddress();
+
+      expect(addressParams()['filter'])
+        .withContext('the term leaves the address')
+        .toBeUndefined();
+
+      const reread: TestRequest = expectList('the unfiltered re-read');
+
+      reread.flush(pageOf([moduleRow()], 1, 0));
+      fixture.detectChanges();
+
+      expect(query<HTMLInputElement>('.search-input__field')?.value)
+        .withContext('AND it leaves the box, which is the half that was measured missing')
+        .toBe('');
+    });
+
+    it('states the zero-result outcome once, not twice', async () => {
+      await enterAt('/modules?filter=nothingmatches');
+      create();
+      answerList([], 0);
+
+      const occurrences: number = (host().textContent ?? '').split('No records found').length - 1;
+
+      expect(occurrences).withContext('the empty state is asserted exactly once').toBe(1);
+    });
+  });
+
+  // ---------------------------------------------------------------------------------------------------
+  // AN ADDRESS PAST THE END
+  // ---------------------------------------------------------------------------------------------------
+  describe('an address past the end of the results', () => {
+    it('does not show a populated range beside the zero-result surface', async () => {
+      // Reported: `21-30 of 30` rendered beside "No records found." - a caption describing records the
+      // grid is not showing and cannot show.
+      await enterAt('/modules?currentpage=99');
+      create();
+      await settleAddress();
+      answerList([], 30, 98);
+
+      // The WHOLE screen is examined rather than one region, because the range and the zero-result
+      // sentence were rendered by two different components - the pager below the grid and the grid's own
+      // empty row - and an assertion scoped to either would have missed the contradiction between them.
+      const shown: string = (host().textContent ?? '').replace(/\s+/g, ' ');
+
+      expect(shown)
+        .withContext('no range describing records the grid is not showing and cannot show')
+        .not.toContain('of 30');
+      expect(shown.toLowerCase())
+        .withContext('it says the page is past the end instead')
+        .toContain('past the end');
+    });
+
+    it('offers the same return-to-first-page recovery the portal listing offers', async () => {
+      await enterAt('/modules?currentpage=99');
+      create();
+      await settleAddress();
+      answerList([], 30, 98);
+
+      const recovery: HTMLButtonElement | null = query<HTMLButtonElement>('.module-list__first-page');
+
+      expect(recovery).not.toBeNull();
+
+      recovery?.click();
+      await settleAddress();
+
+      expect(addressParams()['currentpage']).toBeUndefined();
+
+      const reread: TestRequest = expectList('the first-page re-read');
+
+      reread.flush(pageOf([moduleRow()], 30, 0));
+      fixture.detectChanges();
+    });
+  });
+
+  // ---------------------------------------------------------------------------------------------------
+  // AN ADMINISTRATIVE MODULE'S SETTINGS
+  // ---------------------------------------------------------------------------------------------------
+  // Reported: every row offered `Settings`, and on the row created from the administrative `User Accounts`
+  // package the screen behind it answered 403 `module.settings_protected` every single time - "available only
+  // through their typed privileged endpoint", a sentence about an endpoint shown to an operator, with no way
+  // on. The refusal is deliberate; offering a command that provokes it is not.
+  describe('the settings command for an administrative module', () => {
+    /** Every row command's destination, in document order, with a button reported as having none. */
+    function commandTargets(): readonly (string | null)[] {
+      const row: HTMLTableRowElement = bodyRows()[0] as HTMLTableRowElement;
+
+      return Array.from(row.querySelectorAll<HTMLElement>('a, button')).map((control) =>
+        control.getAttribute('href'),
+      );
+    }
+
+    /** The names of this row's commands. */
+    function names(): readonly string[] {
+      const row: HTMLTableRowElement = bodyRows()[0] as HTMLTableRowElement;
+
+      return Array.from(row.querySelectorAll<HTMLElement>('a, button')).map((control) =>
+        (control.textContent ?? '').trim(),
+      );
+    }
+
+    it('sends it to the screen that owns those settings, not to the generic one', () => {
+      arrive([
+        moduleRow({
+          moduleId: 7,
+          friendlyName: 'User Accounts',
+          moduleTitle: 'User Accounts',
+          isAdmin: true,
+        }),
+      ]);
+
+      expect(names())
+        .withContext('the command is still offered - it simply leads somewhere that works')
+        .toContain('Settings');
+
+      // The membership settings screen IS this module's settings, which is why the server refuses to serve
+      // them generically. The address is the one the role listing already names for the same screen.
+      expect(commandTargets())
+        .withContext('the destination is the screen that genuinely owns them')
+        .toContain('/settings/membership');
+      expect(commandTargets())
+        .withContext('and never the generic settings screen, which answers 403 for this module')
+        .not.toContain('/modules/7/settings');
+    });
+
+    it('withholds it entirely for an administrative package this console does not administer', () => {
+      arrive([
+        moduleRow({
+          moduleId: 5,
+          friendlyName: 'Site Log',
+          moduleTitle: 'Site Log',
+          isAdmin: true,
+        }),
+      ]);
+
+      expect(names())
+        .withContext('no affordance is better than one that always ends in a refusal')
+        .not.toContain('Settings');
+
+      // The other three commands are untouched: the module can still be edited, exported and removed.
+      expect(names()).toEqual(['Edit', 'Export', 'Delete']);
+    });
+
+    it('offers the generic screen for an ordinary module, and for one whose package could not be read', () => {
+      arrive([moduleRow({ moduleId: 3, isAdmin: false })]);
+
+      expect(commandTargets()).toContain('/modules/3/settings');
+
+      // ⚠ `null` IS NOT `true`. An unresolved package makes no claim, so the ordinary destination stands and
+      // the server remains the authority - treating absence as "administrative" would withhold a working
+      // command from every module whose definition join failed.
+      arrive([moduleRow({ moduleId: 3, isAdmin: null })]);
+
+      expect(commandTargets())
+        .withContext('an unresolved package is not a claim that the module is administrative')
+        .toContain('/modules/3/settings');
+    });
+  });
+
 });

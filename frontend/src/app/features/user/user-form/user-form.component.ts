@@ -17,6 +17,8 @@ import {
   ElementRef,
 } from '@angular/core';
 import type { Signal } from '@angular/core';
+import { USER_LIST_ROUTE } from '../../../core/config/app-routes.config';
+import { ListReturnStore } from '../../../core/state/list-return.store';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import type { AbstractControl, ValidationErrors, ValidatorFn } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
@@ -29,9 +31,17 @@ import type { DeferredOutcome } from '../../../core/services/deferred-outcome.se
 import { NotificationService } from '../../../core/services/notification.service';
 import type { NotificationSeverity } from '../../../core/services/notification.service';
 import { AuthStore } from '../../../core/state/auth.store';
+import { USER_DELETED_MESSAGE } from '../user-messages';
+import { SessionTeardownService } from '../../../core/state/session-teardown.service';
 import { UserStore } from '../../../core/state/user.store';
 import type { UserOperation } from '../../../core/state/user.store';
-import { stripLegacyBreakTags, userCreateMessage } from '../../../core/utils/form-errors.util';
+import {
+  missingEntityProblem,
+  missingEntityRecoveryLabel,
+  stripLegacyBreakTags,
+  userCreateMessage,
+} from '../../../core/utils/form-errors.util';
+import { EMAIL_PATTERN } from '../../../core/utils/email-grammar.util';
 import type { ProblemSeverity } from '../../../core/utils/form-errors.util';
 import { CREDENTIAL_MAX_LENGTH } from '../../../core/utils/credential-bounds.util';
 import { parseRouteId, readRouteId } from '../../../core/utils/route-id.util';
@@ -67,11 +77,6 @@ export const PASSWORD_MIN_NON_ALPHANUMERIC = 0;
 
 const NON_ALPHANUMERIC_PATTERN = /[^0-9a-zA-Z]/g;
 
-/**
- * The pattern an electronic-mail address must match. this is the MEASURED legacy expression, explicitly
- * anchored.
- */
-const EMAIL_PATTERN = /^[\w.-]+(\+[\w-]*)?@([\w-]+\.)+[\w-]+$/;
 
 /**
  * The maximum length of each identity field, in characters. the authority is the column and the API rule,
@@ -103,14 +108,65 @@ export const EDIT_MODE_TITLE = 'Edit User Accounts';
 /** `AddUser.Text` — the screen title while creating. */
 export const CREATE_MODE_TITLE = 'Add New User';
 
-/** `UserTitle.Text` — the per-record title format. */
+/** The stock help line for the display-name field, shown when the operator chooses the name. */
+export const DISPLAY_NAME_HELP = 'Provide a Display Name';
+
+/**
+ * The help line shown when the tenant composes display names from a stored format, so the operator does
+ * not choose one.
+ */
+export const DISPLAY_NAME_COMPOSED_HELP =
+  'This site composes display names from a set format, so this value cannot be changed here.';
+
+/** `UserTitle.Text` — the per-record title format, used when an ADMINISTRATOR is editing someone else. */
 export const EDIT_RECORD_TITLE_FORMAT = 'Edit User - {0} (Id: {1})';
+
+/**
+ * The per-record title shown to THE ACCOUNT'S OWNER, which deliberately omits the record identifier.
+ *
+ * ⚠ THIS IS A DOCUMENTED DIVERGENCE, AND THE LEGACY RULE IS NARROWER THAN THE OBVIOUS READING OF IT.
+ * `ManageUsers.ascx.vb` chose its heading in three arms, and the middle one is
+ * `If IsUser And IsProfile Then trTitle.Visible = False` (L259-L260); every other authenticated case reached
+ * `String.Format(UserTitle, User.Username, User.UserID.ToString)` (L262). The conjunct that matters is the
+ * second one. `UserModuleBase.vb` L350-L371 defines `IsProfile` as `IsUser` AND the PROFILE editor being the
+ * panel on screen (`ctl=Profile`, or the tenant's own user tab), so the title row was hidden ONLY on the
+ * profile screen. Legacy therefore DID show `Edit User - name (Id: n)` to an account's own owner on this,
+ * the account panel — L347's `If AddUser Or (IsUser And Not IsAdmin)` proves a member could reach it, since
+ * that branch exists precisely to hide the membership panel from a member editing their own account.
+ *
+ * The faithful reproduction of the hidden-title rule therefore lives on the PROFILE screen, and it does
+ * (see `formatProfileTitle` in `user-profile.component.ts`). Withholding the identifier here as well is an
+ * ADDITIONAL, deliberate divergence, kept for two reasons. First, this route is declared
+ * `data: { permission: 'PortalAdministrator' }`, so `isSelf()` here can only mean an administrator looking
+ * at their own account — a caller who already knows which account it is, and for whom the identifier
+ * carries no information. Second, it is defensive: the identifier is disclosed on the strength of a route
+ * guard rather than of the heading's own logic, and were that guard ever relaxed to the account owner, to
+ * restore the legacy reachability L347 documents, this branch is already what stops a member being shown an
+ * internal database key.
+ *
+ * Hiding the heading outright is not reproduced on either screen, because a routed screen with no `h1`
+ * leaves its main region without an accessible name and breaks the semantic-landmark requirement every
+ * other screen in this application satisfies. Omitting only the identifier achieves what the legacy rule
+ * was protecting while keeping the heading a screen needs.
+ */
+export const EDIT_OWN_RECORD_TITLE_FORMAT = 'Edit User - {0}';
 
 /** `MembershipTitle.Text` — the legend of the membership panel. */
 export const MEMBERSHIP_PANEL_TITLE = 'Membership Information';
 
 /** `Delete.Text` — the destructive action's label for another account. */
 export const DELETE_LABEL = 'Delete';
+
+/**
+ * The wording of the safe exit.
+ *
+ * ⚠ MIGRATION: AN ADDED AFFORDANCE, NOT A PORTED ONE, and the divergence is deliberate. The legacy command
+ * panel at `Website/admin/Users/User.ascx` L71-L79 carried exactly two commands - remove and save - and no
+ * cancel, while the sibling editors DID carry one: `signup.ascx`, `sitesettings.ascx` and `editroles.ascx` all
+ * declare `cmdCancel`. That asymmetry was faithfully reproduced here, and it left this screen alone among the
+ * four with no way out of a half-filled form except the browser's own controls. Recorded in MIGRATION_NOTES.md.
+ */
+export const CANCEL_LABEL = 'Cancel';
 
 export const UNREGISTER_LABEL = 'UnRegister';
 
@@ -124,8 +180,17 @@ export const CONFIRM_UNREGISTER_MESSAGE = 'Are you sure you want to un-register'
 export const PASSWORD_HELP =
   'Optionally enter a password for this user, or allow the system to generate a random password';
 
-/** `Required.Text`, from the shared resources. */
-export const REQUIRED_LEGEND = ' All fields marked with a red arrow are required.';
+/**
+ * `Required.Text`, from the shared resources, WITH ONE WORD CHANGED.
+ *
+ * ⚠ #20 — MIGRATION: the legacy sentence read "marked with a red arrow", and it was accurate there: the
+ * legacy skin drew its required marker as a red arrow IMAGE referenced from the stylesheet. No image asset
+ * ships with this workspace - the favicon is the only one - so the marker here is the asterisk the shared
+ * field draws, and the legacy sentence described something no reader could see. A sentence that names the
+ * wrong marker is worse than a reworded one: it sends a reader looking for an arrow that does not exist. The
+ * divergence is deliberate and is recorded in MIGRATION_NOTES.md.
+ */
+export const REQUIRED_LEGEND = ' All fields marked with an asterisk are required.';
 
 /**
  * The element identifier of the password section's GROUP message container — #8. ⚠ IT HAS TO BE A STABLE,
@@ -184,6 +249,19 @@ export const USER_UNAUTHORIZED_MESSAGE = 'User successfully Un-Authorized';
 /** Success wording after releasing a locked-out account. DEFECT 5, annotated and NOT fixed. */
 export const USER_UNLOCKED_MESSAGE = 'User successfully Unlocked';
 
+/**
+ * Stated when Update is pressed on a form nobody has edited.
+ *
+ * ⚠ A DEAD PRIMARY ACTION IS WORSE THAN A POINTLESS WRITE, AND THIS SCREEN HAD ONE. The write is still
+ * skipped - there is nothing to store, and issuing it would touch the account's audit trail for no reason -
+ * but the click used to return in silence: no request, no navigation, no message, nothing on screen changed.
+ * Runtime testing pressed Update on an untouched form and could not tell the click from a broken button.
+ * MIGRATION: the wording is net-new. `ManageUsers.ascx.vb` L918 answered every update by redirecting to the
+ * same address, so the legacy screen visibly reloaded even when nothing had changed; a single-page
+ * application has no reload to stand in for that acknowledgement and has to say so instead.
+ */
+export const NO_CHANGES_MESSAGE = 'There are no changes to save.';
+
 /** Success wording after obliging an account to change its password. */
 export const PASSWORD_CHANGE_REQUIRED_MESSAGE = 'This user must change their password at next login';
 
@@ -215,6 +293,9 @@ export const USER_CREATE_FAILED_MESSAGE = 'User account could not be created';
  */
 export const USER_CREATED_MESSAGE = 'User account {name} created';
 
+/** Where a reader is sent once the addressed account has gone, and the only action offered there. */
+const RECOVERY_LABEL = missingEntityRecoveryLabel('User Accounts');
+
 /** `NoUser.Text` — the account does not exist. */
 export const NO_USER_MESSAGE = "This account doesn't exist";
 
@@ -224,7 +305,15 @@ export const SUPER_USER_MESSAGE =
 /** `InvalidUser.Text` — the account exists but is not a member of this tenant. */
 export const INVALID_USER_MESSAGE = 'This account is not a User in the current Portal.';
 
-/** `NotAuthorized.Text` — the caller may not edit this account. */
+/**
+ * `NotAuthorized.Text` — the caller may not edit this account.
+ *
+ * ⚠ #20 — KEPT VERBATIM, INCLUDING ITS SPELLING. A review counted four phrasings of access denial across
+ * the application and asked for one vocabulary; this is one of the two that are LEGACY RESOURCE WORDING, and
+ * the migration's parity requirement is that a message a legacy operator recognises stays the message they
+ * recognise. The vocabulary was unified across the sentences this application AUTHORS - every one of those
+ * now begins "You do not have permission to" - and the two legacy strings are the documented exception.
+ */
 export const NOT_AUTHORIZED_MESSAGE = 'You are not authorized to edit this user.';
 
 /** `UserLockedOut.Text` — repeated failed sign-ins have locked the account. */
@@ -295,6 +384,33 @@ const FORBIDDEN_STATUS = 403;
 
 /** The not-found status. */
 const NOT_FOUND_STATUS = 404;
+
+/**
+ * What the screen says when the account could not be re-read and nothing was already on it.
+ *
+ * ⚠ NET-NEW: THERE WAS NO WORDING AND NO CONTROL FOR THIS AT ALL. A failed read left the screen silent
+ * apart from the shared banner, with every action still live.
+ */
+const DETAIL_UNREAD_MESSAGE =
+  'This account could not be read, so nothing here can be confirmed against the server. The actions are ' +
+  'unavailable until it has been read.';
+
+/** What it says when a record read earlier is still on screen behind the failure. */
+const DETAIL_UNCONFIRMED_MESSAGE =
+  'This account could not be re-read, so the values shown may be out of date. The actions are ' +
+  'unavailable until it has been read again.';
+
+/** The recovery control's wording, matching the one the module and portal listings already use. */
+const RETRY_LABEL = 'Try again';
+
+/** The wording of the control that proceeds without re-reading. */
+const DISMISS_LABEL = 'Dismiss';
+
+/**
+ * The wording of the way out when the first read failed and there is therefore nothing on screen to
+ * proceed with. Dismissing is not offered in that case, so this is the only forward move besides retrying.
+ */
+const LEAVE_LABEL = 'Back to user accounts';
 
 /** The state-conflict status. */
 const CONFLICT_STATUS = 409;
@@ -505,6 +621,14 @@ export function passwordRulesValidator(isCreateMode: () => boolean): ValidatorFn
 
 // THE COMPONENT
 
+/**
+ * THE SUBTITLE, UNDER THE APPLICATION'S ONE SUBTITLE RULE: exactly one per screen, stating that screen's
+ * SCOPE - the record it acts on when the title does not already name it, otherwise what the screen is for
+ * in one line - and never a status, a count or a progress readout.
+ */
+const PAGE_SUBTITLE =
+  'The account itself. Its profile, password and roles are managed on their own screens.';
+
 @Component({
   selector: 'app-user-form',
   standalone: true,
@@ -531,9 +655,19 @@ export class UserFormComponent {
    * navigation: Cancel, an in-application link and the browser's Back button are navigations a route
    * guard can refuse, while closing or reloading the tab is not, and only the browser's own unload prompt
    * covers that - which needs the dirty state at an arbitrary moment rather than at a navigation.
+   *
+   * ⚠ THE BUSY EXCLUSION WAS REMOVED, AND ITS REMOVAL CLOSES A MEASURED HOLE. This predicate used to read
+   * `dirty && busy === false`, which reported the screen CLEAN for exactly as long as a write was in flight -
+   * so navigating away mid-save was admitted in silence, the departure destroyed the component, and
+   * `takeUntilDestroyed` cancelled the request. The operator lost the write and was told nothing. A form
+   * holding an unfinished write is the LEAST safe moment to leave, not the safest.
+   *
+   * The exclusion was written to stop the application's OWN post-save navigation being challenged, and that
+   * case is already covered properly: every success path replaces the address imperatively, which
+   * `unsavedChangesGuard` admits explicitly. Nothing here has to approximate it a second time.
    */
   private readonly unsavedEntry = inject(UnsavedChangesTracker).watch(
-    () => this.form.dirty && this.store.saving() === false,
+    () => this.form.dirty,
   );
   /**
    * The account identifier taken from the route, as a string, or undefined. The name is EXTERNALLY FIXED
@@ -553,11 +687,35 @@ export class UserFormComponent {
    */
   private readonly deferredOutcome = inject(DeferredOutcomeService);
 
+  /**
+   * Which session a write belongs to, so an outcome can be disowned rather than guessed at.
+   *
+   * ⚠ WHY THIS SCREEN NEEDS IT WHEN THE STORE ALREADY REPORTS FAILURES. Every announcement below settles a
+   * write by testing `store.failure()` for null, and a null failure is only evidence of success while the
+   * slot is under the server's control. A session teardown empties it — `SessionTeardownService.purge()`
+   * calls `UserStore.reset()`, which sets the pending-write count to zero AND the failure slot to null —
+   * so the instant a renewal is refused mid-write, every test below reads exactly as a clean success.
+   * Measured in a browser: a `PUT /api/v1/users/16` that was refused, never replayed and never reached the
+   * API produced the toast "User account updated" beside "Your session has ended", and a fresh read showed
+   * the old value. Capturing the generation at dispatch is what lets the settle path tell "the server said
+   * nothing was wrong" apart from "there is no longer anyone to ask".
+   */
+  private readonly sessionTeardown = inject(SessionTeardownService);
+
+  /**
+   * The session generation in force when the outstanding write was dispatched, or 0 when none is
+   * outstanding. Compared through {@link SessionTeardownService.isCurrent}.
+   */
+  private writeGeneration = 0;
+
   /** This screen's lifetime, held for the one hand-over below and nothing else. */
   private readonly destroyRef = inject(DestroyRef);
 
   /** Used only for the two measured redirects and the password cross-link. */
   private readonly router = inject(Router);
+
+  /** Where the listing stood when the operator left it, so returning restores that place. */
+  private readonly listReturn = inject(ListReturnStore);
 
   /**
    * The signed-in operator, read ONLY to decide whether this screen is editing their own account. This is
@@ -597,6 +755,92 @@ export class UserFormComponent {
 
   /** Whether the screen is editing rather than creating. */
   protected readonly isEditMode: Signal<boolean> = computed<boolean>(() => !this.isCreateMode());
+
+  /**
+   * Whether the tenant composes display names itself, in which case the operator does not choose one.
+   *
+   * ⚠ THE TEST IS "STORED AND NON-EMPTY", NOT "PRESENT". `UserEditorCreated` (`User.ascx.vb` L397-L406)
+   * read `Security_DisplayNameFormat` and acted only when the setting was neither `Nothing` NOR an empty
+   * string - a tenant that has never configured a format stores the empty string, and treating that as
+   * configured would lock the field on every ordinary site.
+   */
+  protected readonly displayNameComposedByTenant: Signal<boolean> = computed<boolean>(() => {
+    const settings = this.store.membershipSettings();
+
+    if (settings === null) {
+      // Not yet read. The field stays editable until the policy is known, because the alternative is a
+      // field that starts locked and silently unlocks - which reads as a fault.
+      return false;
+    }
+
+    return settings.securityDisplayNameFormat.trim().length > 0;
+  });
+
+  /**
+   * Whether to render the display-name field at all.
+   *
+   * ⚠ THE LEGACY RULE HAS TWO ARMS AND THEY ARE DIFFERENT, which is easy to miss. Within the same
+   * `If setting is configured` branch, `User.ascx.vb` L400-L404 reads:
+   * `If AddUser Then e.Editor.Visible = False Else e.Editor.EditMode = PropertyEditorMode.View`.
+   * Creating an account HID the field outright - there is nothing to show, because the name will be
+   * composed from parts the operator is about to supply. Editing one showed it READ-ONLY, because a
+   * composed value already exists and is worth seeing.
+   */
+  protected readonly showDisplayNameField: Signal<boolean> = computed<boolean>(
+    () => !(this.isCreateMode() && this.displayNameComposedByTenant()),
+  );
+
+  /**
+   * Whether the display-name field is presented for reading only.
+   *
+   * `readonly` rather than `disabled`: a disabled control leaves the tab order and is skipped by assistive
+   * technology, so an operator navigating by keyboard would never learn the value exists.
+   *
+   * The value IS still sent, and that is correct rather than an oversight. The legacy editor in
+   * `PropertyEditorMode.View` round-tripped the stored value untouched, and the update resource replaces
+   * every column it names - so omitting the display name would clear it. A read-only control the operator
+   * cannot change sends back exactly what it was given.
+   */
+  protected readonly displayNameReadOnly: Signal<boolean> = computed<boolean>(
+    () => this.isEditMode() && this.displayNameComposedByTenant(),
+  );
+
+  /**
+   * The help line beneath the display-name field.
+   *
+   * ⚠ THE STOCK WORDING CONTRADICTS A READ-ONLY FIELD, which is what made the original defect worse than a
+   * missing lock: the field was editable AND told the operator to "Provide a Display Name", so a name typed
+   * there was silently replaced by the composed one on save. When the tenant composes the name, the help
+   * line says so instead of instructing the operator to do something that will not take effect.
+   */
+  protected readonly displayNameHelp: Signal<string> = computed<string>(() =>
+    this.displayNameReadOnly() ? DISPLAY_NAME_COMPOSED_HELP : DISPLAY_NAME_HELP,
+  );
+
+  /**
+   * Moves the display-name required rule on and off as the tenant policy resolves.
+   *
+   * ⚠ WITHOUT THIS THE HIDDEN FIELD WOULD MAKE THE FORM UNSUBMITTABLE WITH NO VISIBLE REASON, which is a
+   * worse defect than the one being fixed. While creating an account in a tenant that composes display
+   * names, the field is not rendered at all - and a required control that is not rendered leaves the form
+   * invalid with nothing on screen to correct.
+   *
+   * Dropping the rule is safe rather than permissive, because the server supplies the value in exactly this
+   * case: `CreateUserAsync` reads the tenant's format and composes the name from it, and
+   * `CreateUserRequestValidator` bounds `DisplayName` only `.When(!IsNullOrEmpty)`. So an empty display name
+   * submitted from this screen is not an unvalidated one - it is the server's to compose.
+   */
+  private applyDisplayNameRequiredRule(fieldShown: boolean): void {
+    const control = this.form.controls.displayName;
+
+    if (fieldShown) {
+      control.addValidators(requiredText);
+    } else {
+      control.removeValidators(requiredText);
+    }
+
+    control.updateValueAndValidity({ emitEvent: false });
+  }
 
   /**
    * Whether the address carries something that is not an account identifier. ⚠ THE DISTINCTION {@link
@@ -644,6 +888,15 @@ export class UserFormComponent {
   /** The problem document to show in the banner, or null when there is nothing to show. */
   protected readonly problem: Signal<ProblemDetails | null> = computed<ProblemDetails | null>(
     () => {
+      // ⚠ AN ACCOUNT THAT IS NOT THERE IS STATED BY THE BANNER, and it was not before. A missing record
+      // answers at 404, which the shared classifier calls a REFUSAL rather than an error, so the arm below
+      // returned null for it and the only statement was a plain paragraph appearing inside a branch - a
+      // live region created together with its first message, which is announced inconsistently. The
+      // sentence itself is the legacy `NoUser.Text` and is carried across verbatim.
+      if (this.userMissing() || this.addressUnreadable()) {
+        return missingEntityProblem(NO_USER_MESSAGE);
+      }
+
       const failure = this.store.failure();
 
       if (failure === null) {
@@ -759,10 +1012,7 @@ export class UserFormComponent {
 
   // PAGE CHROME
 
-  /**
-   * The screen title, which the measured resources prove is MODE-DEPENDENT. Three cases, all measured.
-   * Creating uses `AddUser.Text`.
-   */
+
   protected readonly pageTitle: Signal<string> = computed<string>(() => {
     if (this.isCreateMode() && !this.addressUnreadable()) {
       return CREATE_MODE_TITLE;
@@ -775,6 +1025,13 @@ export class UserFormComponent {
     }
 
     const shown: string = held.displayName.length === 0 ? held.username : held.displayName;
+
+    // THE RECORD IDENTIFIER IS AN ADMINISTRATIVE DETAIL, so it is disclosed only to a caller acting
+    // administratively. The owner of the account sees the same heading without it - see
+    // EDIT_OWN_RECORD_TITLE_FORMAT for the legacy arm this reproduces and the one detail it does not.
+    if (this.isSelf()) {
+      return EDIT_OWN_RECORD_TITLE_FORMAT.replace('{0}', shown);
+    }
 
     return EDIT_RECORD_TITLE_FORMAT.replace('{0}', shown).replace('{1}', String(held.userId));
   });
@@ -800,6 +1057,9 @@ export class UserFormComponent {
    * whether the account being edited IS the signed-in caller.
    */
   protected readonly deleteLabel: string = DELETE_LABEL;
+
+  /** The wording of the safe exit, matching the three sibling forms that already offer one. */
+  protected readonly cancelLabel: string = CANCEL_LABEL;
 
   /** The confirmation shown before removal. Same unevaluable branch as the label. */
   protected readonly confirmDeleteMessage: string = CONFIRM_DELETE_MESSAGE;
@@ -908,6 +1168,14 @@ export class UserFormComponent {
   );
 
   /**
+   * `UserLockedOut.Text`, stated beside the command that clears it.
+   *
+   * A plain field rather than a computed, because the sentence never varies; the template renders it under
+   * the same condition as the unlock command, so the condition lives in exactly one place.
+   */
+  protected readonly lockedOutMessage = USER_LOCKED_OUT_MESSAGE;
+
+  /**
    * `cmdPassword.Visible = Not Membership.UpdatePassword` — offered only while the obligation is not
    * already recorded.
    */
@@ -945,8 +1213,99 @@ export class UserFormComponent {
 
     const status: number | null = failure.summary.status;
 
-    return status === FORBIDDEN_STATUS || status === NOT_FOUND_STATUS;
+    if (status === FORBIDDEN_STATUS || status === NOT_FOUND_STATUS) {
+      return true;
+    }
+
+    // ⚠ ANY FAILED READ OF THE ACCOUNT WITHHOLDS THE ACTIONS TOO, AND THIS IS THE FIX. Only `403` and `404`
+    // used to disable, so a read that failed for any other reason - a dropped connection, an aborted
+    // request, a `500` - left Update, Delete, UnAuthorize and Force Password Change all live over a record
+    // that had NOT been refreshed. The fields on screen were the previous read's, so those actions would
+    // have written decisions taken against data whose current state is unknown. A stale record is not a
+    // basis for a mutation, whatever the reason it is stale.
+    return failure.operation === 'loadUser';
   });
+
+  /**
+   * Whether the account could not be re-read, so what is on screen may no longer match the server.
+   *
+   * Distinguished from {@link userMissing} - which is the `404`, where there is nothing to show at all - and
+   * from {@link formDisabled}, which is the consequence rather than the cause. This one exists so the screen
+   * can SAY it is showing data it could not confirm, and offer a way out.
+   */
+  protected readonly detailUnread: Signal<boolean> = computed<boolean>(() => {
+    if (this.isCreateMode() || this.store.selectedUserLoading()) {
+      return false;
+    }
+
+    const failure = this.store.failure();
+
+    if (failure === null || failure.operation !== 'loadUser') {
+      return false;
+    }
+
+    // A `404` is reported by its own surface, which explains that the account is gone rather than
+    // unconfirmed; saying both would contradict itself.
+    return failure.summary.status !== NOT_FOUND_STATUS;
+  });
+
+  /**
+   * Whether a record read earlier is still on screen behind that failure. The wording differs: showing
+   * fields that could be out of date is a different warning from showing nothing at all.
+   */
+  protected readonly showingUnconfirmedRecord: Signal<boolean> = computed<boolean>(
+    () => this.detailUnread() && this.selectedUser() !== null,
+  );
+
+  protected readonly detailUnreadMessage = DETAIL_UNREAD_MESSAGE;
+
+  protected readonly detailUnconfirmedMessage = DETAIL_UNCONFIRMED_MESSAGE;
+
+  protected readonly retryLabel = RETRY_LABEL;
+
+  protected readonly dismissLabel = DISMISS_LABEL;
+
+  protected readonly leaveLabel = LEAVE_LABEL;
+
+  /** Where the listing lives, for the way out offered when nothing could be read. */
+  protected readonly listRoute = USER_LIST_ROUTE;
+
+  /** Re-issues the account read that failed. */
+  protected onRetryDetail(): void {
+    const id: number | undefined = this.resolvedUserId();
+
+    if (id === undefined) {
+      return;
+    }
+
+    this.store.clearFailure();
+
+    // The FORCED re-read, not the guarded selection: this control exists for a record that is already on
+    // screen and could not be confirmed, and the guarded path treats an account already held as nothing left
+    // to do - which made this button do nothing at all.
+    this.store.rereadUser(id);
+  }
+
+  /**
+   * Puts the failure aside without re-reading, re-enabling the actions.
+   *
+   * ⚠ THE TEMPLATE OFFERS THIS ONLY WHILE {@link showingUnconfirmedRecord} HOLDS, AND THAT RESTRICTION IS
+   * LOAD-BEARING RATHER THAN COSMETIC. Re-enabling is defensible when a record was read earlier and is
+   * still on screen: the operator can see real values, may know they are current, and trapping them behind
+   * an unreachable server with no way forward is worse than letting them decide. It is indefensible when
+   * the FIRST read failed, because then the form is blank - dismissing would clear the disclaimer, remove
+   * the retry and hand over an empty but fully editable account form with a live Update, so an operator who
+   * filled the required fields would overwrite stored values they had never seen. Runtime verification
+   * reproduced exactly that: four of five inputs and the submit re-enabled with zero network traffic and no
+   * residual warning. Hence the guard, and hence the listing link in its place.
+   */
+  protected onDismissDetailFailure(): void {
+    if (!this.showingUnconfirmedRecord()) {
+      return;
+    }
+
+    this.store.clearFailure();
+  }
 
   protected readonly userMissing: Signal<boolean> = computed<boolean>(() => {
     if (this.isCreateMode()) {
@@ -966,6 +1325,12 @@ export class UserFormComponent {
     return failure.operation === 'loadUser' && failure.summary.status === NOT_FOUND_STATUS;
   });
 
+  /** The one-line scope statement shown beneath the title. */
+  protected readonly pageSubtitle = PAGE_SUBTITLE;
+
+  /** The caption of the one way out offered once the addressed account cannot be shown. */
+  protected readonly recoveryLabel = RECOVERY_LABEL;
+
   /** Whether the submit action should be offered as available. */
   protected readonly canSubmit: Signal<boolean> = computed<boolean>(
     () => !this.formDisabled() && !this.loading(),
@@ -974,6 +1339,37 @@ export class UserFormComponent {
   // WIRING
 
   constructor() {
+    // THE TENANT POLICY IS READ, ONCE, BECAUSE THIS SCREEN'S BEHAVIOUR DEPENDS ON IT. Whether the operator
+    // chooses the display name or the tenant composes it decides whether the field is offered at all - so
+    // without this read the screen renders an editable field whose value the server will replace, which is
+    // the defect being fixed rather than a cosmetic gap.
+    //
+    // Guarded on the policy being absent so that arriving from the listing, which has already read it, does
+    // not read it again.
+    effect(() => {
+      const alreadyHeld = this.store.membershipSettings() !== null;
+      const loading = this.store.membershipSettingsLoading();
+
+      if (alreadyHeld || loading) {
+        return;
+      }
+
+      untracked(() => {
+        this.store.loadMembershipSettings();
+      });
+    });
+
+    // THE TENANT POLICY DRIVES THE REQUIRED RULE. Re-runs when the policy resolves, and when the screen
+    // changes between creating and editing. Written untracked so the reconfiguration cannot take a
+    // dependency on whatever the validity update happens to read.
+    effect(() => {
+      const fieldShown = this.showDisplayNameField();
+
+      untracked(() => {
+        this.applyDisplayNameRequiredRule(fieldShown);
+      });
+    });
+
     effect(() => {
       const id: number | undefined = this.resolvedUserId();
 
@@ -984,6 +1380,10 @@ export class UserFormComponent {
         this.updateSubmitted.set(false);
         this.deleteSubmitted.set(false);
         this.awaitedMembershipAction.set(null);
+        // Released with the latches it qualifies. Nothing is outstanding once they are all down, and a
+        // generation left standing would let the next write be judged against a session it never belonged
+        // to - in whichever direction that fell, the judgement would be about the wrong session.
+        this.writeGeneration = 0;
 
         if (id === undefined) {
           this.hydratedUserId = undefined;
@@ -1042,6 +1442,17 @@ export class UserFormComponent {
       }
 
       untracked(() => {
+        if (this.userMissing() || this.addressUnreadable()) {
+          // ⚠ NO TOAST FOR AN ACCOUNT THAT WAS NEVER THERE, and no support reference either. Measured at
+          // runtime after the banner was given this state: the banner said "This account doesn't exist"
+          // while a persistent warning toast beside it said the SERVER's own "The requested resource does
+          // not exist." and quoted the request's correlation identifier - two owners for one piece of news,
+          // in two politeness levels, one of them sending the reader to support for an occurrence support
+          // cannot look up. A record that is not there is a legitimate state, stated once by the banner and
+          // recovered through the header.
+          return;
+        }
+
         this.announceFailure(
           failure.summary.severity,
           failure.summary.message,
@@ -1064,7 +1475,7 @@ export class UserFormComponent {
 
         this.createSubmitted.set(false);
 
-        if (failure !== null || created === null) {
+        if (this.writeDisowned() || failure !== null || created === null) {
           // A refused creation discloses nothing. The held credential belongs to an account that does not
           // exist, so it is discarded rather than shown.
           this.heldCredential = null;
@@ -1101,7 +1512,14 @@ export class UserFormComponent {
 
         // Replaced, not pushed: the work is done, so BACK must not return to a form for a record that now
         // exists. See the note on the sign-in screen's departure for the same rule stated in full.
-        void this.router.navigate(['/users'], { replaceUrl: true }).catch(() => false);
+        // ⚠ THE LISTING COORDINATE IS CARRIED BACK. A bare navigation returned the operator to the opening
+        // letter-A view, hiding the very record that had just been written - see ListReturnStore.
+        void this.router
+          .navigate([USER_LIST_ROUTE], {
+            queryParams: this.listReturn.coordinateFor(USER_LIST_ROUTE),
+            replaceUrl: true,
+          })
+          .catch(() => false);
       });
     });
 
@@ -1117,7 +1535,9 @@ export class UserFormComponent {
 
         this.updateSubmitted.set(false);
 
-        if (failure !== null) {
+        // Disowned before failure-tested, for the reason set out on `writeDisowned`: after a session
+        // boundary a null failure slot is the teardown's work, not the server's.
+        if (this.writeDisowned() || failure !== null) {
           return;
         }
 
@@ -1139,7 +1559,7 @@ export class UserFormComponent {
 
         this.deleteSubmitted.set(false);
 
-        if (failure !== null) {
+        if (this.writeDisowned() || failure !== null) {
           return;
         }
 
@@ -1150,10 +1570,32 @@ export class UserFormComponent {
         this.form.markAsPristine();
         this.form.markAsUntouched();
 
-    // Replaced, not pushed: the work is done, so BACK must not return to a form for a record that has just
-    // been written - and the unsaved-entry gate reads a replacement as a departure the application itself
-    // initiated, so it does not question it.
-    void this.router.navigate(['/users'], { replaceUrl: true });
+        // ⚠ ANNOUNCED, AND ANNOUNCED BEFORE THE DEPARTURE. Removal was the ONLY mutation this screen
+        // performed without confirming it - creating announced, updating announced, authorising and forcing
+        // a credential change announced, and the single most destructive action said nothing whatsoever.
+        // The operator was returned to the listing and left to infer from an absence that the account was
+        // gone, which is indistinguishable from a removal that silently failed.
+        //
+        // The sentence is the one the LISTING already used for the same event, imported rather than
+        // restated, so the confirmation cannot depend on which screen the operator started from.
+        //
+        // ⚠ THE SECOND ARGUMENT IS NOT OPTIONAL HERE, AND OMITTING IT MADE THE ANNOUNCEMENT INVISIBLE.
+        // `survivesNavigation` defaults to false, and the very next statement navigates: the router calls
+        // `clearOnNavigation()`, whose sweep discards every entry that is neither flagged nor explicitly
+        // retained. So the confirmation WAS published and then destroyed before a single frame rendered it,
+        // which looks exactly like publishing nothing - the defect this announcement exists to fix. Updating
+        // does not need the flag because it does not leave the screen; creating already passes it for this
+        // same reason. Measured in the browser, not reasoned about: the create toast was observed at t+375ms
+        // while this one never entered the DOM across 3.2s of polling.
+        this.notifications.success(USER_DELETED_MESSAGE, true);
+
+        // Replaced, not pushed: the work is done, so BACK must not return to a form for a record that has
+        // just been written - and the unsaved-entry gate reads a replacement as a departure the application
+        // itself initiated, so it does not question it.
+        void this.router.navigate([USER_LIST_ROUTE], {
+          queryParams: this.listReturn.coordinateFor(USER_LIST_ROUTE),
+          replaceUrl: true,
+        });
       });
     });
 
@@ -1169,7 +1611,7 @@ export class UserFormComponent {
       untracked(() => {
         this.awaitedMembershipAction.set(null);
 
-        if (failure !== null && failure.operation === awaited.operation) {
+        if (this.writeDisowned() || (failure !== null && failure.operation === awaited.operation)) {
           return;
         }
 
@@ -1182,6 +1624,26 @@ export class UserFormComponent {
     });
 
     this.destroyRef.onDestroy(() => this.handOverPendingWrite());
+  }
+
+  /**
+   * Whether the outstanding write can no longer be settled, because the session it was issued under has
+   * ended. Every announcement path consults this BEFORE reading the store's failure slot, since a
+   * teardown clears that slot itself and would otherwise be indistinguishable from a clean success.
+   *
+   * @returns True when a session boundary was crossed after the write was dispatched.
+   */
+  private writeDisowned(): boolean {
+    return this.writeGeneration !== 0 && !this.sessionTeardown.isCurrent(this.writeGeneration);
+  }
+
+  /**
+   * Records which session the write about to be dispatched belongs to. Called at each of the four dispatch
+   * sites rather than once, so a screen that has been sitting open across a re-authentication captures the
+   * generation actually in force at the moment of the write.
+   */
+  private claimWriteGeneration(): void {
+    this.writeGeneration = this.sessionTeardown.generation();
   }
 
   /**
@@ -1202,6 +1664,13 @@ export class UserFormComponent {
     // The store publishes one in-flight flag and one failure slot for the account commands, which is all
     // either bridge above reads, so the verdict is resolved from exactly the facts they use.
     const verdict: Signal<DeferredOutcome> = computed<DeferredOutcome>(() => {
+      // FIRST, and before the in-flight flag: a teardown lowers that flag and empties the failure slot in
+      // the same breath, so asking either question after a session boundary yields "succeeded" for a write
+      // that may never have left the browser. This is the reported defect's exact site.
+      if (this.writeDisowned()) {
+        return 'abandoned';
+      }
+
       if (this.store.saving()) {
         return 'pending';
       }
@@ -1291,6 +1760,21 @@ export class UserFormComponent {
     box.focus();
   }
 
+  // COMMANDS — ABANDONING THE FORM
+
+  /**
+   * Abandons the form and returns to the account listing.
+   *
+   * ⚠ A DEPARTURE, NOT A RESET, AND NOT A SILENT ONE. It goes through the router, so the unsaved-entry gate
+   * this screen registers with sees it and asks the operator before anything they typed is discarded - the
+   * same question the sidebar and the browser's Back button already put on this screen. It is deliberately NOT
+   * a `replaceUrl` navigation: only a departure the application itself initiated after a successful write is
+   * exempt from that question, and abandoning a form is the operator's decision rather than the application's.
+   */
+  protected onCancel(): void {
+    void this.router.navigate(['/users']).catch(() => false);
+  }
+
   // COMMANDS — REMOVAL
 
   /** Opens the removal confirmation. Does NOT validate. */
@@ -1319,6 +1803,7 @@ export class UserFormComponent {
       return;
     }
 
+    this.claimWriteGeneration();
     this.deleteSubmitted.set(true);
     this.store.deleteUser(id);
   }
@@ -1341,6 +1826,7 @@ export class UserFormComponent {
       return;
     }
 
+    this.claimWriteGeneration();
     this.awaitedMembershipAction.set({
       operation: 'setApproval',
       success: USER_AUTHORIZED_MESSAGE,
@@ -1357,6 +1843,7 @@ export class UserFormComponent {
       return;
     }
 
+    this.claimWriteGeneration();
     this.awaitedMembershipAction.set({
       operation: 'setApproval',
       success: USER_UNAUTHORIZED_MESSAGE,
@@ -1373,6 +1860,7 @@ export class UserFormComponent {
       return;
     }
 
+    this.claimWriteGeneration();
     this.awaitedMembershipAction.set({
       operation: 'unlockUser',
       success: USER_UNLOCKED_MESSAGE,
@@ -1389,6 +1877,7 @@ export class UserFormComponent {
       return;
     }
 
+    this.claimWriteGeneration();
     this.awaitedMembershipAction.set({
       operation: 'requirePasswordChange',
       success: PASSWORD_CHANGE_REQUIRED_MESSAGE,
@@ -1433,7 +1922,12 @@ export class UserFormComponent {
     // were emptied when the creation settled, before this panel was ever shown, so by the time an operator
     // dismisses it there is no typed credential left to remove; the generated value is dropped on the line
     // above and is held nowhere else.
-    void this.router.navigate(['/users'], { replaceUrl: true }).catch(() => false);
+    void this.router
+      .navigate([USER_LIST_ROUTE], {
+        queryParams: this.listReturn.coordinateFor(USER_LIST_ROUTE),
+        replaceUrl: true,
+      })
+      .catch(() => false);
   }
 
   // TEMPLATE HELPERS
@@ -1544,6 +2038,7 @@ export class UserFormComponent {
     // discards it.
     this.heldCredential = generate ? password : null;
 
+    this.claimWriteGeneration();
     this.createSubmitted.set(true);
     this.store.createUser(request);
   }
@@ -1559,7 +2054,11 @@ export class UserFormComponent {
       return;
     }
 
+    // ⚠ ANSWERED RATHER THAN IGNORED. See NO_CHANGES_MESSAGE: skipping the write is right, and doing it
+    // silently is what made the primary action look broken.
     if (this.form.pristine) {
+      this.notifications.info(NO_CHANGES_MESSAGE);
+
       return;
     }
 
@@ -1572,6 +2071,7 @@ export class UserFormComponent {
       email: raw.email,
     };
 
+    this.claimWriteGeneration();
     this.updateSubmitted.set(true);
     this.store.updateUser(id, request);
   }

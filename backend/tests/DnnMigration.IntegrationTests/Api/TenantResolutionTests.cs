@@ -416,6 +416,23 @@ public sealed class TenantResolutionTests
             "PortalAliasesController.UpdateForPortalAsync",
             "PortalsController.CreateAsync",
             "PortalsController.ListAsync",
+            // The body-bound sibling of the listing, added so a search term stops travelling in a logged
+            // query string. It carries the same mark for the same reason the listing does: it enumerates
+            // every portal in the installation and must work on an installation that has none, where no
+            // alias can resolve.
+            "PortalsController.SearchAsync",
+            // The address-resolution probe. Reviewed and accepted: an address that resolves to NO tenant is
+            // the question this endpoint answers, not an error, so refusing it for an unresolved tenant would
+            // withhold the answer in the exact installation that most needs it. It reads no tenant-scoped
+            // data and returns the submitted segment and one boolean - a fact already observable by visiting
+            // the address - and it is bounded by the session-read budget so it cannot be looped cheaply.
+            "TenancyController",
+            // The anonymous tenant-address read. Reporting that an address resolves to NO tenant is the
+            // operation's entire purpose - a browser asks before it adopts a path segment as a tenant prefix
+            // - so it must be served in exactly the state this mark covers. It reads no tenant-owned
+            // resource: the only value it returns is the path portion of the alias the caller's own request
+            // resolved by.
+            "TenantAddressController",
             "TabsController.GetAsync",
             "TabsController.UpdateAsync",
         };

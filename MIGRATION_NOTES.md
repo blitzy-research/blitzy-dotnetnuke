@@ -979,6 +979,152 @@ Restoring rich text means choosing an editor component, deciding how it uploads,
 introducing a reviewed rendering path with an explicit sanitisation decision. That is a fresh
 design, not a restoration.
 
+### 4.16a The module permission grid: restored, and the AAP tension it exposes
+
+**Legacy behaviour.** `Website/admin/Modules/modulesettings.ascx:L42` declared
+`<dnn:modulepermissionsgrid id="dgPermissions">` — a matrix of one row per portal role
+against one column per permission the module's definition declares, with a checkbox in every
+cell. The code-behind read it at L89 through
+`GetModulePermissionsCollectionByModuleID(ModuleId, TabId)`, seeded the inherit switch and the
+grid's `InheritViewPermissionsFromTab` at L122–L123, and on save assigned both
+`objModule.ModulePermissions = dgPermissions.Permissions` and
+`objModule.InheritViewPermissions = chkInheritPermissions.Checked` at L378–L379 before a
+single `UpdateModule`. Two computed rules lived in
+`Library/Controls/DataGrids/Permissions Grids/ModulePermissionsGrid.vb`: the administrator row
+was reported granted on every column and never editable (`GetPermission` L288–L310,
+`GetEnabled` L237–L250), and the view column collapsed to cleared-and-disabled whenever
+inheritance was on — tested **before** the administrator rule, so an administrator's view cell
+cleared too. The row set came from `PermissionsGrid.GetRoles` (L450–L475), whose group filter
+defaulted to `-2` and therefore took every portal role and appended the two built-in
+pseudo-roles, `Unauthenticated Users` (`-3`) and `All Users` (`-1`), before sorting by name
+through the case-insensitive `RoleComparer`.
+
+**Target behaviour.** The grid exists again, as `GET` and `PUT
+/api/v1/modules/{moduleId}/permissions` and a real `<table>` in
+`frontend/src/app/features/module/module-settings/`. Both computed rules are resolved
+server-side and travel as explicit per-cell facts (`allowAccess` and `editable`), because they
+depend on `Portals.AdministratorRoleId` and `Modules.InheritViewPermissions` and would
+otherwise be re-derived — differently — by every client. The inheritance switch still collapses
+the view column, and it now does so without a round trip: the legacy control carried
+`autopostback="true"` only because the server had to redraw the column.
+
+**Why the difference was necessary.** §0.5.1.4 of the action plan scopes
+`PermissionsController` as a **read-only catalogue**, and the first port honoured that
+literally — it published the four declared permission keys as inert text and offered no way to
+grant any of them. The result satisfied the plan and failed Minimal Change Clause item 4, which
+requires that every workflow reachable from the legacy admin pages be supported. The tension is
+resolved by observing that the plan constrains the **permission resource**, not the module: the
+legacy screen edited and saved these grants *as part of the module*, so the grid is reached
+through `/api/v1/modules/{id}/permissions` and `PermissionsController` remains read-only,
+exactly as §0.5.1.4 specifies. `IPermissionRepository` already declared and implemented every
+grant write this needs; only the service, the DTOs, the endpoints and the screen were missing.
+
+**Observable consequences, and three deliberate reductions.**
+
+1. **The save is a REPLACE, and turning inheritance on withdraws explicit view grants.** Both
+   are legacy behaviour reproduced rather than defects. The legacy grid's collection held
+   exactly the ticked boxes — `UpdatePermission` (L507–L539) removed an entry the moment its box
+   was cleared, commented "as we only keep AllowAccess permissions" — so a cleared box was a
+   withdrawn grant, and a view cell rendered cleared under inheritance was withdrawn on the
+   next save. The API withholds submitted view grants while inheritance is on rather than
+   refusing the request, because the tick and the switch are submitted together and refusing
+   would make the screen unusable.
+2. **A recorded DENY reads as not granted.** The legacy two-state checkbox bound
+   `AllowAccess` directly, so a deny row and an absent row were indistinguishable on screen and
+   a replace dropped both. The contract carries `allowAccess` so a deny can be expressed
+   deliberately, but the grid does not offer a third state — the alternative is a visual state
+   the save path cannot express.
+3. **Adding an account to the grid by name is not reproduced.** The legacy grid had an account
+   picker (`ModulePermissionsGrid.AddPermission`). Accounts that already hold a grant remain
+   visible and editable, so no stored grant becomes unreachable, but a **new** account-scoped
+   grant is made by granting a role instead. The picker is a separate search-and-select surface
+   with its own paging and its own tenant scoping; it is recorded here rather than built.
+4. **The host pseudo-role (`-2`) is refused rather than stored.** The evaluator's principal
+   matcher returns false for it, so a grant against it would be a stored row with no reachable
+   consequence and an operator who chose it would be told nothing.
+
+### 4.16b The container appearance columns: restored, against the letter of the exclusion
+
+**Legacy behaviour.** The module settings screen administered three columns on
+`dbo.TabModules` that describe how the module's container is painted:
+`modulesettings.ascx:L120-L139` declares `cboAlign` (a radio list of `left`, `center`, `right`
+and a fourth entry whose value is the **empty string**, captioned "Not Specified"), `txtColor`
+(free text, no validator) and `txtBorder` (`MaxLength="1"` with an integer `CompareValidator`
+reading *"Invalid Border (must be a number between 0 and 9)"*).
+`ModuleSettings.ascx.vb:L144-L147` reads all three onto the form and `:L345-L347` writes them
+back, `cboAlign.SelectedItem.Value` going to the column verbatim.
+
+**What was delivered first, and why it was wrong.** These three columns exist *only* to inform
+server-side container rendering, which this migration excludes outright — the API returns JSON
+and paints nothing. On that reading the fields were withheld from every contract, and three
+tests were written asserting their absence with the exclusion cited as the reason.
+
+That reading confused **who renders a value** with **who administers it**. The AAP excludes
+server-side rendering; it does not excuse dropping a stored value from the only screen that
+ever set it. Minimal Change Clause item 4 requires every workflow reachable from the legacy
+admin pages, and setting a module's alignment, colour and border *is* one of those workflows.
+The values also still have a live consumer: the migration is explicitly side-by-side, the
+legacy application runs against the same database, and its container rendering reads these
+three columns on every request. Declining to administer them did not make them unused — it
+made them **unreachable**, editable from nowhere while still deciding how the module looks on
+the running site.
+
+**Target behaviour.** All three are restored end to end: `alignment`, `color` and `border` on
+`ModuleDetailDto` and on `UpdateModuleRequest`, with a four-option radio group, a colour field
+and a single-character numeric border field on the settings screen. Four consequences are
+deliberate and are recorded because each is a place a later change could quietly undo the fix:
+
+1. **"Not Specified" stores the empty string, not `null`.** The legacy list's fourth entry
+   carries the value `""` and `:L345` wrote it straight through. Folding it to `null` would be a
+   change in stored value dressed up as tidiness, and the legacy renderer distinguishes them.
+2. **They are columns on the placement, not key-value settings.** They appear on the module
+   contracts and are deliberately **absent** from `ModuleSettingsDto`, which carries the
+   `ModuleSettings` / `TabModuleSettings` key-value bags.
+3. **The update is a full replacement, so every screen submitting it must round-trip them.**
+   A request naming none of the three clears all three. The module record form does not edit
+   them and therefore sends back exactly what it read; a test asserts that a rename leaves them
+   intact, because the failure mode is silent and destructive.
+4. **The renderer-only columns stay excluded.** `PaneName`, `DisplayPrint` and `DisplaySyndicate`
+   are absent from every contract. They are not administered *or* administrable here — they
+   describe skin composition and syndication surfaces the API does not expose — so the exclusion
+   genuinely applies to them, which is what makes the distinction in this section a distinction
+   rather than a loophole.
+
+**The border validator's wording is carried verbatim** — *"Invalid Border (must be a number
+between 0 and 9)"* — and is enforced on the border control specifically, not merely displayed.
+
+### 4.16c Export and import wording: the legacy sentence continued, and one departure from it
+
+**Legacy behaviour.** `Export.ascx.resx` key `ControlHelp.Text` reads *"Administrators can
+export content for the specified module."* and `Import.ascx.resx` key `ModuleHelp.Text` reads
+*"Administrators can import content for the specified module."* The export screen's
+`Validation.Text` reads **"You must specify a folder and file for export"**, and the legacy
+screen did offer both a folder picker and a file name field.
+
+**Target behaviour, and the distinction that governs it.** Two different treatments, because
+the two strings fail differently.
+
+- **The two help sentences are carried VERBATIM and then CONTINUED.** Neither is replaced.
+  Minimal Change Clause item 4 requires equivalent wording, and there was no need to choose
+  between honouring that and telling an operator what the operation actually does — the legacy
+  sentence is stated first, exactly as written, and a second sentence states the outcome:
+  export writes an XML document and downloads it to the operator's device with nothing stored on
+  the server; import reads an XML document from the device and **replaces** the module's current
+  content. The legacy screens said neither, and a destructive import in particular deserves to
+  say so before it runs.
+- **The export validation message is a genuine, deliberate DEPARTURE.** This screen has no
+  folder picker: the legacy one wrote the export into a portal folder through the excluded file
+  manager, whereas this one streams the document to the caller. A message demanding a folder
+  would name a control that does not exist and cannot be created, which is worse than a changed
+  string — it is an instruction that cannot be followed. It now reads **"You must specify a file
+  name for the export."** The superseded string is retained in the test suite as an explicitly
+  *absent* expectation, so that reinstating it on parity grounds fails a test which explains why
+  it was departed from, rather than quietly putting a phantom folder picker back in front of an
+  operator.
+
+The import field additionally states the `.xml`-only restriction the legacy screen left
+implicit, and the file input's `accept` attribute enforces exactly what the sentence promises.
+
 ### 4.17 Visual and design-token divergences
 
 **Legacy behaviour.** There was no design system. Appearance came from two stylesheets —
@@ -1727,21 +1873,34 @@ Gate 7: docker-compose up -d; sleep 10; curl -f http://localhost:8080/health;
 ```
 
 **What was executed, and what it produced.** All seven ran from this repository on
-**13 August 2026**, on Linux (Ubuntu 25.10 container) with .NET SDK 8.0.423 (runtimes
+**17 August 2026**, on Linux (Ubuntu 25.10 container) with .NET SDK 8.0.423 (runtimes
 Microsoft.AspNetCore.App and Microsoft.NETCore.App 8.0.29), Node v20.20.2, npm 10.8.2, Angular
 CLI 19.2.27 driving Angular 19.2.25 and TypeScript 5.7.3, Google Chrome 151.0.7922.71 (reported
 by Karma as Chrome Headless 151.0.0.0), Docker Engine 29.7.0 with Compose v5.3.1, and SQL Server
 2022 CU26 (16.0.4265.3) for the integration suites.
 
+**All seven rows are measurements from that one sitting against that one tree.** Counts on rows 2,
+4 and 5 move whenever test cases are added, and they have been added repeatedly as reviews closed
+gaps in the test net, so a matrix stitched together from several dates would invite comparisons
+between rows that were never measured against the same source. Only the latest whole-set run is
+reported here; the record of *what* each review added is in the sections above, where it belongs.
+
+One operational note, learned by measurement rather than predicted: **take gates 2 and 5 on their
+own.** Running gate 5 concurrently with `npm ci` and a production build starved SQL Server and
+produced a `Microsoft.Data.SqlClient` *Execution Timeout Expired* (`Win32Exception: Unknown error
+258`) inside a suite's catalogue provisioning, stretching the run to 13 m 27 s against the usual
+7 m; the same command run alone passed unchanged. A timeout in that phase is therefore a contention
+symptom to re-run serially, not a defect in the suite.
+
 | Gate | Command executed | Result | Measured evidence |
 | --- | --- | --- | --- |
 | 1 | `cd backend && dotnet restore && dotnet build --configuration Release --warnaserror` | **PASS** | Restore reported 0 `NU` diagnostics; `Build succeeded. 0 Warning(s) 0 Error(s)` across all six projects, emitting `DnnMigration.Api.dll` |
-| 2 | `cd backend && dotnet test --configuration Release --no-build --verbosity normal` | **PASS** | UnitTests 3094 passed / 0 failed / 0 skipped in 11.27 s; IntegrationTests 1933 passed / 0 failed / 0 skipped in 4.52 min; **5 027 total**, both assemblies `Test Run Successful` |
-| 3 | `cd frontend && npm ci && npx ng build --configuration production` | **PASS** | `npm ci` printed `added 989 packages, and audited 990 packages in 9s` and left the lockfile byte-identical; **989 installed** = the lockfile's 1,123 `node_modules` entries less 134 optional packages pinned to another OS or CPU, **990 audited** = that set plus the workspace root; bundle emitted to `dist/dnn-migration/browser`; initial payload **461.71 kB raw / 122.90 kB transfer** |
-| 4 | `cd frontend && npx ng test --watch=false --browsers=ChromeHeadless --code-coverage` | **PASS** | `TOTAL: 5922 SUCCESS` — 5 922 specs, zero failures; coverage in `frontend/coverage/dnn-migration` — statements **95.21 %** (11 081/11 638), branches **85.74 %** (3 584/4 180), functions **97.71 %** (2 528/2 587), lines **95.18 %** (10 809/11 356) |
-| 5 | `cd backend && dotnet test --configuration Release --filter "Category=Integration"` | **PASS** | `Failed: 0, Passed: 1933, Skipped: 0` on `DnnMigration.IntegrationTests.dll`; the unit-test assembly reports `No test matches the given testcase filter` and the run still exits 0 — which is what proves every integration test carries the trait |
-| 6 | `docker compose -f docker/docker-compose.yml --env-file docker/.env build` | **PASS** | Exit 0; `dnnmigration-api:latest` (196 MB) and `dnnmigration-frontend:latest` (63.5 MB) both tagged |
-| 7 | `docker compose -f docker/docker-compose.yml --env-file docker/.env up -d`, `sleep 10`, `curl -f http://localhost:8080/health`, `curl -f http://localhost:4200`, `… down` | **PASS** | `up -d` transitioned the api service `Started` → `Waiting` → `Healthy`, releasing the front end through `condition: service_healthy`; `/health` answered 200 with the health document and `:4200` answered 200 (4 428 bytes, the served `index.html` byte for byte); both services `Up (healthy)`; `down` removed both containers and the network, every step exit 0 |
+| 2 | `cd backend && dotnet test --configuration Release --no-build --verbosity normal` | **PASS** | UnitTests 3 142 passed / 0 failed / 0 skipped in 10.9 s; IntegrationTests 2 009 passed / 0 failed / 0 skipped in 6 m 0 s; **5 151 total**, both assemblies `Test Run Successful` |
+| 3 | `cd frontend && npm ci && npx ng build --configuration production` | **PASS** | `npm ci` printed `added 989 packages, and audited 990 packages in 19s` and left the lockfile byte-identical; **989 installed** = the lockfile's 1,123 `node_modules` entries less 134 optional packages pinned to another OS or CPU, **990 audited** = that set plus the workspace root; bundle emitted to `dist/dnn-migration/browser`; initial payload **476.44 kB raw / 126.20 kB transfer** |
+| 4 | `cd frontend && npx ng test --watch=false --browsers=ChromeHeadless --code-coverage` | **PASS** | `TOTAL: 6510 SUCCESS` — 6 510 specs, zero failures; coverage in `frontend/coverage/dnn-migration` — statements **95.29 %** (12 537/13 156), branches **85.89 %** (4 232/4 927), functions **97.47 %** (2 823/2 896), lines **95.28 %** (12 241/12 847) |
+| 5 | `cd backend && dotnet test --configuration Release --filter "Category=Integration"` | **PASS** | `Failed: 0, Passed: 2009, Skipped: 0` on `DnnMigration.IntegrationTests.dll` in 7 m 4 s; the unit-test assembly reports `No test matches the given testcase filter` and the run still exits 0 — which is what proves every integration test carries the trait |
+| 6 | `docker compose -f docker/docker-compose.yml --env-file docker/.env build` | **PASS** | Exit 0; `dnnmigration-api:latest` (196 MB) and `dnnmigration-frontend:latest` (63.6 MB) both tagged |
+| 7 | `docker compose -f docker/docker-compose.yml --env-file docker/.env up -d`, `sleep 10`, `curl -f http://localhost:8080/health`, `curl -f http://localhost:4200`, `… down` | **PASS** | `up -d` transitioned the api service `Started` → `Waiting` → `Healthy`, releasing the front end through `condition: service_healthy`; on the API origin `/health`, `/health/live` and `/health/ready` each answered 200 anonymously with the health document, and `:4200` answered 200 (4 428 bytes, the served `index.html` byte for byte) while the SPA origin answered 404 to all three API health paths and 200 to its own `/nginx-health`; both services `Up (healthy)`; `down` removed both containers and the network, every step exit 0 |
 
 Gate 7 ran as one uninterrupted `up -d` → probe → `down` cycle from a fully torn-down host. The
 Compose file fixes `container_name`, so a host already running this topology cannot take the gate
@@ -3070,9 +3229,21 @@ every hashed static asset and on proxied API responses:
 
 ```
 default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
-img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none';
-frame-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'
+img-src 'self' data:; font-src 'self'; connect-src 'self'; manifest-src 'self';
+worker-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'self';
+form-action 'self'; frame-ancestors 'self'
 ```
+
+Thirteen directives, quoted from the `map $scheme $content_security_policy` block
+in `docker/nginx.conf` and confirmed against the header a running container
+actually serves. Two of them close fetch destinations that `default-src` would
+otherwise be relied on for, and both are named explicitly because a directive
+that is inherited rather than stated is one a later edit can lose by accident:
+`manifest-src 'self'` bounds the web-application manifest, and `worker-src 'self'`
+bounds worker and shared-worker scripts. This application ships neither today, so
+both are headroom rather than a current requirement — and stating them keeps a
+future manifest or worker same-origin by default instead of by whichever
+`default-src` fallback the browser happens to implement.
 
 It is defined once, in an `http`-context map, and referenced by variable from all
 three header sets - because nginx **replaces** rather than merges an `add_header`
@@ -4355,13 +4526,21 @@ against the `SYSTEM_FOLDER` scope by the upgrade scripts
 The legacy `PermissionInfo` type exposed `PermissionKey` as a plain `String`.
 
 **Target representation.** Those literals are centralised into a four-member
-enumeration: `VIEW`, `EDIT`, `READ`, `WRITE`.
+enumeration: `VIEW`, `EDIT`, `READ`, `WRITE`. The enumeration bounds **the keys this
+solution names** — the ones its authorisation policies, its permission requirements and
+its service parameters are written against. It is emphatically **not** a claim about the
+set of keys the column can hold, and the entity property is a plain `string` for exactly
+that reason; see *The entity property is free text, and the enumeration is not the
+column's value domain* below.
 
-**The column contract is text, not a number.** `Permission.PermissionKey` is declared
-`varchar(20) NOT NULL`
-(`Website/Providers/DataProviders/SqlDataProvider/02.02.00.SqlDataProvider:L688`), and
-the `AddPermission` procedure in the same script (L843-L862) accepts
-`@PermissionKey varchar(20)`. No integer for this concept is persisted anywhere.
+**The column contract is text, not a number.** `Permission.PermissionKey` is terminally
+declared `varchar(50) NOT NULL`: created `varchar(20)`
+(`Website/Providers/DataProviders/SqlDataProvider/02.02.00.SqlDataProvider:L688`) and
+widened by `04.06.00.SqlDataProvider:L397-L398` under the comment
+*enlarge permission key field*. `AddPermission` accepted `@PermissionKey varchar(20)` in
+the baseline script (L843-L862) and accepts `@PermissionKey varchar(50)` from
+`04.06.00.SqlDataProvider:L407` onward. No integer for this concept is persisted
+anywhere, and no check constraint on the column exists in any of the 88 scripts.
 
 **Deliberate decision — upper-case identifiers.** The members are spelled exactly as
 the legacy literals are spelled, in upper case, rather than in PascalCase. This makes
@@ -4375,13 +4554,19 @@ contain and must never be renamed or re-cased.
 
 **Requirement placed on the persistence layer.** The ordinals are incidental: they are
 never persisted and never serialised, and no member carries an explicit value.
-`Infrastructure/Persistence/Configurations/PermissionConfiguration.cs` must therefore
-apply a **string-based** value conversion over the `varchar(20)` column — converting
-each member to and from its name — and must never convert to an integer. The
-conversion is deliberately not declared in the Domain layer, which takes no dependency
+`Infrastructure/Persistence/Configurations/PermissionConfiguration.cs` binds the column
+as **plain text with no value conversion at all**, because the property it binds is
+already a `string`. A conversion between this enumeration and the column is **forbidden**
+there: routing a free-text column through a closed enumeration makes every legal value
+outside the enumeration unreadable, and the provider signals that from inside the
+materialiser where no result type can intercept it. The full account, including the two
+endpoints it took down and why a tolerant converter is not the answer either, is under
+*The entity property is free text, and the enumeration is not the column's value domain*.
+Nothing about the conversion is declared in the Domain layer, which takes no dependency
 on any persistence technology.
 
-**Exhaustiveness.** Four keys is the complete set for this DotNetNuke generation.
+**Exhaustiveness — of what this solution names, not of what the column holds.** Four keys
+is the complete set the upgrade chain seeds for this DotNetNuke generation.
 Measured occurrence counts across the legacy tree were EDIT 13, VIEW 12, WRITE 3 and
 READ 2. Independently, a sweep of every value compared or assigned to `PermissionKey`
 across all 88 upgrade scripts yields only `READ` and `WRITE` literals and no other key.
@@ -4409,7 +4594,18 @@ overloaded in this codebase, being both the legacy integer null-sentinel and the
 `IDENTITY(-1,1)` seed of `Portals.PortalID`. Absence, where a caller needs it, is
 expressed as a nullable projection (`PermissionKey?`) on that caller's own property.
 The legacy text null-sentinel was the empty string rather than a null, so an empty key
-is not modelled either.
+is not modelled either. Nor is an `Unknown` or `Other` member declared for keys outside
+the four: a member standing in for an arbitrary stored value would have to be written
+back as its own name, replacing the row's real key the next time anything about it was
+saved. The entity carries the stored spelling itself instead.
+
+**Comparison is case-insensitive.** A stored spelling is matched against a member's
+identifier with `StringComparison.OrdinalIgnoreCase`, in `PermissionEvaluator` and in
+`PermissionService` alike, and the deny index in `PermissionEvaluator.Survivors` is
+case-folded before it is consulted so that a deny recorded as `edit` still suppresses an
+allow recorded as `EDIT`. That is the collation the column is read under and the semantics
+the legacy stored procedures compared with, so a row cased differently confers what it
+always conferred rather than silently ceasing to match.
 
 **Client-side gating is not enforcement.** The Angular `hasPermission` directive
 consumes these exact strings to show and hide affordances, but authorisation is decided
@@ -5227,8 +5423,11 @@ and, on this file, actively misleading: it places global error handling in
 (`docs/technical-specifications.md:L408-L409` and `:L795`, and
 `docs/project-guide.md:L381`). The migration plan supersedes all three. The file
 is `ErrorHandling/GlobalExceptionHandler.cs`, it is the framework-native
-`IExceptionHandler` rather than a hand-rolled middleware, and `Middleware/`
-carries exactly three files, none of them an exception middleware.
+`IExceptionHandler` rather than a hand-rolled middleware, and **no file under
+`Middleware/` is an exception middleware at all** — that directory holds the
+request-scoped concerns (correlation identifier, request logging, transport
+refusal, restricted session, credential cache control, origin `Vary`, and tenant
+resolution and path rebasing), and error handling is deliberately not one of them.
 
 
 ## Configuration and options
@@ -6951,7 +7150,95 @@ the converter exists to remove.
 **No value conversion is needed for the permission key on the persistence side.**
 `Permission.PermissionKey` is deliberately a plain string on the domain entity, so
 that an installation carrying a key this codebase has not seen still round-trips
-intact. Only the wire form is pinned.
+intact. Only the wire form is pinned. The full reasoning is in the entry below.
+
+### The entity property is free text, and the enumeration is not the column's value domain
+
+**The column.** `dbo.Permission.PermissionKey` is terminally `varchar(50) NOT NULL`:
+created `varchar(20)` at `02.02.00.SqlDataProvider:L688` and widened by
+`04.06.00.SqlDataProvider:L397-L398` under the comment *enlarge permission key field*.
+It carries **no check constraint** in any of the 88 upgrade scripts and **no lookup
+foreign key**, and the procedures that write it accept the full width —
+`AddPermission @PermissionKey varchar(50)` at `04.06.00.SqlDataProvider:L407` and
+`UpdatePermission` at `L436`. The legacy property this replaces is likewise declared
+`Public Property PermissionKey() As String`
+(`Library/Components/Security/Permissions/Permission.vb:L69`), and every legacy check
+compared two strings —
+`Library/Components/Security/Permissions/ModulePermissionController.vb:L36`,
+`TabPermissionController.vb:L41`, `FolderPermissionController.vb:L33`.
+
+**Why that matters rather than being a curiosity.** DotNetNuke's extensibility model has
+a third-party module register **its own** permission keys when it installs, through that
+very procedure. The upgrade chain seeds only `VIEW`, `EDIT`, `READ` and `WRITE`, so a
+clean-baseline database contains nothing else — but any installation that has ever had a
+third-party module installed can already hold a key this migration has never seen, and
+such a row is ordinary data rather than corruption.
+
+**What the delivered mapping is.** `Permission.PermissionKey` is a `string`, initialised
+to the empty string exactly as its two text siblings `PermissionCode` and `PermissionName`
+are, and `PermissionConfiguration` binds it with `HasColumnName`, `varchar(50)`,
+`HasMaxLength(50)`, `IsUnicode(false)` and `IsRequired()` and **no value conversion**. The
+key travels through `PermissionEvaluator`, `PermissionService.ToDto` and the
+`PermissionDto` wire contract as the spelling the row holds — unfolded, unvalidated and
+unsubstituted.
+
+**What was tried first and is forbidden.** Typing the property as the closed
+`PermissionKey` enumeration and mapping it with `HasConversion<string>()`. Entity
+Framework Core's `StringEnumConverter` throws `InvalidOperationException`
+(*Cannot convert string value 'CUSTOM' from the database to any value in the mapped
+'PermissionKey' enum*) for any spelling outside the enumeration, and it throws from inside
+the query materialiser — `SingleQueryingEnumerable.AsyncEnumerator.MoveNextAsync` — where
+no `Result<T>` can intercept it. Two consequences followed, both reproducible:
+
+- `GET /api/v1/permissions/{id}` answered `500` **unconditionally**, for a host account as
+  readily as for anyone else, for any such row.
+- The module authorisation path answered `500` **for every caller who was not a host
+  account**, as soon as a key outside the enumeration was registered against the module's
+  own `ModuleDefID` — with no grant row required, because
+  `PermissionEvaluator.CollectModuleGrantsAsync` reads the catalogue before it reads
+  grants. `GET /api/v1/auth/me` failed the same way for such a caller once a grant reached
+  the row. Host accounts short-circuit before the read, which is precisely why the fault
+  was invisible to host-account testing and to any clean-baseline demonstration.
+
+That is a mapping decision converting access-control evaluation into an unhandled fault for
+ordinary portal users, and it also broke the RFC 7807 error contract every other response in
+this API honours.
+
+**Why a tolerant converter is not the answer either.** Folding an unrecognised spelling onto
+a sentinel member would keep the read from throwing, but `GET /api/v1/permissions/{id}`
+would then report a key the row does not contain, and a tracked save touching anything else
+about that row would write the sentinel's name over the installation's real key. Both are
+losses of stored data, so the property carries the string itself.
+
+**Precedent this now matches.** Three neighbouring decisions already applied the same
+principle, which is what makes the enum mapping an inconsistency rather than a considered
+trade-off: `Permission.PermissionCode` is a plain string with its own note saying so;
+`PermissionService` matches the scope code as free text; and
+`BillingFrequencyToStringConverter` deliberately omits an `Enum.IsDefined` filter so that
+an unknown `char(1)` frequency code survives. A sweep of every `HasConversion` call site in
+`backend/src` confirms there is no remaining instance of an enumeration mapped over an
+unconstrained text column: the only two are that frequency converter, on both frequency
+columns.
+
+**Behavioural impact.** For the four seeded keys, none — the values written and read, the
+wire spellings, and every authorisation verdict are unchanged, and comparison stays
+case-insensitive as the previous converter's parse was. For any other key the column holds,
+the read now succeeds and returns it verbatim where it previously faulted, and the
+authorisation path reaches a verdict rather than throwing. A key outside the enumeration
+confers only itself: it is never mistaken for `VIEW` or `EDIT`, and it never silently
+becomes one.
+
+**Bounded by the legacy read surface, deliberately.** `GET /api/v1/permissions` answers the
+set of keys **this solution names** when the caller supplies no module definition, and the
+`permissionKey` filter remains typed, so an unrecognised spelling in the query string is
+refused with `400` rather than matching nothing. Neither is a narrowing introduced here:
+the legacy catalogue exposes no all-rows reader at all —
+`Library/Components/Providers/Data/DataProvider.vb:L280-L288` declares readers by
+identifier, by module definition, by module, by folder path, by scope-code-and-key and by
+page and nothing else, and `PermissionController.vb:L29-L49` mirrors exactly those — so with
+no scope named there is no row set to enumerate and the answer can only be a candidate list.
+Naming a module definition takes the store-backed path, which reports the stored spellings
+whatever they are; that is how a custom key is surfaced through the listing.
 
 ### Six upgrade-script citations were wrong, and were repaired by measurement
 
@@ -8001,20 +8288,51 @@ after password storage where preservation is overridden on security grounds.
 not — on a partial alias resolving to a tenant must configure that alias
 explicitly. No alias that resolves exactly today changes behaviour.
 
-### Portal-alias resolution is deliberately not cached
+### Portal-alias resolution IS cached, and the invalidation that makes it safe is explicit
 
 **Legacy behaviour.** The legacy code cached aggressively, including tenant
 settings, and cleared caches by portal or by host.
 
-**Target behaviour.** The host-to-tenant lookup is performed per request and is not
-cached, even though the caching service exists and is used elsewhere.
+**Target behaviour.** The host-to-tenant lookup is served from the caching service
+under the legacy key `GetPortalByAlias`, as a *family* of entries keyed by address
+rather than one entry, and every alias write evicts that family synchronously.
 
-**Why the difference is deliberate.** A host-keyed cache entry has no existing
-invalidation path: aliases are edited through the alias endpoints, which have no
-reason to know about a middleware cache, so a stale entry would survive an alias
-being moved or removed. The failure mode of a stale host-to-tenant mapping is that a
-request is served the wrong tenant's data. Correctness is preferred to a saved
-lookup, and the omission is recorded here rather than left to look like an oversight.
+**Why this reverses an earlier decision recorded here.** An earlier revision of this
+document recorded the lookup as deliberately *not* cached, on the reasoning that a
+host-keyed entry had no invalidation path — aliases being edited through the alias
+endpoints, which had no reason to know about a middleware cache — so a stale entry
+would survive an alias being moved or removed, and a request would be served the
+wrong tenant's data. That reasoning was sound, and it named a real prerequisite
+rather than an objection in principle. The prerequisite has since been supplied: a
+performance review measured this uncached lookup at 76–98% of all logical I/O on
+nearly every authenticated request, which made a saved lookup worth the invalidation
+work it demands, and the invalidation was written rather than assumed.
+
+**What the invalidation actually covers.** `AddPortalAliasAsync`,
+`UpdatePortalAliasAsync` and `DeletePortalAliasAsync` each call **both**
+`InvalidateHost()` and `InvalidatePortal(...)`, so no alias write can leave a stale
+mapping behind. `InvalidateHost` evicts the bare literal by name, for entries written
+by a path that bypassed the service; `InvalidatePortal` evicts the whole tracked
+family. The family is evicted rather than the single address, because its entries
+project the portal's name, its administrator account, and its administrator and
+registered-user role keys and both of those roles' names — facts every authorisation
+decision reads — so a role rename or a change of designated role must evict them too,
+and attributing one entry to a portal would take the very query the cache exists to
+avoid.
+
+**Verified at runtime, against the precise failure mode the earlier note feared.**
+With the cache warmed by live traffic: an unconfigured address is refused; the alias
+is added through the API and is accepted on the *very next request* bearing it,
+resolving to the correct tenant with no restart and no expiry wait; it is deleted
+through the API and stops resolving on the next request. Both transitions are
+observed synchronously.
+
+**Operational consequence, and the one window that remains.** An alias edited through
+the API takes effect immediately. An alias inserted or removed **out of band** —
+directly in the database, bypassing the API — is not seen until the family is next
+evicted or the entry expires, because nothing in the process observes that write.
+That window is the general property of caching a database fact, it applies equally to
+every other cached read here, and it is the only staleness this design admits.
 
 ### Tenant resolution refuses a request that can only get its tenant from the host name, and lets every other request continue
 
@@ -8104,7 +8422,8 @@ that genuinely allows anonymous access, are still refused before any policy runs
 **Why the difference is deliberate.** Only three of the fifteen legacy entries describe a responsibility
 this API still has, and each is met natively rather than ported: exception handling by
 `IExceptionHandler` with problem details, membership by bearer authentication, and compression by the
-reverse proxy. The rest belong to subsystems this migration excludes — users-online tracking,
+reverse proxy for browser traffic and by the host's own response-compression middleware for anything
+addressing the API directly — see the response-compression entry below for why both exist. The rest belong to subsystems this migration excludes — users-online tracking,
 personalisation, URL rewriting, the AJAX script handlers, RSS syndication, file-server link clicks and
 the CAPTCHA handler. A configured module chain resolved by reflection also defeats every compile-time
 check: an entry naming a type that no longer exists fails at first request rather than at build, which
@@ -8155,11 +8474,11 @@ configured" and "unavailable" differently, and those send an operator to the con
 to the instance respectively — without expanding an anonymous wire contract. No probe exception, data
 dictionary or connection string is logged.
 
-**One database probe, not two.** Registering two — this solution's own connection open plus the
+**One database probe, not two.** Registering two — this solution's own probe plus the
 health-check package's `AddSqlServer` — is tempting on the reasoning that they answer different
-questions. They do not: both read `ConnectionStrings:Default` and both open a connection to the
-instance it names, so the second can disagree with the first only by being flaky, and neither
-exercises the entity model. Whether the model agrees with the schema it maps is settled by the
+questions. They do not: both read `ConnectionStrings:Default` and both take a connection to the
+instance it names and ask it a trivial question, so the second can disagree with the first only by
+being flaky, and neither exercises the entity model. Whether the model agrees with the schema it maps is settled by the
 integration suite. Because the readiness view runs every readiness-tagged check on every request, and
 that view is re-polled for the life of the container, a duplicate costs a second connection on every
 poll while distinguishing nothing. The `AspNetCore.HealthChecks.SqlServer` package reference is **kept**: it is the only route by
@@ -8172,13 +8491,69 @@ that contract and disclosed deployment detail to every caller. The endpoint must
 unthrottled — the image's `HEALTHCHECK` probes it with `wget --spider` before any credential exists, and
 the front-end service is held back by `condition: service_healthy` until it answers.
 
+### The readiness probe executes a statement, because opening a pooled connection proves nothing
+
+**Legacy behaviour.** Not applicable; the legacy analogue ran no dependency check at all.
+
+**Target behaviour.** The database probe opens a connection **and then executes
+`SELECT 1;`** under an explicit one-second command timeout, asserting that the answer
+comes back and is the value expected. A connection that opens but cannot answer is
+reported `Unhealthy`.
+
+**Why the difference is deliberate.** `new SqlConnection(...)` followed by
+`OpenAsync` does not necessarily traverse the network: ADO.NET connection pooling
+hands back an already-established connection, so once the pool is warm the open
+completes locally and reports success no matter what state the server is in. A
+performance review demonstrated the consequence rather than inferring it — with the
+pool warm and the database wedged, `/health/ready` answered **`200 Healthy` in
+1.96 ms** while real data requests were failing with `503` after 35 seconds. A
+readiness probe that cannot fail is worse than no probe, because an orchestrator will
+keep routing traffic to a replica it believes is serving. Executing a statement is
+what forces the round trip the probe exists to make.
+
+**Two bounds apply, and which one ends a wedged attempt is not guaranteed.** The
+one-second command timeout is the inner bound and reports through this solution's own
+sanitised handler; the registration's two-second probe timeout is the outer bound and
+is reported by the health infrastructure. A black-holed socket never acknowledges an
+abandoned command, so in practice the first probe after a wedge reports through the
+inner path and later ones through the outer. Both answer `503` and both publish an
+identical document carrying only `status`, `timestamp`, `version` and `serviceName` —
+no server, database, credential or provider text — so the distinction is invisible to
+a caller and matters only when reading logs.
+
+**Pooling is deliberately left ON for the probe.** A `Pooling=false` probe connection
+would also force the traversal, but it would open a fresh TCP connection and perform a
+fresh handshake on every poll for the life of the container, and it would stop
+exercising the pool that real requests actually use. Executing a statement on a pooled
+connection tests the path production traffic takes.
+
+**Start-up is not gated on this.** Both the image `HEALTHCHECK` and the compose health
+check probe `/health`, the liveness view, which runs no readiness-tagged check, so
+`depends_on: condition: service_healthy` cannot be stranded by a dependency outage.
+Worst-case `/health/ready` latency during an outage is bounded at about six seconds.
+
+**Verified at runtime, and guarded by a test that was proven to catch the defect.**
+With a fault-injection relay holding established connections open but forwarding
+nothing, and the pool warmed by real traffic first: `/health/ready` answers `503`
+while `/health/live` continues to answer `200`; restoring the dependency returns it to
+`200` with no process restart. Two integration tests reproduce this in process using a
+wedgeable loopback relay, and they were run against the previous open-only probe to
+confirm they fail against it — a regression test that passes on the broken
+implementation guards nothing.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Infrastructure/HealthChecks/DatabaseHealthCheck.cs`,
+`backend/src/DnnMigration.Infrastructure/DependencyInjection.cs`,
+`backend/tests/DnnMigration.IntegrationTests/WedgeableDependencyProxy.cs`.
+
 ### A cancelled probe is not a database outage
 
 **Legacy behaviour.** Not applicable; the legacy analogue ran no dependency check, so it had
 nothing to cancel.
 
 **Target behaviour.** The database probe reports `Unhealthy` when the connection string is
-absent and when opening a connection fails, and it **propagates** an
+absent, when opening a connection fails, and when the connection opens but the probe statement
+cannot complete or does not return the expected answer; and it **propagates** an
 `OperationCanceledException` raised while the supplied cancellation token is cancelled instead
 of converting it into a verdict.
 
@@ -8280,6 +8655,82 @@ address through `Proxy__KnownProxies__0`. The surrounding subnet is deliberately
 the API service publishes its own port, so a caller reaching that port directly is
 source-translated to the network gateway, which is a same-subnet address. Trusting the subnet
 would therefore trust a directly reachable caller as if it were the proxy.
+
+### Responses are compressed by the host as well as by the proxy
+
+**Legacy behaviour.** A `Compression` managed module compressed responses in the
+legacy pipeline.
+
+**Target behaviour.** The host registers response compression, so a caller that
+negotiates `Accept-Encoding` receives a compressed body whether it reached the API
+through the front-end proxy or addressed the API's published port directly.
+
+**Why the difference is deliberate.** An earlier revision recorded compression as met
+"by the reverse proxy", which is true of browser traffic and was the whole story while
+`docker/nginx.conf` was the only path to the API. It is not the whole story for the
+port the API publishes for diagnostics and for service-to-service callers, and a
+performance review measured a JSON collection there as **16.1× compressible** and
+uncompressed. Compressing in the host covers both paths from one place. The proxy's own
+compression is retained rather than removed: it also serves the static bundle, which
+never reaches the API.
+
+**Health documents are excluded, and stay excluded.** The three anonymous health views
+are answered uncompressed. They are probed by BusyBox `wget --spider` from the image's
+own `HEALTHCHECK`, they are a few dozen bytes, and compressing them would trade a
+readable probe response for nothing.
+
+**Verified at runtime.** The paged collections answer `content-encoding: br` on the
+direct port, and identically through the proxy, which passes the host's encoding
+through rather than re-compressing it. `/health`, `/health/live` and `/health/ready`
+answer uncompressed, and `wget --spider` against `/health` inside the running container
+reports success.
+
+### Two collections that answered whole now answer a bounded page
+
+**Legacy behaviour.** The legacy page and member-service grids rendered their whole
+collection, unpaged.
+
+**Target behaviour.** `GET /api/v1/portals/{portalId}/tabs` and
+`GET /api/v1/users/{userId}/services` are paged, on the same `PagedRequest` contract as
+every other paged collection here: `pageIndex` from zero, `pageSize` defaulting to 10
+and capped at 100, and an `ApiMeta` carrying `totalCount`, `pageIndex`, `pageSize` and
+`totalPages`. Unlike the other paged collections, both accept **no** sort field and
+**no** text filter, and reject either with `400` and a message saying so.
+
+**Why the difference is deliberate.** Both previously answered with every row the
+tenant held, and a performance review measured the consequence at scale: a portal of
+3,001 pages answered **782,368 bytes** in a single uncompressed response, and a
+catalogue of 1,008 public roles answered **447,446 bytes**. Growth was linear in tenant
+size and had no ceiling, which is a denial-of-service lever against a JSON API. The
+sort vocabulary is empty rather than populated because each collection has exactly one
+defined order that the screens depend on — pages are returned in navigation order, and
+the catalogue in the order its classification pass produced — and offering a re-order
+would either break that dependency or require an index the immutable schema forbids
+adding. The filter is refused for the same reason: neither collection was ever filtered
+by text, so accepting a filter would invent a contract rather than preserve one.
+
+**Operational consequence for a client.** A caller that previously read the whole
+collection from one response must now walk pages until it has `totalCount` rows. The
+front end does exactly that: the portal-settings page selectors and the member-services
+grid each assemble their full collection from successive bounded pages, so both screens
+still present every row. That is a deliberate trade — those screens are specified to
+show the whole collection, so the request count rises where the response size falls.
+Measured after the change: the page selectors issue 31 requests of 100 for 3,001 rows
+and the catalogue 11 for 1,008, and the largest single response falls from 782,368
+bytes to 25,467 uncompressed and 1,954 on the wire.
+
+**Verified at runtime, in a browser, through the delivered proxy topology.** Each of
+the four page selectors holds 3,002 options — 3,001 real pages plus the
+`<None Specified>` placeholder — with no duplicate and no gap in the identifier run,
+and the catalogue renders all 1,008 rows with contiguous row indices. No request
+carried a sort or filter parameter, none exceeded the page-size cap, every request
+answered `200`, and neither screen produced a console message.
+
+**Annotated in code at.**
+`backend/src/DnnMigration.Api/Controllers/TabsController.cs`,
+`backend/src/DnnMigration.Api/Controllers/UsersController.cs`,
+`backend/src/DnnMigration.Application/Dtos/Common/TabPagedRequest.cs`,
+`backend/src/DnnMigration.Application/Dtos/Common/MemberServicePagedRequest.cs`.
 
 
 ## Authorisation
@@ -10018,8 +10469,11 @@ The catalogue class rename belongs with this. The legacy type is `PermissionInfo
 spans lines 28-88), and its five properties are declared over `Dim` backing fields at lines
 31-35 — `Dim`, not `Private`, so a search for private fields finds none of them. The target
 keeps all five and renames two: `ModuleDefID` becomes `ModuleDefinitionId`, mapped back to
-the legacy column name, and the free-text `PermissionKey` becomes the closed enumeration
-described under *Domain enumerations* above. The legacy spellings are **absent rather than
+the legacy column name, and `PermissionKey` keeps the legacy spelling. It also keeps the
+legacy **type**: it stays free text rather than becoming the closed enumeration described
+under *Domain enumerations* above, for the reasons set out under *The entity property is
+free text, and the enumeration is not the column's value domain*. The legacy spellings of
+the two renamed members are **absent rather than
 retained as aliases**, which matters because property lookup is case-sensitive and
 `PermissionID` differs from `PermissionId` only by casing: keeping both would give the
 entity two names for one column.
@@ -10685,6 +11139,47 @@ unchanged.
 **No schema change accompanies this.** The predicate is merely made seekable; whether an
 index on `PortalName` exists remains a deployment decision, and none is created here
 (Rule T4).
+
+### The same reasoning now governs every account predicate, not only the tenant filter
+
+**What changed.** The account repository's predicates were folded — the username, email
+and multi-column search comparisons in the listing, and the three exact-equality
+lookups behind sign-in, the username uniqueness test and the email collision test all
+wrapped their column in `LOWER(...)` and compared it against a lower-cased argument.
+Every one of them now compares the bare column and leaves case to the collation, which
+is the rule the tenant filter above already followed.
+
+**Why it was worth doing, measured rather than argued.** The fold cost two things the
+collation was giving away free. It made the predicates non-SARGable, so `UNIQUE
+IX_Users(Username)` could not be seeked: the exact-username lookup on the **sign-in
+path** was measured taking an `Index Scan` of that index at **48 logical reads** per
+attempt, against **8** for the seek that replaced it. And it blocked the optimiser's
+`LIKE`-prefix range estimate, so a selective prefix could not be recognised as
+selective — a byte-identical parameterised listing statement was measured at **80,089
+logical reads against 442**, decided solely by which search term happened to compile
+the cached plan. After the change the same term costs the same on repeat measurement
+regardless of which term compiled the plan, and cost tracks selectivity instead.
+
+**Behaviour is unchanged, and that was verified rather than reasoned.** Both the
+database and the `Users` columns carry `SQL_Latin1_General_CP1_CI_AS`, under which
+`'SETUP_HOST'` and `'setup_host'` compare equal, so removing the fold changes no
+result on this installation — and on a case-sensitive installation it restores the
+answer that installation actually gives, which is what Rule T5 asks for. Sign-in was
+exercised with `setup_host`, `SETUP_HOST`, `Setup_Host` and a space-padded spelling:
+all four authenticate, the padding being handled by the trim that remains.
+
+**One fold is deliberately left in place.** The role-name lookup keeps its fold. A
+performance review measured it at a single logical read already seeking
+`IX_RoleName(PortalID, RoleName)`, and explicitly withdrew it from the finding; there
+is nothing to gain and a behavioural difference to risk.
+
+**The emitted parameter is fixed-width, which matters.** The predicates now bind
+`nvarchar(100)` — the configured column length — rather than a width derived from the
+supplied value, so one plan serves every name length and the parameter type matches the
+column with no implicit conversion to defeat the seek.
+
+**No schema change accompanies this either.** No index is created; the existing unique
+index simply becomes usable (Rule T4).
 
 ### Role fee clamping replaces an intrinsic that evaluates both branches
 
@@ -18481,8 +18976,11 @@ process. Two failures follow from that single fact, both observed:
   application down with it rather than degrading only its API calls.
 
 With `resolver 127.0.0.11 valid=10s ipv6=off` and the service name held in `$api_upstream`,
-staleness is bounded at ten seconds: after a deliberate address change the proxy answered 502 at
-+5s and +10s and 200 at +15s and +20s, with no restart of anything. Re-verified end to end during
+staleness is bounded at ten seconds: after a deliberate address change the upstream failed at +5s
+and +10s and answered 200 at +15s and +20s, with no restart of anything. What the **caller** saw
+during that window was the `error_page` answer described in the next section — `503` with
+`urn:dnnmigration:error:gateway.api_unreachable` and `Retry-After: 5`, never a raw 502, which is
+mapped away deliberately. Re-verified end to end during
 the TLS parity work below: the API moved from `172.31.16.2` to `172.31.16.3` (old address
 squatted, then force-recreate) and three consecutive probes were answered 401 by the API itself
 while the frontend container never restarted.
@@ -18566,12 +19064,19 @@ instruction sequence is the preserved example's own.
 ### Both nginx servers carry an identical `/api/` directive list, and that is enforced by sharing one file
 
 Two resilience behaviours belong to `/api/` on both listeners, and a TLS block that lacked them made
-activating TLS silently give up both. `docker/nginx.tls.conf.template` therefore carries the
-late-resolving upstream (`resolver`, `resolver_timeout`, `set $api_upstream api`, `proxy_pass
-http://$api_upstream:8080$request_uri`), the `error_page 502 503 504 = @api_unavailable`
-redirection with a complete `@api_unavailable` location returning the RFC 7807 503, the
-`client_max_body_size 6356992` ceiling and all six forwarded headers; the two files' `/api/`
-directive lists are now identical directive for directive. `docker/docker-compose.tls.yml` no
+activating TLS silently give up both: the public listener carried its own four-line copy of the
+proxy block and therefore neither the late-resolving upstream nor the RFC 7807 gateway answer.
+Restating those directives in the TLS block was the first repair and it was the wrong one, because
+two copies of a directive list are two things to keep in step. **The shipped arrangement removes
+the copy instead: `docker/nginx.tls.conf.template` declares no proxy directive and no forwarded
+header of its own — it `include`s `/etc/nginx/snippets/api-proxy.conf`, alongside
+`security-headers.conf` and `spa-static.conf`, which is the same file the plain-HTTP server
+includes.** The late-resolving upstream (`resolver`, `resolver_timeout`, `set $api_upstream api`,
+`proxy_pass http://$api_upstream:8080$request_uri`), the `error_page 502 503 504 =
+@api_unavailable` redirection with its `@api_unavailable` location returning the RFC 7807 503, the
+`client_max_body_size 6356992` ceiling and all seven forwarded headers therefore reach both
+listeners from one definition, so the two `/api/` directive lists are identical by construction
+rather than by inspection. `docker/docker-compose.tls.yml` no
 longer hard-codes `AllowedHosts` — it reads `${TLS_ALLOWED_HOSTS:-…}` with the previous value as
 the fallback, so a deployment sets its own server name without editing a tracked file.
 
@@ -19893,7 +20398,7 @@ them, which makes divergence impossible rather than merely unlikely:
 | Snippet | What it owns |
 | --- | --- |
 | `docker/security-headers.conf` | The nine response headers, every line `always`, with the content-security and HSTS values coming from the http-level maps keyed on `$scheme` |
-| `docker/api-proxy.conf` | `location /api/` — resolver, `set $api_upstream`, `proxy_pass http://$api_upstream:8080$request_uri`, `client_max_body_size 6356992`, `error_page 502 503 504 = @api_unavailable`, the six forwarded headers — and the `@api_unavailable` named location that answers RFC 7807 with `Retry-After: 5` |
+| `docker/api-proxy.conf` | `location /api/` — resolver, `set $api_upstream`, `proxy_pass http://$api_upstream:8080$request_uri`, `client_max_body_size 6356992`, `error_page 502 503 504 = @api_unavailable`, and seven forwarded headers: the preserved example's six plus the canonicalised `X-Correlation-Id` — and the `@api_unavailable` named location that answers RFC 7807 with `Retry-After: 5` |
 | `docker/spa-static.conf` | The immutable hashed-asset policy and the SPA deep-link fallback |
 
 `docker/frontend.Dockerfile` copies all three into `/etc/nginx/snippets/`, a directory nothing auto-includes,
@@ -20976,10 +21481,16 @@ crawler receives.
 **Annotated in code at.** `docker/security-headers.conf`, `frontend/src/index.html`.
 
 **Proved by.** `backend/tests/DnnMigration.IntegrationTests/Infrastructure/ResponseHeaderPolicyTests.cs`,
-which reads the snippet as a **linked** embedded resource so a header removed from the artefact an
-operator ships cannot leave a green test behind, and additionally asserts that every declared header
-carries `always`. Confirmed in a real browser with zero console messages and the other eight policy
-headers intact.
+which reads the snippet as a **linked** embedded resource — the artefact an operator ships, not a copy
+under a test folder — and asserts three things about it: that each of the nine required headers is
+declared exactly once carrying the value it must carry, named header by header so a failure says which
+one; that nothing is declared which that inventory does not name, so an added or renamed header is a
+deliberate change rather than a silent one; and that every declaration carries `always`. The first two
+were added on 14 August 2026 after a test-suite review measured what the earlier pair could see: both
+quantified over the declarations still present, so deleting one removed the subject of the assertion
+rather than breaking it, and five of the nine headers could be dropped from the shipped file with the
+whole backend suite still green. Confirmed in a real browser with zero console messages and the other
+eight policy headers intact.
 
 ### Four smaller hardening notes, each with the reasoning that decided it
 
@@ -21234,3 +21745,566 @@ Both blocks now describe what is delivered: thresholded row windowing in TypeScr
 **The .NET position is unchanged too.** `dotnet list package --vulnerable --include-transitive` reports **no vulnerable package in any of the six projects**, against `https://api.nuget.org/v3/index.json`. That remains conditional on the two direct security pins in the integration-test project, which exist to displace vulnerable transitive resolutions and are guarded by a test that inspects the assemblies actually copied beside the tests rather than the manifest.
 
 **One citation was wrong, and its class of error is worth naming.** The date-formatting row cited a line number in a 206-line file that no line could satisfy; the call is at `:147` and the pattern union it depends on is declared at `:38`. Both are now cited. A path checker cannot catch this: the file existed, so only reading the cited line reveals it. Line-numbered citations therefore have to be re-read rather than re-resolved.
+
+## QA remediation — divergences introduced while resolving the runtime findings
+
+Everything below was introduced or changed while resolving a set of 43 findings raised by runtime QA against
+the production bundle. Each entry records a difference between what the legacy application did, or what the
+plan said, and what this tree now does — stated so it can be read without the finding report that prompted
+it, because that report does not travel with this file. Where a finding was declined rather than fixed, the
+decline and its authority are recorded here too; an omission would read downstream as a fix.
+
+### A path-addressed child portal now requires the served document to declare its own base, and inferring one from the URL had to stop
+
+**What the code did.** The front end treated the first path segment of any address as a candidate portal base.
+That is a reasonable-looking inference and it is wrong in a way no test caught: an address the router has no
+route for is indistinguishable from a child-portal prefix, so a single-segment URL that should have produced
+the not-found view was instead adopted as a tenant base, the router rewrote the address, and the reader was
+moved somewhere they had not asked to go. A recovery link rendered on that view could then inherit the
+fabricated base and carry the fault forward.
+
+**What it does now.** The base is read from the deployment's own declared base, never inferred from the
+requested path, so an address with no route reaches the wildcard route and renders the not-found view in
+place at the address the reader typed, with no rewriting. The recovery link cannot inherit a base that was
+never established.
+
+**The deployment consequence, which is a genuine new obligation.** A DotNetNuke installation that serves a
+child portal under a path prefix must now serve an `index.html` whose `<base href>` states that prefix. The
+legacy application derived it per request; this one takes it from the document. Serving the same document at
+a prefixed path without adjusting its base will make the SPA resolve its API and route URLs against the
+wrong root. This is a deployment contract, not a code setting, and it is the price of refusing to guess.
+
+
+### Two path prefixes, two authorities, and they compose
+
+The two sections that follow are about DIFFERENT prefixes and both are in force. The first is the
+**deployment mount point** — where the bundle is served from — which is read from the document's own declared
+base and is a value only whoever serves the bundle can set. The second is the **tenant path prefix** — which
+child portal a request belongs to — which is proposed by the address and confirmed by the deployment before
+the application starts. `appBaseHref()` composes them in that order, and so does every API URL, so a bundle
+served beneath a path reaches its API through the proxy that served it whether or not a tenant segment is
+also in play. Neither prefix is ever taken from the address bar unconfirmed.
+
+### A tenant path segment is now confirmed by the deployment before the browser adopts it, so a mistyped address reaches the not-found view instead of an unwinnable sign-in screen
+
+**The finding, restated as a fact about the code.** `frontend/src/app/core/config/tenant-path.ts` decided whether the first path segment of the address a document was served at named a tenant, and it decided on SHAPE alone: any segment of ASCII letters, digits, hyphens and underscores that was not one of the console's own routes or one of the API's own roots was adopted as a tenant prefix. That value became the router's `APP_BASE_HREF` and was composed into every API URL. The file said so in as many words — "an unrecognised single segment is claimed as a tenant prefix, and nothing here can avoid it" — and named the consequence: the `**` catch-all was not reached for such an address.
+
+**What that produced at run time, measured through the container topology rather than reasoned about.** A one-character typo of the most-typed admin path — `/portls` for `/portals` — was served the SPA document by the proxy's fallback, adopted as a tenant prefix by the bundle, and left the routable address empty, so the root redirect ran and the console painted a pristine, fully styled sign-in form with no error and no not-found text. Correct credentials were then posted to `/portls/api/v1/auth/login`, which reaches no route at all, and the `401` that came back was rendered as "Unauthorized — Authentication is required to reach this resource": a message that blames the credential when the fault is the address. No in-application link escaped the prefix — the header's identity link and the not-found view's own recovery link both resolved against the adopted base — so recovery meant editing the address bar. Repeated attempts recorded real authentication failures against a valid account.
+
+**Why no client-side rule could have fixed it.** A child portal is addressed beneath one path segment of a shared host, and one built bundle is served to every tenant, so the segment can only be derived from the address at run time. A mistyped console route and a real child segment are indistinguishable by shape; the alias rows that separate them live in the database. Narrowing the shape rule would not have helped and would have broken real tenants: a legitimate `host/acme` has exactly the shape of `host/portls`.
+
+**What changed.** The segment is now a CANDIDATE, and the deployment confirms it before the application starts.
+
+- `backend/src/DnnMigration.Api/Controllers/TenantAddressController.cs` adds `GET /api/v1/tenant-address`, the one anonymous read in this API, marked tenant-optional and returning `ApiResponse<TenantAddressDto>` whose single member is the path prefix the calling request itself resolved beneath — empty for a bare-host alias and for an address that resolves to no portal. It performs no I/O: tenant resolution has already run before routing, once per request.
+- `frontend/src/app/core/config/tenant-resolution.ts` asks that question beneath the candidate itself — `GET {candidate}/api/v1/tenant-address` — and records the decision. `tenant-path.ts` keeps the pure derivation, adds the recorded decision, and answers every later caller from it, so `APP_BASE_HREF` and the API base can no longer disagree. `frontend/src/main.ts` awaits the decision before `bootstrapApplication`, because the location strategy reads the base href while the router is being constructed and a later decision would arrive after the first navigation had already been resolved against it.
+
+**Reaching the endpoint is itself half the answer, and that is a property of the resolver rather than a trick.** `PortalContextHolder.BuildAddressChain` fails closed with no bare-host fallback, and `TenantPathBaseMiddleware` moves a segment out of the routable path only for a stored alias — so a request beneath an unrecognised segment keeps the segment, matches no route, and is refused by routing and the authorisation fallback. A success therefore means "this segment names a tenant" and a caller-correctable refusal means "it does not"; the body confirms WHICH segment, and is compared case-insensitively because an alias is matched case-insensitively and reported as stored.
+
+**Only a definite answer demotes a candidate, and the asymmetry is deliberate.** A `5xx`, a `408`, a `429`, a transport failure or the four-second timeout keeps the candidate. A deployment whose API is unreachable answers nothing for any address, so treating silence as a refusal would render "nothing answers this address" for a legitimate child portal during an outage — misdescribing an outage as a missing tenant. Keeping the candidate leaves the caller with the service-unavailable report the error surface already produces, which is the honest description of that state.
+
+**What it costs, and where it does not apply.** An address that proposes no candidate — the bare host and every one of the console's own screens, which is every address the application itself navigates to — is decided with no request at all, so first paint is unchanged for them. In development the API is configured at an absolute address on a different origin, where a segment on the document's origin is not an address the API could match an alias against; the candidate stands unasked there, and path-prefixed tenancy is documented as a same-origin, proxied-topology capability.
+
+**The recovery links needed no change once the root cause was fixed, and forcing them would have been wrong.** With a rejected candidate the base href stays `/`, the address reaches the route table as typed, the `**` route renders, and `routerLink="/"` in the not-found view and the header's identity link both resolve to the true root. Under a CONFIRMED tenant those same links resolve to that tenant's own root, which is correct — making them absolute to the deployment root would have sent a child portal's administrator to a different tenant's landing screen.
+
+**No tenant fact is disclosed to an unauthenticated caller.** The response reports the path portion of the alias the caller's own request resolved by and nothing else: no portal identifier, no portal name, no alias key, and no listing operation or lookup-by-value exists. An anonymous caller learns whether the address it already holds reaches a tenant — which the sign-in endpoint has always distinguished for an unconfigured address — and learns nothing about any address it did not ask about.
+
+**Proved by.**
+`backend/tests/DnnMigration.IntegrationTests/Api/TenantAddressApiTests.cs` (bare host reports no prefix; a stored segment reports itself; an unrecognised segment is refused with a caller-correctable status rather than answered; an unconfigured host is answered rather than refused; the anonymous payload carries only the prefix),
+`backend/tests/DnnMigration.IntegrationTests/Api/TenantResolutionTests.cs` (the tenant-optional inventory now names the controller and its reason),
+`frontend/src/app/core/config/tenant-resolution.spec.ts` and
+`frontend/src/app/core/config/tenant-path.spec.ts` (each probe outcome, the recorded rejection winning over an address that still proposes its segment, and the no-candidate path asking nothing at all).
+
+
+**One probe, and a second endpoint that answers the same question.** A probe was written into `tenant-path.ts`
+as well, against `GET /api/v1/tenancy/path-prefix?segment=…`, which adjudicates one segment for a caller that
+asks root-relatively. Only one probe may run — two would issue two requests before first paint and could
+disagree about the same address — so the client keeps the one above, which asks beneath the candidate itself
+and therefore treats reachability as part of the evidence, bounds its own wait, and demotes a candidate only
+on a DEFINITE answer so that an unreachable API cannot strand a real child portal at the root. The
+`tenancy/path-prefix` endpoint remains part of the API, tenant-optional and covered by its own tests, for any
+caller that wants one segment adjudicated without addressing anything beneath it.
+
+### The shared record grid changed shape in six ways, and the reasons are not interchangeable
+
+**The minimum measure rose from 40rem to 60rem, and a narrow-viewport relaxation was removed.** The grid
+declares `table-layout: fixed`, and under that algorithm every column resolves from its declared track. A
+40rem floor left the wider grids resolving columns too narrow to hold their own content, so values broke
+mid-token. The floor is now 60rem and the below-`md` width relaxation is gone: the table keeps its measure
+and its own container scrolls, which is the behaviour the scroll contract below was built for. A reader at a
+narrow viewport now scrolls a grid rather than reading a broken one.
+
+**A scrollable grid now announces itself.** When — and only when — the container actually overflows, it
+carries `data-table-scroll`, `tabindex="0"`, `role="region"` and an accessible name taken from the table's
+own caption, so a keyboard reader can reach and scroll it and hears what they have landed in. When the table
+fits, none of those attributes is emitted, so no pointless tab stop is introduced. The conditionality is the
+point: an unconditional region would add a stop to every grid on every screen.
+
+**The users listing hides its row-command wording at every width.** It previously showed the words at wide
+measures and hid them narrow, which meant the column changed width with the viewport and the grid reflowed
+around it. The wording is now always visually hidden and always present as the command's accessible name.
+
+**The modules listing's Actions column widened to 9rem.** Its commands are glyphs, but there are enough of
+them that the shared icon-command measure overpainted the column beside it.
+
+**The portals listing now treats the legacy sentinel date as absent.** A portal with no expiry carried
+`Date.MinValue` through the legacy sentinel table, and rendering it produced a real-looking date in the
+past. It is now recognised as absence and rendered through the shared absent-value convention.
+
+**Every column width is now set by a stated rule, and the rule is about headings rather than values.** A
+heading cell spends a fixed 24 pixels before a glyph is drawn — eight of cell padding, four of the sort
+control's gap, and twelve the sort indicator reserves whether or not the column is the sorted one — so a
+heading's text receives only `columnWidth - 24`. Because a percentage column is at its narrowest exactly
+when the table sits at its floor, the floor is the only width a declaration has to be checked against:
+satisfy it there and every wider viewport follows. The rule is now that every heading's widest UNBREAKABLE
+run fits at the floor with at least four pixels to spare.
+
+**What "unbreakable" means was itself a finding, because word count predicts nothing.** A column marked
+atomic computes `white-space: nowrap`, which makes the WHOLE label one unbreakable run — which is why the
+two-word "Portal Id" and "Disk Space" were being clipped. Every other label may wrap between words but never
+inside one, so its LONGEST WORD is the run that must fit — which is why the single-word "Public", "Auto" and
+"Authorized" were clipped, and why "Billing Period" was clipped on BOTH of its wrapped lines. Headings also
+compute one type step larger than the body, so a heading needs materially more room than its character count
+suggests against body text.
+
+**Which widths moved, and what paid for them.** On the portals listing the identifier and disk-space columns
+grew and the alias column, measured to have a large surplus, paid; on the user accounts listing the
+authorisation column grew and the address column paid; on the security roles listing six columns grew and the
+role-name column paid. The portals and user-accounts totals are unchanged, so no other column's geometry
+moved. The roles total rose from 66 to 70 per cent, which was unavoidable: it is the widest grid in the
+application at thirteen columns and six of its headings had been under-allocated.
+
+**Taking width from a name column is deliberate, and the asymmetry is the justification.** A role name WRAPS
+and stays wholly legible at a narrower measure — it now runs to four lines at 1440 and five at 960, complete
+either way. A clipped heading is simply gone from the screen: the accessible name survives, the visible one
+does not. Width therefore moves from a value that reflows to a heading that cannot.
+
+**One column is sized by its value rather than its heading, and it is the exception that proves the rule.**
+The user accounts creation column is atomic, so its cells ellipsise rather than wrap, and its value is a date
+AND a time. At the width it previously declared, every row rendered a truncated stamp with the seconds and
+the meridiem both cut, leaving a reader unable to tell morning from evening. The full text node survived in
+the accessibility tree, so this was a loss to sighted readers only — and that is still a loss. It was widened
+to hold the whole value at the floor. The last-login column carries the same exposure but appears only in the
+dense configuration, and is documented here rather than changed, because that configuration is already
+structurally unable to fit every heading at the floor and an unmeasured change would only move the failure.
+
+**Fractional percentages are now used in practice as well as admitted by the type.** Several of these
+measurements do not land on a whole percent. The runtime validator and the width type both accept a fraction;
+one specification that pinned integers asserted something stricter than the contract and was realigned.
+
+**Zebra striping gains a border fallback under forced colours.** A forced-colours palette discards the
+alternating surface, which is the only row separation this grid draws, so a separator border is declared for
+that mode alone. The AAP closes the colour vocabulary, so this adds no colour — it adds a border where the
+colour has been taken away.
+
+### The help panel's border lost contrast against its own fill, and the colour vocabulary is why
+
+The help disclosure's border was resolved from the ordinary border token and its panel is filled with the
+surface token; measured against each other they reach 1.38:1. The stronger border token was substituted,
+which is the best available result, and it is still below a 3:1 non-text threshold. No new colour was
+introduced to fix it because the AAP closes the design system's colour vocabulary at nine values, and adding
+a tenth to win a contrast ratio on a decorative border would be a change to the design contract rather than
+a fix within it. Recorded as a knowing decline of a nicety, not an oversight.
+
+### The claim that the server did not validate profile writes was factually wrong, and the real defect was the shape of the refusal
+
+**What was reported, and what was actually true.** The finding stated that a profile write with values
+violating the tenant's declared validation was accepted and persisted with a 204. The server was in fact
+already enforcing every declared rule and already refusing the write. The defect was that it published the
+refusal as a FLAT problem document carrying no `errors` member, so the client received a refusal it could not
+attribute to any field: no control could be marked invalid, nothing could be focused, and the reader saw a
+failure with no indication of what to change. A response that refuses correctly but unattributably is
+indistinguishable, from the screen, from one that did not refuse at all.
+
+**What changed.** A field-errors failure reason was added, the refusal is emitted as a validation problem
+document with one entry per offending property under that property's own declared name, and the service
+accumulates every violation rather than stopping at the first — so a reader fixing three fields is told about
+three, once. The client already understood that envelope. Two server assertions now pin the naming.
+
+**The client-side half.** The client built its validators from the declaration metadata but applied only
+required-ness and maximum length, deliberately skipping the declared validation expression. The expression
+rule is now applied as well, wired into the same error, invalid-state and first-error-focus contract as every
+other field, so the common case is refused before a request is sent.
+
+**Two of the four measured legacy expressions are themselves ruinous, and they are enforced on the server
+only.** Of the validation expressions actually present in the legacy data, two are vulnerable to
+catastrophic backtracking. Compiling them in the browser would hand any reader a way to hang their own tab,
+so they are screened and enforced server-side, where execution is bounded and observable. Behaviour for a
+legitimate value is identical; behaviour for a hostile pattern differs deliberately.
+
+**The address-expression compilability check is client and server, and it deliberately does not screen for
+backtracking.** A tenant administrator authoring a validation expression is told immediately if it will not
+compile — the earlier build accepted `[a-z` and stored it, after which every profile write against that
+property failed with an error naming nothing the reader had done. The check answers only "does this compile",
+not "is this safe": judging catastrophic backtracking is undecidable in general, and a check that pretended
+otherwise would give false assurance.
+
+### The three membership redirect settings are now page pickers, and the identifier became secondary information
+
+They were free-text boxes taking a raw tab identifier, which asked an administrator to know a database key in
+order to choose a page. Each is now a picker listing the tenant's real pages, storing exactly the same
+identifier on exactly the same contract, with the numeric value shown as secondary information so an
+administrator who does know it can still confirm what was chosen. Nothing about the persisted value changed.
+
+### The forms agree on their action bars now, and five separate things had to change for that
+
+**One shared primary treatment.** A global primary-action class replaces the per-screen primaries; ten
+submits and two local primary species adopted it.
+
+**The module form's actions moved out of the page header and became ordinary buttons.** They were rendered as
+page-header commands, which put a form's submit in the place every other screen uses for navigation.
+
+**Cancel was ADDED to two screens the legacy did not give one.** The legacy account and password screens
+declare no cancel control, while the signup, site-settings and role-edit screens all declare one. Rather than
+carry that inconsistency forward, the two screens without one gained it: an administrator part-way through an
+edit they no longer want should not have to navigate away to escape it. This is an addition beyond the legacy
+surface and is recorded as such.
+
+**The primaries are mode-aware.** A create form's primary now names the creation, so the same screen does not
+read identically whether it is making a record or amending one.
+
+**They agree on start alignment by INHERITING it, not by declaring it.** The account form previously centred
+its commands. The fix was to stop overriding the initial value rather than to declare the value again
+everywhere — a rule that restates a default is a rule someone later has to disprove.
+
+### The role listing's danger command paints the same tint on hover and on press, because the vocabulary allows exactly one danger value
+
+Its ink is pinned to the danger token, so a hover that recoloured the text had nothing to move to. Hover now
+changes the underline and the press paints the selected tint as its surface. The two states are distinguishable
+from each other and from rest, without inventing a second danger colour the design contract does not have.
+
+### Row commands had hover feedback declared but unreachable, and the gate was the cause
+
+Every row command's hover rule sat behind a pointer-capability gate, so on the machines where QA measured it
+the rule never applied and no row command anywhere gave hover feedback. The gate was removed from the row
+commands on all four listings. A press state was also moved from an inset shadow to a background tint, because
+a shadow is contested on a focusable control by the focus ring that also wants to draw there.
+
+### The portal settings field grid is content-driven now, and two narrow-width behaviours follow from that
+
+The grid asked a viewport media query whether to show two columns, which is the wrong question: what matters
+is whether a COLUMN can hold a field, not how wide the window is. It now decides from the available measure
+against a declared two-column measure. The consequence to know about is that between roughly 1024 and 1279 it
+renders ONE column where it previously rendered two — that is the correct answer for the space, and it is why
+any responsive sweep of this screen must include 1024 and 1152 rather than jumping from 768 to 1280. Below
+480px the grid runs edge-to-edge inside its fieldset and every native select gives up half its inline padding,
+which buys back the width a label and its control need to stay on one row. Three shared tokens were added to
+express these measures once.
+
+### The heading ramp spends one token per level, and the root element finally declares a font
+
+The ramp previously reused sizes, so `h1`/`h2` and `h3`/`h4` were indistinguishable and a reader could not
+tell depth from size. It now runs strictly downward, one step per level. Separately, the `html` element
+declared no font family at all, so the root computed the browser default — Times New Roman — while everything
+visible inherited the base stack from `body`. The root now declares the base stack. Nothing visible changed;
+what changed is that nothing depends on `body` to correct the root any more.
+
+### The required-marker legend describes what is drawn, and the marker is not an image
+
+The legend said a red arrow marked required fields. No arrow asset ships, and the shared field draws an
+asterisk. The wording now says asterisk. The legend also remains only on the account screens, which is where
+the legacy screens carried it — adding it elsewhere would author copy the legacy never had.
+
+### Denial sentences share one stem, with four legacy-verbatim exceptions that are named rather than counted
+
+**The stem.** Every denial this application authors now opens "You do not have permission to". The route
+guard's refusal changed from "You do not have access to this content." to "You do not have permission to view
+this content." and joined it.
+
+**Why the guard does not adopt the full legacy sentence.** The legacy access-denied text hedges across two
+states — "Either you are not currently logged in, or …" — and its first half is FALSE for a caller the guard
+has already established is signed in. The legacy sentence remains verbatim on the genuine unauthenticated
+path, where both halves are true.
+
+**The four exceptions, all traced to their resource files.** Two portal-alias refusals and two user-editing
+refusals are kept byte-for-byte as the legacy authored them, because they say something specific that a
+generic stem would lose, and one authentication refusal likewise. Naming them is the point: an earlier draft
+of this note said there were two, and the difference between two and four is the difference between a rule
+with exceptions and a rule nobody can check.
+
+### The password screen gained a field the legacy did not have, and kept a contract the legacy did have
+
+A read-only username field with the appropriate autocomplete hint was added so a password manager can attach
+the new credential to the right account; without it a manager has nothing to key on. The screen also keeps
+its single-message contract from the legacy screen — one message at a time rather than a summary — and the
+confirmation control now carries its own required and match validators so the control itself becomes invalid.
+That last point matters mechanically: a group-level error leaves every CONTROL valid, so the shared
+first-invalid-field focus finds nothing to move to and a reader is told there is a problem with no way to be
+taken to it.
+
+### Whitespace-only search terms are no longer transmitted, and both listings say what they filtered
+
+A term of pure whitespace was sent as a filter, so a reader who pressed space and searched got a filtered,
+empty listing with no explanation. Such a term is now discarded, and both the modules and users listings state
+their active filter — or state that the input contained nothing to match on, so an unfiltered listing is not
+mistaken for an empty one. The users listing's explanation is a polite live region, matching the modules
+listing, so the two screens announce alike.
+
+### All four detail screens share ONE missing-record contract, which removed a legacy bounce and withheld two links
+
+A request for a record that does not exist now: stays at the address, states it once through the shared
+assertive banner in one shared wording, renders no form and no action bar, offers exactly one recovery link,
+raises no toast, and quotes no bare identifier. Reaching that cost two deliberate subtractions. The role
+screen's legacy bounce back to the listing was removed — being moved somewhere else while a toast explains why
+is worse than being told where you are. The portal screen's two sibling links were withheld, because links to
+the settings and aliases of a portal that has gone are dead links. The support reference is now introduced as
+a sentence explaining what to do with it rather than a bare labelled identifier, in the banner and in every
+toast.
+
+### Every screen's subtitle states that screen's scope, and never a status or a count
+
+Subtitles were doing three different jobs. Thirteen screens now carry a subtitle stating what the screen is
+for; the not-found view is the documented exception, having nothing to scope. The portals listing's range and
+total moved out of the subtitle to their own line above the grid, because a count changes as you page and a
+scope does not. The module screens' heading also changed: the page heading and its first section head were
+both "Module Settings", stacked identically, so the page heading now uses the legacy control title.
+
+### There is one validation-summary contract, and it is "no page-level summary anywhere"
+
+A blocked submit marks its controls touched and moves focus to the first invalid field. No form raises a
+page-level summary: the portal settings screen lost both its summary toast and its summary paragraph, and the
+module form lost its summary toast. A summary that repeats what is already marked on the fields adds a second
+place to read and a second place to keep correct.
+
+### One e-mail grammar, mirroring the server's own value object
+
+The account form's pattern was looser than the server's and admitted addresses the server would refuse, so a
+reader could pass the client and fail the write. A shared client grammar now mirrors the server's rule — a
+final label of two to sixty-three ASCII letters. The tenant's own configurable expression remains what it
+always was: pattern DATA held for the tenant, not the application's grammar.
+
+### A cache period may no longer be negative, on the client and on the server
+
+The legacy integer check accepted `-1`. A negative cache period is not a meaningful instruction, so it is now
+refused in both places. Zero remains legal and no upper bound is imposed. Two integration assertions had
+encoded the old behaviour — asserting that a negative period persists verbatim — and were reversed, with a
+companion added proving zero is still accepted. Those two assertions are worth naming: they survived an entire
+phase undetected because the new bound had been verified with a direct request and not by running the suite.
+
+### Typing bounds are announced, and the reference had to sit on the CONTROL rather than on the group
+
+The shared field accepts a limit and states it as a sentence in a permanently-present visually-hidden region,
+repeated inside the help disclosure; the shared search input states its own bound the same way. The first
+implementation put the reference on the field's wrapping group, which is announced on ENTERING the field and
+is silent on the control itself — the browser computed no accessible description at all for the box being
+typed into. An ARIA description on a composite group is NOT inherited by the control inside it. The reference
+is now contributed to the projected control as well, and three specifications pin it so it cannot regress.
+The portal settings form now announces the bounds of all eleven of its bounded boxes; it previously announced
+none.
+
+### Sign-in and refresh report the caller's real authority, and the access token still carries none
+
+**What was wrong.** Both responses were built by a separate snapshot builder that hard-coded empty roles and
+permissions and never set the portal-administrator flag, so a sign-in response understated the caller's
+authority against an immediately following current-user read of the same account.
+
+**What changed.** The minimised builder is gone; both paths resolve the same snapshot the current-user read
+resolves, and they now agree member for member.
+
+**The reasoning I first wrote for this was false, and the correction matters.** My initial note justified the
+change by saying the roles were "already inside the access token's claims". They are not: the token carries
+subject, token identifier, portal and issued-at, and no authority claim of any kind. The property that makes
+this safe is different and better — the token carries no authority, so authority is re-evaluated server-side
+on every request; a response body is not a credential; and the shape is structural, because the token-issuing
+call has no parameter through which authority could travel even if someone wanted it to.
+
+### Two listing filters moved into the request body so search terms stop reaching access logs
+
+The modules and portals listings carried their filters as query parameters, which puts a reader's search term
+into every access log that records a request line. Two body-bound endpoints were added for those two
+listings; the term-free collection reads remain as they were. This was scoped by measurement rather than
+assumption: the roles listing has no search input and the users listing already used a body, so exactly two
+listings were exposed, and one of them carries two terms. The two query-bound request contracts had to be
+unsealed so the body-bound ones could derive from them, which is what guarantees the two transports accept
+exactly the same thing rather than drifting apart.
+
+### Lookups that are already held are reused, and re-reading is now an explicit command
+
+Selecting an account is idempotent for an account already held or in flight, which removed a duplicate detail
+read on every edit load; the membership policy and the profile-declaration catalogue are reused when already
+held. Two explicit refresh commands exist for the cases that genuinely must re-read, and the reuse is guarded
+by a "has been read" flag rather than by testing whether the result is empty — a tenant with no profile
+properties is a legitimate answer, and a failed read must stay retryable. The listing retry uses both refresh
+commands, because a listing read beside an unreadable policy is exactly the state that retry recovers from.
+
+### The danger token's contrast is a DECLINED finding, not a fixed one
+
+The danger colour is below 4.5:1 for normal text on both the page and surface fills. It is NOT changed here.
+The AAP fixes the colour vocabulary by measurement from the legacy stylesheets and names this value, so
+changing it would be a change to the design contract rather than a defect fix — and the finding itself records
+it as an accepted open product risk with non-colour redundancy already implemented, which this tree provides
+throughout: expired, zero-fee, negative and unauthorised states all carry a word, not only a hue. Closing it
+requires a human decision to amend the vocabulary. Recorded as open rather than silently omitted.
+
+## The portal administration screens: four absent controls decided one at a time, and the alias contract closed at both ends
+
+**Why these are grouped.** A review of the portal screens found four legacy controls with no counterpart anywhere in the application, and it found them undocumented — which is the part that made them defects rather than decisions. An absence nobody recorded cannot be told apart from an oversight, and three of the four turned out to deserve different answers. Each is settled below on its own evidence, and the reasoning is here so that a later reader does not have to re-derive it from the code.
+
+### Payment Settings is restored, because nothing else could configure it
+
+**The measured state.** `Portals.PaymentProcessor` and `Portals.ProcessorUserId` were carried by the detail resource, accepted by the update resource, and returned unchanged by the settings screen's own request composer — every part of the path existed except the affordance. The section that held them was dropped outright, so neither column could be set anywhere in the application, while the role screen still instructs an operator to configure a payment processor. An instruction pointing at a control that does not exist is the same class of dead end as a settings link to a screen that refuses to load.
+
+**What was restored, and where.** A `Payment Settings` disclosure carrying two text boxes, placed between Page Management and Other Settings because that is the legacy order — `Website/admin/Portal/sitesettings.ascx` declares its advanced heads as Security (L218), Page Management (L239), Payment (L294), Usability (L339), Other (L385) and Host (L420). It opens collapsed, matching `IsExpanded="False"` at L294-L295. Both boxes are capped at 50 characters, which is what `PortalConfiguration` declares for both columns.
+
+**Three legacy affordances in that section are deliberately NOT restored.** The processor control was a `DropDownList` (`cboProcessor`, L314) filled from the legacy list subsystem, which the plan excludes at §0.2.2.2; a text box is what the remaining contract supports, and it is the same position the currency and default-language boxes were already in for the same reason. The `Go To Payment Processor Website` link (L317-L318) resolved its address from that same excluded list, so it has no address to go to. The processor **password** box (L330) has no counterpart because the settings contract carries no credential member at all — there is nothing to bind and nowhere to send it; the screen states this in place of the control rather than leaving an unexplained gap.
+
+**The currency stays where it is, and that is now a decision rather than a leftover.** Its legacy home was the payment section, and it had been moved to Other Settings on the recorded grounds that resurrecting a whole section for one field was not worth it. That reason no longer holds. It stays anyway: its placement was never a reported defect, both placements serve the identical workflow, and moving a field on a screen nobody complained about is churn that risks a regression for no gain.
+
+### The time-zone offset keeps its minute box and gains the bound it never had
+
+**What is preserved and why.** The offset is stored and edited as whole minutes, which is the legacy storage exactly — `Localization.vb:L75` carries `-480` — and no named-zone picker is offered, because the zone list belongs to the localisation subsystem the plan excludes. That much was already the case and is not changed here.
+
+**What was wrong.** Replacing a closed selector with a free-text box moves a value's legality from the LIST to the VALIDATOR, and no validator followed it. `99999` was accepted by the client, accepted by the server and storable, and a portal's entire notion of local time derives from that column.
+
+**The bound is measured, not chosen.** `Website/App_GlobalResources/TimeZones.xml` is the file the legacy `cboTimeZone` selector was filled from, and its entries run from `key="-720"` (UTC -12:00) to `key="780"` (UTC +13:00). Both layers now enforce exactly that range: the client so an operator is told before a round trip, and the server — in the abstract base both portal write validators derive from, so it reaches the settings PUT and the general portal PUT alike — because that is the bound that actually holds for any caller. The message names BOTH ends in one sentence, so satisfying the end that was crossed cannot reveal the other for the first time afterwards. An omitted offset is still accepted: a portal is permitted to keep none.
+
+### The home directory is shown and not editable, which is exact legacy parity
+
+**The finding was half right, and the half it got wrong changes the remedy.** The path was neither shown nor editable, and the review read the second half as a regression. It is not: `sitesettings.ascx:L289-L290` declares that box `Enabled="False"`, so the legacy screen displayed the path and refused to let anybody change it. The code-behind read it back out on save purely to round-trip it (`SiteSettings.ascx.vb:L419` in, `L781` out), which is what this screen's request composer already did. So only the display was missing.
+
+**What was added.** A read-only, label-associated box at the end of Page Management — the section legacy declared it in (L285, inside the block opened at L239) — with a sentence saying the path is fixed once a site is created. It is `readonly` rather than `disabled`: the two are equivalent for editing, but a disabled control leaves the tab order and is skipped by assistive technology, so the legacy spelling would have hidden the value from the readers most in need of it. It is not a form control at all, so nothing an operator does to it can reach the payload, and the column is still returned unchanged.
+
+**Editing it is deliberately still absent.** Changing a portal's home directory without moving the files beneath it would break the portal, and the file-relocation half of that workflow belongs to the file-system subsystem the plan excludes. A control that stored a new path and moved nothing would be worse than no control.
+
+### Site Log History, Logo and Body Background remain absent, each for a stated reason
+
+**These three are recorded as deliberate rather than remedied.** `SiteLogHistory` is a retention setting for the site-log feature, and the logging providers are excluded at §0.2.2.2 — a control configuring the retention of records nothing produces would describe a feature that is not there. `LogoFile` and `BackgroundFile` are file references whose legacy affordance was the file picker, and file management is out of scope (§0.2.2 and §0.3.4); a bare text box demanding an exact stored path is not a substitute for a browser and invites a broken reference that renders as a missing image. All three columns are still carried by the contract and still returned unchanged by every save, so no value is lost by the absence of the control — which is the property that makes documenting them an honest answer rather than an evasion.
+
+## The alias contract: case is canonical again, and the length rule states the limit that binds
+
+**Case was neither normalised nor rejected, and that is a tenant-resolution difference rather than a cosmetic one.** An alias is the only thing that resolves an incoming request to a tenant, so `WWW.Example.Test` and `www.example.test` naming different rows is a correctness problem. Lower case is the legacy rule and not a preference: every path in `Library/Components/Portal/PortalAliasController.vb` that touched an alias applied `.ToLower` — `AddPortalAlias` at L31, `UpdatePortalAliasInfo` at L97, and both read paths at L52 and L76 — so a DotNetNuke installation never held a mixed-case alias. Note that the legacy EDIT screen does not lower-case anything; the rule lived in the controller, which is to say in the data layer, and that is where it has been restored. The service now returns the trimmed value lower-cased on every write, using the invariant casing rather than the current culture's, because the culture-aware form maps a dotted capital I to a dotless one under a Turkish locale and would canonicalise one submitted alias two different ways depending on the server's locale. The screen canonicalises the box on blur and again on submit for the same reason, so an operator sees the host name the portal will actually be reachable by instead of discovering it in the row that comes back.
+
+**A host name already listed on the screen is now refused without a round trip, and the limit of that is stated.** Re-entering a name visible on the very screen an operator is looking at cost a request to be told so. It is now judged locally, in the same wording the server's refusal carries, and the row being edited is excluded so that opening a row and pressing Update unchanged is not refused as a collision with itself. **This does not replace the server's refusal and must not be read as doing so.** Alias uniqueness is global — `IX_PortalAlias` is unique over the whole table — while the screen holds only the aliases of the portal it is showing, so a host name claimed by a different tenant is invisible locally and is still refused by the server with a `409` that the banner surfaces.
+
+**The length rule stated the wrong limit first.** Two rules were in play — the rendered box's legacy cap of 255 and the column's 200 — and the weaker was reported first. Pasting 260 characters produced "may not exceed 255 characters", after which trimming to 240 produced, for the first time, a message naming 200. Announcing a limit that is not the binding one, and only revealing the binding one once the first is satisfied, is the same defect as disclosing password rules one at a time. 200 is binding on three independent authorities: the legacy column is `[HTTPAlias] [nvarchar] (200)` at `Website/Providers/DataProviders/SqlDataProvider/02.02.02.SqlDataProvider:L3807`, `PortalAliasConfiguration` declares `HasMaxLength(200)`, and the server validator enforces `PortalAliasRules.MaximumLength`. There is now one length message and it names 200. The 255 cap on the box is unchanged, because that is measured legacy parity for the typing experience — it simply no longer has a message of its own to contradict the real rule with.
+
+## Three smaller portal corrections, and one convergence that was deliberately left incomplete
+
+**The aliases screen names the portal it edits.** Its heading is the constant "Portal Aliases" and its rows are bare host names, so an operator who arrived by typed address, or who kept two tenants open, had nothing on the screen telling them which portal they were about to add a host name to or delete one from. Both sibling screens under `/portals/:portalId` already state it in the shared header's subtitle, and that is the affordance mirrored rather than a new one invented. **This costs one additional read per screen entry**, which is the price of naming the tenant on a cold load and is the same read both siblings already make; arriving from a sibling screen issues nothing, because the selection is already held. The held identifier is compared against the one the address names before the name is used — a detail left behind by a sibling would otherwise caption one portal's host names with another's, which is worse than naming none because it reads as fact.
+
+**An empty alias list is announced instead of silently emptying.** The screen replaced the whole grid with a panel the moment a portal was read and found to have no host names, and that destroyed the grid's polite status region along with it — so the one transition most in need of a report announced nothing at all. The grid now renders the screen's own wording and its own recovery command inside a spanning row, and the region survives to say it. A refused read is kept distinct: it reports that the records could not be READ, never that none exist.
+
+**The disk allowance stops printing the absent-value sentinel.** `Portals.HostSpace` was rendered as a plain field while the two tally columns beside it were template columns, so a portal holding `-1` painted a literal `-1` in Disk Space and an em dash in Users and Pages, on the same row. Legacy treated all three identically and gave none of them any treatment — `Website/admin/Portal/portals.ascx:L44-L46` declares Users, Pages and DiskSpace as bare `dnn:textcolumn` data fields, so the legacy grid printed `-1` in every one. The dash marker was therefore a divergence already taken for two of the three; the third now agrees with them rather than introducing a new idea. Ordering is unaffected, because the server still sorts on the stored value.
+
+**The expiry cell on that row converged too, and the argument against converging it is recorded here because it is the argument that lost.** The case for leaving an absent expiry as an empty cell was real: dates across the application are rendered by one shared pipe whose absent-value rendering is the empty string, and that is also the legacy behaviour — `Portals.ascx.vb:L250-L260` seeded its result with the empty string and formatted the date only when it was not the legacy absent-date marker — so converging one cell risked either changing every date cell or making this one disagree with all of them. What settled it against that reading is the sentinel work recorded above: once the listing recognises `Date.MinValue` as absence rather than printing a real-looking date in the past, this column has to say *something* for two states at once, and “nothing” cannot distinguish a portal that never expires from a cell that failed to render. The shared marker can, because it carries a screen-reader description an empty cell has no way to carry. **So this column renders both an absent expiry and the legacy marker date through the shared absent-value convention, alongside the two tallies and the disk allowance — one row, one idiom, four columns.** The divergence is scoped to this column and does not travel: the shared date pipe still renders every other absent date as empty, which is why an absent membership date on the account screens remains an empty cell (see the membership note below) and is legacy parity there. The negative-fee qualifier beside them is a third treatment and remains one on purpose: a negative fee is a real stored value, not an absent one.
+
+## Two refusals that were reported to the wrong tenant, and a toast that deliberately does not expire
+
+**The permission gate read the policy and ignored the portal.** `/portals/:portalId/settings` and `/portals/:portalId/aliases` are guarded, but the guard judged only whether a caller administers *a* portal — never whether it administers *the one the address names*. Measured as a tenant administrator of portal −1: the server answers `/portals/-1` and `/portals/-1/aliases` with 200 and answers `/portals/2`, `/portals/2/aliases` and `/portals/0` with 403 `auth.not_permitted`, which is `PortalAdministrationEvaluator` comparing the token's portal against the route's and short-circuiting only for a host account. The guard now mirrors that rule exactly, including the part that is easy to get wrong: **−1 is a real portal identifier, not an absent one**, because `Portals.PortalID` is seeded `IDENTITY(-1,1)`, so the comparison is by value and never by truthiness. The route's portal is resolved as an OPTIONAL scope, deliberately separate from the mandatory-scope mechanism beside it — declaring it mandatory was tried and refused every account, module, role and settings screen carrying the same policy name with no portal in its address, and that regression is now pinned by a test.
+
+**A malformed address is not an unauthorised one.** When the route names something that is not an integer, the guard claims nothing rather than refusing: the address is unusable, and the screen behind it says so.
+
+**Warning and error notifications do not self-dismiss, and this is a design decision rather than an omission.** A review recorded an unbounded toast lifetime as a defect. The surface retires the two severities that ask nothing of the reader and exempts the two that do, on three grounds: they report something that did NOT happen, they frequently carry the support reference an operator has to quote to get help, and removing them on a timer destroys the only record of a failure. Individual notifications may override it — the permission guard's refusal does, because navigation was blocked and the screen the caller landed on says why. The divergence is recorded here rather than resolved by making failures disappear.
+
+## The role editor stops committing on a keystroke, and the mechanism it restores is structural rather than scripted
+
+**Enter in a monetary box no longer saves the role, and that returns the legacy outcome rather than inventing a new one.** The legacy editor's four commands — `cmdUpdate`, `cmdCancel`, `cmdDelete` and `cmdManage` at `Website/admin/Security/editroles.ascx` L179-L188 — are every one of them an `asp:LinkButton`, which renders as an anchor calling `__doPostBack` and is not a submit control. The same markup declares eight `asp:TextBox` controls. HTML's implicit-submission rule is then decisive: a form holding no submit button submits on Enter only when it has exactly ONE field that blocks implicit submission, and otherwise does nothing at all. So in the legacy editor a keystroke in a fee box committed nothing, and even had the surrounding page contributed a submit control, the button it activated would have been the first in tree order somewhere in the skin rather than this editor's Update.
+
+The port renders a real `button[type="submit"]`. Enter in any of the six fee, period and trial boxes therefore dispatched a genuine save — and that save is the one this console deliberately preserves as legacy-faithful even though it OVERWRITES stored paid-membership values the form does not render (`EditRoles.ascx.vb` L212-L231). An accidental keystroke destroyed values the operator was never shown and never chose to change. **The destructive save is unchanged, because it is parity; what changed is that a keystroke can no longer trigger it.**
+
+**The suppression is opt-in by attribute, not applied to every form.** Enter-to-submit is the expected and wanted behaviour on a single-purpose form such as signing in, so a selector matching every reactive form would have altered screens no finding was raised against. `appBlockImplicitSubmit` is applied where the hazard was measured. Three things are deliberately NOT suppressed: Enter on a button, which the browser turns into a click, so both commands stay fully keyboard-operable; Enter in a textarea, which inserts a newline; and the Enter that ends a composition session, because swallowing it would stop an operator committing the characters an input method is in the middle of composing.
+
+Measured in the browser rather than reasoned about: six genuine key presses across every value box produced no network request and not even a `submit` event, while `defaultPrevented` was observed flipping from false at document-capture to true at document-bubble for each `input[type="text"]` and staying false for the textarea. The Update command was then reached by keyboard alone in twenty-two Tab presses and saved correctly.
+
+## The role listing distinguishes a membership in force from one nobody judged, and three states now read differently
+
+**A membership that has not started yet and one that has lapsed no longer look alike.** Both previously shared a single class, so a term merely scheduled for the future was painted in the danger colour at bold weight exactly like one that had expired — two adverse-looking rows, with colour carrying nothing that told them apart. Each state now has its own treatment: a lapsed term takes the danger colour, a scheduled one takes the brand colour because it is scheduled rather than wrong, and a term in force reads quietly in the muted colour. Every state also states its own word, so nothing here depends on colour being perceived.
+
+**Neither role-assignment screen in the legacy application compared a bound against the clock**, so these qualifiers are a fully authored net addition rather than a port. The precedent is the portal listing, which qualifies a lapsed hosting term the same way.
+
+**A qualifier never appears beside a cell the date renders as empty, and that constraint outranks the new word.** `Null.vb` spells an unset date as `Date.MinValue`, so both the emptiness and the qualification are decided by the same parser precisely so an unset bound cannot acquire a word. A membership with no expiry bound therefore keeps its empty cell and says nothing, even though it is in force by definition.
+
+**The separator between a date and its qualifier is a non-breaking space, and the character is the fix rather than a detail.** Angular compiles templates with whitespace preservation disabled, and that pass deletes a whitespace-only text node standing between two elements — so a qualifier written on its own line joined the value it qualified with no separator at all, and the accessibility tree announced one run-together token. An ordinary space repairs the DOM but not always the accessibility tree: where the framework's anchor comments leave the separator an isolated whitespace-only text node, the browser builds no text box for it, it never becomes a text node in the accessibility tree, and the accessible name concatenates regardless. That was measured through the DevTools Accessibility domain in two independent browsers — one cell whose DOM read `9/20/2027 Active` computed an accessible name of `9/20/2027Active`. U+00A0 is not collapsible, always produces a text box, and therefore always reaches the tree. The same character is used on the two listing screens that pair a figure with a clipped qualifier.
+
+## The role editor discloses a stored frequency code it cannot represent, and the disclosure is gated on representability rather than on which boxes stayed empty
+
+**The notice above the paid-membership boxes no longer opens by asserting an absence.** It previously began "This role has no trial" and then went on to list the very trial values it had just denied existed — one sentence denying in its first clause what it reported in its second. The premise was drawn from the legacy bind gate, which is a narrower fact than the absence it was phrased as: `EditRoles.ascx.vb` L146 fills the billing boxes only when the service fee formats to something other than `0.00`, and the trial boxes only for a trial frequency among the six the select offers. A role can therefore hold trial values and still fail that gate, which is exactly the state the notice was misdescribing. Every lead now names the CONDITION the role fails rather than making a claim about what the record holds.
+
+**A stored code the console cannot set is now always disclosed, together with the value that will replace it.** `coerceFrequency` maps any code outside the six the select offers onto `N`, and the outgoing write initialises the frequency to `N` as well (`EditRoles.ascx.vb` L214, L224) — so a role storing `Q` has that `Q` replaced the moment this form is saved. The first attempt at this notice tied the disclosure to the withheld-boxes condition, and runtime measurement showed that to be the wrong hinge entirely: the rewrite happens because the SELECT cannot represent the code, which is true whether or not the fee boxes were populated. A role priced at 249.50 storing `Q` therefore had its boxes filled, failed the old gate, and received no disclosure whatsoever of a loss that was certain; a second role disclosed its unrepresentable trial code while silently dropping its equally doomed billing code from the same sentence. The gate is now representability alone, the notice renders when there is either a withheld value or an unrepresentable code, and every such code is named individually rather than counted — because the operator's only route to recovering the value is knowing what it was.
+
+**The warning reveals itself rather than waiting to be found.** It lives in the advanced section because it describes those boxes, but the Update command sits outside that disclosure and is operable without expanding it, so a collapsed section let the destructive save run with the warning never once on screen. The section now opens itself whenever there is a notice to read, and closes as before when there is not. The notice also carries a polite live region, because it arrives only after the record lands.
+
+
+## The sign-in screen states what it knows about an account, and one mistyped address stops claiming to be a tenant
+
+**An unknown leading path segment is no longer taken for a tenant address.** The prefix deriver accepted any first segment it did not recognise, so a mistyped one-segment address was claimed as a tenant, the router's base href became that typo, the wildcard route was never reached, and every subsequent request went out beneath the invented prefix — a sign-in POST included, which returned 401 with no route back. The segment is now judged against what the server could actually have stored: two reserved sets held separately on purpose, `RESERVED_TOP_LEVEL_SEGMENTS` (asserted by `tenant-path.spec.ts` to be exactly the route table's own top-level paths, which is what keeps a newly added route from being read as a tenant) and `RESERVED_PLATFORM_SEGMENTS` for the paths the server owns. Anything still ambiguous is settled by the server rather than guessed: `TenancyController` exposes an anonymous `GET api/v1/tenancy/path-prefix` answered from the same alias reader the request pipeline resolves tenants with. An unknown address therefore reaches the not-found view **with the address intact**, for anonymous callers too.
+
+**A locked account is told that it is locked.** The refusal previously handed back the generic wrong-credential problem, so the one state a caller can do nothing about was indistinguishable from the one they can. `AuthService` now carries a distinct `auth.locked_out` code (listed among the disclosable authentication codes in `ApiResults`) and the sign-in screen renders the legacy advisory against it. **This is a deliberate disclosure decision and it departs from the legacy screen in one respect:** the legacy advisory ended by pointing the operator at a "Password Reminder" affordance, and password retrieval is deliberately absent from this migration (recorded earlier in these notes), so that pointer would name a control that does not exist. The advisory states the lockout and the wait; it does not offer a retrieval route.
+
+**The legacy lock-out sentence now has a home rather than being dead copy.** `UserLockedOut.Text` had been carried across into a constant that nothing rendered. It is bound on the account administration screen, positioned **before** the Unlock command so the reader learns the state before meeting the remedy, rather than on the sign-in screen where the legacy string sat — because the administrator is the party who can act on it, and the sign-in screen already carries its own advisory above.
+
+**The sign-in screen offers a recovery pointer, because the absence it stands in for is deliberate.** With password retrieval removed there was no sentence anywhere telling an operator who cannot sign in what to do next. One is now rendered on the pristine screen. It points at an administrator rather than at a self-service reset, which is the honest instruction given what this migration ships.
+
+**The unapproved-account message is stated once, in one live region, and it names the site rather than a number.** It had been rendered twice through two different surfaces, which a screen reader announced twice, and it identified the portal by nothing at all. It now renders exactly once and says "this site" — the wording chosen because the sign-in screen is reached through a tenant's own address, so the site is already established by context and an interpolated portal name or id would be either redundant or, on a mistyped address, actively misleading.
+
+**Both remediation landings explain themselves, and one of them is now enforced.** A refusal that means "complete something first" was being cancelled client-side before any request left, so the server's actionable `auth.remediation_required` was replaced by a permanent-sounding permission message. The refusal now reaches the screen. Enforcement was verified at BOTH layers rather than one, because a client-side-only remediation gate is a suggestion.
+
+**The unsaved-changes guard covers the two routes that previously went around it.** It fired on links, Cancel and browser Back, but not on Logout and not on a navigation issued while a save was in flight. Both are covered now. This closes the `unsavedChangesGuard` row of the compliance matrix.
+
+
+## The account screens stop disclosing an internal identifier to the account's own owner, and eight narrower corrections
+
+**A member's own profile heading no longer contains the record identifier.** The legacy screens withheld more than this: `ManageUsers.ascx.vb` L259-L260 with `UserModuleBase` L350-L371 suppressed the ENTIRE title row when a member was looking at their own account. This migration keeps the `h1`, because a landmark heading is required of every screen here and removing it would breach that, and drops only the identifier from it. That is a deliberate partial adoption of the legacy behaviour, chosen so the two requirements can both hold, and the same withholding is applied on the account form for the same reason.
+
+**A search term made of invisible characters is no longer treated as a term.** Text pasted from a spreadsheet or a web page routinely carries soft hyphens, zero-width spaces, bidirectional controls, word joiners and byte-order marks; a term of three zero-width spaces looked empty, returned nothing, and explained nothing. Those code points are now stripped before the term is judged, and a term that reduces to nothing is treated as blank. **This narrows the search input's previously verbatim emission contract**, which is the divergence: what the caller typed is no longer what is emitted, byte for byte, when what they typed cannot be seen.
+
+**A filter that carries no weight is refused by the server rather than silently widened.** A whitespace-only or emoji-only term reached the query layer, contributed nothing to it, and returned every record while the caption asserted a filter was in force — a match-all disguised as a search. The read side now fails closed: a filter that reduces to nothing is refused rather than dropped, so no caller is ever shown an unfiltered set under a filtered heading.
+
+**A required profile property that is hidden is still reachable by the person required to fill it.** Hidden properties are correctly withheld on the administrative path (that withholding is legacy parity and is listed among the behaviours deliberately preserved). On the owner's own path the same withholding produced a deadlock the legacy application shipped: a property both required and invisible cannot be satisfied. The owner's view therefore withholds hidden properties **except** where one is required and unfilled, which is the narrowest exception that removes the deadlock without widening the disclosure.
+
+**The searchable-property list and the rendered column names were reconciled on the read side.** A search by a property the listing displayed returned nothing, because the two sides named the same property differently. The reconciliation is on the read path only; no stored name changed.
+
+**The membership display-name format is validated, the redirect page references are chosen from real pages, and absent dates read as absences.** The format field accepted a string containing no token at all, which would have produced an empty display name for every account; it now requires at least one. The redirect-after fields were free text and are now selects offering the portal's real pages with an explicit "No redirect" entry first, soft-deleted pages excluded and no sentinel value ever rendered. **One related observation is recorded here as out of scope rather than as a divergence:** an absent membership date renders as an empty cell, and that IS legacy parity — `DateEditControl.StringValue` L141-L147 returns the null string and `RenderViewMode` L225-L228 writes an empty span — so a change made there was reverted in full.
+
+**Two smaller corrections.** A silent no-op on an unedited account form now says so, and a value whose stored padding is significant is rendered so that the padding is visible without leaking into the accessible name of the command beside it.
+
+
+## The shared components: eleven corrections to keyboard reach and interaction state, and three reports that measurement refuted
+
+**The listing's horizontal scroller is reachable by keyboard, but only when it actually scrolls.** It hid 377, 322 and 114 pixels at 320, 375 and 768 with `tabindex="-1"`, no role and no accessible name, so a keyboard user could not scroll it at all. It is now a named `region` and a focus stop — and **conditionally**, because at 1280 nothing is hidden and a permanent stop would add an unusable one to every listing at every width to serve the narrow ones. The condition is a measurement, taken and re-taken as the viewport changes.
+
+**The grid's row identity is dataset-relative rather than page-relative.** `aria-rowcount` and `aria-rowindex` described the page, so a reader on page two was told it was reading rows 1 to 7 of 7. They now describe the dataset. **This required an eleventh public input, `rowOffset`, on a component whose input contract was otherwise settled** — that is the divergence, and it is recorded because the alternative was to have the component infer an offset it cannot know.
+
+**Sort changes are announced, in the region that already announces the result count.** The order clause was folded into that single region rather than given a second one, because two live regions announcing after one gesture is worse than none.
+
+**A long run of row commands can be passed over.** A skip affordance appears once the body holds more than `ROW_SKIP_THRESHOLD = 6` focus stops, and a selectable row counts as a stop even when it holds no command — 20 selectable rows cost 20 presses either way. That threshold, and the decision to count rows rather than only their commands, are the judgement calls here.
+
+**The pager's disabled buttons are announced rather than removed from the tab order.** They carried the native `disabled` attribute, which took them out of the tab order entirely and made the machinery that repaired focus after a page change necessary; they now carry `aria-disabled` and refuse activation in the handler, and that repair machinery is gone. **A dimmed treatment was deliberately NOT added**: the measured contrast is 4.732:1 and three non-colour cues already distinguish the state.
+
+**The help toggle follows the control it describes.** It preceded it, so every help-bearing field cost a press before the field itself. The legacy control offers no position to preserve — `Website/controls/labelcontrol.ascx` L3-L4 puts `tabindex="-1"` on both the help button and its image, so it was not in the tab order at all — which is why this is a decision rather than a restoration.
+
+**Each letter strip is one tab stop with arrow-key movement.** Twenty-seven buttons meant twenty-seven stops. The strip is now a roving-tabindex composite and its container role changed from `group` to `toolbar`, which is strictly stronger for the same "grouped and named" invariant; the missing accessible names were added on the portals strip. One narrowing inside the directive is load-bearing rather than defensive: a bare attribute binds the **empty string**, not `undefined`, so the selector input is transformed rather than defaulted — without that transform both live strips crashed on first render, a regression worse than the defect being fixed.
+
+**The confirmation dialog names the record and no longer covers the first row.** It is top-anchored with its height cap reduced by the same offset, so it fits at 320 as well; the role listing splits into two dialogs because one message could not truthfully name either record.
+
+**The dialog is dismissed by navigation.** A browser Back left an orphaned `:modal` dialog with focus trapped inside it. Dismissal is now driven from `NavigationStart`, with the router injected optionally so the component still stands alone in a fixture.
+
+**Two interaction states were corrected and one exclusion was chosen.** The destructive command keeps its colour on hover — the shared hover rule is excluded from it with `:not(--danger)` rather than un-gated, because un-gating would have changed every other command's hover as well — and `:active` is made perceptible by exempting the active state's transition, inside `prefers-reduced-motion: no-preference` and for all six compounds rather than buttons alone. Sidebar links were given a flex floor to reach the shared target size.
+
+**Three reported defects were refuted by measurement and are recorded so they are not re-opened.** The missing scoped hover rules exist and all three change colour under an emulated fine pointer (one genuine sub-part was fixed: a gated letter-strip hover now also declares its background). Both letter strips measure 54 of 54 entries at exactly 44x44. The checkbox and radio targets meet the standard, proven by activation — a real click 146.42 pixels from the box flipped the control and moved focus. Only one of the three needed any code at all.
+
+
+## The responsive layout: the collapsed rail gives its track back, the content has a measure, and a pinned header required a scroll reservation
+
+**Collapsing the sidebar reclaims the rail.** It reclaimed exactly zero pixels, because the collapsed rule set `gap: 0` and nothing else while the definite rail width stayed in force — at 768 that was an empty 185-pixel column taking 24% of the viewport and starving the content to 568. The collapsed state now takes `inline-size: max-content` at the side-by-side step, so the honest width is the one its remaining content asks for rather than a second number chosen here. It wins on specificity-matching source order alone, with no compound selector and no importance flag. Measured: 185 to 125.16, reclaiming 59.84 at 768, 1024 and 1280; at 1920 the content track grows by the same amount while the capped column stays put and re-centres. Below the step the rule is correctly inert and collapsing reclaims height instead.
+
+**An empty listing is readable on a phone.** The table is floored at `--table-min-inline-size` so that columns scroll rather than crush, which is right for rows of data — but a message row has no columns and inherited the floor anyway, so the stand-in panel was laid out 608 pixels wide inside a 271-pixel scrollport and its centred heading rendered as "Nothin". All three message states are now wrapped in a viewport that is pinned to the scrollport and given exactly the visible width, and **that width is `clientWidth` minus the container's computed inline padding**: `clientWidth` includes that padding while the wrapper begins after it, so the raw value overhung the visible box by exactly four pixels at each edge. The width is imposed only while the container is actually clipping. This is a deliberate departure from the table's own floor, for the one row that has no columns to protect.
+
+**The page header is pinned, at the side-by-side step and no narrower.** Nothing in this application was sticky, so on documents measured at 1487 pixels against a 900-pixel viewport the product identity, the primary navigation disclosure and the sign-out control all scrolled away and stayed away. The gate is a measurement rather than a preference: the band is 69 pixels at 1280 but 177 at 375, where its account cluster wraps, and pinning 177 pixels to the top of an 800-pixel viewport would consume 22% of it. **Two sibling improvements were considered and DECLINED on measured evidence, which is recorded here so they are not attempted blindly.** A sticky table head is a no-op: because the listing container declares `overflow-x: auto`, `overflow-y` computes as `auto` too, making that container the nearest scrollport, and a live experiment showed a sticky head resolving against it with a constant offset while the window scrolled — it could only be made to work by removing the horizontal scroll container, which would reintroduce the unreachable-scroller defect above. A sticky action bar would be overlaid by the fixed transient-message surface, which is exactly the collision the message-space reservation was added to prevent.
+
+**The content column has a measure.** It ran full-bleed, so at 1920 a single-line text input stretched to 1498 pixels and a two-character value sat in a 167.8-pixel column: the wider the display, the further a label sat from its own control. The column is capped at the widest breakpoint step and centred. It bites only above that step — at 1280 and below the track is already narrower — so every viewport up to 1280 is unchanged, proven by removing the cap at 1280 and measuring a difference of zero.
+
+**Pinning the header made the browser scroll targets underneath it, and closing that took a new token.** This is the clearest instance in this migration of a fix creating a defect in a path it never touched. Chrome subtracts nothing for a sticky band when it scrolls an element into view, so activating "Skip to main content" — the first focusable element on every page, and the one affordance whose whole purpose is to deposit a keyboard or screen-reader user at the start of the content — set the scroll offset to the main region's own document offset and left 69 pixels of it behind the band, concealing the page title and all three page actions completely, three of them focusable links. The document now reserves that room through `scroll-padding-block-start` on `html`, gated to the same step. **Three decisions inside it are worth stating.** It is set on `html` rather than as a per-target margin because the scrolling element IS `html`, so one declaration covers the skip link's focus call, in-page fragments and the existing `scrollIntoView` call sites at once. Its value is the band's **measured** height, published from a `ResizeObserver` onto the document element and backed by a `--layout-header-block-size` token that holds until the first measurement lands — a literal would under-reserve the moment that account cluster wraps and would reopen the defect silently. And a token-sized gap is added on top, because with the bare height the target lands flush and the focus ring's halo is back under the band even though the box is clear. Two paths into the same risk behaved oppositely and only measurement separated them: focus scrolling centres its target and was clean across 60 real Tab presses, while fragment scrolling top-aligns and was not.
+
+**One documentation correction.** The collapsed-rail rule ships in the sidebar component's own scoped styles, inlined into the main application bundle, rather than in the global stylesheet where the header and content-column rules live. Anyone verifying it in the served assets should look there.
+
+
+## One build-budget threshold was raised, and the error ceiling was not
+
+**The component-style warning budget moved from 4kB to 5kB.** A stylesheet grew past the warning threshold while a screen's disclosure and validation states were being corrected. It was first trimmed — from 4523 to 4107 bytes, by removing genuine duplication rather than comments — and the threshold was then raised to 5kB because the remaining size is legitimate. **The error ceiling was deliberately left at 8kB**, so the budget still fails a build that grows without bound; only the advisory point moved.
+
+
+## The time-zone offset is bounded by validators rather than by HTML attributes, on purpose
+
+**The control is a text box with `inputmode="numeric"`, not `type="number"`, so it carries no `min` or `max` attribute.** A re-measurement of the screen noted their absence, and it is a deliberate shape rather than an omission. The stored unit is minutes and the legacy screen offered a select filled from `TimeZones.xml`; a numeric spinner would invite arrow-key stepping through 1500 single-minute values to reach a neighbouring zone, and `type="number"` additionally varies in what it accepts and how it reports an unparseable entry. The box therefore accepts a whole number of minutes, states the unit and an example in a programmatically associated hint, and rejects out-of-range entries through validators.
+
+**The bound is enforced on both layers, and the numbers are the same on each.** The client rejects anything outside −720 to 780 with a message naming both ends and their UTC equivalents; `UpdatePortalRequestValidator` holds `TimeZoneOffsetMinimum = -720` and `TimeZoneOffsetMaximum = 780` with its own out-of-range message, so a caller that bypasses the screen entirely is refused with a 400 rather than storing an offset no zone occupies. The consequence worth stating for anyone auditing from the markup alone: the range is **not** discoverable from the element's attributes, and reading them will suggest the field is unbounded when it is not.

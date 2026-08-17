@@ -13,6 +13,7 @@ import {
   decodeInteger,
   decodeNumber,
   decodeObject,
+  decodeNumericCode,
   decodePageStructure,
   decodeResponse,
   decodeString,
@@ -331,6 +332,36 @@ describe('decode.util', () => {
       expect(violationFrom(decode, 7).expected).toBe('one of 0, 1, 2');
       expect(violationFrom(decode, '0').received).toBe('a string');
       expect(violationFrom(decode, 1.5).expected).toBe('an integer');
+    });
+  });
+
+  describe('decodeNumericCode', () => {
+    // ⚠ THE TOLERANT COUNTERPART OF `oneOfNumber`, AND THE DIFFERENCE BETWEEN THE TWO IS THE FIX FOR THE
+    // WORST DEFECT THIS APPLICATION HELD. Every legacy discriminator column is a plain `int` with no check
+    // constraint, so a code this console publishes no wording for is legitimate stored data. Refusing one
+    // refused the record, and - because a record is decoded inside its page - refused the page: one row
+    // holding `TabModules.Visibility = 9` turned a successful HTTP 200 carrying every module into an empty
+    // listing announcing "No records found.", silently.
+    it('admits a code outside the published set, keeping the integer exactly as it arrived', () => {
+      const decode = decodeNumericCode([0, 1, 2]);
+
+      expect(decode(9, 'v')).withContext('kept').toBe(9);
+      expect(decode(-1, 'v')).withContext('a negative code is a code').toBe(-1);
+      expect(decode(0, 'v')).withContext('and the published codes still decode').toBe(0);
+    });
+
+    it('still refuses a value that is not an integer, because the SET is open and the TYPE is not', () => {
+      const decode = decodeNumericCode([0, 1, 2]);
+
+      expect(violationFrom(decode, '0').received).toBe('a string');
+      expect(violationFrom(decode, 1.5).expected).toBe('an integer');
+      expect(violationFrom(decode, null).received).toBe('null');
+    });
+
+    it('refuses to be constructed with no published code at all', () => {
+      // A call site with no wording for its column is a mistake worth failing at construction, rather than
+      // one that tolerates everything for the life of the application.
+      expect(() => decodeNumericCode([])).toThrowError(TypeError);
     });
   });
 

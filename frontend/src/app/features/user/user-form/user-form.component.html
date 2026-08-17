@@ -2,7 +2,7 @@
   The title is mode-dependent, which the measured resources prove: `AddUser.Text` while creating, and
   the `UserTitle.Text` format 'Edit User - {0} (Id: {1})' once a record has loaded.
 -->
-<app-page-header [title]="pageTitle()">
+<app-page-header [title]="pageTitle()" [subtitle]="pageSubtitle">
   <!--
     ⚠ U-M10 — WITHHELD ONCE THE ACCOUNT IS GONE, AND `isEditMode()` ALONE WAS NOT ENOUGH TO DO THAT.
     That projection answers "does the route name an account", which stays true for an account that has
@@ -18,6 +18,13 @@
       [queryParams]="{ userId: resolvedUserId() }"
       >Manage Roles for this User</a
     >
+  } @else if (userMissing() || addressUnreadable()) {
+    <!--
+      THE ONE WAY OUT, in the slot the three withheld actions vacated. Every detail screen offers exactly
+      this, in exactly this place, once its record has gone: previously three of the four left a reader
+      with a sentence and no route out at all.
+    -->
+    <a class="page-action" routerLink="/users">{{ recoveryLabel }}</a>
   }
 </app-page-header>
 
@@ -30,6 +37,43 @@
 }
 
 <app-error-banner [problem]="problem()" />
+
+<!--
+  ⚠ THE RECOVERY SURFACE FOR A FAILED ACCOUNT READ, WHICH DID NOT EXIST. A read that failed for anything
+  other than `403`/`404` left this screen showing the PREVIOUS read's values with Update, Delete,
+  UnAuthorize and Force Password Change all live, and offered no way to re-read and no way forward - the
+  shared banner named the fault and stopped there. The wording distinguishes "could not be read" from
+  "could not be RE-read", because showing fields that may be out of date is a different warning from
+  showing none.
+-->
+@if (detailUnread()) {
+  <div class="user-form__unconfirmed" role="status">
+    <p class="user-form__unconfirmed-message">
+      {{ showingUnconfirmedRecord() ? detailUnconfirmedMessage : detailUnreadMessage }}
+    </p>
+
+    <div class="user-form__unconfirmed-actions">
+      <button type="button" class="user-form__recovery" (click)="onRetryDetail()">
+        {{ retryLabel }}
+      </button>
+
+      <!--
+        PROCEEDING WITHOUT A RE-READ IS OFFERED ONLY WHEN THERE IS SOMETHING TO PROCEED WITH.
+        When a record was read earlier and is still on screen the operator can see real values and is
+        entitled to decide. When the FIRST read failed there is nothing on screen at all, so dismissing
+        would hand over a blank editable form with a live Update - see onDismissDetailFailure. The exit in
+        that case is the listing, not the form.
+      -->
+      @if (showingUnconfirmedRecord()) {
+        <button type="button" class="user-form__recovery" (click)="onDismissDetailFailure()">
+          {{ dismissLabel }}
+        </button>
+      } @else {
+        <a class="user-form__recovery" [routerLink]="listRoute">{{ leaveLabel }}</a>
+      }
+    </div>
+  </div>
+}
 
 <!-- THE ONE-TIME CREDENTIAL HAND-OVER. -->
 @if (revealedCredential(); as credential) {
@@ -46,7 +90,10 @@
 }
 
 @if (userMissing() || addressUnreadable()) {
-  <p>This account doesn't exist</p>
+  <!--
+    Stated by the banner above, which is the application's one assertive owner for a refusal, and
+    recovered through the header. Nothing is rendered here, so the state is one statement rather than two.
+  -->
 } @else {
   <form class="user-form" [formGroup]="form" (ngSubmit)="onSubmit()">
     @if (formDisabled()) {
@@ -139,22 +186,32 @@
               an addition; `nickname` is the only one the browser does not act on, and it raised a
               developer-tools issue on every load while autofilling nothing.
             -->
-            <app-form-field
-              label="Display Name:"
-              for="user-form-display-name"
-              help="Provide a Display Name"
-              [required]="true"
-              [error]="messageFor('displayName')"
-            >
-              <input
-                id="user-form-display-name"
-                type="text"
-                [attr.aria-required]="true"
-                [attr.aria-invalid]="messageFor('displayName') ? 'true' : null"
-                [attr.maxlength]="maxLengths.displayName"
-                formControlName="displayName"
-              />
-            </app-form-field>
+<!--
+              WITHHELD ENTIRELY while creating an account in a tenant that composes display names itself,
+              and presented for READING ONLY while editing one. Both arms are the legacy rule; see
+              `showDisplayNameField` and `displayNameReadOnly` for the measured source and why the two arms
+              differ.
+            -->
+            @if (showDisplayNameField()) {
+              <app-form-field
+                label="Display Name:"
+                for="user-form-display-name"
+                [help]="displayNameHelp()"
+                [required]="!displayNameReadOnly()"
+                [error]="messageFor('displayName')"
+              >
+                <input
+                  id="user-form-display-name"
+                  type="text"
+                  [attr.aria-required]="displayNameReadOnly() ? null : true"
+                  [attr.aria-invalid]="messageFor('displayName') ? 'true' : null"
+                  [attr.aria-readonly]="displayNameReadOnly() ? 'true' : null"
+                  [attr.maxlength]="maxLengths.displayName"
+                  [readOnly]="displayNameReadOnly()"
+                  formControlName="displayName"
+                />
+              </app-form-field>
+            }
 
             <!--
               The address is typed as `email` so the platform offers the right keyboard, while the
@@ -396,7 +453,7 @@
                 <div class="user-form__membership-row">
                   <dt class="user-form__membership-term">Created Date:</dt>
                   <dd class="user-form__membership-value">
-                    {{ createdDate() | dateDisplay }}
+                    {{ createdDate() | dateDisplay: 'datetime' }}
                     <p>Date this user was created</p>
                   </dd>
                 </div>
@@ -404,7 +461,7 @@
                 <div class="user-form__membership-row">
                   <dt class="user-form__membership-term">Last Activity Date:</dt>
                   <dd class="user-form__membership-value">
-                    {{ lastActivityDate() | dateDisplay }}
+                    {{ lastActivityDate() | dateDisplay: 'datetime' }}
                     <p>Date of last activity by this user</p>
                   </dd>
                 </div>
@@ -412,7 +469,7 @@
                 <div class="user-form__membership-row">
                   <dt class="user-form__membership-term">Last Login Date:</dt>
                   <dd class="user-form__membership-value">
-                    {{ lastLoginDate() | dateDisplay }}
+                    {{ lastLoginDate() | dateDisplay: 'datetime' }}
                     <p>Date this user last logged in</p>
                   </dd>
                 </div>
@@ -420,7 +477,7 @@
                 <div class="user-form__membership-row">
                   <dt class="user-form__membership-term">Last Password Change:</dt>
                   <dd class="user-form__membership-value">
-                    {{ lastPasswordChangeDate() | dateDisplay }}
+                    {{ lastPasswordChangeDate() | dateDisplay: 'datetime' }}
                     <p>Date the user last changed his/her password</p>
                   </dd>
                 </div>
@@ -428,7 +485,7 @@
                 <div class="user-form__membership-row">
                   <dt class="user-form__membership-term">Last Lock-out Date:</dt>
                   <dd class="user-form__membership-value">
-                    {{ lastLockoutDate() | dateDisplay }}
+                    {{ lastLockoutDate() | dateDisplay: 'datetime' }}
                     <p>Date this user was last locked out, due to repetitive failed logins</p>
                   </dd>
                 </div>
@@ -488,6 +545,21 @@
                   </button>
                 }
                 @if (canUnlock()) {
+                  <!--
+                    ⚠ THE LEGACY SENTENCE, BOUND AT LAST. `UserLockedOut.Text` was carried across with its
+                    siblings and then never rendered anywhere - it appeared exactly once in the whole source
+                    tree, as an export nothing imported, and still shipped in the bundle. Dead copy is worse
+                    than absent copy: it cannot be exercised by a specification, so it rots unnoticed while
+                    reading like a delivered feature.
+
+                    Its home is here rather than on the sign-in screen. This is the ADMINISTRATOR's statement
+                    of the account's condition, alongside `SUPER_USER_MESSAGE`, `INVALID_USER_MESSAGE` and
+                    `NOT_AUTHORIZED_MESSAGE` from the same resource family; the advisory the locked-out PERSON
+                    reads is produced by the server on sign-in, where it can state the wait this installation
+                    actually applies. Rendered next to the command that resolves it, and only while there is
+                    something to resolve, so the statement and the remedy are read together.
+                  -->
+                  <p class="user-form__locked-out" role="status">{{ lockedOutMessage }}</p>
                   <button type="button" [disabled]="formDisabled()" (click)="onUnlock()">
                     Unlock Account
                   </button>
@@ -516,13 +588,23 @@
 
     <!-- THE ACTION BAR, from `pnlUpdate` at `User.ascx` L71-L79. -->
     <div class="user-form__actions">
-      <button type="submit" [disabled]="!canSubmit()"
+      <button class="form-action--primary" type="submit" [disabled]="!canSubmit()"
           [attr.aria-busy]="loading() ? 'true' : null">
         @if (isCreateMode()) {
           Create User
         } @else {
           Update
         }
+      </button>
+
+      <!--
+        THE SAFE EXIT. Added rather than ported: the legacy panel offered remove and save and nothing else,
+        while the portal, signup and role editors all offered a cancel, so this screen was the only one of the
+        four an operator could not back out of. `type="button"` keeps it from submitting, so no validator runs
+        and an invalid form cannot disable the way out.
+      -->
+      <button type="button" [disabled]="formDisabled()" (click)="onCancel()">
+        {{ cancelLabel }}
       </button>
 
       <!--

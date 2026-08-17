@@ -68,6 +68,7 @@ function listRow(overrides: Partial<ModuleListItem> = {}): ModuleListItem {
     moduleName: 'Announcements',
     description: '',
     version: '01.00.00',
+    isAdmin: false,
     moduleOrder: 1,
     allTabs: false,
     visibility: ModuleVisibility.Maximized,
@@ -167,8 +168,11 @@ describe('SessionTeardownService', () => {
     );
 
     moduleStore.loadTabs(7);
+
+    // MIGRATION: THE PAGE HIERARCHY NOW ARRIVES AS A BOUNDED PAGE. The listing used to answer every page of
+    // a tenant in one response; it answers `items` plus populated `meta` now, and the reader walks the pages.
     httpMock.expectOne((request) => request.url === `/api/v1/portals/7/tabs`).flush({
-      data: [
+      items: [
         {
           tabId: 4,
           tabName: 'Home',
@@ -186,6 +190,7 @@ describe('SessionTeardownService', () => {
           iconFile: null,
         },
       ],
+      meta: { totalCount: 1, pageIndex: 0, pageSize: 100, totalPages: 1 },
     });
 
     expect(moduleStore.modules().length)

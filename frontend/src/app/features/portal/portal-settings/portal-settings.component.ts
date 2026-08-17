@@ -14,6 +14,8 @@ import {
   viewChildren,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { ListReturnStore } from '../../../core/state/list-return.store';
+import { PORTAL_LIST_ROUTE } from '../../../core/config/app-routes.config';
 import type { Subscription } from 'rxjs';
 import { finalize } from 'rxjs/operators';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
@@ -22,16 +24,26 @@ import { Router, RouterLink } from '@angular/router';
 import { BannerAdvertisingMode, UserRegistrationMode } from '../../../core/models/portal.model';
 import { NotificationService } from '../../../core/services/notification.service';
 import { TabService } from '../../../core/services/tab.service';
+import {
+  NO_PAGE_SELECTED,
+  NO_PAGE_SELECTED_LABEL,
+  buildPageChoices,
+} from '../../../core/utils/page-options.util';
+
+import type { PageOption } from '../../../core/utils/page-options.util';
 import { AuthStore } from '../../../core/state/auth.store';
 import { PortalStore } from '../../../core/state/portal.store';
 import {
   conflictMessage,
+  fieldErrorMessages,
   problemMessage,
   problemSupportReference,
   statusMessage,
   stripLegacyBreakTags,
+  supportReferenceFor,
 } from '../../../core/utils/form-errors.util';
 import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialog/confirm-dialog.component';
+import { EmptyStateComponent } from '../../../shared/components/empty-state/empty-state.component';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
 import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
 import {
@@ -75,6 +87,7 @@ type PortalSettingsSection =
   | 'marketing'
   | 'security'
   | 'pages'
+  | 'payment'
   | 'other'
   | 'host';
 
@@ -82,11 +95,59 @@ type PortalSettingsSection =
 const TAB_ORDER: readonly PortalSettingsTab[] = ['basic', 'advanced'];
 
 /**
+ * Which tab owns each control.
+ *
+ * ⚠ THIS MAP EXISTS BECAUSE THE PANELS ARE CONDITIONAL RENDERS, NOT HIDDEN SIBLINGS. Only the selected
+ * panel is in the document, so there is no way to ask the DOM whether the OTHER tab holds an invalid
+ * control - and without an answer to that question a rejected save can name three fields while the screen
+ * highlights one and gives no hint that the remaining two exist. Runtime verification reproduced exactly
+ * that: a `400` naming `portalName`, `hostFee` and `expiryDate` left the operator on the Basic tab looking
+ * at one error, with the other two on a tab that advertised nothing and whose panel was not even rendered.
+ *
+ * It is derived from the template's own panels and must be kept in step with them; the specs assert that
+ * every control in the form appears here exactly once, so a control added to one panel and forgotten here
+ * fails the suite rather than silently losing its error marker.
+ */
+const CONTROL_TAB: Readonly<Record<string, PortalSettingsTab>> = Object.freeze({
+  portalName: 'basic',
+  description: 'basic',
+  keyWords: 'basic',
+  footerText: 'basic',
+  bannerAdvertising: 'basic',
+  userRegistration: 'advanced',
+  splashTabId: 'advanced',
+  homeTabId: 'advanced',
+  loginTabId: 'advanced',
+  userTabId: 'advanced',
+  administratorId: 'advanced',
+  paymentProcessor: 'advanced',
+  processorUserId: 'advanced',
+  timeZoneOffset: 'advanced',
+  currency: 'advanced',
+  defaultLanguage: 'advanced',
+  expiryDate: 'advanced',
+  hostFee: 'advanced',
+  hostSpace: 'advanced',
+  pageQuota: 'advanced',
+  userQuota: 'advanced',
+});
+
+/** What the marker on a tab holding rejected fields says to a screen reader. */
+const TAB_HAS_ERRORS_LABEL = 'has fields needing attention';
+
+/** No tab is flagged. Hoisted so the identity is stable and the computed does not churn. */
+const EMPTY_TAB_SET: ReadonlySet<PortalSettingsTab> = Object.freeze(
+  new Set<PortalSettingsTab>(),
+) as ReadonlySet<PortalSettingsTab>;
+
+/**
  * The disclosures that start closed. Measured from the markup one head at a time: `dshSite` and
  * `dshSecurity` and `dshPages` declare no `IsExpanded` and so default open, `dshMarketing` declares
  * `IsExpanded="True"`, and `dshOther` and `dshHost` declare `IsExpanded="False"`.
  */
-const INITIALLY_COLLAPSED: readonly PortalSettingsSection[] = ['other', 'host'];
+// `payment` joins them because the legacy section head declared `IsExpanded="False"` at
+// `Website/admin/Portal/sitesettings.ascx:L294-L295`, exactly as the two below did.
+const INITIALLY_COLLAPSED: readonly PortalSettingsSection[] = ['payment', 'other', 'host'];
 
 /** `txtPortalName MaxLength="128"`, matching `Portals.PortalName nvarchar(128)`. */
 const PORTAL_NAME_MAX_LENGTH = 128;
@@ -120,17 +181,43 @@ const DEFAULT_LANGUAGE_MAX_LENGTH = 10;
 /** `txtHostSpace`, `txtPageQuota` and `txtUserQuota`, all `MaxLength="6"`. */
 const QUOTA_MAX_LENGTH = 6;
 
-// ---------------------------------------------------------------------------
-// The page-selector sentinel
-// ---------------------------------------------------------------------------
-
-const NO_PAGE_SELECTED = -1;
+/**
+ * The cap on both payment boxes, from the columns themselves: `PortalConfiguration` declares
+ * `HasMaxLength(50)` for `PaymentProcessor` and for `ProcessorUserId`.
+ *
+ * ⚠ WHY THESE TWO CONTROLS EXIST AT ALL. Neither could be configured ANYWHERE in the application, while
+ * the role screen still instructs an operator to configure a payment processor - an instruction pointing
+ * at a control that did not exist. Both members were already carried by the detail resource, already
+ * accepted by the update resource, and already preserved unchanged by this screen's own request composer,
+ * so the ONLY thing missing was the affordance.
+ *
+ * TWO LEGACY AFFORDANCES ARE DELIBERATELY NOT RESTORED, and both omissions are recorded in
+ * MIGRATION_NOTES.md rather than left to be discovered:
+ *   - The processor was a DROPDOWN (`cboProcessor`, `sitesettings.ascx:L314`) filled from the legacy list
+ *     subsystem, which AAP 0.2.2.2 excludes. A text box is what the remaining contract supports.
+ *   - The processor PASSWORD box (`txtPassword`, `sitesettings.ascx:L330`) has no counterpart: the settings
+ *     contract carries no credential member, so there is nothing to bind and nowhere to send it.
+ */
+const PROCESSOR_MAX_LENGTH = 50;
 
 /**
- * The wording of that option: `"<" + None_Specified + ">"` where the shared resource value of
- * `None_Specified.Text` is `None Specified`.
+ * The bounds of a portal time-zone offset, in minutes, MEASURED FROM THE LEGACY ZONE LIST rather than
+ * chosen. `Website/App_GlobalResources/TimeZones.xml` is the file the legacy `cboTimeZone` selector was
+ * filled from, and its 58 entries run from `key="-720"` (UTC -12:00) to `key="780"` (UTC +13:00).
+ *
+ * ⚠ THE DEFECT THIS CLOSES. Replacing a closed selector with a free-text box moved the legality of the
+ * value from the LIST to the VALIDATOR - and no validator was added, so the box accepted any integer at
+ * all. `99999` was storable, and a portal's whole notion of local time is derived from it.
  */
-const NO_PAGE_SELECTED_LABEL = '<None Specified>';
+const TIME_ZONE_MIN_OFFSET = -720;
+
+/** @see TIME_ZONE_MIN_OFFSET */
+const TIME_ZONE_MAX_OFFSET = 780;
+
+// THE PAGE-SELECTOR SENTINEL AND ITS WORDING ARE NO LONGER DECLARED HERE. Both are imported from
+// `core/utils/page-options.util` above, so this screen and the membership settings screen cannot disagree
+// about how "no page" is spelled or how it reads. Re-declaring them locally would shadow the shared
+// vocabulary with a second copy that could drift.
 
 /** The in-flight wording for a WRITE this screen issued. */
 /** The wording of the link to this portal's host names. */
@@ -147,10 +234,7 @@ const REFRESHING_LABEL = 'Loading site settings…';
 
 const NO_ADMINISTRATOR_SELECTED = -1;
 
-const INDENT_STEP = '...';
 
-/** The deepest indent that will ever be produced. */
-const MAX_INDENT_LEVELS = 127;
 
 // MIGRATION: localisation itself is not ported. No translation runtime is present in the pinned dependency
 // surface, so these strings are authored directly and the legacy resource files served as the reference for
@@ -177,11 +261,27 @@ const SECTION_LABEL: Readonly<Record<PortalSettingsSection, string>> = Object.fr
   marketing: 'Site Marketing',
   security: 'Security Settings',
   pages: 'Page Management',
+  payment: 'Payment Settings',
   other: 'Other Settings',
   host: 'Host Settings',
 });
 
 /** The labelled-field captions, keyed by the control each legacy label named. */
+/**
+ * The validation-error key under which a control carries what the SERVER rejected about it.
+ *
+ * ⚠ THE VALUE IS THE WHOLE MESSAGE LIST, NOT A FLAG, and that is what lets the messages expire by
+ * themselves. Angular re-runs a control's validators on every value change and REPLACES its error object
+ * with the result, so the moment an operator edits a field the server's complaint about it disappears
+ * without anything having to remember to clear it. A flag plus a lookup held elsewhere would survive the
+ * edit and go on quoting a rejection of a value that is no longer in the box.
+ *
+ * The key is deliberately not one of the client rule names: a client rule describes what this screen
+ * refuses to send, and this describes what the server refused to accept, which are different claims and
+ * must not overwrite one another.
+ */
+const SERVER_REJECTED_KEY = 'serverRejected';
+
 const FIELD_LABEL = Object.freeze({
   portalName: 'Title:',
   description: 'Description:',
@@ -195,6 +295,9 @@ const FIELD_LABEL = Object.freeze({
   loginTabId: 'Login Page:',
   userTabId: 'User Page:',
   administratorId: 'Administrator:',
+  homeDirectory: 'Home Directory:',
+  paymentProcessor: 'Payment Processor:',
+  processorUserId: 'Processor UserId:',
   timeZoneOffset: 'Portal TimeZone:',
   currency: 'Currency:',
   defaultLanguage: 'Default Language:',
@@ -227,6 +330,9 @@ const FIELD_HELP = Object.freeze({
   loginTabId: 'The Login Page for your site.',
   userTabId: 'The User Page for your site.',
   administratorId: 'The Administrator User for the site.',
+  homeDirectory: 'Enter the Home Directory for this site',
+  paymentProcessor: 'The Payment Processor used to handle payments on the site.',
+  processorUserId: 'The UserId for the Payment Processor.',
   timeZoneOffset: 'The TimeZone for the location of the site.',
   currency: 'The Currency used on the site.',
   defaultLanguage: 'The Default Language for the site.',
@@ -260,6 +366,13 @@ const WHOLE_NUMBER_INVALID_MESSAGE = 'Enter a whole number.';
 const TIME_ZONE_INVALID_MESSAGE = 'Enter the offset as a whole number of minutes.';
 
 /**
+ * What an offset outside the legacy zone range is told. Names BOTH bounds, so the rule is stated once and
+ * in full rather than revealed a bound at a time. @see TIME_ZONE_MIN_OFFSET
+ */
+const TIME_ZONE_OUT_OF_RANGE_MESSAGE =
+  'Enter an offset between \u2212720 and 780 minutes, which is UTC \u221212:00 to UTC +13:00.';
+
+/**
  * `DeleteMessage.Text` from THIS screen's own resource file. The space before the question mark is in the
  * stored value and is reproduced verbatim.
  */
@@ -278,12 +391,33 @@ const DELETE_SUCCEEDED_MESSAGE = 'The portal was deleted.';
 /**
  * What a refusal of the host-owned fields says. This is the wording the `403` resolves to, and it names
  * the cause.
+ *
+ * ⚠ #20 — It opens with the shared denial stem, "You do not have permission to", for the reason recorded on
+ * the portal form's own copy of this refusal: one vocabulary across every denial this application authors.
  */
 const HOST_FIELDS_REFUSED_MESSAGE =
-  'Only a host account may change the hosting fee, the disk space, the page quota, the user quota or the expiry date. Those fields were not saved.';
+  'You do not have permission to change the hosting fee, the disk space, the page quota, the user quota '
+  + 'or the expiry date, which only a host account may change. Those fields were not saved.';
 
-/** What a rejected submission says, before the field-level detail is shown. */
-const FORM_INVALID_MESSAGE = 'Correct the highlighted fields and try again.';
+/**
+ * What a refused READ of the settings says.
+ *
+ * ⚠ IT NAMES NO FIELDS AND NO SAVE. {@link HOST_FIELDS_REFUSED_MESSAGE} was announced for every `403` on
+ * this screen, including the one that comes back from simply opening a portal the caller may not see - so
+ * an operator who had submitted nothing was told that the hosting fee, disk space, page quota, user quota
+ * and expiry date "were not saved". Every clause of that was false: no save was attempted, those fields
+ * were never rendered, and the cause was not the host-only-field rule.
+ */
+const SETTINGS_READ_REFUSED_MESSAGE =
+  'You are not permitted to view this portal’s settings, so nothing could be loaded.';
+
+// A PAGE-LEVEL SENTENCE FOR A REJECTED SUBMISSION USED TO BE DECLARED HERE, AND IT IS GONE ON PURPOSE.
+// Measured across the eighteen forms in this application, sixteen answered a client-blocked submit by
+// marking their controls touched and moving focus to the first offender, so what a reader hears is the
+// specific, actionable field message. This screen additionally raised a summary toast AND rendered the same
+// sentence into a `role="alert"` paragraph of its own - a second assertive owner for news the focused field
+// already carries. The contract is now the majority one, with no page-level restatement, so there is
+// nothing left to word. See `onSubmit` below.
 
 /** Shown when the page list cannot be read, so the four selectors are knowingly thin. */
 const PAGES_UNAVAILABLE_MESSAGE =
@@ -305,8 +439,6 @@ const RETAINED_ADMINISTRATOR_LABEL = 'Current administrator (account {0})';
 /** Shown when the address carries no usable portal identifier. */
 const PORTAL_ID_MISSING_MESSAGE = 'This address does not identify a portal to configure.';
 
-/** Where cancelling, and a completed delete, navigate to. */
-const PORTAL_LIST_PATH = '/portals';
 
 /** The refusal status the host-only-field rule arrives as. */
 const HTTP_FORBIDDEN = 403;
@@ -323,10 +455,6 @@ interface RadioChoice<TValue> {
 }
 
 /** One option in a page selector. */
-interface PageOption {
-  readonly value: number;
-  readonly label: string;
-}
 
 /** One option in the administrator selector. */
 interface AdministratorOption {
@@ -356,6 +484,11 @@ interface PortalSettingsFormModel {
   userTabId: FormControl<number>;
 
   administratorId: FormControl<number>;
+
+  // ⚠ RESTORED. See {@link PROCESSOR_MAX_LENGTH}.
+  paymentProcessor: FormControl<string>;
+  processorUserId: FormControl<string>;
+
   timeZoneOffset: FormControl<string>;
   currency: FormControl<string>;
   defaultLanguage: FormControl<string>;
@@ -371,12 +504,7 @@ interface PortalSettingsFormModel {
 /** The members this screen preserves without showing. */
 type PreservedMembers = Pick<
   PortalSettings,
-  | 'backgroundFile'
-  | 'homeDirectory'
-  | 'logoFile'
-  | 'paymentProcessor'
-  | 'processorUserId'
-  | 'siteLogHistory'
+  'backgroundFile' | 'homeDirectory' | 'logoFile' | 'siteLogHistory'
 >;
 
 // ---------------------------------------------------------------------------
@@ -572,6 +700,36 @@ const timeZoneOffsetCheck = dataTypeCheck(
   TIME_ZONE_INVALID_MESSAGE,
 );
 
+/**
+ * Bounds the offset to the range the legacy selector offered. @see TIME_ZONE_MIN_OFFSET
+ *
+ * Runs only once the SHAPE holds: reporting a range for something that is not a number at all would state
+ * the second rule before the first is satisfied, which is the sequencing defect this project has already
+ * had to correct on the alias field.
+ *
+ * @param control The offset control.
+ * @returns The failure, or null when the offset is within range or not yet a number.
+ */
+function timeZoneRangeCheck(control: AbstractControl): ValidationErrors | null {
+  const raw: unknown = control.value;
+
+  if (typeof raw !== 'string') {
+    return null;
+  }
+
+  const trimmed = raw.trim();
+
+  if (trimmed.length === 0 || INTEGER_PATTERN.test(trimmed) === false) {
+    return null;
+  }
+
+  const minutes = Number(trimmed);
+
+  return minutes < TIME_ZONE_MIN_OFFSET || minutes > TIME_ZONE_MAX_OFFSET
+    ? { timeZoneRange: TIME_ZONE_OUT_OF_RANGE_MESSAGE }
+    : null;
+}
+
 // The page options behind the four selectors
 // * none-specified TRUE → prepend a synthetic option, `TabID = -1`, named `"<" + None_Specified + ">"`, and
 // SELECTABLE; * hidden TRUE → invisible pages ARE included; * deleted FALSE → recycled pages are excluded;
@@ -579,42 +737,15 @@ const timeZoneOffsetCheck = dataTypeCheck(
 // URL is empty; * authorised FALSE → no role filtering is applied; * and unconditionally → administration
 // pages are excluded.
 
-/** Reports whether a page is of the legacy Normal type. */
-function isNormalPage(row: TabListItem): boolean {
-  return row.url === null || row.url.trim().length === 0;
-}
-
-/** Reports whether a page sits in the administration band. */
-function isAdministrationPage(row: TabListItem, adminTabId: number | null): boolean {
-  if (adminTabId === null) {
-    return false;
-  }
-
-  return row.tabId === adminTabId || row.parentId === adminTabId;
-}
-
-/** Produces the indent prefix for a page at the given level. */
-function indentFor(level: number): string {
-  if (!Number.isFinite(level) || level <= 0) {
-    return '';
-  }
-
-  const steps = Math.min(Math.trunc(level), MAX_INDENT_LEVELS);
-
-  return INDENT_STEP.repeat(steps);
-}
-
 /**
- * Builds the shared option list for all four page selectors. The received order is preserved rather than
- * re-sorted: the listing already arrives in hierarchy order by page order, which is the sequence the
- * legacy iteration relied on, and re-sorting it here would put the indents out of step with their
- * parents.
+ * Builds the shared option list for all four page selectors, by prepending this screen's own "none
+ * specified" option to the shared page choices. The admission rules, the ordering and the indent live in
+ * `core/utils/page-options.util.ts`, which the membership settings screen reads the same way.
  *
  * @param rows Every page of the portal, as received.
  * @param adminTabId The portal's administration page, or `null` when it is not yet known.
  * @param retain Page references the portal currently holds, so a stored choice that the filter would
- * otherwise hide still appears — a page that has since been recycled, made into a link, or moved under
- * administration must remain visible as the current value rather than silently reset the selector to
+ * otherwise hide still appears.
  * @returns The options, beginning with the selectable "none specified" entry.
  */
 function buildPageOptions(
@@ -622,40 +753,10 @@ function buildPageOptions(
   adminTabId: number | null,
   retain: readonly number[],
 ): readonly PageOption[] {
-  const options: PageOption[] = [
+  return [
     { value: NO_PAGE_SELECTED, label: NO_PAGE_SELECTED_LABEL },
+    ...buildPageChoices(rows, adminTabId, retain),
   ];
-
-  // Guards against a duplicated identifier in the response. Two options sharing a value
-  // would make a native select ambiguous about which one is chosen.
-  const seen = new Set<number>([NO_PAGE_SELECTED]);
-  const wanted = new Set<number>(retain);
-
-  for (const row of rows) {
-    if (seen.has(row.tabId)) {
-      continue;
-    }
-
-    const held = wanted.has(row.tabId);
-    const admitted =
-      row.isDeleted === false && isNormalPage(row) && !isAdministrationPage(row, adminTabId);
-
-    if (!admitted && !held) {
-      continue;
-    }
-
-    seen.add(row.tabId);
-    options.push({ value: row.tabId, label: indentFor(row.level) + row.tabName });
-  }
-
-  for (const tabId of retain) {
-    if (!seen.has(tabId)) {
-      seen.add(tabId);
-      options.push({ value: tabId, label: String(tabId) });
-    }
-  }
-
-  return options;
 }
 
 /** The portal settings screen. */
@@ -673,6 +774,8 @@ function buildPageOptions(
     LoadingSpinnerComponent,
     ErrorBannerComponent,
     ConfirmDialogComponent,
+    // For the branch that says the settings could not be read. @see settingsUnreadable
+    EmptyStateComponent,
   ],
   templateUrl: './portal-settings.component.html',
   styleUrl: './portal-settings.component.scss',
@@ -685,11 +788,19 @@ export class PortalSettingsComponent {
    * navigation: Cancel, an in-application link and the browser's Back button are navigations a route
    * guard can refuse, while closing or reloading the tab is not, and only the browser's own unload prompt
    * covers that - which needs the dirty state at an arbitrary moment rather than at a navigation.
+   *
+   * ⚠ THE BUSY EXCLUSION WAS REMOVED, AND ITS REMOVAL CLOSES A MEASURED HOLE. This predicate used to read
+   * `dirty && busy === false`, which reported the screen CLEAN for exactly as long as a write was in flight -
+   * so navigating away mid-save was admitted in silence, the departure destroyed the component, and
+   * `takeUntilDestroyed` cancelled the request. The operator lost the write and was told nothing. A form
+   * holding an unfinished write is the LEAST safe moment to leave, not the safest.
+   *
+   * The exclusion was written to stop the application's OWN post-save navigation being challenged, and that
+   * case is already covered properly: every success path replaces the address imperatively, which
+   * `unsavedChangesGuard` admits explicitly. Nothing here has to approximate it a second time.
    */
   private readonly unsavedEntry = inject(UnsavedChangesTracker).watch(
-    // `busy` is declared further down the class; the arrow body is only evaluated when the
-    // tracker asks, so the ordering is irrelevant at construction time.
-    () => this.form.dirty && this.busy() === false,
+    () => this.form.dirty,
   );
   // Collaborators. Injected as fields rather than through the constructor, which is this workspace's
   // convention, and every one of them is a state or presentation concern: no transport type is reachable
@@ -714,6 +825,9 @@ export class PortalSettingsComponent {
    */
   private readonly changeDetector = inject(ChangeDetectorRef);
   private readonly router = inject(Router);
+
+  /** Where the listing stood when the operator left it. */
+  private readonly listReturn = inject(ListReturnStore);
   private readonly destroyRef = inject(DestroyRef);
 
   // -------------------------------------------------------------------------
@@ -729,6 +843,26 @@ export class PortalSettingsComponent {
   );
   private readonly _confirmingDelete = signal(false);
   private readonly _submitRejected = signal(false);
+
+  /**
+   * A counter bumped on every form status change, so a computed can depend on validity.
+   *
+   * The value itself is meaningless; only its changing matters. See the `statusChanges` subscription.
+   */
+  private readonly _formRevision = signal(0);
+
+  /**
+   * Whether the settings failure now being reported belongs to a SAVE this screen requested, rather than
+   * to the read that populates it.
+   *
+   * ⚠ A PLAIN FIELD RATHER THAN A SIGNAL, DELIBERATELY, and the reason is timing. The store keeps one
+   * failure slice for both operations, so the operation has to be recorded by whoever asked. It cannot be
+   * derived from {@link writing} because that is lowered in `finalize`, which runs before the announcing
+   * effect does - by the time the effect looks, a refused save is indistinguishable from a refused read.
+   * It is raised at the submit and lowered wherever a read is requested, which are the only two places
+   * that know.
+   */
+  private settingsFailureFromWrite = false;
 
   /**
    * The tab controls, in the order the strip renders them. Queried rather than reached through a selector
@@ -794,9 +928,22 @@ export class PortalSettingsComponent {
     // legacy markup finds exactly two validators on the whole screen, both data-type comparisons, and
     // neither is on this field.
     administratorId: new FormControl(NO_ADMINISTRATOR_SELECTED, { nonNullable: true }),
+
+    // LENGTH ONLY. The legacy processor control was a SELECTOR filled from the excluded list subsystem, so
+    // there is no closed value set to validate against - the same position the currency and language boxes
+    // are already in, and for the same reason.
+    paymentProcessor: new FormControl('', {
+      nonNullable: true,
+      validators: [Validators.maxLength(PROCESSOR_MAX_LENGTH)],
+    }),
+    processorUserId: new FormControl('', {
+      nonNullable: true,
+      validators: [Validators.maxLength(PROCESSOR_MAX_LENGTH)],
+    }),
+
     timeZoneOffset: new FormControl('', {
       nonNullable: true,
-      validators: [timeZoneOffsetCheck],
+      validators: [timeZoneOffsetCheck, timeZoneRangeCheck],
     }),
 
     // LENGTH ONLY, AND NO CLOSED VALUE SET. The legacy controls were selectors, so their legality came from
@@ -839,6 +986,52 @@ export class PortalSettingsComponent {
   protected readonly pageTitle = PAGE_TITLE;
   protected readonly tabOrder = TAB_ORDER;
   protected readonly tabLabel = TAB_LABEL;
+  protected readonly tabHasErrorsLabel = TAB_HAS_ERRORS_LABEL;
+
+  /**
+   * Which tabs currently hold an invalid control, so a tab can advertise errors that are not on screen.
+   *
+   * Recomputed from the form's status stream rather than from a signal the form does not expose, and only
+   * while a submit has actually been rejected - marking tabs before the operator has submitted anything
+   * would flag every mandatory empty field on a form they have not filled in yet.
+   */
+  protected readonly tabsWithErrors = computed<ReadonlySet<PortalSettingsTab>>(() => {
+    if (!this._submitRejected()) {
+      return EMPTY_TAB_SET;
+    }
+
+    // Depend on the status revision so this recomputes as validity changes.
+    this._formRevision();
+
+    const flagged = new Set<PortalSettingsTab>();
+
+    for (const [name, tab] of Object.entries(CONTROL_TAB)) {
+      if (this.form.get(name)?.invalid === true) {
+        flagged.add(tab);
+      }
+    }
+
+    return flagged;
+  });
+
+  /**
+   * Whether `tab` holds an invalid control.
+   *
+   * @param tab The tab to test.
+   * @returns True when at least one control on that tab is invalid.
+   */
+  protected tabHasErrors(tab: PortalSettingsTab): boolean {
+    return this.tabsWithErrors().has(tab);
+  }
+
+  /**
+   * The control-to-tab map, exposed so the suite can prove it covers every control in the form.
+   *
+   * The map is hand-maintained against the template's panels - it has to be, because the unselected panel
+   * is not in the document to be inspected - so the completeness check is the only thing standing between a
+   * newly added control and a silently missing error marker.
+   */
+  private readonly controlTabForTesting = CONTROL_TAB;
   protected readonly tabHelp = TAB_HELP;
   protected readonly sectionLabel = SECTION_LABEL;
   protected readonly fieldLabel = FIELD_LABEL;
@@ -857,7 +1050,6 @@ export class PortalSettingsComponent {
     return name === undefined ? DELETE_CONFIRM_MESSAGE : `${DELETE_CONFIRM_MESSAGE} ${name}`;
   });
   protected readonly deleteConfirmLabel = DELETE_CONFIRM_LABEL;
-  protected readonly formInvalidMessage = FORM_INVALID_MESSAGE;
   protected readonly pagesUnavailableMessage = PAGES_UNAVAILABLE_MESSAGE;
 
   /** The wording shown when the administrator candidates could not be read. */
@@ -882,6 +1074,7 @@ export class PortalSettingsComponent {
     hostSpace: QUOTA_MAX_LENGTH,
     pageQuota: QUOTA_MAX_LENGTH,
     userQuota: QUOTA_MAX_LENGTH,
+    processor: PROCESSOR_MAX_LENGTH,
   });
 
   /** `optBanners`, horizontal, three items. */
@@ -919,6 +1112,9 @@ export class PortalSettingsComponent {
 
     this._portalId.set(resolved);
     this.hydratedFrom = null;
+    // Lowered here because the next thing that can fail is a READ. See the member's own note for why the
+    // distinction is not cosmetic.
+    this.settingsFailureFromWrite = false;
 
     if (resolved === undefined) {
       return;
@@ -1014,6 +1210,12 @@ export class PortalSettingsComponent {
       if (this.form.valid && this._submitRejected()) {
         this._submitRejected.set(false);
       }
+
+      // ⚠ THE BRIDGE FROM THE FORM'S OBSERVABLE VALIDITY TO THE SIGNAL GRAPH. A reactive form publishes
+      // status through an observable and not through a signal, so a computed that reads `control.invalid`
+      // has nothing to depend on and would never recompute. Bumping a counter here is what makes the
+      // per-tab error markers track validity as the operator types.
+      this._formRevision.update((revision) => revision + 1);
     });
   }
 
@@ -1045,6 +1247,75 @@ export class PortalSettingsComponent {
 
   /** The settings resource on screen, or `null` before the first read completes. */
   protected readonly settings = this.portals.settings;
+
+  /**
+   * The portal's home directory, for the read-only display. @see homeDirectoryNotice
+   *
+   * An unread or absent path renders as the empty string rather than as a marker: the box is a text input,
+   * so a dash inside it would read as a stored VALUE of one character.
+   */
+  protected readonly homeDirectoryText = computed<string>(() => {
+    const held = this.portals.settings();
+
+    if (held === null || held.homeDirectory === null) {
+      return '';
+    }
+
+    return held.homeDirectory;
+  });
+
+  /**
+   * Whether the settings read has been attempted and left nothing to show.
+   *
+   * ⚠ THE MEASURED DEFECT THIS CLOSES. The branch chain in the template ran
+   * `no portal id -> loading -> settings present` and had NO final alternative, so a read that failed left
+   * the body of the page completely empty: the page header, the error banner and then a measured 656px of
+   * nothing, with no statement of what had happened and no way to try again. The banner alone is not enough
+   * - it sits above the fold of an empty region and reads as a transient complaint rather than as the
+   * reason the screen is blank.
+   *
+   * Requires the portal identifier to be usable and the read to be settled, so this never claims a failure
+   * during the first load or on an address that named no portal - each of those has its own branch.
+   */
+  protected readonly settingsUnreadable = computed<boolean>(
+    () =>
+      this.hasPortalId() &&
+      this.loading() === false &&
+      this.portals.settings() === null,
+  );
+
+  /** What the unreadable state says. The REASON stays in the banner, which owns the support reference. */
+  protected readonly settingsUnreadableMessage =
+    'The settings for this site could not be read, so there is nothing to edit here yet.';
+
+  /** The way out of the unreadable state. */
+  protected readonly settingsRetryLabel = 'Try again';
+
+  /** Re-reads the settings after a failed read. */
+  protected retrySettingsRead(): void {
+    const portalId: number | undefined = this._portalId();
+
+    if (portalId === undefined) {
+      return;
+    }
+
+    // Only the settings read is retried. The other three reads this screen issues on arrival have their own
+    // failure surfaces and their own recovery, and re-issuing them here would turn one retry into four
+    // requests, three of which may already have succeeded.
+    this.portals.clearFailures();
+    this.portals.loadSettings(portalId);
+  }
+
+  /** Why the path above cannot be changed here. */
+  protected readonly homeDirectoryNotice =
+    'The home directory is fixed once a site is created and cannot be changed here.';
+
+  /**
+   * Why no processor credential is offered. Stated on the screen rather than left as an absence, because an
+   * operator who knows the legacy screen had a password box needs to know where it went.
+   */
+  protected readonly processorCredentialNotice =
+    'The processor password is not held or changed here. Set it with your payment provider.';
 
   /** True while either read is outstanding and nothing is on screen yet. */
   protected readonly loading = computed<boolean>(
@@ -1368,7 +1639,11 @@ export class PortalSettingsComponent {
    * @param name The control, or one of the two read-only rows that have no control.
    * @returns The identifier.
    */
-  protected controlId(name: keyof PortalSettingsFormModel | 'guid'): string {
+  protected controlId(
+    // `homeDirectory` is neither a form control nor the identifier display: it is the read-only path
+    // box, which needs an id to be label-associated exactly as every real control does.
+    name: keyof PortalSettingsFormModel | 'guid' | 'homeDirectory',
+  ): string {
     return `portal-settings-${name}`;
   }
 
@@ -1399,10 +1674,29 @@ export class PortalSettingsComponent {
 
     const messages: string[] = [];
 
+    // ⚠ THE SERVER'S COMPLAINT LEADS, because it is the one that just happened. A client rule would have
+    // blocked the submit before it was sent, so if a server message is present the operator has already
+    // passed every local rule and the server is telling them something local validation could not know.
+    const rejectedByServer: unknown = errors[SERVER_REJECTED_KEY];
+
+    if (Array.isArray(rejectedByServer)) {
+      for (const entry of rejectedByServer) {
+        if (typeof entry === 'string' && entry.length > 0) {
+          messages.push(entry);
+        }
+      }
+    }
+
     // ⚠ NO REQUIRED RULE IS REPORTED, BECAUSE NO CONTROL ON THIS SCREEN DECLARES ONE. A branch here
     // reported `"Site Title is required."` against a `Validators.required` on the title, mirroring a
     // `NotEmpty()` the update contract carried; both are withdrawn as a parity break.
-    for (const key of ['expiryDateType', 'hostFeeType', 'wholeNumber', 'timeZoneOffset']) {
+    for (const key of [
+      'expiryDateType',
+      'hostFeeType',
+      'wholeNumber',
+      'timeZoneOffset',
+      'timeZoneRange',
+    ]) {
       const held: unknown = errors[key];
 
       if (typeof held === 'string') {
@@ -1445,17 +1739,31 @@ export class PortalSettingsComponent {
     }
 
     if (this.form.invalid) {
+      // ⚠ THE ONE VALIDATION-SUMMARY CONTRACT, AND THIS SCREEN USED TO BREAK IT TWICE. Measured across the
+      // eighteen forms, sixteen answered a client-blocked submit by marking their controls touched and
+      // letting focus land on the first invalid one, so the statement a reader hears is the specific,
+      // actionable field message. Two forms additionally raised a page-level summary toast, and this one
+      // also rendered the same sentence into a `role="alert"` paragraph of its own - a second assertive
+      // owner beside the shared banner, for news the field being focused already carries. The summary is
+      // therefore gone from both: the contract is touched controls, focus on the first offender, and no
+      // page-level restatement.
       this.form.markAllAsTouched();
       this._submitRejected.set(true);
-      this.notifications.warning(FORM_INVALID_MESSAGE);
       this.revealFirstInvalidControl();
 
       return;
     }
 
     this._submitRejected.set(false);
+    this.clearServerFieldErrors();
     this.portals.clearFailures();
+    this.settingsFailureFromWrite = true;
     this.writing.set(true);
+
+    // ⚠ THE STORE COMPLETES WITHOUT EMITTING WHEN THE SAVE IS REFUSED, so `next` firing is the only
+    // signal that it succeeded. Read in `complete` rather than in `finalize`, because a teardown also runs
+    // on destroy and this must not act on a screen that is going away.
+    let succeeded = false;
 
     this.portals
       .saveSettings(target, this.toRequest(this.hydratedFrom))
@@ -1465,16 +1773,109 @@ export class PortalSettingsComponent {
           this.writing.set(false);
         }),
       )
-      .subscribe((stored: PortalSettings) => {
-        this.hydratedFrom = stored;
+      .subscribe({
+        next: (stored: PortalSettings) => {
+          succeeded = true;
+          this.hydratedFrom = stored;
 
-        // Two things went wrong while the flag survived, and the second is the serious one. A saved form
-        // kept advertising unsaved work, so the screen contradicted the success notification beside it.
-        this.form.markAsPristine();
-        this.form.markAsUntouched();
+          // Two things went wrong while the flag survived, and the second is the serious one. A saved form
+          // kept advertising unsaved work, so the screen contradicted the success notification beside it.
+          this.form.markAsPristine();
+          this.form.markAsUntouched();
 
-        this.notifications.success(SAVE_SUCCEEDED_MESSAGE);
+          this.notifications.success(SAVE_SUCCEEDED_MESSAGE);
+        },
+        complete: () => {
+          if (!succeeded) {
+            this.presentRefusedSave();
+          }
+        },
       });
+  }
+
+  /**
+   * Routes a refused save onto the controls it was refused about, then brings the first of them into view
+   * and into focus.
+   *
+   * ⚠ THIS CLOSES THREE FAULTS AT ONCE, AND THEY SHARE ONE CAUSE: the server's per-field messages reached
+   * the banner and stopped there. No control was marked invalid, so nothing carried `aria-invalid` and no
+   * message appeared beside any field; two of the three fields a settings refusal typically names live in
+   * a disclosure on the OTHER tab, so they were not even rendered and the operator was told about fields
+   * they could not see; and focus stayed on the submit button. Making the form genuinely invalid fixes all
+   * three through machinery this screen already owns - the shared field component derives `aria-invalid`
+   * and `aria-describedby` from its messages, and {@link revealFirstInvalidControl} already opens every
+   * disclosure and walks both tabs looking for `.ng-invalid`.
+   *
+   * A refusal that names no field at all - a `403`, a `409`, a `500` - leaves the form untouched and is
+   * reported by the banner alone, which is correct: there is nothing to point at.
+   */
+  private presentRefusedSave(): void {
+    const failure: PortalFailure | null = this.portals.settingsFailure();
+
+    if (failure === null) {
+      return;
+    }
+
+    if (!this.applyServerFieldErrors(failure.problem)) {
+      return;
+    }
+
+    this._submitRejected.set(true);
+    this.revealFirstInvalidControl();
+  }
+
+  /**
+   * Marks every control the server named as invalid, carrying that field's messages.
+   *
+   * @param problem The refusal document, or null when the failure carried none.
+   * @returns True when at least one control was named, so the caller knows whether to reveal anything.
+   */
+  private applyServerFieldErrors(problem: ProblemDetails | null): boolean {
+    let named = false;
+
+    for (const controlName of Object.keys(this.form.controls)) {
+      const messages: readonly string[] = fieldErrorMessages(problem, controlName);
+
+      if (messages.length === 0) {
+        continue;
+      }
+
+      const control: AbstractControl | null = this.form.get(controlName);
+
+      if (control === null) {
+        continue;
+      }
+
+      // Spread rather than replace: a control can be reporting a client rule as well, and dropping it
+      // would let a locally invalid value look acceptable the moment the server's message expires.
+      control.setErrors({ ...(control.errors ?? {}), [SERVER_REJECTED_KEY]: messages });
+      // Touched is what makes `messagesFor` willing to speak: an operator who never visited the field is
+      // still entitled to see why the server rejected what was sent on their behalf.
+      control.markAsTouched();
+      named = true;
+    }
+
+    return named;
+  }
+
+  /**
+   * Drops every server-supplied error before a fresh submit, so a field the server no longer objects to
+   * does not stay marked invalid from the previous attempt.
+   */
+  private clearServerFieldErrors(): void {
+    for (const controlName of Object.keys(this.form.controls)) {
+      const control: AbstractControl | null = this.form.get(controlName);
+      const errors: ValidationErrors | null = control?.errors ?? null;
+
+      if (control === null || errors === null || !(SERVER_REJECTED_KEY in errors)) {
+        continue;
+      }
+
+      const remaining: ValidationErrors = { ...errors };
+      delete remaining[SERVER_REJECTED_KEY];
+
+      control.setErrors(Object.keys(remaining).length > 0 ? remaining : null);
+    }
   }
 
   /**
@@ -1514,7 +1915,11 @@ export class PortalSettingsComponent {
 
   protected onCancel(): void {
     this.portals.clearFailures();
-    void this.router.navigateByUrl(PORTAL_LIST_PATH);
+    // `navigate` rather than `navigateByUrl`, because only the former accepts the listing coordinate this
+    // screen must hand back - see ListReturnStore.
+    void this.router.navigate([PORTAL_LIST_ROUTE], {
+      queryParams: this.listReturn.coordinateFor(PORTAL_LIST_ROUTE),
+    });
   }
 
   /** Opens the delete confirmation. */
@@ -1568,7 +1973,10 @@ export class PortalSettingsComponent {
         // longer exists, so leaving a history entry for it would offer the browser’s Back button as a route
         // to a settings form for a deleted portal - and the unsaved-entry gate reads the replacement as an
         // application-initiated departure, so it does not question a navigation nobody chose.
-        void this.router.navigateByUrl(PORTAL_LIST_PATH, { replaceUrl: true });
+        void this.router.navigate([PORTAL_LIST_ROUTE], {
+          queryParams: this.listReturn.coordinateFor(PORTAL_LIST_ROUTE),
+          replaceUrl: true,
+        });
       });
   }
 
@@ -1587,7 +1995,13 @@ export class PortalSettingsComponent {
    */
   private describeSaveFailure(failure: PortalFailure): string {
     if (failure.status === HTTP_FORBIDDEN) {
-      return HOST_FIELDS_REFUSED_MESSAGE;
+      // ⚠ ONLY A REFUSED SAVE MAY BE DESCRIBED AS ONE. `HOST_FIELDS_REFUSED_MESSAGE` ends "Those fields
+      // were not saved.", and this arm was reached by a refused READ as well - so simply opening a portal
+      // this caller may not see announced that five named fields had failed to save, on a screen where
+      // nothing had been submitted and, on a refused read, nothing had even been rendered to submit.
+      return this.settingsFailureFromWrite
+        ? HOST_FIELDS_REFUSED_MESSAGE
+        : SETTINGS_READ_REFUSED_MESSAGE;
     }
 
     const conflict = conflictMessage(failure.conflictCode);
@@ -1642,6 +2056,8 @@ export class PortalSettingsComponent {
       loginTabId: wirePageToSelected(source.loginTabId),
       userTabId: wirePageToSelected(source.userTabId),
       administratorId: wireAdministratorToSelected(source.administratorId),
+      paymentProcessor: source.paymentProcessor === null ? '' : source.paymentProcessor,
+      processorUserId: source.processorUserId === null ? '' : source.processorUserId,
       timeZoneOffset: numberToText(source.timeZoneOffset),
       currency: source.currency === null ? '' : source.currency,
       defaultLanguage: source.defaultLanguage === null ? '' : source.defaultLanguage,
@@ -1658,8 +2074,9 @@ export class PortalSettingsComponent {
   }
 
   /**
-   * Composes the update request. THE SIX MEMBERS THIS SCREEN DOES NOT SHOW ARE RETURNED UNCHANGED, AND
-   * THAT IS REQUIRED RATHER THAN TIDY. The update resource carries the portal's whole editable state and
+   * Composes the update request. THE FOUR MEMBERS THIS SCREEN DOES NOT SHOW ARE RETURNED UNCHANGED, AND
+   * THAT IS REQUIRED RATHER THAN TIDY. There were six; the two payment members are now edited on this
+   * screen and so are composed from the form like every other shown member. The update resource carries the portal's whole editable state and
    * REPLACES every column it names, so a member sent as absent is a member cleared.
    *
    * @param source The resource the form was hydrated from, and the source of every preserved member.
@@ -1671,8 +2088,6 @@ export class PortalSettingsComponent {
       backgroundFile: source.backgroundFile,
       homeDirectory: source.homeDirectory,
       logoFile: source.logoFile,
-      paymentProcessor: source.paymentProcessor,
-      processorUserId: source.processorUserId,
       siteLogHistory: source.siteLogHistory,
     };
 
@@ -1697,6 +2112,10 @@ export class PortalSettingsComponent {
       // explicit offset.
       administratorId: selectedAdministratorToWire(edited.administratorId),
       timeZoneOffset: this.optionalWholeNumber(edited.timeZoneOffset),
+
+      // Payment Settings, RESTORED and therefore edited rather than preserved. @see PROCESSOR_MAX_LENGTH
+      paymentProcessor: textOrNull(edited.paymentProcessor),
+      processorUserId: textOrNull(edited.processorUserId),
 
       currency: textOrNull(edited.currency),
       defaultLanguage: textOrNull(edited.defaultLanguage),
@@ -1760,14 +2179,22 @@ export class PortalSettingsComponent {
           this._pageRows.set(rows);
           this._pagesFailed.set(false);
         },
-        error: () => {
+        error: (cause: unknown) => {
           if (this.portalChanged(portalId)) {
             return;
           }
           this.pagesRequest = null;
           this._pageRows.set([]);
           this._pagesFailed.set(true);
-          this.notifications.warning(PAGES_UNAVAILABLE_MESSAGE);
+
+          // The cause is taken rather than ignored, so this refusal can still quote its support reference.
+          // Written as `error: () => ...` it discarded the correlation identifier the server sent, and
+          // `warning()` cannot carry one either - hence `notify()`.
+          this.notifications.notify(
+            'warning',
+            PAGES_UNAVAILABLE_MESSAGE,
+            supportReferenceFor(cause),
+          );
         },
       });
   }

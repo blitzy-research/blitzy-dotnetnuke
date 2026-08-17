@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.RegularExpressions;
 using DnnMigration.Application.Abstractions;
+using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Application.Dtos.Tab;
 using DnnMigration.Application.Mapping;
 using DnnMigration.Application.Options;
@@ -29,6 +30,14 @@ public sealed class TabService : ITabService
 {
     /// <summary>Reason code reported when the named portal does not exist.</summary>
     private const string PortalNotFoundCode = "tab.portal_not_found";
+
+    /// <summary>Reason code reported when a page request names an ordering or a filter this collection has none of.</summary>
+    /// <remarks>
+    /// Spelled in the collection's own namespace, like every other paging refusal in this layer, so the API
+    /// layer's single code-to-status table answers it with <c>400 Bad Request</c> without inferring anything
+    /// from how the code reads.
+    /// </remarks>
+    private const string PagingInvalidCode = "tab.paging_invalid";
 
     /// <summary>Reason code reported when the page being updated does not exist.</summary>
     private const string NotFoundCode = "tab.not_found";
@@ -172,14 +181,37 @@ public sealed class TabService : ITabService
     }
 
     /// <inheritdoc />
-    public async Task<Result<IReadOnlyList<TabListItemDto>>> GetTabsAsync(
+    public async Task<Result<PagedResult<TabListItemDto>>> GetTabsAsync(
         int portalId,
+        TabPagedRequest request,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(request);
+
+        // ⚠ REFUSED HERE AS WELL AS AT THE BOUNDARY, AND THE SECOND CHECK IS NOT REDUNDANT. The validator
+        // that rejects an ordering or a filter runs on the HTTP path only; this member is a public
+        // application-layer contract and may be called without one. A page tree read in any order other than
+        // navigation order still carries a parentId and a level on every row, so it would look well formed
+        // while describing a hierarchy that does not exist - which is exactly the kind of wrongness that
+        // survives review, so it is refused rather than quietly re-ordered.
+        if (request.HasSort)
+        {
+            return Result<PagedResult<TabListItemDto>>.Failure(
+                PagingInvalidCode,
+                $"A portal's pages are returned in navigation order and cannot be ordered by '{request.SortBy}'.");
+        }
+
+        if (request.HasQuery)
+        {
+            return Result<PagedResult<TabListItemDto>>.Failure(
+                PagingInvalidCode,
+                "A portal's pages are not filtered by text.");
+        }
+
         bool portalExists = await _portals.ExistsAsync(portalId, cancellationToken).ConfigureAwait(false);
         if (!portalExists)
         {
-            return Result<IReadOnlyList<TabListItemDto>>.Failure(
+            return Result<PagedResult<TabListItemDto>>.Failure(
                 PortalNotFoundCode,
                 $"No portal bears identifier {portalId}.");
         }
@@ -205,18 +237,60 @@ public sealed class TabService : ITabService
         IReadOnlyList<int> permitted = await PermittedTabIdsAsync(portalId, rows, cancellationToken)
             .ConfigureAwait(false);
 
+        IReadOnlyList<TabListItemDto> visible;
+
         if (permitted.Count == rows.Count)
         {
-            // Nothing was withheld, so the cached instance is returned as it stands rather than copied.
-            return Result<IReadOnlyList<TabListItemDto>>.Success(rows);
+            // Nothing was withheld, so the cached instance is paged as it stands rather than copied.
+            visible = rows;
+        }
+        else
+        {
+            var allowed = new HashSet<int>(permitted);
+
+            // The navigation order the read produced is preserved: a child's position is meaningful only
+            // relative to the parent that precedes it, so the rows are filtered in place rather than
+            // re-ordered.
+            visible = rows.Where(row => allowed.Contains(row.TabId)).ToList();
         }
 
-        var allowed = new HashSet<int>(permitted);
+        // ⚠ PAGED AFTER THE NARROWING, WHICH IS THE ONLY ORDER THAT REPORTS A TRUE TOTAL. Cutting the page
+        // from the tenant's raw rows and then withholding some of them would return short pages - twenty
+        // asked for, eleven delivered, with no way for the caller to tell a withheld page from the end of the
+        // collection - and would report a total the caller can never reach. Paging the narrowed sequence
+        // makes the reported total the size of the collection this caller is actually paging.
+        //
+        // The page is cut IN MEMORY, over the same cached, tenant-keyed list the unpaged listing already
+        // held, for the reason the cache exists at all: the whole tree is read once per tenant and the read
+        // is the expensive part, while what this bounds is the response. That is also why the cache entry is
+        // still written before any narrowing or paging - it holds the tenant's rows, never one caller's page.
+        return Result<PagedResult<TabListItemDto>>.Success(BuildPage(visible, request));
+    }
 
-        // The navigation order the read produced is preserved: a child's position is meaningful only relative
-        // to the parent that precedes it, so the rows are filtered in place rather than re-ordered.
-        return Result<IReadOnlyList<TabListItemDto>>.Success(
-            rows.Where(row => allowed.Contains(row.TabId)).ToList());
+    /// <summary>Cuts the requested page out of a sequence already in its one meaningful order.</summary>
+    /// <param name="visible">The pages this caller may act on, in navigation order.</param>
+    /// <param name="request">The page the caller asked for.</param>
+    /// <returns>The requested page, or the whole sequence when the caller asked for no paging.</returns>
+    /// <remarks>
+    /// A page size of zero means "unpaged" to the application layer and is unreachable over HTTP, where the
+    /// shared validator requires at least one row - so this handles a direct caller of the application
+    /// contract without offering an unbounded response to the wire.
+    /// </remarks>
+    private static PagedResult<TabListItemDto> BuildPage(
+        IReadOnlyList<TabListItemDto> visible,
+        TabPagedRequest request)
+    {
+        if (request.PageSize == 0)
+        {
+            return PagedResult<TabListItemDto>.Unpaged(visible);
+        }
+
+        List<TabListItemDto> window = visible
+            .Skip(Paging.SkipCount(request.PageIndex, request.PageSize))
+            .Take(request.PageSize)
+            .ToList();
+
+        return PagedResult<TabListItemDto>.Create(window, visible.Count, request.PageIndex, request.PageSize);
     }
 
     /// <summary>Resolves which of the listed pages the current caller may act on.</summary>

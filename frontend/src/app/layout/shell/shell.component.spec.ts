@@ -9,6 +9,10 @@ import { Router, provideRouter } from '@angular/router';
 import { AUTH_ENDPOINTS } from '../../core/config/api-endpoints';
 import { TokenStorageService } from '../../core/services/token-storage.service';
 import { AuthStore } from '../../core/state/auth.store';
+import {
+  UNSAVED_CHANGES_PROMPT,
+  UnsavedChangesTracker,
+} from '../../core/guards/unsaved-changes.guard';
 import { SessionLifecycleService } from '../../core/state/session-lifecycle.service';
 import { FooterComponent } from '../footer/footer.component';
 import { HeaderComponent } from '../header/header.component';
@@ -331,6 +335,25 @@ describe('ShellComponent', () => {
       expect(link.hasAttribute('href')).toBeTrue();
     });
 
+    // THE FIRST TAB STOP IS ALSO A POINTER TARGET ONCE REVEALED - QA-18.
+    it('meets the target minimum once revealed, and keeps its collapsed geometry until then', () => {
+      const link = requireElement('a.shell__skip-link');
+
+      // COLLAPSED FIRST, because this is the half that a bare `min-block-size` would have broken:
+      // `min-block-size` clamps `block-size` regardless of specificity, so an unscoped rule would have given
+      // the HIDDEN link a 44px box sitting over the top-left corner of the page.
+      expect(link.getBoundingClientRect().height).toBeLessThan(44);
+
+      link.focus();
+      fixture.detectChanges();
+
+      // Programmatic focus matches `:focus-visible` in this engine, which is what reveals the link. Guarded
+      // rather than assumed, so the specification fails loudly if the reveal ever stops happening instead of
+      // silently asserting the collapsed box a second time.
+      expect(link.matches(':focus-visible')).toBeTrue();
+      expect(link.getBoundingClientRect().height).toBeGreaterThanOrEqual(44);
+    });
+
     it('names a fragment that the main region actually carries', () => {
       const target = requireElement('a.shell__skip-link').getAttribute('href') ?? '';
       const region = requireElement('main');
@@ -537,6 +560,92 @@ describe('ShellComponent', () => {
       expect(banner().signingOut).toBeFalse();
     });
 
+    // ---------------------------------------------------------------------------------------------
+    // SIGNING OUT OF A DIRTY SCREEN
+    // ---------------------------------------------------------------------------------------------
+
+    // ⚠ THE MEASURED DEFECT THESE PROVE CLOSED. Logout discarded a dirty form in SILENCE while navigating
+    // from the very same form raised the confirmation. Ordering was the cause: the revocation and the local
+    // teardown both ran before the router could reach `canDeactivate`, so the question came too late to be
+    // answerable - and answering "no" would have stranded the operator on unsaved work whose session had
+    // already ended.
+
+    describe('signing out while a screen holds unsaved entry', () => {
+      let confirmSpy: jasmine.Spy<(message?: string) => boolean>;
+
+      /** Whether the stand-in form currently holds unsaved entry. Read by the probe below on every ask. */
+      let screenIsDirty = true;
+
+      beforeEach(() => {
+        confirmSpy = spyOn(globalThis, 'confirm').and.returnValue(true);
+        screenIsDirty = true;
+
+        // A probe standing in for a mounted form. Registered outside any component, so it stays for the
+        // duration of the case and nothing else can release it, and reads a mutable flag so one case can
+        // present a CLEAN screen through the very same registration.
+        TestBed.runInInjectionContext(() => {
+          TestBed.inject(UnsavedChangesTracker).watch(() => screenIsDirty);
+        });
+      });
+
+      it('asks BEFORE revoking anything, and revokes nothing when the operator declines', () => {
+        confirmSpy.and.returnValue(false);
+
+        holdSession();
+        clickSignOut();
+
+        expect(confirmSpy)
+          .withContext('the question is put once, in the application\u2019s own words')
+          .toHaveBeenCalledOnceWith(UNSAVED_CHANGES_PROMPT);
+        expect(httpMock.match(AUTH_ENDPOINTS.logout))
+          .withContext('\u26a0 NOTHING IRREVERSIBLE HAPPENED: no credential was revoked')
+          .toEqual([]);
+        expect(tokens.accessToken())
+          .withContext('and the session the operator kept is still usable')
+          .not.toBeNull();
+        expect(navigate)
+          .withContext('and they are still on the screen holding their work')
+          .not.toHaveBeenCalled();
+      });
+
+      it('proceeds once, without asking a second time, when the operator agrees', () => {
+        holdSession();
+        clickSignOut();
+
+        expect(confirmSpy).toHaveBeenCalledTimes(1);
+
+        httpMock
+          .expectOne(AUTH_ENDPOINTS.logout)
+          .flush(null, { status: 204, statusText: 'No Content' });
+        fixture.detectChanges();
+
+        expect(confirmSpy)
+          .withContext('the departure carries the answer already given; the router asks nothing more')
+          .toHaveBeenCalledTimes(1);
+        expect(navigate).toHaveBeenCalled();
+      });
+
+      it('asks nothing at all when the screen holds no unsaved entry', () => {
+        screenIsDirty = false;
+
+        holdSession();
+        clickSignOut();
+
+        expect(confirmSpy)
+          .withContext('nothing is at stake, so an ordinary sign-out is not interrupted')
+          .not.toHaveBeenCalled();
+
+        httpMock
+          .expectOne(AUTH_ENDPOINTS.logout)
+          .flush(null, { status: 204, statusText: 'No Content' });
+        fixture.detectChanges();
+
+        expect(navigate)
+          .withContext('and it completes exactly as it did before this gate existed')
+          .toHaveBeenCalled();
+      });
+    });
+
     it('offers no account address while no session is held', () => {
       expect(banner().accountProfileLink).toBeUndefined();
       expect(banner().accountPasswordLink).toBeUndefined();
@@ -678,6 +787,61 @@ describe('ShellComponent', () => {
       expect(debugSpy).not.toHaveBeenCalled();
     });
   });
+
+  describe('the room it reserves for the pinned header band', () => {
+    /** The property `_reset.scss` reads as the document's scroll padding above the side-by-side step. */
+    const BAND_PROPERTY = '--layout-header-block-size';
+
+    /** The value currently published on the document element, or the empty string when none is. */
+    function published(): string {
+      return document.documentElement.style.getPropertyValue(BAND_PROPERTY).trim();
+    }
+
+    afterEach(() => {
+      // The publication is a deliberate write OUTSIDE this component's own subtree - it has to be, because
+      // the declaration consuming it sits on `html` and a custom property flows downward only. It is
+      // withdrawn here rather than left to leak into every later spec in the run.
+      document.documentElement.style.removeProperty(BAND_PROPERTY);
+    });
+
+    it("publishes the band's measured height rather than the token's declared value", async () => {
+      await fixture.whenStable();
+
+      const band: HTMLElement = requireElement('.shell__header');
+      const measured: number = band.getBoundingClientRect().height;
+
+      expect(measured).withContext('the band has a height worth publishing').toBeGreaterThan(0);
+      expect(published())
+        .withContext('the document element carries the measurement, in pixels')
+        .toBe(`${measured}px`);
+    });
+
+    it('never publishes a zero height, so the reservation cannot silently vanish', async () => {
+      await fixture.whenStable();
+
+      const beforeCollapse: string = published();
+
+      expect(beforeCollapse).withContext('a real measurement was published first').not.toBe('');
+
+      const band: HTMLElement = requireElement('.shell__header');
+
+      band.style.display = 'none';
+
+      expect(band.getBoundingClientRect().height)
+        .withContext('the band now measures nothing at all')
+        .toBe(0);
+
+      (component as unknown as { publishHeaderBlockSize(): void }).publishHeaderBlockSize();
+
+      // A zero would reserve nothing and restore the defect, so the last real measurement is kept.
+      expect(published())
+        .withContext('the last real measurement survives a zero reading')
+        .toBe(beforeCollapse);
+
+      band.style.removeProperty('display');
+    });
+  });
+
 });
 
 /** The shell as a child portal addressed beneath a path segment renders it. */
@@ -774,4 +938,198 @@ describe('ShellComponent under a tenant path base href', () => {
     // path, which would have left the fragment naming nothing.
     expect(document.activeElement).toBe(region);
   });
+  // ⚠ MINOR (responsive) — the content column ran full-bleed at 1920, and nothing on the page was sticky.
+  describe('the content column measure and the sticky header', () => {
+  /** One flattened stylesheet rule: its selector, its declarations, and the media query guarding it. */
+  interface FlatLayoutRule {
+    readonly selectorText: string;
+    readonly style: CSSStyleDeclaration;
+    readonly media: string | null;
+  }
+
+  /**
+   * Every style rule reachable from the document, including those nested inside media queries.
+   *
+   * \u26a0 A RULE SCAN RATHER THAN A COMPUTED READING, AND THE REASON IS THE FIXTURE. The declaration under
+   * test is gated behind a `min-width` media query, and a fixture is rendered at whatever width the runner
+   * happens to give it - so a computed value would assert the runner's width rather than the stylesheet's
+   * intent, and would flip between a wide runner and a narrow one. Nested rules are therefore walked
+   * unconditionally: this measures what the stylesheet DECLARES.
+   *
+   * The test build loads `src/styles.scss`, which is what puts these rules in `document.styleSheets`.
+   *
+   * @returns The flattened rules.
+   */
+  function flattenedLayoutRules(): readonly FlatLayoutRule[] {
+    const collected: FlatLayoutRule[] = [];
+
+    const walk = (rules: CSSRuleList, media: string | null): void => {
+      Array.from(rules).forEach((rule) => {
+        if (rule instanceof CSSMediaRule) {
+          walk(rule.cssRules, rule.conditionText);
+
+          return;
+        }
+
+        if (rule instanceof CSSStyleRule) {
+          collected.push({ selectorText: rule.selectorText, style: rule.style, media });
+        }
+      });
+    };
+
+    Array.from(document.styleSheets).forEach((sheet) => {
+      try {
+        walk(sheet.cssRules, null);
+      } catch {
+        return;
+      }
+    });
+
+    return collected;
+  }
+
+    /**
+     * Whether one selector-list part is exactly the given class compound.
+     *
+     * \u26a0 THE ATTRIBUTE SUFFIX HAS TO BE TOLERATED, AND AN EXACT COMPARISON FAILED BECAUSE OF IT. Angular's
+     * emulated encapsulation rewrites every component rule to carry a scoping attribute, so the authored
+     * `.app-sidebar` reaches the stylesheet as `.app-sidebar[_ngcontent-ng-c123]` with a suffix that changes
+     * every build. A plain equality check therefore found none of them and the first version of these
+     * specifications reported zero rules against correct code.
+     *
+     * @param part One comma-separated part of a selector list.
+     * @param compound The class compound to match, including its leading dot.
+     * @returns Whether the part is that compound, with or without a scoping attribute.
+     */
+    function isCompound(part: string, compound: string): boolean {
+      const escaped: string = compound.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+      return new RegExp(`^${escaped}(\\[[^\\]]*\\])*$`).test(part.trim());
+    }
+
+    /** The rules whose selector list carries the given compound. */
+    function rulesFor(compound: string): readonly FlatLayoutRule[] {
+      return flattenedLayoutRules().filter((rule) =>
+        rule.selectorText.split(',').some((part) => isCompound(part, compound)),
+      );
+    }
+
+    /** Resolves a CSS length expression to pixels by letting the browser do the conversion. */
+    function resolvedLength(expression: string): number {
+      const probe: HTMLDivElement = document.createElement('div');
+      probe.style.blockSize = expression;
+      document.body.appendChild(probe);
+      const resolved: number = probe.getBoundingClientRect().height;
+      probe.remove();
+
+      return resolved;
+    }
+
+    it('caps the main region at the widest breakpoint step and centres it', () => {
+      // ⚠ A BARE ELEMENT RATHER THAN A RENDERED SHELL, DELIBERATELY. The declarations under test are global
+      // rules keyed on the class, not component styles, so what has to be proven is that carrying the class is
+      // enough to get the measure. Rendering the whole shell would drag in a session, a router and an HTTP
+      // backend to assert something none of them influences - and would leave the assertion silently dependent
+      // on that setup continuing to work.
+      const main: HTMLElement = document.createElement('main');
+      main.className = 'shell__main';
+      document.body.appendChild(main);
+
+      const resolved: CSSStyleDeclaration = getComputedStyle(main);
+
+      // ⚠ THE DISCRIMINATING VALUE IS A DEFINITE LENGTH. Before the fix this computed to `none`, and at 1920
+      // that put a two-character value in a 167.8-pixel column and stretched a single-line text input to 1498
+      // pixels. `none` and a definite cap are exactly what the two implementations disagree about.
+      const cap: number = Number.parseFloat(resolved.maxInlineSize);
+
+      expect(resolved.maxInlineSize).withContext('a measure is declared').not.toBe('none');
+      expect(cap).toBeCloseTo(resolvedLength('80rem'), 0);
+
+      main.remove();
+
+      // The centring half, asserted from the STYLESHEET rather than from the computed value.
+      // ⚠ `getComputedStyle` CANNOT EVIDENCE AN AUTO MARGIN, and the first version of this specification
+      // failed against correct code because of it: Chrome reports the RESOLVED value, which is `0px` for a
+      // margin authored as `auto`, so the check read "Expected '0px' to be 'auto'" while the declaration was
+      // present and working. A browser measurement of the live page proved the centring geometrically instead -
+      // 220.00 pixels of gutter on each side of a 1280-wide column inside a 1720-wide track at 1920 - and here
+      // the declaration itself is what is asserted.
+      const centred = rulesFor('.shell__main').filter(
+        (rule) => rule.style.getPropertyValue('margin-inline').trim() === 'auto',
+      );
+
+      expect(centred.length).withContext('the measure is centred in its track').toBeGreaterThan(0);
+    });
+
+    it('pins the header at the side-by-side step and nowhere narrower', () => {
+      const sticky = rulesFor('.shell__header').filter(
+        (rule) => rule.style.getPropertyValue('position').trim() === 'sticky',
+      );
+
+      expect(sticky.length).withContext('the header is pinned').toBeGreaterThan(0);
+      sticky.forEach((rule) => {
+        // The CSSOM normalises a zero length, so the authored `0` reads back as `0px`.
+        expect(rule.style.getPropertyValue('inset-block-start').trim()).toBe('0px');
+
+        // ⚠ THE GATE IS THE DISCRIMINATING PART, and it is a measurement rather than a preference: the header
+        // measures 69 pixels at 1280 but 177 at 375, where its user-links cluster wraps. Pinning 177 pixels to
+        // an 800-pixel viewport spends 22% of the screen on chrome, so an ungated rule would be a regression on
+        // the narrowest devices even though it satisfies "the header is sticky".
+        expect(rule.media).withContext('gated to the side-by-side step').toMatch(/min-width/);
+      });
+    });
+
+    it('takes its stacking order from the token scale rather than a literal', () => {
+      // The token vocabulary reserves every z-index to its own scale, and `--z-index-sticky` existed from the
+      // start with no user at all. A literal here would be the first value in the application outside it.
+      const sticky = rulesFor('.shell__header').filter(
+        (rule) => rule.style.getPropertyValue('position').trim() === 'sticky',
+      );
+
+      expect(sticky.length).toBeGreaterThan(0);
+      sticky.forEach((rule) => {
+        expect(rule.style.getPropertyValue('z-index').trim()).toBe('var(--z-index-sticky)');
+      });
+    });
+
+    // ⚠ MAJOR - THE PINNED BAND CONCEALED WHATEVER THE BROWSER SCROLLED TO THE TOP OF THE VIEWPORT.
+    // Measured on the account listing at 1280x720: activating "Skip to main content" set `scrollY` to
+    // exactly 69, the main region's own document offset, which left FOUR elements 100% concealed with zero
+    // pixels visible - the `h1` and all three page actions, three of them focusable links.
+    it('reserves the pinned band at the top of every scroll, at the same step and from the same tokens', () => {
+      const declared: readonly FlatLayoutRule[] = rulesFor('html').filter(
+        (rule) => rule.style.getPropertyValue('scroll-padding-block-start').trim() !== '',
+      );
+
+      expect(declared.length)
+        .withContext('the document reserves room for the pinned band')
+        .toBeGreaterThan(0);
+      expect(resolvedLength('var(--layout-header-block-size)'))
+        .withContext('the band-height token resolves to a real length')
+        .toBeGreaterThan(0);
+
+      declared.forEach((rule) => {
+        const value: string = rule.style.getPropertyValue('scroll-padding-block-start').trim();
+
+        // THE PUBLISHED HEIGHT RATHER THAN A NUMBER, and that is the discriminating part. The band is 69
+        // pixels only while the account cluster fits on one line; a literal would under-reserve the moment
+        // it wraps and reopen the defect silently, which is why `shell.component.ts` measures it instead.
+        expect(value)
+          .withContext('the reservation is the published band height')
+          .toContain('var(--layout-header-block-size)');
+        expect(value)
+          .withContext('with a token-sized gap, so the focus ring clears the band and not just the box')
+          .toContain('var(--space-2)');
+        expect(value)
+          .withContext('no hard-coded length can drift from the band it is meant to match')
+          .not.toMatch(/\d+px/);
+
+        // Gated to the SAME step as the pin: below it the header is `static` and 177 pixels tall, so
+        // reserving that there would push every screen down for a band that scrolls away by itself.
+        expect(rule.media).withContext('gated to the side-by-side step').toMatch(/min-width/);
+      });
+    });
+
+  });
+
 });

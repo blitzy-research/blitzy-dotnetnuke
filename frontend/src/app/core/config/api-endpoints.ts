@@ -1,5 +1,5 @@
 import { environment } from '../../../environments/environment';
-import { tenantPathBase } from './tenant-path';
+import { deploymentPathBase, tenantPathBase } from './tenant-path';
 
 /** The complete vocabulary of literal path segments, in kebab-case. */
 const SEGMENT = {
@@ -114,7 +114,17 @@ export function apiUrl(path: string): string {
   return suffix.length === 0 ? base : `${base}/${suffix}`;
 }
 
-/** @returns The base with no trailing slash. */
+/**
+ * @returns The base with no trailing slash.
+ *
+ * A ROOT-RELATIVE base is prefixed with the deployment's own mount point AND with the CONFIRMED tenant path
+ * prefix, in that order, so that a bundle served beneath a path reaches its API through the same proxy that
+ * served it and a child portal addressed beneath a path segment reaches its own tenant. The mount point comes
+ * from the document's `base` element - a value the deployment authors - and the tenant segment comes from the
+ * server's own answer; NEITHER is ever taken from the address bar unconfirmed, and `tenant-path.ts` records
+ * what went wrong when the tenant segment was inferred from the address instead. An ABSOLUTE base is left
+ * exactly as configured: it already names its own origin and path, so a prefix would corrupt it.
+ */
 function configuredApiBase(): string {
   const configured = environment.apiBaseUrl.replace(/\/+$/, '');
 
@@ -122,7 +132,7 @@ function configuredApiBase(): string {
     return configured;
   }
 
-  return `${tenantPathBase()}${configured}`;
+  return `${deploymentPathBase()}${tenantPathBase()}${configured}`;
 }
 
 /**
@@ -297,8 +307,20 @@ export const API_ENDPOINTS = {
 
   /** Portals — the multi-tenant site containers. */
   portals: {
-    /** `GET` the paged collection; `POST` to create. */
+    /**
+     * `GET` the paged collection; `POST` to create. ⚠ THE `GET` IS FOR A TERM-FREE READ. A free-text term
+     * or a site-name filter must go to {@link API_ENDPOINTS.portals.search} instead — see the note there.
+     */
     collection: (): string => apiUrl(SEGMENT.portals),
+
+    /**
+     * `POST` a portal search whose filters travel in the REQUEST BODY. ⚠ THIS EXISTS FOR A PRIVACY REASON,
+     * NOT AN ERGONOMIC ONE, AND MUST NOT BE COLLAPSED BACK INTO A QUERY STRING. This listing carries TWO
+     * caller-chosen terms — the paging contract's own free-text term and the site-name filter — and both
+     * were being written into the logged request line. The reasoning is set out in full on
+     * {@link API_ENDPOINTS.modules.search}.
+     */
+    search: (): string => apiUrl(`${SEGMENT.portals}/${SEGMENT.search}`),
 
     /** `GET`, `PUT` or `DELETE` one portal. */
     byId: (portalId: number): string => apiUrl(`${SEGMENT.portals}/${portalId}`),
@@ -336,8 +358,20 @@ export const API_ENDPOINTS = {
    * authenticated context before any service call.
    */
   modules: {
-    /** `GET` the resolved tenant's placements; `POST` to add one. */
+    /**
+     * `GET` the resolved tenant's placements; `POST` to add one. ⚠ THE `GET` IS FOR A TERM-FREE READ. A
+     * free-text term must go to {@link API_ENDPOINTS.modules.search} instead — see the note there.
+     */
     collection: (): string => apiUrl(SEGMENT.modules),
+
+    /**
+     * `POST` a module search whose filters travel in the REQUEST BODY. ⚠ THIS EXISTS FOR A PRIVACY REASON,
+     * NOT AN ERGONOMIC ONE, AND MUST NOT BE COLLAPSED BACK INTO A QUERY STRING. The module listing filters
+     * on a free-text term that a person typed, and binding it from the query string wrote every term into
+     * the request line that the reverse proxy's access log and the API's own request log both record. The
+     * account listing had already settled this the same way, and the two disagreeing was the defect.
+     */
+    search: (): string => apiUrl(`${SEGMENT.modules}/${SEGMENT.search}`),
 
     /** `GET`, `PUT` or `DELETE` one placement. */
     byId: (moduleId: number): string => apiUrl(`${SEGMENT.modules}/${moduleId}`),
@@ -345,6 +379,14 @@ export const API_ENDPOINTS = {
     /** `GET` or `PUT` the per-placement settings. */
     settings: (moduleId: number): string =>
       apiUrl(`${SEGMENT.modules}/${moduleId}/${SEGMENT.settings}`),
+
+    /**
+     * `GET` and `PUT` the grant grid of one module. Reached through the MODULE resource rather than
+     * through `permissions`, because the grants belong to the module — the legacy screen edited and saved
+     * them as part of it — and because the permission resource is a read-only catalogue by design.
+     */
+    permissions: (moduleId: number): string =>
+      apiUrl(`${SEGMENT.modules}/${moduleId}/${SEGMENT.permissions}`),
 
     export: (moduleId: number): string =>
       apiUrl(`${SEGMENT.modules}/${moduleId}/${SEGMENT.export}`),

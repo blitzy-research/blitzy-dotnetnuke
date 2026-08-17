@@ -67,9 +67,10 @@
   max-inline-size: mx.breakpoint('sm');
 }
 
-.member-services__code-submit {
-  font-weight: var(--font-weight-bold);
-}
+// ⚠ #22 — THE PRIMARY MARKER IS THE SHARED ONE. This rule said exactly what `.form-action--primary` says in
+// _forms.scss, and the panel that hosts this one carried a third copy of the same idea: one vocabulary
+// expressed three times is how the create screens came to read as three different species. The class stays on
+// the element for layout; the weight now comes from the shared marker alone.
 
 .member-services__report {
   display: grid;

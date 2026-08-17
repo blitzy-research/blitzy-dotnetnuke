@@ -7,15 +7,17 @@ using Xunit;
 namespace DnnMigration.UnitTests.Domain;
 
 /// <summary>
-/// Covers the permission catalogue, the two grant tables that reference it, the closed key vocabulary they
-/// name, and the outcome primitives every permission answer is carried in.
+/// Covers the permission catalogue, the two grant tables that reference it, the key vocabulary this
+/// solution names, and the outcome primitives every permission answer is carried in.
 /// </summary>
 /// <remarks>
 /// <para>
 /// <b>Invariants and sentinel boundaries, and nothing else.</b> This suite asserts what the three entities
 /// and the key enumeration guarantee on their own: which properties survived the port, what a freshly
 /// constructed instance reports, which legacy sentinel values became honest CLR nulls and which remained
-/// real data, and when two instances are the same entity.
+/// real data, and when two instances are the same entity. The catalogue's key is asserted as FREE TEXT,
+/// because the column is: the enumeration bounds the keys this solution asks about, never the keys a real
+/// installation can hold.
 /// </para>
 /// <para>
 /// <b>Cross-references rather than duplication.</b> These entities carry a <c>RoleId</c>, whose entity-side
@@ -55,16 +57,17 @@ public class PermissionTests
             PermissionId = 1,
             PermissionCode = "SYSTEM_MODULE_DEFINITION",
             ModuleDefinitionId = 7,
-            PermissionKey = PermissionKey.VIEW,
+            PermissionKey = nameof(PermissionKey.VIEW),
             PermissionName = "View Module",
         };
 
         entry.PermissionCode.Should().Be("SYSTEM_MODULE_DEFINITION");
         entry.ModuleDefinitionId.Should().Be(7);
         entry.PermissionKey.Should().Be(
-            PermissionKey.VIEW,
-            "the key is the closed enumeration rather than free text, so a misspelling is now a "
-            + "compile error instead of a row that silently matches nothing");
+            nameof(PermissionKey.VIEW),
+            "the key is free text on the same footing as the code beside it, because the column is "
+            + "varchar(50) with no check constraint and DotNetNuke lets a third-party module register "
+            + "its own keys");
         entry.PermissionName.Should().Be("View Module");
         entry.ModulePermissions.Should().NotBeNull().And.BeEmpty();
         entry.TabPermissions.Should().NotBeNull().And.BeEmpty();
@@ -73,11 +76,10 @@ public class PermissionTests
 
         bare.PermissionCode.Should().BeEmpty();
         bare.PermissionName.Should().BeEmpty();
-        bare.PermissionKey.Should().Be(
-            PermissionKey.VIEW,
-            "VIEW is the zero member, so an entry constructed without an explicit key reports it; the "
-            + "column is NOT NULL and the enumeration declares no absent member, so a caller that "
-            + "means something else must say so");
+        bare.PermissionKey.Should().BeEmpty(
+            "an entry constructed without an explicit key carries the empty string exactly as the code "
+            + "and name beside it do, rather than silently reporting whichever key happens to be first "
+            + "in the enumeration; the column is NOT NULL, so a caller must say what it means");
     }
 
     /// <summary>
@@ -92,14 +94,14 @@ public class PermissionTests
             PermissionId = 12,
             PermissionCode = "SYSTEM_TAB",
             ModuleDefinitionId = -1,
-            PermissionKey = PermissionKey.EDIT,
+            PermissionKey = nameof(PermissionKey.EDIT),
             PermissionName = "Edit Page",
         };
 
         entry.PermissionId.Should().Be(12);
         entry.PermissionCode.Should().Be("SYSTEM_TAB");
         entry.ModuleDefinitionId.Should().Be(-1);
-        entry.PermissionKey.Should().Be(PermissionKey.EDIT);
+        entry.PermissionKey.Should().Be(nameof(PermissionKey.EDIT));
         entry.PermissionName.Should().Be("Edit Page");
 
         // The two renames are structural, not cosmetic, so the legacy spellings must be absent rather than
@@ -148,7 +150,7 @@ public class PermissionTests
             PermissionId = 1,
             PermissionCode = "SYSTEM_TAB",
             ModuleDefinitionId = -1,
-            PermissionKey = PermissionKey.VIEW,
+            PermissionKey = nameof(PermissionKey.VIEW),
         };
 
         Permission definitionScoped = new()
@@ -156,7 +158,7 @@ public class PermissionTests
             PermissionId = 2,
             PermissionCode = "SYSTEM_MODULE_DEFINITION",
             ModuleDefinitionId = 1,
-            PermissionKey = PermissionKey.VIEW,
+            PermissionKey = nameof(PermissionKey.VIEW),
         };
 
         systemLevel.ModuleDefinitionId.Should().Be(-1);
@@ -185,7 +187,9 @@ public class PermissionTests
         bare.ModuleDefinitionId.Should().Be(0);
         bare.PermissionCode.Should().NotBeNull().And.BeEmpty();
         bare.PermissionName.Should().NotBeNull().And.BeEmpty();
-        bare.PermissionKey.Should().Be(PermissionKey.VIEW, "VIEW is the zero member of the enumeration");
+        bare.PermissionKey.Should().NotBeNull().And.BeEmpty(
+            "the key is hardened exactly as the two text columns beside it are: all three are free text in "
+            + "the terminal schema, so all three default to the empty string rather than to null");
         bare.IdentityIsPersisted.Should().BeFalse(
             "a constructed instance has no declared persisted identity until something says so");
     }
@@ -568,7 +572,7 @@ public class PermissionTests
         grant.PermissionId.Should().Be(entry.PermissionId);
         grant.Permission.Should().BeSameAs(entry);
         grant.Permission.PermissionKey.Should().Be(
-            PermissionKey.VIEW,
+            nameof(PermissionKey.VIEW),
             "the five catalogue values the copy constructor used to duplicate are read from the entry");
         grant.Permission.PermissionCode.Should().Be("SYSTEM_MODULE_DEFINITION");
         grant.Permission.ModuleDefinitionId.Should().Be(1);
@@ -1095,7 +1099,7 @@ public class PermissionTests
         PermissionId = permissionId,
         PermissionCode = "SYSTEM_MODULE_DEFINITION",
         ModuleDefinitionId = 1,
-        PermissionKey = permissionKey,
+        PermissionKey = permissionKey.ToString(),
         PermissionName = permissionKey + " Module",
     };
 

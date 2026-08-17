@@ -607,6 +607,16 @@ internal sealed class MemoryCacheService : ICacheService
             // invalidates it. The legacy portal clear evicted it too, through ClearTabsCache.
             Evict(TabPathCacheKey);
 
+            // TENANT RESOLUTION IS EVICTED HERE, AND THAT IS NOT MERELY TIDINESS. Its entries project the
+            // portal's name, its administrator account, its administrator and registered-user role keys and
+            // BOTH OF THOSE ROLES' NAMES - facts every authorisation decision in the request reads. A role
+            // rename, a role removal or a change of designated role happens on the role write path, which
+            // reaches this member and not the host one, so an entry surviving it would carry an
+            // authorisation fact that is no longer true. Evicted as a whole family rather than per portal
+            // because the entries are keyed by ADDRESS: attributing one to a portal would take the very
+            // query the family exists to avoid, and re-resolving costs a single index seek.
+            EvictTrackedCategory(PortalAliasCacheKey);
+
             // Tab-keyed and module-keyed, so not attributable to this portal without a query.
             EvictTrackedCategory(PrefixOf(TabModuleCacheKey));
             EvictTrackedCategory(PrefixOf(ModulePermissionCacheKey));
@@ -715,6 +725,12 @@ internal sealed class MemoryCacheService : ICacheService
             PrefixOf(ProfileDefinitionsCacheKey),
             PrefixOf(UserCacheKey),
             ModuleSettingsCacheKeyPrefix,
+
+            // Alias resolution is a FAMILY rather than a single entry, because the question is asked by
+            // address and an installation serves many. Its bare literal is still evicted by name in the host
+            // invalidation, for entries written by a path that bypassed this service, so both spellings are
+            // load bearing.
+            PortalAliasCacheKey,
 
             // The portal dictionary earns an entry of its own even though nothing sweeps it as a category,
             // because its literal key begins with the portal category's prefix.

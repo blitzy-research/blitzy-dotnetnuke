@@ -224,6 +224,48 @@ export function problemSupportReference(
   return traceId !== undefined && traceId.length > 0 ? traceId : null;
 }
 
+/**
+ * Recovers the problem document from whatever a failed request handed to an `error` callback.
+ *
+ * ⚠ THIS EXISTS SO THAT AN `error` CALLBACK CANNOT SILENTLY DISCARD THE SUPPORT REFERENCE. `HttpClient`
+ * delivers an `HttpErrorResponse` whose parsed body sits under `error`, so a callback written as
+ * `error: () => ...` - which is how several of them were written - throws away the correlation identifier
+ * the server took the trouble to send. Pairing this with {@link problemSupportReference} turns that
+ * callback into one that can still quote a reference, without each call site re-deriving the unwrapping.
+ *
+ * It is deliberately tolerant of shape: the argument is typed `unknown` because a transport failure, a
+ * parse failure and a thrown value all reach the same callback, and a wrong guess must yield `null` rather
+ * than throw inside an error handler.
+ *
+ * @param cause Whatever the failing observable passed to its `error` callback.
+ * @returns The problem document, or `null` when the value carries none.
+ */
+export function problemFrom(cause: unknown): ProblemDetails | null {
+  if (typeof cause !== 'object' || cause === null) {
+    return null;
+  }
+
+  // The `HttpErrorResponse.error` member holds the parsed body for a JSON error response.
+  const body: unknown = (cause as Record<string, unknown>)['error'];
+
+  if (isProblemDetails(body)) {
+    return body;
+  }
+
+  // A document thrown directly, rather than wrapped in a transport error.
+  return isProblemDetails(cause) ? cause : null;
+}
+
+/**
+ * The support reference for whatever a failed request handed to an `error` callback.
+ *
+ * @param cause Whatever the failing observable passed to its `error` callback.
+ * @returns The reference to quote, or `null` when the failure carries none.
+ */
+export function supportReferenceFor(cause: unknown): string | null {
+  return problemSupportReference(problemFrom(cause));
+}
+
 // ---------------------------------------------------------------------------
 // FIELD RESOLUTION
 // ---------------------------------------------------------------------------
@@ -416,6 +458,64 @@ export const FORBIDDEN = 'You do not have permission to perform this action.';
 /** Shown for 404. */
 export const NOT_FOUND = 'The requested item could not be found.';
 
+/** The status a record that is not on the server is reported at. */
+const MISSING_RECORD_STATUS = 404;
+
+/**
+ * THE ONE SENTENCE SHAPE EVERY DETAIL SCREEN USES FOR AN ADDRESSED RECORD THAT IS NOT ON THE SERVER, and
+ * authored here rather than four times because four copies is exactly how the four screens came to word
+ * the same outcome four different ways. `entity` is the noun as a reader would say it - "portal",
+ * "module", "role" - never an identifier and never a type name.
+ *
+ * The second clause is not padding: a reader who followed a bookmark needs to know the address was
+ * understood and the record is gone, which is a different situation from an address that was never a
+ * record identifier at all, and the two must not read alike.
+ *
+ * @param entity The record's noun, lower case.
+ * @returns The shared sentence for a record that is not there.
+ */
+export function missingEntityMessage(entity: string): string {
+  return `The ${entity} could not be found. It may have been removed.`;
+}
+
+/**
+ * A SYNTHESISED 404 DOCUMENT CARRYING `message`, so a missing record is stated by the shared banner -
+ * the application's single assertive owner for a failure - rather than by a paragraph the screen
+ * authors for itself. ⚠ THE DISTINCTION IS AUDIBLE, NOT COSMETIC. A paragraph that appears inside a
+ * branch is inserted into the document at the moment it first has something to say, and a region
+ * inserted with its first message is announced inconsistently; the banner's region is already there and
+ * only its contents change.
+ *
+ * Deliberately carries NO support reference. A record that is not there is a legitimate state rather
+ * than a fault, so there is no occurrence for anyone to look up, and a diagnostic quoted against one
+ * would send a reader to support for an answer support cannot give.
+ *
+ * @param message The sentence to state, usually from {@link missingEntityMessage}.
+ * @returns A problem document the shared banner will render as a refusal.
+ */
+export function missingEntityProblem(message: string): ProblemDetails {
+  return { status: MISSING_RECORD_STATUS, detail: message };
+}
+
+/**
+ * The caption of the one way out a detail screen offers once its record has gone. `listing` is the
+ * destination as the navigation names it, so the caption and the sidebar agree.
+ *
+ * @param listing The listing's own name.
+ * @returns The recovery caption.
+ */
+export function missingEntityRecoveryLabel(listing: string): string {
+  return `Back to ${listing}`;
+}
+
+/**
+ * Introduces the server's identifier for a failed request, and it EXPLAINS the identifier rather than
+ * merely labelling it. Measured finding: the bare label `Reference:` was shown on six user-facing
+ * errors, where it reads as an unexplained opaque value - it means nothing without the server's logs,
+ * which is exactly why it is safe to show, and equally why a reader has to be told what it is for.
+ */
+export const SUPPORT_REFERENCE_LEAD = 'If you report this, quote reference';
+
 /** Shown for 409, where the record changed underneath the caller. */
 export const CONFLICT =
   'This item was changed by someone else. Reload it and apply your changes again.';
@@ -504,8 +604,82 @@ export function transportProblem(
 }
 
 /**
+ * The `type` published on a contract failure. Namespaced like the server's own codes so that a consumer
+ * switching on {@link failureCode} can recognise it, and so it can never collide with one of them.
+ */
+export const CONTRACT_FAILURE_TYPE = 'urn:dnnmigration:client:response.unreadable';
+
+/** The {@link failureCode} form of {@link CONTRACT_FAILURE_TYPE}. */
+export const CONTRACT_FAILURE_CODE = 'response.unreadable';
+
+/** The title shown when the server answered, but in a shape this client cannot read. */
+export const CONTRACT_FAILURE_TITLE = 'Unexpected response';
+
+/**
+ * The sentence shown when the server answered, but in a shape this client cannot read.
+ *
+ * ⚠ DELIBERATELY NOT {@link NETWORK_UNREACHABLE}, AND THE DISTINCTION IS THE WHOLE REASON THIS EXISTS. A
+ * response that arrived and decoded badly and a request that never arrived at all are opposite faults with
+ * opposite remedies — one is a version or contract mismatch between this bundle and the API, the other is
+ * connectivity — and reporting both as "the server could not be reached" made the connectivity sentence
+ * untrustworthy, because it no longer meant connectivity.
+ */
+export const CONTRACT_UNREADABLE =
+  'The server answered in a form this application could not read, so nothing on this screen can be ' +
+  'trusted. Reload the screen; if it happens again, report the details shown here.';
+
+/**
+ * Builds a well-formed problem document for a response this client could not decode.
+ *
+ * The document deliberately carries NO `status`. The transport succeeded, so no transport status describes
+ * the fault; and `0` is already spoken for by {@link transportProblem} as "never arrived". An absent status
+ * resolves to `error` severity through {@link problemSeverity} and to a non-refusal through
+ * {@link isRefusalStatus}, which are both correct here.
+ *
+ * @param detail Wording naming what could not be read, appended to the standing sentence when supplied.
+ * @param supportReference The correlation identifier, when one is known.
+ * @returns A document with the same shape the server publishes.
+ */
+export function contractProblem(
+  detail: string | null = null,
+  supportReference: string | null = null,
+): ProblemDetails {
+  const suffix = stripLegacyBreakTags(detail);
+
+  const document: ProblemDetails = {
+    type: CONTRACT_FAILURE_TYPE,
+    title: CONTRACT_FAILURE_TITLE,
+    detail: suffix.length > 0 ? `${CONTRACT_UNREADABLE} (${suffix})` : CONTRACT_UNREADABLE,
+  };
+
+  return supportReference === null ? document : { ...document, correlationId: supportReference };
+}
+
+/**
+ * Whether a problem document describes a response this client could not read, rather than anything the
+ * server refused or failed.
+ *
+ * @param problem The problem document, or null.
+ * @returns True for a contract failure.
+ */
+export function isContractProblem(problem: ProblemDetails | null | undefined): boolean {
+  return problem?.type === CONTRACT_FAILURE_TYPE;
+}
+
+/**
  * Resolves everything the presentation layer needs about one failure. The single entry point a banner, a
  * notification or a signal store should use.
+ *
+ * ⚠ IT DOES NOT SUBSTITUTE {@link CONFLICT_MESSAGE} FOR THE DOCUMENT'S OWN SENTENCE, AND THAT RESTRAINT IS
+ * DELIBERATE - IT WAS TRIED HERE AND IS WRONG. Wording every recognised conflict code from the shared
+ * vocabulary at this level looks like the tidy way to make the surfaces consistent, and it breaks three
+ * things, because a code's MEANING is screen-dependent while its wording is not. `module.not_portable`
+ * arrives on both the export and the import screen and the legacy resources word it differently on each
+ * ("exporting of content" against "importing of content"), so a central substitution silently gives one of
+ * them the other's sentence. It also discards the server's own text where a screen is specifically
+ * responsible for proving that text is rendered inertly, and it captures documents whose status says the
+ * response never arrived. A screen that wants the legacy sentence asks {@link conflictMessage} for it, and
+ * therefore chooses which of its meanings applies.
  *
  * @param problem The problem document, or null when the response carried none.
  * @param fallback Optional wording to prefer over the status-derived sentence when the document carries

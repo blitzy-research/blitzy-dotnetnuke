@@ -24,6 +24,27 @@
 -->
 <app-error-banner [problem]="problem()" />
 
+<!--
+  ⚠ WHY THE CALLER IS HERE, WHICH THIS SCREEN USED TO LEAVE UNSAID. A caller owing required profile
+  details is landed here by the gate rather than arriving by choice, and the gate's own message is a
+  transient one that is gone by the time they start typing. Without a standing explanation on the screen
+  itself, the landing was indistinguishable from an ordinary visit while every other address was refused.
+
+  Polite rather than assertive: it describes the state of the screen they are already on, and it is rendered
+  on arrival rather than in response to an action.
+-->
+<!--
+  ⚠ A STANDING EXPLANATION, DELIBERATELY NOT A LIVE REGION. The guard that sent the caller here already
+  announces the redirect once through the transient-message surface, and a `role="status"` region carrying
+  the same fact would be a second announcement of one action - exactly the defect corrected for the sign-in
+  screen. `role="note"` matches the idiom this workspace already uses for a standing explanation of an
+  unexpected landing (`module-settings__administered`): it is reachable and semantically marked, and it
+  announces nothing.
+-->
+@if (landedForRemediation()) {
+  <p class="user-profile__remediation" role="note">{{ remediationExplanation }}</p>
+}
+
 <!-- The legacy layout table becomes a CSS grid stack, in both modes. -->
 @if (addressUnreadable()) {
 <!--
@@ -33,7 +54,14 @@
   parsed.
 -->
   <p class="user-profile__notice">{{ unreadableAddressMessage }}</p>
-} @else if (loading()) {
+} @else if (showLoadingPlaceholder()) {
+<!--
+  ⚠ GATED ON THERE BEING NOTHING TO REPLACE, and the measured defect this closes is that it was not. A
+  successful save RE-READS the profile, so this branch was re-entered immediately after every save and the
+  whole form - every label, every value just typed, the visibility selectors and both actions - was replaced
+  by this indicator until the confirming read landed. A read that arrives while fields are on screen keeps
+  them and reports itself through `aria-busy` and the status line beside the actions instead.
+-->
   <app-loading-spinner label="Loading profile…" />
 } @else if (!hasProperties()) {
 <!--
@@ -51,6 +79,18 @@
   configurations, and they are ONE component in two modes for that reason.
 -->
   <div class="user-profile">
+    @if (withheldProperties().length > 0) {
+      <!--
+        U13 - The declaration withholds these from the account's own owner, exactly as legacy did. Saying
+        so keeps the form from reading as the whole profile; their stored values are carried by every write.
+      -->
+      <p class="user-profile__withheld">
+        This site keeps {{ withheldProperties().length }} further profile
+        {{ withheldProperties().length === 1 ? 'detail' : 'details' }} that are not shown here. Saving this
+        form leaves {{ withheldProperties().length === 1 ? 'it' : 'them' }} unchanged.
+      </p>
+    }
+
     <div class="user-profile__groups">
       @for (section of sections(); track section.key) {
         <fieldset class="user-profile__group">
@@ -98,7 +138,44 @@
     </div>
   </div>
 } @else {
-  <form class="user-profile" [formGroup]="form()" (ngSubmit)="onSubmit()">
+  <form
+    class="user-profile"
+    [formGroup]="form()"
+    [attr.aria-busy]="busy() ? 'true' : null"
+    (ngSubmit)="onSubmit()"
+  >
+    @if (unmetRequired().length > 0) {
+      <!--
+        U12 - A MANDATORY PROPERTY DECLARED LAST SAT ~2400px BELOW THE FOLD WITH NOTHING POINTING TO IT.
+        Focus already moves to the first invalid control on a refused submit; what was missing was any way
+        to reach an unmet requirement BEFORE submitting, which is when the caller actually needs it.
+      -->
+      <div class="user-profile__outstanding">
+        <h2 class="user-profile__outstanding-heading">Still required</h2>
+        <ul class="user-profile__outstanding-list">
+          @for (value of unmetRequired(); track value.definition.propertyDefinitionId) {
+            <li>
+              <button type="button" class="user-profile__outstanding-link" (click)="reach(value)">
+                {{ reachLabel(value) }}
+              </button>
+            </li>
+          }
+        </ul>
+      </div>
+    }
+
+    @if (withheldProperties().length > 0) {
+      <!--
+        U13 - The declaration withholds these from the account's own owner, exactly as legacy did. Saying
+        so keeps the form from reading as the whole profile; their stored values are carried by every write.
+      -->
+      <p class="user-profile__withheld">
+        This site keeps {{ withheldProperties().length }} further profile
+        {{ withheldProperties().length === 1 ? 'detail' : 'details' }} that are not shown here. Saving this
+        form leaves {{ withheldProperties().length === 1 ? 'it' : 'them' }} unchanged.
+      </p>
+    }
+
     <div class="user-profile__groups">
 <!--
   Two of this screen's resource keys contain a space, and both are handled explicitly rather than left
@@ -196,6 +273,18 @@
                         [attr.aria-invalid]="hasError(value) ? 'true' : null"
                       />
                     }
+                    @if (isSeededFromDefault(value)) {
+                      <!--
+                        U14 - The value shown was seeded from the tenant's declared default because this
+                        account has no stored answer at all. Two accounts whose answer serialises
+                        identically as "" DID render differently, and this is what makes which of the two
+                        you are looking at legible.
+                      -->
+                      <span class="user-profile__seeded">
+                        <span aria-hidden="true">&#8226;</span>
+                        Suggested by this site; not yet saved for this account.
+                      </span>
+                    }
                   </app-form-field>
 
                   @if (visibilityOffered()) {
@@ -229,11 +318,23 @@
   validate, and it does here: an invalid form is not submitted and instead reveals the messages for
   controls the operator never visited.
 -->
-      <button type="submit" [disabled]="saving()"
-          [attr.aria-busy]="saving() ? 'true' : null">
+      <button class="form-action--primary" type="submit" [disabled]="busy()"
+          [attr.aria-busy]="busy() ? 'true' : null">
         {{ saving() ? 'Saving…' : 'Update' }}
       </button>
-      <button type="button" [disabled]="saving()" (click)="onReset()">Cancel</button>
+      <button type="button" [disabled]="busy()" (click)="onReset()">Cancel</button>
+<!--
+  ⚠ ONE LIVE REGION, AND THE INDICATOR INSIDE IT CARRIES NO LABEL OF ITS OWN. The shared spinner renders its
+  own visible label AND claims `role="status"` when given one, so labelling it here would nest one live region
+  inside another and announce a single transition twice. The sentence belongs to this region; the ring is a
+  decorative indicator beside it.
+-->
+      @if (busyMessage(); as pending) {
+        <p class="user-profile__pending" role="status" aria-live="polite">
+          <app-loading-spinner size="small" label="" />
+          {{ pending }}
+        </p>
+      }
     </div>
   </form>
 }

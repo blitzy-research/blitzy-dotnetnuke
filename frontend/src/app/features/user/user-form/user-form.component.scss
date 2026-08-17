@@ -149,11 +149,25 @@ p {
   margin-block-start: var(--space-3);
 }
 
+// ⚠ #22 — THE SHARED PLACEMENT, which this bar alone did not use. It centred its commands with a wider gap
+// while the portal, module, role and password forms all start-align theirs with `--space-2`, so the primary
+// action moved horizontally as an operator walked between screens - one of the three placements the review
+// counted across four create screens. Nothing here is bespoke any more.
 .user-form__actions {
   display: flex;
   flex-wrap: wrap;
-  justify-content: center;
-  gap: var(--space-3);
+  gap: var(--space-2);
+  align-items: center;
+}
+
+// The locked-account statement, sitting inside the wrapping action row beside the command that clears it.
+// `flex-basis: 100%` puts it on its own line rather than in the queue of buttons: it is a sentence, and a
+// sentence between two buttons reads as a label for one of them.
+.user-form__locked-out {
+  flex-basis: 100%;
+  margin-block: 0;
+  text-align: center;
+  color: var(--color-text-muted);
 }
 
 // ONE-TIME CREDENTIAL HAND-OVER
@@ -172,6 +186,55 @@ p {
 // heading spaces on the container's `gap` like everything else in it.
 .user-form__credential-title {
   margin-block: 0;
+}
+
+// The recovery surface for an account that could not be read. Bordered like the credential panel so the
+// two read as the same class of out-of-band notice, and muted rather than danger-coloured because the
+// shared banner immediately above is already carrying the failure at full weight.
+.user-form__unconfirmed {
+  display: grid;
+  gap: var(--space-2);
+  margin-block: var(--space-2);
+  padding: var(--space-3);
+  border: var(--border-width) var(--border-style) var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-surface);
+}
+
+.user-form__unconfirmed-message {
+  margin-block: 0;
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-tight);
+  color: var(--color-text-muted);
+}
+
+.user-form__unconfirmed-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+// The way out is an anchor rather than a button, because it navigates. It therefore inherits none of the
+// global `button` appearance and none of the pointer-target floor declared with it, so both are restated
+// here - the two controls sit side by side and must be indistinguishable in size and weight.
+a.user-form__recovery {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  min-inline-size: var(--target-size-min);
+  min-block-size: var(--target-size-min);
+  padding-block: var(--space-1);
+  padding-inline: var(--space-3);
+
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+  color: var(--color-primary);
+  text-decoration: none;
+
+  background-color: var(--color-surface);
+  border: var(--border-width) var(--border-style) var(--color-primary);
+  border-radius: var(--radius-sm);
 }
 
 .user-form__credential-advisory {
@@ -199,3 +262,4 @@ p {
 // MIGRATION: the spacing, radius and elevation scales that every value above resolves to are NET ADDITIONS.
 // The legacy design has no spacing system, is square-cornered and is flat. Nothing here reads a value the
 // legacy declared and changes it; the scales exist so that no value has to be written as a literal.
+

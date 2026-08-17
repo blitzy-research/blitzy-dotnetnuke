@@ -58,6 +58,7 @@ public static class ModuleMappings
             ModuleName = facts.ModuleName,
             Description = facts.Description,
             Version = facts.Version,
+            IsAdmin = facts.IsAdmin,
         };
     }
 
@@ -109,6 +110,9 @@ public static class ModuleMappings
             ModuleOrder = placement.ModuleOrder,
             CacheTime = placement.CacheTime,
             IconFile = placement.IconFile,
+            Alignment = placement.Alignment,
+            Color = placement.Color,
+            Border = placement.Border,
             Visibility = placement.Visibility,
             DisplayTitle = placement.DisplayTitle,
 
@@ -118,6 +122,7 @@ public static class ModuleMappings
             ModuleName = facts.ModuleName,
             Description = facts.Description,
             Version = facts.Version,
+            IsAdmin = facts.IsAdmin,
         };
     }
 
@@ -273,6 +278,14 @@ public static class ModuleMappings
         placement.ModuleOrder = request.ModuleOrder;
         placement.CacheTime = request.CacheTime;
         placement.IconFile = request.IconFile;
+
+        // The three container-appearance columns the legacy screen edited at
+        // `ModuleSettings.ascx.vb:L345-L347`. Assigned unconditionally, because a cleared field is a
+        // deliberate withdrawal of a stored value and not an omission.
+        placement.Alignment = request.Alignment;
+        placement.Color = request.Color;
+        placement.Border = request.Border;
+
         placement.Visibility = request.Visibility;
         placement.DisplayTitle = request.DisplayTitle;
     }

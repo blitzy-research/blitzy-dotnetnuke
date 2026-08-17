@@ -127,15 +127,26 @@ const EXPECTED_EXPORT_LABEL = 'Export';
 const EXPECTED_CANCEL_LABEL = 'Cancel';
 
 /**
- * `Export.ascx.resx` key `Validation.Text`, asserted VERBATIM.
+ * The wording shown when the filename is missing.
  *
- * The sentence names two things because the legacy gate at `Export.ascx.vb:L121` tested two -
- * `cboFolders.SelectedIndex <> 0 And txtFile.Text <> ""`. The folder half is gone with the folder picker, so
- * only the filename half is enforced; the sentence is nonetheless carried across unaltered, because the
- * operator-facing wording is part of the contract this migration preserves. The narrowing is the documented
- * divergence; the words are not. A reworded sentence must fail this expectation.
+ * ⚠ DELIBERATELY NOT THE LEGACY SENTENCE, AND THIS EXPECTATION IS WHERE THAT IS PINNED. `Export.ascx.resx`
+ * key `Validation.Text` read "You must specify a folder and file for export" because the legacy gate at
+ * `Export.ascx.vb:L121` tested two things - `cboFolders.SelectedIndex <> 0 And txtFile.Text <> ""`. The
+ * folder half is gone with the folder picker, whose whole file-system surface is out of scope, so the legacy
+ * sentence named a control this screen does not have and sent the operator looking for it. Verbatim wording
+ * is preserved wherever the legacy control still exists; where it does not, an accurate sentence beats a
+ * faithful one. Recorded in `MIGRATION_NOTES.md`.
  */
-const EXPECTED_VALIDATION_MESSAGE = 'You must specify a folder and file for export';
+const EXPECTED_VALIDATION_MESSAGE = 'You must specify a file name for the export.';
+
+/**
+ * The legacy sentence, retained here as the wording that must NOT be shown.
+ *
+ * Kept explicit rather than deleted so that a later change reinstating it - by reverting to the resource
+ * value on parity grounds - fails a test that explains why it was departed from, instead of quietly putting
+ * a missing folder picker back in front of the operator.
+ */
+const SUPERSEDED_VALIDATION_MESSAGE = 'You must specify a folder and file for export';
 
 /**
  * `Export.ascx.resx` key `ExportNotSupported.Text`, asserted VERBATIM.
@@ -233,12 +244,16 @@ function moduleOf(overrides: Partial<ModuleDetail> = {}): ModuleDetail {
     moduleOrder: 6,
     cacheTime: 120,
     iconFile: 'module.gif',
+    alignment: null,
+    color: null,
+    border: null,
     visibility: MODULE_VISIBILITY.maximized,
     displayTitle: true,
     friendlyName: 'News Announcer',
     moduleName: 'Announcements',
     description: 'Announcement content',
     version: '01.00.00',
+    isAdmin: false,
     ...overrides,
   };
 }
@@ -1236,10 +1251,13 @@ describe('ModuleExportComponent', () => {
 
       submitForm();
 
-      // The wording is the legacy resource value character for character. It names a folder as well as a
-      // file, because the legacy gate tested both; the folder half of the rule is gone with the picker, and
-      // the narrowing is the documented divergence while the words are not.
+      // The wording names only what this screen actually asks for. The legacy value named a folder as well,
+      // because the legacy gate tested both, and the folder picker is out of scope - so the sentence was
+      // narrowed with it rather than carried across naming a control that is not here.
       expect(fieldMessages()).toEqual([EXPECTED_VALIDATION_MESSAGE]);
+      expect(fieldMessages().join(' '))
+        .withContext('and it does not send the operator looking for a folder picker')
+        .not.toContain(SUPERSEDED_VALIDATION_MESSAGE);
 
       // NO REQUEST WHILE THE FORM IS INVALID. Asserted positively here as well as by the outstanding-request
       // check at teardown.
@@ -1352,7 +1370,7 @@ describe('ModuleExportComponent', () => {
       expect(textOf('.error-banner__severity')).toBe('Error');
       expect(q('.error-banner')?.getAttribute('data-severity')).toBe('danger');
       expect(textOf('.error-banner__trace')).toBe(
-        'Reference: 8f7c1b2d-4a6e-4f10-9c3b-5d2e7a1f0b64',
+        'If you report this, quote reference 8f7c1b2d-4a6e-4f10-9c3b-5d2e7a1f0b64.',
       );
 
       // Nothing was offered to the browser, and nothing was reported as a success.
@@ -1781,9 +1799,22 @@ describe('ModuleExportComponent', () => {
       expect(qa('h1').length).toBe(1);
       // Taken from the paragraph inside the legacy help entry; the heading element in that same value
       // duplicates the title, and the shared page header already emits the page's only `h1`.
-      expect(textOf('.page-header__subtitle')).toBe(
-        'Administrators can export content for the specified module.',
-      );
+      const subtitle: string = textOf('.page-header__subtitle') ?? '';
+
+      expect(subtitle)
+        .withContext('the legacy sentence is carried verbatim, and it comes first')
+        .toContain('Administrators can export content for the specified module.');
+
+      // ⚠ AND THE OUTCOME IS STATED, WHICH THE LEGACY SENTENCE NEVER DID. Reported: the screen named the
+      // operation and its audience and said nothing about what pressing Export produces or where it goes -
+      // on a screen whose legacy predecessor made that self-evident by having the operator choose the
+      // destination folder themselves. Continuing the sentence is not replacing it.
+      expect(subtitle.toLowerCase())
+        .withContext('and the reader is told what the operation produces')
+        .toContain('xml document');
+      expect(subtitle.toLowerCase())
+        .withContext('and where it goes')
+        .toContain('downloaded to this device');
     });
 
     it('labels the field from the resource entry and associates the label with the control', () => {

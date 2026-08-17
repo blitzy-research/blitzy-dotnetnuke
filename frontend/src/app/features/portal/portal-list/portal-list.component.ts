@@ -13,17 +13,19 @@ import {
   untracked,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { PORTAL_LIST_ROUTE } from '../../../core/config/app-routes.config';
+import { ListReturnStore } from '../../../core/state/list-return.store';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 
 import { problemDetailsMessage } from '../../../core/models/problem-details.model';
 import { NotificationService } from '../../../core/services/notification.service';
 import { AuthStore } from '../../../core/state/auth.store';
 import { PortalStore } from '../../../core/state/portal.store';
+import { AbsentValueComponent } from '../../../shared/components/absent-value/absent-value.component';
 import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialog/confirm-dialog.component';
+import { RovingFocusDirective } from '../../../shared/directives/roving-focus.directive';
 import { DataTableComponent } from '../../../shared/components/data-table/data-table.component';
-import { EmptyStateComponent } from '../../../shared/components/empty-state/empty-state.component';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
-import { LoadingSpinnerComponent } from '../../../shared/components/loading-spinner/loading-spinner.component';
 import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
 import { PaginationComponent } from '../../../shared/components/pagination/pagination.component';
 import { SearchInputComponent } from '../../../shared/components/search-input/search-input.component';
@@ -87,6 +89,23 @@ const USERS_COLUMN_KEY = 'users';
 
 /** Column key of the page tally. See {@link USERS_COLUMN_KEY}. */
 const PAGES_COLUMN_KEY = 'pages';
+
+/**
+ * Column key of the disk allowance. See {@link USERS_COLUMN_KEY}.
+ *
+ * ⚠ THE MEASURED DEFECT THIS CLOSES. This column was declared as a PLAIN FIELD while the two tallies
+ * beside it were template columns, so a portal holding the legacy absent-integer marker painted a literal
+ * `-1` in Disk Space and an em dash in Users and Pages - on the SAME ROW. `-1` read as a real,
+ * negative allowance, and Rule T7 is explicit that sentinels survive at the boundary and not in the
+ * display.
+ *
+ * Legacy treated all three identically and gave none of them any treatment at all:
+ * `Website/admin/Portal/portals.ascx:L44-L46` declares Users, Pages and DiskSpace as bare
+ * `dnn:textcolumn` data fields, so the legacy grid printed `-1` in every one of them. The dash marker is
+ * therefore a deliberate divergence that was already taken for two of the three columns; this makes the
+ * third agree with them rather than introducing a new idea.
+ */
+const DISK_SPACE_COLUMN_KEY = 'hostSpace';
 
 /** `DiskSpace.Header`. */
 const DISK_SPACE_HEADING = 'Disk Space';
@@ -220,14 +239,6 @@ const HTTP_CONFLICT = 409;
  */
 const ABSENT_INTEGER = -1;
 
-/**
- * What a tally cell paints when it holds the absent-integer marker. An EM DASH, U+2014, which is the
- * conventional "no value" mark and is announced as such.
- */
-const ABSENT_TALLY_MARK = '\u2014';
-
-/** The words behind {@link ABSENT_TALLY_MARK}, for the accessibility tree. */
-const ABSENT_TALLY_DESCRIPTION = 'not recorded';
 
 // THE ADDRESS CONTRACT
 
@@ -322,7 +333,11 @@ function resolveExpiryState(expiryDate: string | null, now: Date): PortalExpiryS
  * @returns The mark when the value is the absent-integer marker, otherwise the number as text.
  */
 function formatTally(tally: number): string {
-  return tally === ABSENT_INTEGER ? ABSENT_TALLY_MARK : String(tally);
+  // ⚠ THE MARK ITSELF IS NO LONGER COMPOSED HERE. The absent case is rendered by the shared absent-value
+  // component, which owns the mark, its colour and the words behind it for every listing; the cell's template
+  // asks `isTallyAbsent` and takes that branch, so this formatter is only ever reached for a real number. The
+  // empty string is returned for the marker so that a caller which does reach it cannot paint minus one.
+  return tally === ABSENT_INTEGER ? '' : String(tally);
 }
 
 // VIEW-MODEL TYPES
@@ -507,6 +522,14 @@ function stripLeadingBreakTags(message: string): string {
   return message.replace(LEADING_BREAK_TAGS, '');
 }
 
+/**
+ * THE SUBTITLE, UNDER THE APPLICATION'S ONE SUBTITLE RULE: exactly one per screen, stating that screen's
+ * SCOPE - the record it acts on when the title does not already name it, otherwise what the screen is for
+ * in one line - and never a status, a count or a progress readout.
+ */
+const PAGE_SUBTITLE =
+  'The portals hosted by this installation.';
+
 @Component({
   selector: 'app-portal-list',
   standalone: true,
@@ -523,16 +546,13 @@ function stripLeadingBreakTags(message: string): string {
     PaginationComponent,
     // The row-deletion confirmation. Its presence in the DOM is what "open" means.
     ConfirmDialogComponent,
-    // The zero-result surface, which also carries the add action so an operator looking at an empty list is
-    // not left without a way forward.
-    EmptyStateComponent,
-    // Shown only while the FIRST page is being read; later reads use the grid's own indicator so the rows
-    // already on screen are not replaced by a spinner.
-    LoadingSpinnerComponent,
+    // The ONE rendering of an absent value, shared with every other listing.
+    AbsentValueComponent,
     // The structured-failure surface, which carries its own live region.
     ErrorBannerComponent,
     // Renders the expiry column, and is the reason that column needs no formatter here.
     DateDisplayPipe,
+    RovingFocusDirective,
   ],
   templateUrl: './portal-list.component.html',
   styleUrl: './portal-list.component.scss',
@@ -569,6 +589,9 @@ export class PortalListComponent implements OnInit {
    * heading - navigates, and the address change is what reaches the store.
    */
   private readonly router = inject(Router);
+
+  /** Where this listing stands, so a form returning to it lands on the same page and filter. */
+  private readonly listReturn = inject(ListReturnStore);
 
   // CELL TEMPLATES
   // Static queries, so they resolve before `ngOnInit` and the column set can be assembled there. A template
@@ -720,7 +743,14 @@ export class PortalListComponent implements OnInit {
    * read.
    */
   protected readonly showInitialSpinner: Signal<boolean> = computed<boolean>(
-    () => this.loading() && this.portals().length === 0,
+    // ⚠ THE UN-ASKED STATE COUNTS AS LOADING, AND LEAVING IT OUT IS WHAT CAUSED THE EMPTY-TABLE FLASH. The
+    // read is issued from the address subscription, so between this component mounting and that request
+    // going out there is a change-detection pass in which `loading()` is still false and no rows are held -
+    // and every screen read that as a genuine zero-result and painted "No records found." for a listing it
+    // had not yet asked about. Measured on every post-save return to a listing. `listSettled` is the store's
+    // own record of whether a read has ever settled, so an un-asked listing now shows the same indicator as
+    // one that is mid-request, which is what it actually is.
+    () => (this.loading() || !this.store.listSettled()) && this.portals().length === 0,
   );
 
   /**
@@ -768,6 +798,9 @@ export class PortalListComponent implements OnInit {
   // Wording, exposed for the template and for specifications
 
   /** `ControlTitle_.Text`. */
+  /** The one-line scope statement shown beneath the title. */
+  protected readonly pageSubtitle = PAGE_SUBTITLE;
+
   protected readonly heading = PAGE_TITLE;
 
   /** `AddContent.Action`. */
@@ -775,6 +808,13 @@ export class PortalListComponent implements OnInit {
 
   /** The grid's clipped accessible name. */
   protected readonly gridCaption = GRID_CAPTION;
+
+  /**
+   * What the grid's progress indicator says while a read is in flight. Names the collection rather than
+   * saying "Loading…", so the announcement identifies WHAT is loading; the same label serves the first-read
+   * placeholder and the refetch strip, so this screen has one loading vocabulary.
+   */
+  protected readonly loadingLabel = 'Loading portals…';
 
   /** Accessible name for the first-letter filter group. */
   protected readonly filterStripLabel = FILTER_STRIP_LABEL;
@@ -817,11 +857,28 @@ export class PortalListComponent implements OnInit {
 
   private readonly today = signal<Date>(new Date());
 
-  /** The mark a tally cell paints in place of the absent-integer marker. */
-  protected readonly absentTallyMark = ABSENT_TALLY_MARK;
-
-  /** The words behind that mark, announced but not painted. */
-  protected readonly absentTallyDescription = ABSENT_TALLY_DESCRIPTION;
+  /**
+   * Whether a portal's hosting term records an expiry at all.
+   *
+   * ⚠ THE CELL NEEDS THIS BECAUSE THE DISPLAY PIPE CANNOT SAY IT. The pipe answers the empty string for an
+   * absent instant, which is why six of seven expiry cells rendered nothing whatsoever - no text, no children,
+   * and nothing for a screen reader either. The template asks this first and renders the shared absent-value
+   * mark instead, so an unrecorded term is stated rather than left blank.
+   *
+   * @param portal The row.
+   * @returns True when an expiry instant is recorded.
+   */
+  protected hasExpiry(portal: PortalListItem): boolean {
+    // ⚠ THE PIPE'S OWN PARSER IS ASKED, RATHER THAN THIS METHOD DECIDING FOR ITSELF, AND THE DIFFERENCE IS
+    // A DEFECT THIS FIXED. A presence test on the string was true for the LEGACY ABSENT-DATE MARKER — the
+    // wire carries `0001-01-01T00:00:00Z`, which is a non-empty string and a real ISO instant — so the cell
+    // took the "there is a date" branch and then painted the pipe's answer for it, which is the empty
+    // string. The result was the very blank cell the shared absent value exists to end, on precisely the
+    // rows most likely to carry it. `Portals.ascx.vb:L250-L260` treated that marker as "no expiry", and the
+    // parser is the one place in this workspace that encodes it, so both verdicts now come from it: a
+    // qualifier can never be painted beside an empty cell, and a date can never be painted without one.
+    return parseDisplayInstant(portal.expiryDate) !== null;
+  }
 
   /**
    * The name filter as this screen last asked for, or `undefined` when it has asked for none yet. ⚠ THIS
@@ -907,6 +964,13 @@ export class PortalListComponent implements OnInit {
 
           return;
         }
+
+        // ⚠ REMEMBERED HERE, WHERE THE COORDINATE IS ALREADY SETTLED AND ALREADY CANONICAL. The branch above
+        // rewrites a non-canonical address and returns, so by this line the parameters are the ones the
+        // listing will actually read - which is what a form must be returned to. Recording it at this single
+        // point covers every route into a changed coordinate, whether the operator paged, filtered, sorted
+        // or arrived on a pasted address, without each of those handlers having to remember to say so.
+        this.listReturn.remember(PORTAL_LIST_ROUTE, serialiseListQuery(query));
 
         this.store.applyListQuery(query);
       });
@@ -1046,10 +1110,13 @@ export class PortalListComponent implements OnInit {
         return portal.users;
       case PAGES_COLUMN_KEY:
         return portal.pages;
+      case DISK_SPACE_COLUMN_KEY:
+        return portal.hostSpace;
       default:
         throw new Error(
           `The shared tally cell template was rendered for column "${columnKey}", which is not a tally ` +
-            `column. It serves "${USERS_COLUMN_KEY}" and "${PAGES_COLUMN_KEY}" only.`,
+            `column. It serves "${USERS_COLUMN_KEY}", "${PAGES_COLUMN_KEY}" and ` +
+            `"${DISK_SPACE_COLUMN_KEY}" only.`,
         );
     }
   }
@@ -1327,7 +1394,8 @@ export class PortalListComponent implements OnInit {
         headerHidden: true,
         headerAlign: 'center',
         bodyAlign: 'center',
-        width: 'min-content',
+        // The command track, sized for the target it holds. See the token for why `min-content` was wrong.
+        width: 'var(--table-command-column-text-inline-size)',
         kind: 'actions',
         cellTemplate: this.requireTemplate(this.editCommandTemplate, 'editCommand'),
       },
@@ -1339,7 +1407,7 @@ export class PortalListComponent implements OnInit {
         headerHidden: true,
         headerAlign: 'center',
         bodyAlign: 'center',
-        width: 'min-content',
+        width: 'var(--table-command-column-text-inline-size)',
         kind: 'actions',
         cellTemplate: this.requireTemplate(this.deleteCommandTemplate, 'deleteCommand'),
       },
@@ -1350,6 +1418,13 @@ export class PortalListComponent implements OnInit {
         label: PORTAL_ID_HEADING,
         headerAlign: 'start',
         bodyAlign: 'start',
+        // ⚠ WIDTHS ARE DECLARED ON EVERY COLUMN OF THIS GRID, AND THE ABSENCE OF THEM WAS A MEASURED DEFECT.
+        // A fixed table layout gives every track with no declared width the SAME share, so a three-character
+        // identifier was as wide as a portal title: at 1440 the title and host columns broke names mid-word
+        // - "Administrato / rs" - while the identifier column sat mostly empty, and at 375 every track
+        // resolved near 49px. The percentages below weight each track by what its content actually needs.
+        width: '9.5%',
+        atomic: true,
         field: 'portalId',
         // Ordering: the key IS the endpoint's own sort name. See the sortability note on this class.
         sortable: true,
@@ -1363,6 +1438,18 @@ export class PortalListComponent implements OnInit {
         label: TITLE_HEADING,
         headerAlign: 'start',
         bodyAlign: 'start',
+        // ⚠ THIS COLUMN DELIBERATELY DECLARES NO WIDTH, AND EXACTLY ONE COLUMN PER GRID MUST NOT.
+        //
+        // Under `table-layout: fixed` the percentage tracks are resolved against the table width and whatever
+        // is LEFT OVER is handed to the columns that declared something else. With every column weighted, that
+        // leftover went to the two command columns: they asked for 5rem each and painted 89.875px, so the icon
+        // columns were as wide as a title column while the titles broke mid-word — the very defect the
+        // weighting exists to end. Proven with a probe: `52px`, `3.25rem` and the token all rendered 909.73px
+        // beside percentages summing to 24%.
+        //
+        // The title is the right column to carry the slack: it holds the longest free-text value on the
+        // screen, it is this row's header and its only inbound affordance, and it is the column a reader
+        // scans. Every other column now gets exactly the share it declares.
         // ⚠ MAJOR (reachability) — A TEMPLATE COLUMN RATHER THAN A BOUND ONE, so the title can carry the
         // record screen's only inbound affordance.
         kind: 'template',
@@ -1378,6 +1465,7 @@ export class PortalListComponent implements OnInit {
         label: ALIASES_HEADING,
         headerAlign: 'start',
         bodyAlign: 'start',
+        width: '13%',
         kind: 'template',
         cellTemplate: this.requireTemplate(this.aliasesCellTemplate, 'aliasesCell'),
       },
@@ -1387,6 +1475,7 @@ export class PortalListComponent implements OnInit {
         label: USERS_HEADING,
         headerAlign: 'center',
         bodyAlign: 'center',
+        width: '7%',
         kind: 'template',
         cellTemplate: this.requireTemplate(this.tallyCellTemplate, 'tallyCell'),
       },
@@ -1396,16 +1485,23 @@ export class PortalListComponent implements OnInit {
         label: PAGES_HEADING,
         headerAlign: 'center',
         bodyAlign: 'center',
+        width: '7%',
         kind: 'template',
         cellTemplate: this.requireTemplate(this.tallyCellTemplate, 'tallyCell'),
       },
 
+      // ⚠ A TEMPLATE COLUMN, so the absent-integer marker is rendered rather than printed. See
+      // {@link DISK_SPACE_COLUMN_KEY}. Ordering is unaffected: the server still sorts on the STORED value,
+      // so a row carrying the marker keeps the place the server gave it instead of being reordered by a
+      // display rule - the same arrangement the expiry column states for itself.
       {
-        key: 'hostSpace',
+        key: DISK_SPACE_COLUMN_KEY,
         label: DISK_SPACE_HEADING,
         headerAlign: 'center',
         bodyAlign: 'center',
-        field: 'hostSpace',
+        width: '11.5%',
+        kind: 'template',
+        cellTemplate: this.requireTemplate(this.tallyCellTemplate, 'tallyCell'),
         sortable: true,
       },
 
@@ -1417,6 +1513,10 @@ export class PortalListComponent implements OnInit {
         label: HOSTING_FEE_HEADING,
         headerAlign: 'center',
         bodyAlign: 'center',
+        // NOT `atomic`: the cell carries a qualifier after the figure on the rows that need one, and clipping
+        // that qualifier would remove information. The figure itself is held together by `data-atomic-value`
+        // in the paired template.
+        width: '10%',
         kind: 'template',
         cellTemplate: this.requireTemplate(this.hostFeeCellTemplate, 'hostFeeCell'),
         sortable: true,
@@ -1428,6 +1528,8 @@ export class PortalListComponent implements OnInit {
         label: EXPIRES_HEADING,
         headerAlign: 'center',
         bodyAlign: 'center',
+        // NOT `atomic`, for the same reason as the fee: an expired row carries a marker after the date.
+        width: '12%',
         kind: 'template',
         cellTemplate: this.requireTemplate(this.expiresCellTemplate, 'expiresCell'),
         // Ordered on the STORED date, so the rows an absent expiry paints as an empty cell still take their

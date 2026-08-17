@@ -185,6 +185,7 @@ describe('SessionLifecycleService', () => {
           moduleName: 'Announcements',
           description: null,
           version: '01.00.00',
+          isAdmin: false,
         },
       ],
       meta: { totalCount: 1, pageIndex: 0, pageSize: 10, totalPages: 1 },

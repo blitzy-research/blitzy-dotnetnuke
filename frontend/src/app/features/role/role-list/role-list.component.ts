@@ -14,6 +14,11 @@ import {
   type WritableSignal,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import {
+  MEMBERSHIP_SETTINGS_ROUTE,
+  ROLE_LIST_ROUTE,
+} from '../../../core/config/app-routes.config';
+import { ListReturnStore } from '../../../core/state/list-return.store';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 
@@ -43,6 +48,11 @@ import {
   fieldErrorMessages,
   stripLegacyBreakTags,
 } from '../../../core/utils/form-errors.util';
+import {
+  ABSENT_VALUE_DESCRIPTION as SHARED_ABSENT_VALUE_DESCRIPTION,
+  ABSENT_VALUE_MARK as SHARED_ABSENT_VALUE_MARK,
+  AbsentValueComponent,
+} from '../../../shared/components/absent-value/absent-value.component';
 import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialog/confirm-dialog.component';
 import { DataTableComponent } from '../../../shared/components/data-table/data-table.component';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
@@ -278,8 +288,13 @@ const SHOW_ALL_ROLES_LABEL = 'Show All Roles';
 /** Target of the legacy `AddGroup.Action` module action. */
 const ADD_ROLE_GROUP_LINK = '/role-groups/new';
 
-/** Target of the legacy `UserSettings.Action` module action. */
-const MEMBERSHIP_SETTINGS_LINK = '/settings/membership';
+/**
+ * Target of the legacy `UserSettings.Action` module action.
+ *
+ * Aliased from the shared declaration rather than spelled again here, now that the module listing names the
+ * same address for an administrative module's settings.
+ */
+const MEMBERSHIP_SETTINGS_LINK = MEMBERSHIP_SETTINGS_ROUTE;
 
 // WORDING
 
@@ -294,6 +309,12 @@ const GROUP_FILTER_HELP = 'Select the Role Group you would like to view';
 
 /** `SharedResources.resx` L834 &rarr; `AllRoles.Text`, stored as `&lt; All Roles &gt;`. */
 const ALL_ROLES_OPTION_LABEL = '< All Roles >';
+
+/** Why the listing is empty when a real group is selected: the narrowing, not the absence of roles. */
+const EMPTY_GROUP_MESSAGE = 'No roles belong to the selected role group.';
+
+/** Why the listing is empty when nothing is narrowing it. */
+const EMPTY_LISTING_MESSAGE = 'No security roles have been defined for this site yet.';
 
 /** `SharedResources.resx` L837 &rarr; `GlobalRoles.Text`, stored as `&lt; Global Roles &gt;`. */
 const GLOBAL_ROLES_OPTION_LABEL = '< Global Roles >';
@@ -348,6 +369,19 @@ const GROUP_DESCRIPTION_TOO_LONG_MESSAGE = 'A description may be at most 1000 ch
  */
 const DELETE_CONFIRMATION_MESSAGE = 'Are You Sure You Wish To Delete This Item?';
 
+/**
+ * Appends the identity of the record being destroyed to the legacy question, or returns the question alone
+ * when there is no record in hand or it carries no usable name.
+ *
+ * @param name The record's name, if there is a record.
+ * @returns The confirmation body.
+ */
+function nameRemoval(name: string | undefined): string {
+  const named: string = (name ?? '').trim();
+
+  return named.length === 0 ? DELETE_CONFIRMATION_MESSAGE : `${DELETE_CONFIRMATION_MESSAGE} ${named}`;
+}
+
 /** Affirmative button wording for the group-removal confirmation. */
 const DELETE_CONFIRMATION_LABEL = 'Delete';
 
@@ -373,10 +407,46 @@ const NO_ROLES: readonly RoleListItem[] = Object.freeze([]);
 
 /** Name of the group-name control, matched against the problem document's field keys. */
 /** The mark drawn where a period or a fee was never recorded — an em dash. */
-const ABSENT_VALUE_MARK = '\u2014';
+const ABSENT_VALUE_MARK = SHARED_ABSENT_VALUE_MARK;
+
+/**
+ * The word painted where a fee is a recorded ZERO. A word rather than the figure, because "0.00" and "0.01"
+ * are one keystroke apart on screen and the difference between them is the whole question this column answers.
+ */
+const FREE_FEE_LABEL = 'Free';
+
+/** What {@link FREE_FEE_LABEL} stands for, announced with the amount it replaces so nothing is withheld. */
+const FREE_FEE_DESCRIPTION = 'no charge, amount ';
+
+/**
+ * The word behind a negative amount, for the accessibility tree only — R3.
+ *
+ * ⚠ THE SAME TREATMENT THE PORTAL LISTING ALREADY GIVES THE SAME STATE, reused rather than reinvented. A
+ * negative fee there is painted in the danger colour at bold weight with this word clipped beside it, so the
+ * sign is never carried by colour alone (WCAG 1.4.1); on this grid the identical state was a bare text node
+ * in the ordinary colour and weight, indistinguishable from a positive amount but for one minus glyph.
+ */
+const NEGATIVE_FEE_QUALIFIER = 'negative';
+
+/** The zero-result sentence for a page addressed beyond the end of a real result set — R5. */
+const PAST_END_MESSAGE = 'This page is past the end of the results. Return to the first page.';
+
+/** The wording of the return-to-first-page affordance — R5. */
+const FIRST_PAGE_LABEL = 'First page';
 
 /** The words behind {@link ABSENT_VALUE_MARK}, for the accessibility tree. */
-const ABSENT_VALUE_DESCRIPTION = 'not recorded';
+const ABSENT_VALUE_DESCRIPTION = SHARED_ABSENT_VALUE_DESCRIPTION;
+
+/**
+ * What a stored frequency character means when it is not one of the six this console publishes wording
+ * for. `Roles.BillingFrequency` and `Roles.TrialFrequency` are `char(1)`, and although
+ * `FK_Roles_CodeFrequency` names a lookup table, a real installation can hold a code this console has no
+ * word for. The character itself keeps being painted - it is load-bearing data and the legacy grid bound
+ * the raw field - but it must not reach a reader as SILENCE, which is what an empty sr-only sibling was.
+ */
+const UNNAMEABLE_FREQUENCY_DESCRIPTION_PREFIX = 'frequency code ';
+
+const UNNAMEABLE_FREQUENCY_DESCRIPTION_SUFFIX = ', name unavailable';
 
 const GROUP_NAME_CONTROL = 'roleGroupName';
 
@@ -464,6 +534,14 @@ interface AwaitedGroupMutation {
  * The Security Roles listing screen. Migrated from `Website/admin/Security/roles.ascx` and its 317-line
  * code-behind `Roles.ascx.vb`.
  */
+/**
+ * THE SUBTITLE, UNDER THE APPLICATION'S ONE SUBTITLE RULE: exactly one per screen, stating that screen's
+ * SCOPE - the record it acts on when the title does not already name it, otherwise what the screen is for
+ * in one line - and never a status, a count or a progress readout.
+ */
+const PAGE_SUBTITLE =
+  'The security roles on this site, and the groups they belong to.';
+
 @Component({
   selector: 'app-role-list',
   standalone: true,
@@ -482,6 +560,8 @@ interface AwaitedGroupMutation {
     // The group-filter row and the two controls of the inline group editor.
     FormFieldComponent,
     // The group-removal confirmation. Its presence in the DOM is what "open" means.
+    // The ONE rendering of an absent value, shared with every other listing.
+    AbsentValueComponent,
     ConfirmDialogComponent,
     // Inline surface for a listing that could not be fetched.
     ErrorBannerComponent,
@@ -507,6 +587,11 @@ export class RoleListComponent implements OnInit {
   private readonly route = inject(ActivatedRoute);
 
   private readonly router = inject(Router);
+
+
+  /** Where this listing stands, so a form returning to it restores the same place. */
+
+  private readonly listReturn = inject(ListReturnStore);
 
   /** Ties the address subscription to this component's lifetime. */
   private readonly destroyRef = inject(DestroyRef);
@@ -691,6 +776,19 @@ export class RoleListComponent implements OnInit {
     () => this.store.rolesLoading() || this.store.heldRolesLoading(),
   );
 
+  /**
+   * What the GRID is told about waiting, which is broader than "a request is in flight".
+   *
+   * ⚠ AN UN-ASKED LISTING IS A WAITING LISTING, NOT AN EMPTY ONE, and conflating the two is the measured
+   * empty-table flash. The shared grid prefers its waiting placeholder over its empty one, so handing it
+   * this instead of the raw in-flight flag is what stops a listing that has not been read yet from
+   * asserting that the tenant has no roles. The store's latch is raised on a read's success AND on its
+   * failure, so this cannot leave a spinner standing over a failure the grid is able to report.
+   */
+  protected readonly listWaiting = computed<boolean>(
+    () => this.loading() || !this.store.listSettled(),
+  );
+
   /** Whether a mutation is in flight; disables the editor and the removal affordance. */
   protected readonly saving = this.store.saving;
 
@@ -828,6 +926,15 @@ export class RoleListComponent implements OnInit {
     }
   });
 
+  /**
+   * Whether the ROLE LISTING READ failed, so zero rows describes a failure rather than a tenant with no
+   * roles. Narrowed to the listing operation on purpose: a failed WRITE says nothing about whether the rows
+   * on screen are trustworthy, and would wrongly withdraw the empty state after, say, a refused deletion.
+   */
+  protected readonly listFailed = computed<boolean>(
+    () => this.store.failure()?.operation === 'loadRoles',
+  );
+
   /** The problem document to show inline, or null when nothing failed to load. */
   protected readonly loadProblem = computed<ProblemDetails | null>(() => {
     const failure: RoleStoreFailure | null = this.store.failure();
@@ -901,11 +1008,20 @@ export class RoleListComponent implements OnInit {
   /** Page heading: `ControlTitle_.Text`. */
   protected readonly pageTitle = PAGE_TITLE;
 
+  /**
+   * What the grid's progress indicator says while a read is in flight. Names the collection rather than
+   * saying "Loading…", so the announcement identifies WHAT is loading; the same label serves the first-read
+   * placeholder and the refetch strip, so this screen has one loading vocabulary.
+   */
+  protected readonly loadingLabel = 'Loading roles…';
+
   protected readonly accountSubtitle = computed<string | undefined>(() => {
     const subject: number | undefined = this.userId();
 
     if (subject === undefined) {
-      return undefined;
+      // Not filtered to one account, so the scope is the listing itself. The slot is never left empty:
+      // under the subtitle rule every screen states its scope, and this listing's scope is the site's roles.
+      return PAGE_SUBTITLE;
     }
 
     const named: string | null =
@@ -1023,7 +1139,35 @@ export class RoleListComponent implements OnInit {
   protected readonly membershipSettingsLink = MEMBERSHIP_SETTINGS_LINK;
 
   /** Body of the removal confirmation: `DeleteItem.Text`. */
-  protected readonly removalMessage = DELETE_CONFIRMATION_MESSAGE;
+  /**
+   * The confirmation body: the legacy question verbatim, then WHICH record it means.
+   *
+   * ⚠ THE MEASURED DEFECT. The dialog read only "Are You Sure You Wish To Delete This Item?" and named nothing at
+   * all - searched against every identifier on the page it matched none of them - while being a real modal
+   * that PHYSICALLY COVERS the grid behind it. Measured with the sixth row targeted, it overlaid the three
+   * rows above it and the top of the target itself, so an operator had no way to check what was about to be
+   * destroyed: the record's identity existed only on the triggering control's accessible name, which is
+   * unreachable once the modal holds focus.
+   *
+   * The wording is APPENDED rather than rewritten, so the measured legacy sentence survives unchanged and
+   * this reads as the same question with the answer to "which one" added. This dialog removes a role GROUP rather than a role, which is precisely the case where naming
+   * matters most: the grid behind it lists roles, so nothing on screen states which group the question is
+   * about.
+   */
+  protected readonly groupRemovalMessage: Signal<string> = computed<string>(() =>
+    nameRemoval(this.pendingGroupRemoval()?.roleGroupName),
+  );
+
+  /**
+   * The ROLE-removal confirmation body. ⚠ A SECOND COMPUTED RATHER THAN A SHARED ONE, and the split is the
+   * correction. Both dialogs on this screen bound ONE `removalMessage`, which was defensible only while the
+   * wording named nothing: the moment it names a record, one sentence cannot serve two different records,
+   * and naming a role group in the dialog that destroys a ROLE would have been worse than naming nothing at
+   * all.
+   */
+  protected readonly roleRemovalMessage: Signal<string> = computed<string>(() =>
+    nameRemoval(this.pendingRoleRemoval()?.roleName),
+  );
 
   /** Affirmative button wording of the removal confirmation. */
   protected readonly removalConfirmLabel = DELETE_CONFIRMATION_LABEL;
@@ -1094,6 +1238,10 @@ export class RoleListComponent implements OnInit {
 
           return;
         }
+
+        // Remembered at the single point where the coordinate is settled and canonical, so every route
+        // into a changed coordinate is covered without each handler having to say so.
+        this.listReturn.remember(ROLE_LIST_ROUTE, serialiseRoleListQuery(query));
 
         this.store.stageListQuery(query.groupFilter, query.pageIndex, query.sortBy, query.sortDir);
 
@@ -1204,16 +1352,28 @@ export class RoleListComponent implements OnInit {
    */
   private buildColumns(): readonly DataTableColumn<RoleListItem>[] {
     return [
-      // ⚠ NO WIDTH IS DECLARED ON THESE TWO COMMAND COLUMNS EITHER, AND THAT IS A MEASURED CONCLUSION
-      // RATHER THAN AN OMISSION. The "Manage Users" command overpainted the Name column in every row -
-      // 30.70px of overlap at a 320-wide viewport, 16.22px still at 1024 - and `width: 'min-content'` was
-      // tried here first as the obvious remedy.
+      // ⚠ EVERY COLUMN OF THIS GRID NOW DECLARES A WIDTH, AND THE PREVIOUS NOTE HERE HAS BEEN SUPERSEDED.
+      // It recorded that `min-content` on the command columns made the "Manage Users" command overpaint the
+      // Name column - 30.70px of overlap at 320, 16.22px still at 1024 - and concluded that declaring no
+      // width at all was safer. Measurement of the result showed the conclusion cost more than it saved: with
+      // no width anywhere, a fixed table layout gave all thirteen tracks the same share, so a hidden-label
+      // command column was as wide as the Name column, names broke mid-word at 1440 ("Administrato / rs") and
+      // every track resolved near 49px at 375.
+      //
+      // The real fault was the KIND of value, not the act of declaring one. `min-content` is not a length, so
+      // the fixed algorithm cannot use it and falls back to the automatic share; a length resolves exactly as
+      // written. The commands therefore take a length token sized for one interactive target plus the cell's
+      // padding, and the remaining ten tracks take percentages weighted by what their content needs.
       {
         key: 'editCommand',
         label: this.editRoleLabel,
         headerHidden: true,
         headerAlign: 'center',
         bodyAlign: 'center',
+        // The command track, a LENGTH sized for the target it holds. `min-content` was tried here first and
+        // is what caused the overlap the note above records: it is not a length, so the fixed table algorithm
+        // fell back to the automatic share and the command overpainted the name column.
+        width: 'var(--table-command-column-inline-size)',
         kind: 'actions',
         cellTemplate: this.requireTemplate(this.editCommandTemplate, 'editCommand'),
       },
@@ -1223,6 +1383,10 @@ export class RoleListComponent implements OnInit {
         headerHidden: true,
         headerAlign: 'center',
         bodyAlign: 'center',
+        // The command track, a LENGTH sized for the target it holds. `min-content` was tried here first and
+        // is what caused the overlap the note above records: it is not a length, so the fixed table algorithm
+        // fell back to the automatic share and the command overpainted the name column.
+        width: 'var(--table-command-column-inline-size)',
         kind: 'actions',
         cellTemplate: this.requireTemplate(this.membersCommandTemplate, 'membersCommand'),
       },
@@ -1235,13 +1399,28 @@ export class RoleListComponent implements OnInit {
         headerHidden: true,
         headerAlign: 'center',
         bodyAlign: 'center',
+        // The command track, a LENGTH sized for the target it holds. `min-content` was tried here first and
+        // is what caused the overlap the note above records: it is not a length, so the fixed table algorithm
+        // fell back to the automatic share and the command overpainted the name column.
+        width: 'var(--table-command-column-inline-size)',
         kind: 'actions',
         cellTemplate: this.requireTemplate(this.deleteCommandTemplate, 'deleteCommand'),
       },
 
       // 3. `asp:boundcolumn DataField="RoleName"`.
+      // ⚠ THIS COLUMN IS THE DONOR THAT PAYS FOR THE SIX HEADINGS BESIDE IT, and the reduction from the 18%
+      // it once declared is deliberate rather than a tuning accident. This is the widest grid in the
+      // application at thirteen columns, and measurement at the table's floor width showed six of its
+      // headings being ellipsised — "Public", "Auto", and both wrapped lines of "Billing Every", "Billing
+      // Period", "Trial Every" and "Trial Period" — because each of those columns had been given less room
+      // than its own heading text needs once the 24px of fixed heading overhead is taken out. The width had
+      // to come from somewhere on the same grid, and a name is the right place to take it from: a role name
+      // WRAPS and stays wholly legible at a narrower measure, whereas a clipped heading is simply gone from
+      // the screen. The full arithmetic, and the two separate mechanisms by which a heading is lost, are
+      // recorded once on the shared column contract rather than restated here.
       {
         key: 'roleName',
+        width: '10.5%',
         rowHeader: true,
         // Ordering: the key IS the endpoint's own sort name. See the sortability note on `columns`.
         sortable: true,
@@ -1260,11 +1439,20 @@ export class RoleListComponent implements OnInit {
         headerAlign: 'center',
         bodyAlign: 'start',
         field: 'description',
+        // ⚠ THE ONE COLUMN ON THIS GRID THAT DECLARES NO WIDTH, AND ONE MUST NOT.
+        //
+        // Under `table-layout: fixed` the leftover after the percentage tracks goes to whichever columns did
+        // NOT declare a percentage — which, with everything weighted, meant the three icon command columns.
+        // They asked for 3.25rem each and painted 63.906px, so a sixteen-unit glyph sat in a track wider than
+        // the fee columns beside it. The description is the right place for the slack: it is the longest
+        // free-text value here, it wraps cleanly at word boundaries, and losing a few characters of it at a
+        // narrow width costs a reader far less than losing them from a role's name.
       },
 
       // 5. Template column over `FormatPrice(ServiceFee)`.
       {
         key: 'serviceFee',
+        width: '6%',
         sortable: true,
         label: FEE_HEADING,
         headerAlign: 'center',
@@ -1276,6 +1464,7 @@ export class RoleListComponent implements OnInit {
       // 6. Template column over `FormatPeriod(BillingPeriod)`. The COUNT, before its unit.
       {
         key: 'billingPeriod',
+        width: '8%',
         sortable: true,
         label: BILLING_EVERY_HEADING,
         headerAlign: 'center',
@@ -1287,6 +1476,7 @@ export class RoleListComponent implements OnInit {
       // 7. `asp:boundcolumn DataField="BillingFrequency"`, with the bare item style noted above.
       {
         key: 'billingFrequency',
+        width: '8%',
         sortable: true,
         label: BILLING_PERIOD_HEADING,
         headerAlign: 'center',
@@ -1299,6 +1489,7 @@ export class RoleListComponent implements OnInit {
       // reading "Trial"; verified at `roles.ascx` L55.
       {
         key: 'trialFee',
+        width: '7.5%',
         sortable: true,
         label: TRIAL_HEADING,
         headerAlign: 'center',
@@ -1310,6 +1501,7 @@ export class RoleListComponent implements OnInit {
       // 9. Template column over `FormatPeriod(TrialPeriod)`. The COUNT, before its unit.
       {
         key: 'trialPeriod',
+        width: '7.5%',
         sortable: true,
         label: TRIAL_EVERY_HEADING,
         headerAlign: 'center',
@@ -1321,6 +1513,7 @@ export class RoleListComponent implements OnInit {
       // 10. `asp:boundcolumn DataField="TrialFrequency"`, the second bare item style.
       {
         key: 'trialFrequency',
+        width: '8%',
         sortable: true,
         label: TRIAL_PERIOD_HEADING,
         headerAlign: 'center',
@@ -1331,6 +1524,7 @@ export class RoleListComponent implements OnInit {
 
       {
         key: 'isPublic',
+        width: '8%',
         // Ordered on the STORED boolean, not on the announced word the pipe produces from it.
         sortable: true,
         label: PUBLIC_HEADING,
@@ -1341,6 +1535,7 @@ export class RoleListComponent implements OnInit {
       },
       {
         key: 'autoAssignment',
+        width: '6.5%',
         sortable: true,
         label: AUTO_HEADING,
         headerAlign: 'center',
@@ -1378,6 +1573,17 @@ export class RoleListComponent implements OnInit {
       },
       queryParamsHandling: 'merge',
     });
+  }
+
+  /**
+   * Whether the listing is currently narrowed to one group, which is the only empty state a reader can widen
+   * their way out of. The two synthetic filters — every role, and the roles that belong to no group — are not
+   * narrowings of anything, so offering to widen them would offer nothing.
+   *
+   * @returns True when a real group is selected.
+   */
+  protected isNarrowedByGroup(): boolean {
+    return this.store.groupFilter().kind === 'Group';
   }
 
   /** Refetches the group list and the roles. */
@@ -1596,6 +1802,80 @@ export class RoleListComponent implements OnInit {
 
   protected readonly absentValueMark = ABSENT_VALUE_MARK;
 
+  /** The word a fee of exactly zero is named with, in place of a price nobody can tell from another price. */
+  protected readonly freeFeeLabel = FREE_FEE_LABEL;
+
+  /** What that word means, announced in full alongside the amount it stands for. */
+  protected readonly freeFeeDescription = FREE_FEE_DESCRIPTION;
+
+  /** The clipped word behind a negative amount — R3. */
+  protected readonly negativeFeeQualifier = NEGATIVE_FEE_QUALIFIER;
+
+  /** The wording of the return-to-first-page affordance — R5. */
+  protected readonly firstPageLabel = FIRST_PAGE_LABEL;
+
+  /**
+   * Whether a fee column holds an amount below zero — R3.
+   *
+   * An ABSENT amount is not a negative one even though its sentinel is far below zero, so the absent test
+   * runs first and owns that row; only a real stored amount can be marked. Zero is not marked either: the
+   * distinction being drawn is a charge against a credit, and there is nothing negative about nothing.
+   *
+   * @param role The row.
+   * @param key Which of the two fee columns is being drawn.
+   * @returns True when the stored amount is below zero.
+   */
+  protected isFeeNegative(role: RoleListItem, key: string): boolean {
+    if (this.isFeeAbsent(role, key)) {
+      return false;
+    }
+
+    const price: number | null = key === 'trialFee' ? role.trialFee : role.serviceFee;
+
+    return price !== null && Number.isFinite(price) && price < 0;
+  }
+
+  /**
+   * Whether the page IN HAND holds rows, which is what mounts the pager — R5.
+   *
+   * ⚠ NARROWER THAN THE TOTAL, AND THE DIFFERENCE IS THE DEFECT. A page past the end of a real result set
+   * has a total and no rows, so a pager mounted on the total alone painted a range - measured as
+   * "21-30 of 30" - beside a grid reading "No records found.", describing records it cannot show. The portal
+   * and module listings gate on their rows for exactly this reason.
+   */
+  protected readonly hasRows = computed<boolean>(() => this.roles().length > 0);
+
+  /** Whether the address names a page beyond the end of the result set — R5. */
+  protected readonly isPastEnd = this.store.isPastEnd;
+
+  /**
+   * The zero-result wording, chosen from the state that actually holds — R5.
+   *
+   * Three states, three sentences: past the end of a real result set, a narrowing that matched nothing, and
+   * a tenant with no roles at all. Answering all three with one sentence is what let a populated range stand
+   * beside "No records found." with no route back.
+   *
+   * ⚠ THE NARROWING TEST IS {@link isNarrowedByGroup} AND NOT "anything but every role". The two synthetic
+   * filters - every role, and the roles that belong to no group - are not narrowings of anything, so offering
+   * to widen them would offer nothing.
+   */
+  protected readonly emptyMessage = computed<string>(() => {
+    if (this.isPastEnd()) {
+      return PAST_END_MESSAGE;
+    }
+
+    return this.isNarrowedByGroup() ? EMPTY_GROUP_MESSAGE : EMPTY_LISTING_MESSAGE;
+  });
+
+  /** Returns to the first page, which is the only recovery from an address past the end — R5. */
+  protected onReturnToFirstPage(): void {
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      queryParams: { [PAGE_PARAM]: null },
+      queryParamsHandling: 'merge',
+    });
+  }
+
   /** The words behind {@link absentValueMark}, for the accessibility tree. */
   protected readonly absentValueDescription = ABSENT_VALUE_DESCRIPTION;
 
@@ -1640,6 +1920,25 @@ export class RoleListComponent implements OnInit {
   }
 
   /**
+   * Whether a fee column holds a recorded amount of exactly nothing — a FREE role.
+   *
+   * ⚠ ZERO AND A REAL PRICE WERE INDISTINGUISHABLE, WHICH IS THE MEASURED DEFECT THIS ANSWERS. A stored zero
+   * painted "0.00" in the same colour and the same weight as "0.01", so the one fact an operator scans this
+   * column for - is this role free? - could only be established by reading two decimal places. The negative
+   * amount already carried a word beside it for exactly this reason; zero now does too. Absence is a different
+   * state again and is answered by {@link isFeeAbsent} before this is ever reached.
+   *
+   * @param role The row.
+   * @param key Which of the two fee columns is being drawn.
+   * @returns True when the stored amount is present and equal to zero.
+   */
+  protected isFeeFree(role: RoleListItem, key: string): boolean {
+    const stored: number | null = key === 'trialFee' ? role.trialFee : role.serviceFee;
+
+    return stored !== null && Number.isFinite(stored) && stored === 0;
+  }
+
+  /**
    * The text of a period column.
    *
    * @param role The row.
@@ -1675,6 +1974,61 @@ export class RoleListComponent implements OnInit {
    */
   protected frequencyName(role: RoleListItem, key: string): string {
     return BILLING_FREQUENCY_NAMES[this.frequencyCode(role, key)] ?? '';
+  }
+
+  /**
+   * Whether a row's stored frequency character is one this console can name.
+   *
+   * @param role The row.
+   * @param key Which of the two frequency columns is being drawn.
+   * @returns True when a word exists for the stored character.
+   */
+  protected isNameableFrequency(role: RoleListItem, key: string): boolean {
+    return this.frequencyName(role, key) !== '';
+  }
+
+  /**
+   * What a row's stored frequency character means, ALWAYS in words and never the empty string.
+   *
+   * ⚠ THIS IS THE FIX FOR A CELL THAT REACHED ASSISTIVE TECHNOLOGY AS NOTHING AT ALL. The painted character
+   * sits in an `aria-hidden` span, and the sr-only sibling beside it used to be rendered only when a word
+   * existed - so `Q`, `X` or `Z` painted a bare 9x15 pixel letter with no legend anywhere and handed a
+   * screen-reader user an EMPTY cell. Three separate treatments are returned here: the word for a published
+   * code, wording naming the stored code for one that has no word, and the shared absent-value wording when
+   * the column is null.
+   *
+   * @param role The row.
+   * @param key Which of the two frequency columns is being drawn.
+   * @returns Wording that is never empty.
+   */
+  protected frequencyDescription(role: RoleListItem, key: string): string {
+    const code: string = this.frequencyCode(role, key);
+
+    if (code === '') {
+      return ABSENT_VALUE_DESCRIPTION;
+    }
+
+    const named: string = this.frequencyName(role, key);
+
+    if (named !== '') {
+      return named;
+    }
+
+    return (
+      `${UNNAMEABLE_FREQUENCY_DESCRIPTION_PREFIX}${code}` +
+      UNNAMEABLE_FREQUENCY_DESCRIPTION_SUFFIX
+    );
+  }
+
+  /**
+   * Whether a row's frequency column holds nothing at all, as distinct from holding a code with no word.
+   *
+   * @param role The row.
+   * @param key Which of the two frequency columns is being drawn.
+   * @returns True when the column is null.
+   */
+  protected isFrequencyAbsent(role: RoleListItem, key: string): boolean {
+    return this.frequencyCode(role, key) === '';
   }
 
   // FORMATTING

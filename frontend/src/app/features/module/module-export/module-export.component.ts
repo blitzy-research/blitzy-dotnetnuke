@@ -38,8 +38,21 @@ interface ModuleExportFormModel {
 /** The page heading, from `Export.ascx.resx` key `ControlTitle_exportmodule.Text`. */
 const PAGE_TITLE = 'Export Module';
 
-/** The supporting sentence beneath the heading. */
-const PAGE_SUBTITLE = 'Administrators can export content for the specified module.';
+/**
+ * The supporting sentence beneath the heading.
+ *
+ * ⚠ THE LEGACY SENTENCE IS CARRIED VERBATIM AND THEN CONTINUED, WHICH IS NOT THE SAME AS REPLACING IT. The
+ * first sentence is `Export.ascx.resx` key `ControlHelp.Text` character for character - the paragraph inside
+ * that value, the heading in it being the page title the shared header already emits. What follows is net
+ * new, and it is there because the legacy screen wrote the document into a folder the operator had just
+ * chosen from a picker, so its destination was self-evident; this one hands it to the browser, and saying
+ * nothing left an operator pressing Export with no idea whether a file had been written on the server,
+ * e-mailed, or placed somewhere they would have to go and find. Preserving the wording and stating the
+ * outcome are not in competition, so both are done.
+ */
+const PAGE_SUBTITLE =
+  'Administrators can export content for the specified module. The content is written to an XML document '
+  + 'and downloaded to this device; nothing is stored on the server.';
 
 /** The field label, from `Export.ascx.resx` key `plFile.Text`. */
 const FILE_LABEL = 'File';
@@ -62,10 +75,17 @@ const EXPORT_ACTION_LABEL = 'Export';
 const CANCEL_ACTION_LABEL = 'Cancel';
 
 /**
- * The message shown when the filename is missing, from `Export.ascx.resx` key `Validation.Text`.
- * preserved verbatim even though the rule behind it is narrower.
+ * The message shown when the filename is missing.
+ *
+ * ⚠ NO LONGER THE LEGACY WORDING, AND THE DEPARTURE IS DELIBERATE. `Export.ascx.resx` key
+ * `Validation.Text` read "You must specify a folder and file for export", which was accurate for a screen
+ * that had a folder picker. This one has none - the picker and the whole file-system surface behind it are
+ * out of scope, and the document is handed to the browser instead - so the legacy sentence named a control
+ * that does not exist and left the operator looking for it. Verbatim wording is preserved wherever the
+ * legacy control still exists; where it does not, an accurate sentence beats a faithful one. Recorded in
+ * `MIGRATION_NOTES.md`.
  */
-const VALIDATION_MESSAGE = 'You must specify a folder and file for export';
+const VALIDATION_MESSAGE = 'You must specify a file name for the export.';
 
 /** The greatest number of characters the filename field accepts. */
 const FILE_NAME_MAX_LENGTH = 200;

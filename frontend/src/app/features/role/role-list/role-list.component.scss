@@ -60,11 +60,18 @@
   color: var(--color-primary);
   text-decoration: underline;
 
-  @include mx.hover {
+  // ⚠ UNGATED, AND THE POINTER-CAPABILITY GUARD IS WHAT HAD TO GO. Measured on this screen: all three row
+  // commands reported an EMPTY set of changed properties on hover, so the pointer was the only feedback the
+  // operator got from a command that navigates away or destroys a role. The declarations were present and
+  // correct - the guard around them was not being satisfied, so nothing inside it ever applied. The portal
+  // listing removed the same guard for the same measured reason, and its rule says so in the same words; the
+  // decision is now consistent across the two screens rather than differing between them.
+  &:hover {
     color: var(--color-primary-hover);
   }
   // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE, and suppression without
-  // replacement is what leaves a control with no visible response at all.
+  // replacement is what leaves a control with no visible response at all. It is declared AFTER the hover so
+  // that a pressed control - which is also hovered - paints the press rather than the hover.
   &:active {
     background-color: var(--color-selected);
   }
@@ -151,6 +158,44 @@
   @include mx.visually-hidden;
 }
 
+// THE FREE-ROLE STATE, painted as a word rather than as a price. Muted, because it is a state rather than an
+// amount and must not compete with the figures in the rows around it, and italic so the distinction survives
+// for a reader who perceives no colour at all — colour is never the only carrier of meaning here.
+.role-list__fee-state {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+// R3: A NEGATIVE AMOUNT. The danger colour and bold weight the portal listing gives the same state; the word
+// behind it is clipped into `.role-list__absent-value`, so the sign is never carried by colour alone.
+.role-list__fee--negative {
+  color: var(--color-danger);
+  font-weight: var(--font-weight-bold);
+}
+
+// R5: THE RECOVERY FROM AN ADDRESS PAST THE END, rendered inside the grid's own empty row. Styled as this
+// screen's other inline commands are, so it reads as an affordance rather than as part of the sentence.
+.role-list__first-page {
+  padding: 0;
+  color: var(--color-primary);
+  font-weight: var(--font-weight-bold);
+  background: none;
+  border: 0;
+  cursor: pointer;
+
+  @include mx.hover {
+    color: var(--color-primary-hover);
+  }
+}
+
+// A STORED FREQUENCY CODE THIS CONSOLE CANNOT NAME. Muted so it reads as a reference rather than a value,
+// with the `help` cursor announcing that the `title` beside it is worth reading. Colour carries no
+// information on its own here — the sr-only sibling states the same fact in words for every reader.
+.role-list__unnameable-code {
+  color: var(--color-text-muted);
+  cursor: help;
+}
+
 // With the wording clipped, each command is a bare 16-unit glyph — and a 16-unit target is far below the
 // floor. The box is floored on BOTH axes, for the reason the form vocabulary gives: a single-glyph command
 // has almost no intrinsic width, and the inline floor matters as much as the block one.
@@ -167,8 +212,20 @@
   border: 0;
   border-radius: 0;
 
-  @include mx.hover {
+  // ⚠ THIS COMMAND'S HOVER HAD TO BECOME A SURFACE CHANGE, AND THE REASON IS THAT ITS INK CANNOT MOVE. The
+  // colour is pinned: a destructive command must stay in the danger hue, and this vocabulary declares exactly
+  // ONE danger token, so there is no second red to move to. Stripping the background and border at class
+  // weight then left the global button hover - which changes precisely those two - with nothing it could
+  // reach, so the command's hover re-set the colour it already had and changed nothing at all.
+  //
+  // The selected tint is the only token that differs from BOTH row surfaces: the plain row is the background
+  // token and the alternating row is the surface token, so a hover painted in either of those is invisible on
+  // one row in two. The consequence, stated rather than hidden: this one command's hover and press paint the
+  // same tint. That is the lesser fault - a command whose hover cannot be perceived at all is the defect being
+  // fixed, and the press is still carried by the pointer and by the confirmation the command opens.
+  &:hover {
     color: var(--color-danger);
+    background-color: var(--color-selected);
   }
 }
 
@@ -248,4 +305,14 @@
   display: inline-flex;
   align-items: center;
   min-block-size: var(--target-size-min);
+}
+
+// THE ZERO-RESULT SURFACE'S ACTIONS. Laid out as a row that wraps, so two affordances sit side by side on a
+// desktop and stack on a narrow viewport without a breakpoint of their own.
+.role-list__empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
 }

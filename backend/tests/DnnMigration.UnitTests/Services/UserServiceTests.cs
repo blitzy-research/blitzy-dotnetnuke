@@ -5111,6 +5111,57 @@ public class UserServiceTests
     }
 
     /// <summary>
+    /// Every refused property is reported, each under its own declared name, so a form can mark the exact
+    /// controls at fault instead of showing one sentence beside none of them.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// ⚠ THE REFUSAL WAS ALWAYS CORRECT; ITS SHAPE WAS NOT. Measured against the running API, a profile write
+    /// carrying an empty required property and a malformed one was refused with the right status and the right
+    /// sentence, but as a FLAT problem document naming no field - so the screen that sent it could mark no
+    /// control invalid, set <c>aria-invalid</c> on nothing, and left focus on the document body. The flat
+    /// <see cref="ResultReason.Code"/> and <see cref="ResultReason.Message"/> are deliberately unchanged, so
+    /// every existing caller reads exactly what it read before; the per-field detail is ADDITIVE.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateProfile_ReportsEveryRefusedPropertyUnderItsOwnDeclaredName()
+    {
+        Harness harness = Harness.Ready();
+        harness.DefinitionFor(CityPropertyId).IsRequired = true;
+        harness.DefinitionFor(TelephonePropertyId).ValidationExpression = @"^\d{3}-\d{4}$";
+
+        Result outcome = await harness.Service.UpdateProfileAsync(
+            PortalId,
+            UserId,
+            Profile(
+                (StreetPropertyId, "Fleet Street"),
+                (TelephonePropertyId, "telephone"),
+                (CityPropertyId, string.Empty)),
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+
+        IReadOnlyDictionary<string, IReadOnlyList<string>> fields = outcome.Reason!.FieldErrors!;
+
+        // BOTH failures, not merely the first one encountered: a form told about one fault at a time makes
+        // the operator submit once per fault to discover them all.
+        fields.Keys.Should().BeEquivalentTo("Telephone", "City");
+        fields["Telephone"].Should().ContainSingle()
+            .Which.Should().Be("Profile property \"Telephone\" does not match the format it requires.");
+        fields["City"].Should().ContainSingle()
+            .Which.Should().Be("Profile property \"City\" is required.");
+
+        // The declared property NAME is the key, because that is what the client identifies its controls by -
+        // the definition id would name nothing the form could find.
+        fields.Keys.Should().NotContain(TelephonePropertyId.ToString(CultureInfo.InvariantCulture));
+
+        // Unchanged for every existing caller: the summary is still the first submitted failure.
+        outcome.Reason!.Code.Should().Be(ProfilePropertyValidationFailedCode);
+        harness.AddedValues.Should().BeEmpty();
+        harness.UpdatedValues.Should().BeEmpty();
+    }
+
+    /// <summary>
     /// A required property answered with whitespace is accepted and stored exactly as submitted, matching
     /// the rule the sign-in completeness gate applies.
     /// </summary>
@@ -5422,6 +5473,17 @@ public class UserServiceTests
     private const string InvitationCode = "Founders-2026";
 
     /// <summary>
+    /// A request for the WHOLE catalogue, used by the assertions that are about what the catalogue SAYS
+    /// rather than about how much of it travels at once.
+    /// </summary>
+    /// <remarks>
+    /// A page size of zero is the application layer's "unpaged" and is unreachable over HTTP, where the
+    /// shared validator requires at least one row - so these assertions read every published service while
+    /// no caller of the endpoint can.
+    /// </remarks>
+    private static MemberServicePagedRequest WholeCatalogue => new MemberServicePagedRequest { PageSize = 0 };
+
+    /// <summary>
     /// The catalogue is the tenant's PUBLIC roles, whether or not the account holds them, and every row
     /// carries the three predicates the legacy grid bound.
     /// </summary>
@@ -5432,13 +5494,14 @@ public class UserServiceTests
         harness.PublishFreeService();
         harness.PublishPaidServiceWithFreeTrial();
 
-        Result<IReadOnlyList<MemberServiceDto>> outcome = await harness.Service
-            .ListMemberServicesAsync(PortalId, UserId, CancellationToken.None);
+        Result<PagedResult<MemberServiceDto>> outcome = await harness.Service
+            .ListMemberServicesAsync(PortalId, UserId, WholeCatalogue, CancellationToken.None);
 
         outcome.IsSuccess.Should().BeTrue();
-        outcome.Value.Select(row => row.RoleId).Should().Equal(FreeServiceRoleId, PaidServiceRoleId);
+        outcome.Value.Items.Select(row => row.RoleId).Should().Equal(FreeServiceRoleId, PaidServiceRoleId);
+        outcome.Value.TotalCount.Should().Be(2, "the total is the whole published catalogue");
 
-        MemberServiceDto free = outcome.Value.Single(row => row.RoleId == FreeServiceRoleId);
+        MemberServiceDto free = outcome.Value.Items.Single(row => row.RoleId == FreeServiceRoleId);
         free.IsSubscribed.Should().BeFalse();
         free.SubscriptionAction.Should().Be(MemberServiceActions.Subscribe);
         free.SubscriptionOffered.Should().BeTrue("a free public service was always offered");
@@ -5447,7 +5510,7 @@ public class UserServiceTests
         free.ExpiryDate.Should().BeNull();
         free.EffectiveDate.Should().BeNull();
 
-        MemberServiceDto paid = outcome.Value.Single(row => row.RoleId == PaidServiceRoleId);
+        MemberServiceDto paid = outcome.Value.Items.Single(row => row.RoleId == PaidServiceRoleId);
         paid.SubscriptionRequiresPayment.Should().BeTrue();
         paid.TrialOffered.Should().BeTrue("the service fee is non-zero and the trial fee is zero");
     }
@@ -5469,10 +5532,10 @@ public class UserServiceTests
         Role fractional = harness.PublishPaidServiceWithFreeTrial();
         fractional.ServiceFee = 0.50m;
 
-        Result<IReadOnlyList<MemberServiceDto>> outcome = await harness.Service
-            .ListMemberServicesAsync(PortalId, UserId, CancellationToken.None);
+        Result<PagedResult<MemberServiceDto>> outcome = await harness.Service
+            .ListMemberServicesAsync(PortalId, UserId, WholeCatalogue, CancellationToken.None);
 
-        MemberServiceDto row = outcome.Value.Single(entry => entry.RoleId == PaidServiceRoleId);
+        MemberServiceDto row = outcome.Value.Items.Single(entry => entry.RoleId == PaidServiceRoleId);
         row.ServiceFee.Should().Be(0.50m);
         row.BillingFrequency.Should().Be(BillingFrequency.Month);
         row.BillingPeriod.Should().Be(1);
@@ -5503,10 +5566,10 @@ public class UserServiceTests
                 expiryOffsetInDays is int offset ? Now.Date.AddDays(offset) : null);
         }
 
-        Result<IReadOnlyList<MemberServiceDto>> outcome = await harness.Service
-            .ListMemberServicesAsync(PortalId, UserId, CancellationToken.None);
+        Result<PagedResult<MemberServiceDto>> outcome = await harness.Service
+            .ListMemberServicesAsync(PortalId, UserId, WholeCatalogue, CancellationToken.None);
 
-        MemberServiceDto row = outcome.Value.Single();
+        MemberServiceDto row = outcome.Value.Items.Single();
         row.IsSubscribed.Should().Be(subscribed);
         row.IsExpired.Should().Be(expected == MemberServiceActions.Renew);
         row.SubscriptionAction.Should().Be(expected);
@@ -5529,10 +5592,10 @@ public class UserServiceTests
         harness.PublishPaidServiceWithFreeTrial();
         harness.PortalRow!.ProcessorUserId = processorUserId;
 
-        Result<IReadOnlyList<MemberServiceDto>> outcome = await harness.Service
-            .ListMemberServicesAsync(PortalId, UserId, CancellationToken.None);
+        Result<PagedResult<MemberServiceDto>> outcome = await harness.Service
+            .ListMemberServicesAsync(PortalId, UserId, WholeCatalogue, CancellationToken.None);
 
-        MemberServiceDto row = outcome.Value.Single();
+        MemberServiceDto row = outcome.Value.Items.Single();
         row.SubscriptionOffered.Should().Be(expected);
         row.SubscriptionRequiresPayment.Should().BeTrue("the offer's terms do not change with the tenant's");
     }
@@ -5550,10 +5613,10 @@ public class UserServiceTests
         harness.PublishPaidServiceWithFreeTrial();
         harness.Subscribe(PaidServiceRoleId, expiry: null, trialUsed: trialUsed);
 
-        Result<IReadOnlyList<MemberServiceDto>> outcome = await harness.Service
-            .ListMemberServicesAsync(PortalId, UserId, CancellationToken.None);
+        Result<PagedResult<MemberServiceDto>> outcome = await harness.Service
+            .ListMemberServicesAsync(PortalId, UserId, WholeCatalogue, CancellationToken.None);
 
-        MemberServiceDto row = outcome.Value.Single();
+        MemberServiceDto row = outcome.Value.Items.Single();
         row.IsTrialUsed.Should().Be(trialUsed ?? false);
         row.TrialOffered.Should().Be(expected);
     }
@@ -5564,11 +5627,12 @@ public class UserServiceTests
     {
         Harness harness = Harness.Ready();
 
-        Result<IReadOnlyList<MemberServiceDto>> outcome = await harness.Service
-            .ListMemberServicesAsync(PortalId, UserId, CancellationToken.None);
+        Result<PagedResult<MemberServiceDto>> outcome = await harness.Service
+            .ListMemberServicesAsync(PortalId, UserId, WholeCatalogue, CancellationToken.None);
 
         outcome.IsSuccess.Should().BeTrue();
-        outcome.Value.Should().BeEmpty();
+        outcome.Value.Items.Should().BeEmpty();
+        outcome.Value.TotalCount.Should().Be(0, "an empty catalogue reports a total of none, not an absent total");
     }
 
     /// <summary>
@@ -5581,13 +5645,13 @@ public class UserServiceTests
         enabled.PublishFreeService();
         enabled.AddMembershipSettingsSource();
 
-        (await enabled.Service.ListMemberServicesAsync(PortalId, UserId, CancellationToken.None))
+        (await enabled.Service.ListMemberServicesAsync(PortalId, UserId, WholeCatalogue, CancellationToken.None))
             .IsSuccess.Should().BeTrue("the stored default is enabled");
 
         Harness noModule = Harness.Ready();
         noModule.PublishFreeService();
 
-        (await noModule.Service.ListMemberServicesAsync(PortalId, UserId, CancellationToken.None))
+        (await noModule.Service.ListMemberServicesAsync(PortalId, UserId, WholeCatalogue, CancellationToken.None))
             .IsSuccess.Should().BeTrue("a tenant with no account module reads as enabled, not as broken");
 
         Harness disabled = Harness.Ready();
@@ -5595,7 +5659,7 @@ public class UserServiceTests
         disabled.AddMembershipSettingsSource();
         disabled.StoreSetting("Profile_ManageServices", bool.FalseString);
 
-        (await disabled.Service.ListMemberServicesAsync(PortalId, UserId, CancellationToken.None))
+        (await disabled.Service.ListMemberServicesAsync(PortalId, UserId, WholeCatalogue, CancellationToken.None))
             .Error!.Code.Should().Be(ServiceDisabledCode);
         (await disabled.Service.SubscribeToServiceAsync(PortalId, UserId, FreeServiceRoleId, CancellationToken.None))
             .Error!.Code.Should().Be(ServiceDisabledCode);
@@ -5621,13 +5685,13 @@ public class UserServiceTests
         Harness noTenant = Harness.Ready();
         noTenant.PortalRow = null;
 
-        (await noTenant.Service.ListMemberServicesAsync(PortalId, UserId, CancellationToken.None))
+        (await noTenant.Service.ListMemberServicesAsync(PortalId, UserId, WholeCatalogue, CancellationToken.None))
             .Error!.Code.Should().Be("portal.not_found");
 
         Harness noAccount = Harness.Ready();
         noAccount.LookupUser = null;
 
-        (await noAccount.Service.ListMemberServicesAsync(PortalId, UserId, CancellationToken.None))
+        (await noAccount.Service.ListMemberServicesAsync(PortalId, UserId, WholeCatalogue, CancellationToken.None))
             .Error!.Code.Should().Be(NotFoundCode);
     }
 
@@ -5663,9 +5727,9 @@ public class UserServiceTests
         harness.PublishFreeService();
         harness.Subscribe(FreeServiceRoleId, Now.Date.AddDays(-1));
 
-        Result<IReadOnlyList<MemberServiceDto>> before = await harness.Service
-            .ListMemberServicesAsync(PortalId, UserId, CancellationToken.None);
-        before.Value.Single().SubscriptionAction.Should().Be(MemberServiceActions.Renew);
+        Result<PagedResult<MemberServiceDto>> before = await harness.Service
+            .ListMemberServicesAsync(PortalId, UserId, WholeCatalogue, CancellationToken.None);
+        before.Value.Items.Single().SubscriptionAction.Should().Be(MemberServiceActions.Renew);
 
         Result outcome = await harness.Service
             .SubscribeToServiceAsync(PortalId, UserId, FreeServiceRoleId, CancellationToken.None);

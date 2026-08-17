@@ -42,7 +42,7 @@
         />
       </app-form-field>
 
-      <button type="submit" class="member-services__code-submit" [disabled]="busy()"
+      <button type="submit" class="member-services__code-submit form-action--primary" [disabled]="busy()"
             [attr.aria-busy]="busy() ? 'true' : null">
         {{ codeSubmit }}
       </button>
@@ -69,6 +69,7 @@
       [rows]="services()"
       [rowKey]="serviceRowKey"
       [loading]="loading()"
+      [failed]="listFailed()"
     >
       <span dataTableCaption>{{ sectionTitle }}</span>
     </app-data-table>

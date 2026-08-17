@@ -1223,7 +1223,7 @@ public sealed class PortalRepositoryTests
     /// tenant's name, silently and deterministically.
     /// </remarks>
     [Fact]
-    public async Task GetAllByHttpAliasAsync_ResolvesAWholeCandidateChainAndReturnsEveryMatch()
+    public async Task ResolveTenantsByHttpAliasAsync_ResolvesAWholeCandidateChainAndReturnsEveryMatch()
     {
         int parentPortalId = await CreatePortalAsync(FormattableString.Invariant($"Parent Portal {Suffix()}"));
         int childPortalId = await CreatePortalAsync(FormattableString.Invariant($"Child Portal {Suffix()}"));
@@ -1240,33 +1240,46 @@ public sealed class PortalRepositoryTests
             IPortalAliasRepository aliases = scope.ServiceProvider.GetRequiredService<IPortalAliasRepository>();
 
             // Most specific first, exactly as a request-time resolver would compose the chain.
-            IReadOnlyList<PortalAlias> matches = await aliases.GetAllByHttpAliasAsync([childAlias, parentAlias]);
+            IReadOnlyList<TenantResolution> matches =
+                await aliases.ResolveTenantsByHttpAliasAsync([childAlias, parentAlias]);
 
             matches.Should().HaveCount(2, "both addresses in the chain are configured, and both are returned");
             matches.Select(alias => alias.PortalAliasId).Should().Equal(
                 new[] { parentAliasId, childAliasId }.OrderBy(id => id),
                 "the order is stable and keyed on the alias identifier");
 
-            // The owning tenant travels with each match, which is what keeps resolution to one round trip.
-            matches.Should().OnlyContain(alias => alias.Portal != null);
-            matches.Single(alias => alias.PortalAliasId == childAliasId).Portal.PortalId
-                .Should().Be(childPortalId);
-            matches.Single(alias => alias.PortalAliasId == parentAliasId).Portal.PortalId
-                .Should().Be(parentPortalId);
+            // The owning tenant's facts travel with each match, which is what keeps resolution to one round
+            // trip - and they arrive as a PROJECTION, so no portal is materialised and no role collection is
+            // traversed to obtain the two role names.
+            matches.Single(alias => alias.PortalAliasId == childAliasId).PortalId.Should().Be(childPortalId);
+            matches.Single(alias => alias.PortalAliasId == parentAliasId).PortalId.Should().Be(parentPortalId);
+            matches.Should().OnlyContain(alias => alias.PortalName != null);
+
+            // ABSENCE IS REPORTED RATHER THAN DEFAULTED. A portal this suite creates designates no
+            // administrator account and no roles, so all five of those facts arrive null - which is what
+            // lets the request-time resolver refuse a half-configured tenant and name the missing fact
+            // instead of resolving to a tenant whose authorisation facts are zero.
+            TenantResolution parentResolution = matches.Single(alias => alias.PortalAliasId == parentAliasId);
+            parentResolution.AdministratorId.Should().BeNull();
+            parentResolution.AdministratorRoleId.Should().BeNull();
+            parentResolution.AdministratorRoleName.Should().BeNull();
+            parentResolution.RegisteredRoleId.Should().BeNull();
+            parentResolution.RegisteredRoleName.Should().BeNull();
+            parentResolution.HttpAlias.Should().Be(parentAlias, "the STORED host name is authoritative");
 
             // A blank candidate cannot name a host, so it is dropped rather than matched or rejected.
-            IReadOnlyList<PortalAlias> withBlanks =
-                await aliases.GetAllByHttpAliasAsync([string.Empty, "   ", parentAlias]);
+            IReadOnlyList<TenantResolution> withBlanks =
+                await aliases.ResolveTenantsByHttpAliasAsync([string.Empty, "   ", parentAlias]);
             withBlanks.Should().ContainSingle().Which.PortalAliasId.Should().Be(parentAliasId);
 
             // Case is not significant, and two candidates differing only in case are one question.
-            IReadOnlyList<PortalAlias> cased =
-                await aliases.GetAllByHttpAliasAsync([parentAlias.ToUpperInvariant(), parentAlias]);
+            IReadOnlyList<TenantResolution> cased =
+                await aliases.ResolveTenantsByHttpAliasAsync([parentAlias.ToUpperInvariant(), parentAlias]);
             cased.Should().ContainSingle().Which.PortalAliasId.Should().Be(parentAliasId);
 
-            (await aliases.GetAllByHttpAliasAsync([])).Should()
+            (await aliases.ResolveTenantsByHttpAliasAsync([])).Should()
                 .BeEmpty("an empty request matches nothing and must not read the store");
-            (await aliases.GetAllByHttpAliasAsync([NewAlias("absent")])).Should()
+            (await aliases.ResolveTenantsByHttpAliasAsync([NewAlias("absent")])).Should()
                 .BeEmpty("an address no tenant claims resolves to nothing");
         }
         finally

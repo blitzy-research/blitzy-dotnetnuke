@@ -35,6 +35,11 @@ namespace DnnMigration.IntegrationTests.Api;
 public sealed class UserApiTests
 {
     /// <summary>An identifier no seeded or created account can hold.</summary>
+    /// <summary>
+    /// The largest catalogue page the API will serve, taken from the shared validator rather than restated.
+    /// </summary>
+    private const int ServicesMaximumPageSize = PagedRequestValidator<MemberServicePagedRequest>.MaximumPageSize;
+
     private const int UnknownUserId = 987654;
 
     /// <summary>A tenant identifier no seeded or created portal can hold.</summary>
@@ -151,6 +156,109 @@ public sealed class UserApiTests
 
         pending.Should().NotBeNull();
         pending!.Items.Select(item => item.UserId).Should().Contain(unapproved.UserId);
+    }
+
+    /// <summary>
+    /// The listing fills its address and telephone columns for EVERY account on the page, from one batched
+    /// answer read rather than one read per row, and leaves them empty for an account that answered nothing.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// WHY A TENANT OF ITS OWN. Both columns are composed only when the tenant DECLARES the properties they
+    /// come from, and the seeded tenant declares none - its rows are provisioned by script rather than by
+    /// the create-portal path. A tenant created here begins with the nineteen legacy declarations, Telephone
+    /// and the six address parts among them, so this is the shape in which the listing actually reads
+    /// answers. Before this case, no request in the suite reached that branch: the batched read the listing
+    /// issues had never executed, in either assembly, and the service that issues it was covered only
+    /// against a substitute repository.
+    /// </para>
+    /// <para>
+    /// TWO ACCOUNTS WITH ANSWERS, AND A THIRD WITHOUT. One account proves nothing here that a per-account
+    /// read would not also satisfy; two prove the page's accounts are answered TOGETHER and that each row
+    /// receives its own account's answers rather than the first account's. The tenant's own administrator
+    /// arrives on the same page holding no answers at all, which is the state that has to come back empty
+    /// rather than absent or borrowed from a neighbour.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ListUsers_ComposesTheAddressAndTelephoneColumnsForEveryAccountOnThePage()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        IsolatedPortal tenant = await CreateIsolatedPortalAsync(host);
+
+        // Addressed at the tenant's OWN alias, because the listing and the declarations it reads are both
+        // scoped by the host name the request arrives at rather than by anything in the route.
+        using HttpClient tenantHost = await _fixture.CreateHostClientAsync(tenant.Alias);
+
+        using HttpResponseMessage declared = await tenantHost.GetAsync(
+            new Uri("/api/v1/profile-definitions", UriKind.Relative));
+
+        declared.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        CollectionEnvelope<ProfilePropertyDefinitionDto>? declaredEnvelope = await declared.Content
+            .ReadFromJsonAsync<CollectionEnvelope<ProfilePropertyDefinitionDto>>(ApiTestFixture.Json);
+
+        declaredEnvelope.Should().NotBeNull();
+        IReadOnlyList<ProfilePropertyDefinitionDto> declarations = declaredEnvelope!.Data!;
+
+        int DefinitionFor(string propertyName) => declarations
+            .Single(declaration => declaration.PropertyName == propertyName)
+            .PropertyDefinitionId;
+
+        int streetId = DefinitionFor("Street");
+        int cityId = DefinitionFor("City");
+        int telephoneId = DefinitionFor("Telephone");
+
+        UserDetailDto first = await CreateUserAsync(tenantHost);
+        UserDetailDto second = await CreateUserAsync(tenantHost);
+
+        await InsertProfileValueAsync(first.UserId, streetId, "1 First Street");
+        await InsertProfileValueAsync(first.UserId, cityId, "Firsttown");
+        await InsertProfileValueAsync(first.UserId, telephoneId, "555-0101");
+        await InsertProfileValueAsync(second.UserId, cityId, "Secondville");
+        await InsertProfileValueAsync(second.UserId, telephoneId, "555-0202");
+
+        using HttpResponseMessage response = await tenantHost.GetAsync(
+            new Uri("/api/v1/users?pageIndex=0&pageSize=100", UriKind.Relative));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        PagedEnvelope<UserListItemDto>? page = await response.Content
+            .ReadFromJsonAsync<PagedEnvelope<UserListItemDto>>(ApiTestFixture.Json);
+
+        page.Should().NotBeNull();
+
+        UserListItemDto firstRow = page!.Items.Should()
+            .ContainSingle(row => row.UserId == first.UserId).Subject;
+        UserListItemDto secondRow = page.Items.Should()
+            .ContainSingle(row => row.UserId == second.UserId).Subject;
+
+        firstRow.Telephone.Should().Be(
+            "555-0101",
+            "the telephone column is the account's own answer to the tenant's Telephone declaration");
+        firstRow.Address.Should().Be(
+            "1 First Street, Firsttown",
+            "the address column is assembled from the parts the account answered, in the legacy order of "
+            + "Unit, Street, City, Region, Country and PostalCode, separated by a comma and a space");
+
+        secondRow.Telephone.Should().Be(
+            "555-0202",
+            "each row carries its OWN account's answers, which a batched read that grouped by nothing would "
+            + "get wrong");
+        secondRow.Address.Should().Be(
+            "Secondville",
+            "the parts an account did not answer contribute neither text nor a separator");
+
+        UserListItemDto administratorRow = page.Items.Should()
+            .ContainSingle(row => row.Username!.StartsWith("users_admin_", StringComparison.Ordinal))
+            .Subject;
+
+        administratorRow.Address.Should().BeNull(
+            "an account that answered no part of an address has no address, which is distinct from an "
+            + "empty one and from another account's");
+        administratorRow.Telephone.Should().BeNull(
+            "and the same for a telephone: the row is present, the value is absent");
     }
 
     /// <summary>Naming a profile property without a value is a contradictory filter and is refused.</summary>
@@ -3062,6 +3170,301 @@ public sealed class UserApiTests
     }
 
     /// <summary>
+    /// Searching by the seeded <c>FirstName</c> profile property finds an account whose first name is
+    /// recorded on the ACCOUNT rather than as a profile answer.
+    /// </summary>
+    /// <remarks>
+    /// ⚠ THE SAME NAME IS RECORDED IN TWO PLACES IN THIS PORT AND THE SEARCH SAW ONLY ONE OF THEM.
+    /// `Library/Components/Users/UserInfo.vb` L144-L149 is
+    /// <c>Property FirstName ... Return Profile.FirstName ... Set Profile.FirstName = Value</c>, so legacy
+    /// had ONE store and the <c>Users.FirstName</c> column was residue nothing read. This port models both,
+    /// the account form writes the column, and the search read only the property - so an operator who set a
+    /// first name could not then find the account by it. The reconciliation is on the read side, and it is
+    /// scoped to the two seeded names alone.
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task SearchUsers_ByFirstNameProfileProperty_FindsANameRecordedOnTheAccount()
+    {
+        using HttpClient administrator = await _fixture.CreateHostClientAsync();
+
+        CreateUserRequest creation = NewUserRequest();
+        creation.FirstName = "Anastasia";
+        creation.LastName = "Mirrorsson";
+        creation.DisplayName = "Anastasia Mirrorsson";
+
+        using HttpResponseMessage created = await administrator.PostAsJsonAsync(
+            UsersRoute(_fixture.Seed.PortalId),
+            creation,
+            ApiTestFixture.Json);
+
+        created.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        // The reconciliation is keyed on the declared NAME, so the declaration must exist by that name;
+        // this schema does not seed the installer's default set, so it is declared here when absent.
+        ProfilePropertyDefinitionDto? firstNameDefinition =
+            await EnsureDefinitionAsync(administrator, "FirstName", 910);
+
+        firstNameDefinition.Should().NotBeNull();
+
+        var search = new UserSearchRequest
+        {
+            PageIndex = 0,
+            PageSize = 50,
+            ProfilePropertyName = firstNameDefinition!.PropertyName,
+            ProfilePropertyValue = "Anastasi",
+        };
+
+        using HttpResponseMessage found = await administrator.PostAsJsonAsync(
+            new Uri("/api/v1/users/search", UriKind.Relative),
+            search,
+            ApiTestFixture.Json);
+
+        found.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        PagedResponse<UserListItemDto>? page =
+            await found.Content.ReadFromJsonAsync<PagedResponse<UserListItemDto>>(ApiTestFixture.Json);
+
+        page.Should().NotBeNull();
+        page!.Items.Should().Contain(
+            row => row.Username == creation.Username,
+            "the first name was stored on the account, and the operator searching for it means that name");
+    }
+
+    /// <summary>
+    /// The reconciliation does not widen a search for any OTHER profile property, so it cannot match a row
+    /// it did not match before.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task SearchUsers_ByAnUnrelatedProfileProperty_IsNotWidenedToTheAccountColumns()
+    {
+        using HttpClient administrator = await _fixture.CreateHostClientAsync();
+
+        CreateUserRequest creation = NewUserRequest();
+        creation.FirstName = "Bartholomew";
+        creation.LastName = "Narrowson";
+        creation.DisplayName = "Bartholomew Narrowson";
+
+        using HttpResponseMessage created = await administrator.PostAsJsonAsync(
+            UsersRoute(_fixture.Seed.PortalId),
+            creation,
+            ApiTestFixture.Json);
+
+        created.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        ProfilePropertyDefinitionDto? city = await EnsureDefinitionAsync(administrator, "City", 911);
+        city.Should().NotBeNull();
+
+        var search = new UserSearchRequest
+        {
+            PageIndex = 0,
+            PageSize = 50,
+            ProfilePropertyName = city!.PropertyName,
+            ProfilePropertyValue = "Bartholom",
+        };
+
+        using HttpResponseMessage found = await administrator.PostAsJsonAsync(
+            new Uri("/api/v1/users/search", UriKind.Relative),
+            search,
+            ApiTestFixture.Json);
+
+        found.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        PagedResponse<UserListItemDto>? page =
+            await found.Content.ReadFromJsonAsync<PagedResponse<UserListItemDto>>(ApiTestFixture.Json);
+
+        page!.Items.Should().NotContain(
+            row => row.Username == creation.Username,
+            "a first name is not a city, and only the two seeded name properties are reconciled");
+    }
+
+    /// <summary>Finds one profile definition by name, declaring it when this schema has none.</summary>
+    /// <param name="administrator">A client able to read and write the catalogue.</param>
+    /// <param name="propertyName">The declared name to find.</param>
+    /// <param name="viewOrder">The order to declare it at when it must be created.</param>
+    /// <returns>The definition.</returns>
+    private static async Task<ProfilePropertyDefinitionDto?> EnsureDefinitionAsync(
+        HttpClient administrator,
+        string propertyName,
+        int viewOrder)
+    {
+        ProfilePropertyDefinitionDto? existing = await FindDefinitionAsync(administrator, propertyName);
+
+        if (existing is not null)
+        {
+            return existing;
+        }
+
+        var declaration = new CreateProfilePropertyDefinitionRequest
+        {
+            PropertyName = propertyName,
+            PropertyCategory = "Name",
+            DataType = 349,
+            Length = 50,
+            Required = false,
+            Visible = true,
+            ViewOrder = viewOrder,
+        };
+
+        using HttpResponseMessage declared = await administrator.PostAsJsonAsync(
+            new Uri("/api/v1/profile-definitions", UriKind.Relative),
+            declaration,
+            ApiTestFixture.Json);
+
+        declared.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        return await declared.Content.ReadEnvelopeAsync<ProfilePropertyDefinitionDto>();
+    }
+
+    /// <summary>Finds one profile definition by name.</summary>
+    /// <param name="administrator">A client able to read the catalogue.</param>
+    /// <param name="propertyName">The declared name to find.</param>
+    /// <returns>The definition, or <see langword="null"/> when none carries that name.</returns>
+    private static async Task<ProfilePropertyDefinitionDto?> FindDefinitionAsync(
+        HttpClient administrator,
+        string propertyName)
+    {
+        using HttpResponseMessage catalogue = await administrator.GetAsync(
+            new Uri("/api/v1/profile-definitions", UriKind.Relative));
+
+        catalogue.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        IReadOnlyList<ProfilePropertyDefinitionDto>? definitions = await catalogue.Content
+            .ReadEnvelopeAsync<IReadOnlyList<ProfilePropertyDefinitionDto>>();
+
+        return definitions?.FirstOrDefault(definition =>
+            string.Equals(definition.PropertyName, propertyName, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// A profile value that breaks the format its own declaration demands is REFUSED, which is what makes
+    /// <c>ProfilePropertyDefinition.ValidationExpression</c> a rule rather than decoration.
+    /// </summary>
+    /// <remarks>
+    /// This was reported as dead configuration on the strength of the browser accepting a non-matching
+    /// value, and the report was right about the browser and wrong about the rule: the client deliberately
+    /// does not run a tenant-authored expression, because nothing bounds how long the browser's own matcher
+    /// would take, and <see cref="DnnMigration.Application.Services.UserService"/> applies it instead
+    /// through a length-bounded, well-formedness-checked, cached matcher with a 50ms timeout. Nothing pinned
+    /// that, so a later change could have removed the only enforcement there is without failing a test.
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task UpdateProfile_WithAValueBreakingItsDeclaredFormat_IsRefused()
+    {
+        using HttpClient administrator = await _fixture.CreateHostClientAsync();
+        UserDetailDto created = await CreateUserAsync(administrator);
+
+        var declaration = new CreateProfilePropertyDefinitionRequest
+        {
+            PropertyName = $"Postcode{created.UserId}",
+            PropertyCategory = "Address",
+            DataType = 349,
+            Length = 20,
+            Required = false,
+            Visible = true,
+            ViewOrder = 900,
+            ValidationExpression = "^[0-9]{5}$",
+        };
+
+        using HttpResponseMessage declared = await administrator.PostAsJsonAsync(
+            new Uri("/api/v1/profile-definitions", UriKind.Relative),
+            declaration,
+            ApiTestFixture.Json);
+
+        declared.StatusCode.Should().Be(
+            HttpStatusCode.Created,
+            "the declaration must exist before a value can be tested against it");
+
+        ProfilePropertyDefinitionDto? definition =
+            await declared.Content.ReadEnvelopeAsync<ProfilePropertyDefinitionDto>();
+        definition.Should().NotBeNull();
+
+        using HttpResponseMessage read = await administrator.GetAsync(
+            ProfileRoute(created.PortalId, created.UserId));
+        read.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        UserProfileDto? profile = await read.Content.ReadEnvelopeAsync<UserProfileDto>();
+        profile.Should().NotBeNull();
+
+        UserProfileValueDto? target = profile!.Properties!
+            .FirstOrDefault(property =>
+                property.PropertyDefinitionId == definition!.PropertyDefinitionId);
+
+        target.Should().NotBeNull("the new declaration must appear in the projection");
+        target!.PropertyValue = "NOT-A-ZIP";
+
+        using HttpResponseMessage refused = await administrator.PutAsJsonAsync(
+            ProfileRoute(created.PortalId, created.UserId),
+            profile,
+            ApiTestFixture.Json);
+
+        refused.StatusCode.Should().Be(
+            HttpStatusCode.BadRequest,
+            "a value the declaration's own expression rejects must not be stored");
+
+        string body = await refused.Content.ReadAsStringAsync();
+        body.Should().Contain(
+            "does not match the format it requires",
+            "the refusal must name the rule that was broken rather than failing opaquely");
+    }
+
+    /// <summary>
+    /// A value that DOES match the declared format is stored, so the guard above is not merely refusing
+    /// everything.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task UpdateProfile_WithAValueMatchingItsDeclaredFormat_IsStored()
+    {
+        using HttpClient administrator = await _fixture.CreateHostClientAsync();
+        UserDetailDto created = await CreateUserAsync(administrator);
+
+        var declaration = new CreateProfilePropertyDefinitionRequest
+        {
+            PropertyName = $"Zip{created.UserId}",
+            PropertyCategory = "Address",
+            DataType = 349,
+            Length = 20,
+            Required = false,
+            Visible = true,
+            ViewOrder = 901,
+            ValidationExpression = "^[0-9]{5}$",
+        };
+
+        using HttpResponseMessage declared = await administrator.PostAsJsonAsync(
+            new Uri("/api/v1/profile-definitions", UriKind.Relative),
+            declaration,
+            ApiTestFixture.Json);
+
+        declared.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        ProfilePropertyDefinitionDto? definition =
+            await declared.Content.ReadEnvelopeAsync<ProfilePropertyDefinitionDto>();
+
+        using HttpResponseMessage read = await administrator.GetAsync(
+            ProfileRoute(created.PortalId, created.UserId));
+
+        UserProfileDto? profile = await read.Content.ReadEnvelopeAsync<UserProfileDto>();
+        UserProfileValueDto? target = profile!.Properties!
+            .First(property => property.PropertyDefinitionId == definition!.PropertyDefinitionId);
+
+        target.PropertyValue = "12345";
+
+        using HttpResponseMessage stored = await administrator.PutAsJsonAsync(
+            ProfileRoute(created.PortalId, created.UserId),
+            profile,
+            ApiTestFixture.Json);
+
+        stored.StatusCode.Should().Be(HttpStatusCode.NoContent);
+    }
+
+    /// <summary>
     /// The same three routes ARE served for the account holder within its own tenant, which is what proves
     /// the tenant comparison closes the cross-tenant path without closing self-service.
     /// </summary>
@@ -3659,6 +4062,140 @@ public sealed class UserApiTests
     // test created it with.
 
     /// <summary>
+    /// The catalogue is BOUNDED: a caller who supplies no paging arguments receives the first page at the
+    /// shared default size, and every paging fact describes the whole catalogue.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// ⚠ THIS IS THE ASSERTION THAT THE RESPONSE CANNOT GROW WITHOUT BOUND. The catalogue is one row per
+    /// subscribable role, so a tenant publishing a thousand roles served a thousand rows of eighteen fields -
+    /// 437 KiB - to a subscriber who could act on one of them, and no request parameter could ask for less.
+    /// The default is what a caller who was never updated now receives, so the bound has to hold for a request
+    /// carrying nothing at all.
+    /// </remarks>
+    [Fact]
+    public async Task MemberServices_WithoutPagingArguments_ReturnTheFirstPageAtTheDefaultSize()
+    {
+        (int userId, HttpClient owner) = await CreateOwnedAccountAsync();
+
+        using (owner)
+        {
+            using HttpResponseMessage response = await owner.GetAsync(ServicesRoute(userId));
+
+            response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+            PagedEnvelope<MemberServiceDto>? page = await response.Content
+                .ReadFromJsonAsync<PagedEnvelope<MemberServiceDto>>(ApiTestFixture.Json);
+
+            page.Should().NotBeNull();
+            page!.PageIndex.Should().Be(0, "a caller who named no page meant the first one");
+            page.PageSize.Should().Be(
+                new MemberServicePagedRequest().PageSize,
+                "the shared default applies to this catalogue like every other collection");
+            page.Items.Count.Should().BeLessThanOrEqualTo(
+                page.PageSize,
+                "the response is bounded by the page size, not by how many services the tenant publishes");
+            page.TotalCount.Should().BeGreaterThanOrEqualTo(
+                page.Items.Count,
+                "the total describes the catalogue, so it can never be smaller than the page cut from it");
+        }
+    }
+
+    /// <summary>
+    /// Two consecutive catalogue pages neither repeat nor drop a service, and the total is the same on both.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task MemberServices_PageTheCatalogueWithoutRepeatingOrDroppingAService()
+    {
+        (int userId, HttpClient owner) = await CreateOwnedAccountAsync();
+        int firstService = await InsertPublicServiceRoleAsync();
+        int secondService = await InsertPublicServiceRoleAsync();
+
+        try
+        {
+            using (owner)
+            {
+                IReadOnlyList<MemberServiceDto> everything = await ReadServicesAsync(owner, userId);
+                everything.Select(row => row.RoleId).Should().Contain(new[] { firstService, secondService });
+
+                using HttpResponseMessage firstResponse = await owner.GetAsync(
+                    ServicesRoute(userId, pageIndex: 0, pageSize: 1));
+                using HttpResponseMessage secondResponse = await owner.GetAsync(
+                    ServicesRoute(userId, pageIndex: 1, pageSize: 1));
+
+                firstResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+                secondResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+
+                PagedEnvelope<MemberServiceDto>? first = await firstResponse.Content
+                    .ReadFromJsonAsync<PagedEnvelope<MemberServiceDto>>(ApiTestFixture.Json);
+                PagedEnvelope<MemberServiceDto>? second = await secondResponse.Content
+                    .ReadFromJsonAsync<PagedEnvelope<MemberServiceDto>>(ApiTestFixture.Json);
+
+                first.Should().NotBeNull();
+                second.Should().NotBeNull();
+
+                first!.Items.Should().ContainSingle();
+                second!.Items.Should().ContainSingle();
+                first.TotalCount.Should().Be(
+                    second.TotalCount,
+                    "the total describes the catalogue and cannot depend on which page was asked for");
+
+                first.Items[0].RoleId.Should().NotBe(
+                    second.Items[0].RoleId,
+                    "consecutive pages are one cut through the catalogue, not two independent reads");
+
+                new[] { first.Items[0].RoleId, second.Items[0].RoleId }.Should().Equal(
+                    everything.Take(2).Select(row => row.RoleId),
+                    "the published order survives the page boundary");
+            }
+        }
+        finally
+        {
+            await RemoveRoleAsync(firstService);
+            await RemoveRoleAsync(secondService);
+        }
+    }
+
+    /// <summary>
+    /// The catalogue applies the shared paging bounds and refuses an ordering or a filter it does not offer.
+    /// </summary>
+    /// <param name="queryString">The paging arguments under test.</param>
+    /// <param name="offendingField">The request property the refusal must name.</param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// A parameter accepted and then discarded is the failure this guards: a subscriber who sorted the price
+    /// list by fee and received the published order would have no way to tell the sort had not happened.
+    /// </remarks>
+    [Theory]
+    [InlineData("pageIndex=-1&pageSize=10", nameof(MemberServicePagedRequest.PageIndex))]
+    [InlineData("pageIndex=0&pageSize=0", nameof(MemberServicePagedRequest.PageSize))]
+    [InlineData("pageIndex=0&pageSize=101", nameof(MemberServicePagedRequest.PageSize))]
+    [InlineData("pageIndex=0&pageSize=10&sortBy=serviceFee", nameof(MemberServicePagedRequest.SortBy))]
+    [InlineData("pageIndex=0&pageSize=10&query=Subscribers", nameof(MemberServicePagedRequest.Query))]
+    public async Task MemberServices_WithAnUnsupportedPageRequest_ReturnBadRequestNamingTheField(
+        string queryString,
+        string offendingField)
+    {
+        (int userId, HttpClient owner) = await CreateOwnedAccountAsync();
+
+        using (owner)
+        {
+            using HttpResponseMessage response = await owner.GetAsync(new Uri(
+                $"/api/v1/users/{Route(userId)}/services?{queryString}",
+                UriKind.Relative));
+
+            response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+            ValidationProblemDetails? problem = await response.Content
+                .ReadFromJsonAsync<ValidationProblemDetails>(ApiTestFixture.Json);
+
+            problem.Should().NotBeNull();
+            problem!.Errors.Keys.Should().Contain(offendingField);
+        }
+    }
+
+    /// <summary>
     /// The catalogue lists the tenant's public roles with this account's own state, and a subscription
     /// round-trips through it.
     /// </summary>
@@ -4107,17 +4644,38 @@ public sealed class UserApiTests
             "SELECT COUNT(*) FROM [dbo].[UserRoles] WHERE [UserID] = @userId AND [RoleID] = @roleId;",
             new Dictionary<string, object?> { ["userId"] = userId, ["roleId"] = roleId });
 
-    /// <summary>Reads the member-services catalogue for one account.</summary>
+    /// <summary>Reads the WHOLE member-services catalogue for one account, one page at a time.</summary>
     /// <param name="client">A client owning the account.</param>
     /// <param name="userId">The account identifier.</param>
-    /// <returns>The catalogue the endpoint served.</returns>
+    /// <returns>Every row of the catalogue the endpoint served.</returns>
+    /// <remarks>
+    /// The assertions that use this are about what the catalogue SAYS about a service - whether a row is
+    /// subscribed, what it costs, which command it offers - so they need the row wherever it falls. The
+    /// catalogue is now paged, because a tenant publishing a thousand roles served all of them at once, so the
+    /// pages are walked here and the walk is bounded by the reported total.
+    /// </remarks>
     private async Task<IReadOnlyList<MemberServiceDto>> ReadServicesAsync(HttpClient client, int userId)
     {
-        using HttpResponseMessage response = await client.GetAsync(ServicesRoute(userId));
+        List<MemberServiceDto> all = [];
 
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        for (int pageIndex = 0; ; pageIndex++)
+        {
+            using HttpResponseMessage response = await client.GetAsync(
+                ServicesRoute(userId, pageIndex, ServicesMaximumPageSize));
 
-        return (await response.Content.ReadEnvelopeAsync<List<MemberServiceDto>>())!;
+            response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+            PagedEnvelope<MemberServiceDto>? page = await response.Content
+                .ReadFromJsonAsync<PagedEnvelope<MemberServiceDto>>(ApiTestFixture.Json);
+
+            page.Should().NotBeNull();
+            all.AddRange(page!.Items);
+
+            if (page.Items.Count == 0 || all.Count >= page.TotalCount)
+            {
+                return all;
+            }
+        }
     }
 
     /// <summary>The five member-services addresses, each with the method that reaches it.</summary>
@@ -4132,11 +4690,25 @@ public sealed class UserApiTests
         (HttpMethod.Post, ServiceRedemptionRoute(userId)),
     ];
 
-    /// <summary>Builds the member-services catalogue route for one account.</summary>
+    /// <summary>Builds the member-services catalogue route for one account, with no paging arguments.</summary>
     /// <param name="userId">The account identifier.</param>
     /// <returns>A relative route.</returns>
+    /// <remarks>
+    /// Deliberately bare, so the addresses this suite probes for authorisation and for method support are the
+    /// addresses a caller reaches without knowing anything about paging.
+    /// </remarks>
     private static Uri ServicesRoute(int userId) =>
         new($"/api/v1/users/{Route(userId)}/services", UriKind.Relative);
+
+    /// <summary>Builds the member-services catalogue route asking for one specific page.</summary>
+    /// <param name="userId">The account identifier.</param>
+    /// <param name="pageIndex">The zero-based page to ask for.</param>
+    /// <param name="pageSize">The number of rows to ask for.</param>
+    /// <returns>A relative route.</returns>
+    private static Uri ServicesRoute(int userId, int pageIndex, int pageSize) =>
+        new(
+            $"/api/v1/users/{Route(userId)}/services?pageIndex={Route(pageIndex)}&pageSize={Route(pageSize)}",
+            UriKind.Relative);
 
     /// <summary>Builds the subscription route for one account and one service.</summary>
     /// <param name="userId">The account identifier.</param>
@@ -5061,6 +5633,116 @@ public sealed class UserApiTests
         signedIn.StatusCode.Should().Be(HttpStatusCode.OK);
     }
 
+    /// <summary>
+    /// A profile write refused for its content answers a problem document that NAMES the offending
+    /// properties, so the form that sent it can mark the exact controls at fault.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// ⚠ MEASURED AGAINST THE RUNNING API, THE REFUSAL WAS RIGHT AND UNUSABLE. Submitting an empty required
+    /// property and a malformed one was correctly refused with 400 and a correct sentence, but as a FLAT
+    /// problem document carrying no <c>errors</c> member - while this controller has always advertised
+    /// <see cref="ValidationProblemDetails"/> for this status, and the screen reads <c>errors[propertyName]</c>
+    /// to decide which control to mark. The consequence in front of the operator was a refused save that
+    /// marked nothing, set <c>aria-invalid</c> on nothing and left focus on the document body.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateProfile_RefusedForItsContent_NamesTheOffendingPropertiesInTheProblemDocument()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        ProfilePropertyDefinitionDto required = await CreateProfileDefinitionAsync(client, required: true);
+        ProfilePropertyDefinitionDto formatted = await CreateProfileDefinitionAsync(client, required: false);
+
+        // ⚠ BOTH DEFINITIONS ARE WITHDRAWN BEFORE THIS TEST RETURNS, whatever its outcome. A profile property
+        // is declared TENANT-WIDE, so a required one left behind refuses every later profile write in the run
+        // that does not answer it - measured, it failed five unrelated tests in this class the first time it
+        // was left standing.
+        try
+        {
+        // A rule that a well-formed telephone satisfies and the word "telephone" cannot.
+        UpdateProfilePropertyDefinitionRequest rule = AmendmentFrom(formatted);
+        rule.ValidationExpression = @"^\d{3}-\d{4}$";
+
+        using HttpResponseMessage ruled = await client.PutAsJsonAsync(
+            ProfileDefinitionRoute(_fixture.Seed.PortalId, formatted.PropertyDefinitionId),
+            rule,
+            ApiTestFixture.Json);
+
+        ruled.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        UserDetailDto account = await CreateUserAsync(client);
+
+        using HttpResponseMessage refused = await client.PutAsJsonAsync(
+            ProfileRoute(_fixture.Seed.PortalId, account.UserId),
+            new UserProfileDto
+            {
+                UserId = account.UserId,
+                Properties =
+                [
+                    new UserProfileValueDto
+                    {
+                        PropertyDefinitionId = formatted.PropertyDefinitionId,
+                        PropertyValue = "telephone",
+                        Visibility = formatted.Visibility,
+                        Definition = formatted,
+                    },
+                    new UserProfileValueDto
+                    {
+                        PropertyDefinitionId = required.PropertyDefinitionId,
+                        PropertyValue = string.Empty,
+                        Visibility = required.Visibility,
+                        Definition = required,
+                    },
+                ],
+            },
+            ApiTestFixture.Json);
+
+        refused.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        refused.Content.Headers.ContentType?.MediaType.Should().Be("application/problem+json");
+
+        ValidationProblemDetails? problem = await refused.Content
+            .ReadFromJsonAsync<ValidationProblemDetails>(ApiTestFixture.Json);
+
+        problem.Should().NotBeNull();
+
+        // Keyed by the DECLARED PROPERTY NAME, because that is what the form identifies its controls by.
+        problem!.Errors.Keys.Should().BeEquivalentTo(formatted.PropertyName, required.PropertyName);
+        problem.Errors[formatted.PropertyName].Should().ContainSingle()
+            .Which.Should().Contain("does not match the format it requires");
+        problem.Errors[required.PropertyName].Should().ContainSingle()
+            .Which.Should().Contain("is required");
+
+        // Attached by the same factory that handles a request-shape refusal, so a refused profile write is
+        // traceable exactly like every other refusal rather than being a shape of its own.
+        problem.Extensions.Should().ContainKey("correlationId");
+        problem.Extensions.Should().ContainKey("traceId");
+
+        // And nothing was stored: a refused write is a refused write.
+        using HttpResponseMessage stored = await client.GetAsync(
+            ProfileRoute(_fixture.Seed.PortalId, account.UserId));
+
+        stored.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        UserProfileDto? profile = await stored.Content.ReadEnvelopeAsync<UserProfileDto>();
+
+        profile.Should().NotBeNull();
+        profile!.Properties
+            .Where(value => value.PropertyDefinitionId == formatted.PropertyDefinitionId)
+            .Should().OnlyContain(value => string.IsNullOrEmpty(value.PropertyValue));
+        }
+        finally
+        {
+            using HttpResponseMessage withdrawnRule = await client.DeleteAsync(
+                ProfileDefinitionRoute(_fixture.Seed.PortalId, formatted.PropertyDefinitionId));
+            using HttpResponseMessage withdrawnRequirement = await client.DeleteAsync(
+                ProfileDefinitionRoute(_fixture.Seed.PortalId, required.PropertyDefinitionId));
+
+            withdrawnRule.StatusCode.Should().Be(HttpStatusCode.NoContent);
+            withdrawnRequirement.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        }
+    }
+
     /// <summary>No account representation carries credential material, and no route serves one back.</summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
@@ -5522,4 +6204,97 @@ public sealed class UserApiTests
 
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
+    /// <summary>
+    /// A filter the database collation cannot weigh must match NOTHING rather than everything.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THIS IS A SAFETY TEST, NOT A TIDINESS ONE. The schema is collated
+    /// <c>SQL_Latin1_General_CP1_CI_AS</c>, which gives supplementary characters no collation weight, so
+    /// <c>N'🎉🎉🎉'</c> compares equal to the empty string and a prefix match on it degrades to
+    /// <c>LIKE N'%'</c>. Measured against the live listing before this guard existed, searching for three
+    /// emoji reported a filter in force and returned EVERY account.
+    /// </para>
+    /// <para>
+    /// An operator who believes a listing has been narrowed to one account may authorise, unauthorise or
+    /// delete a row on that belief. Returning nothing is both honest and safe.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task SearchUsers_ByCharactersTheCollationCannotWeigh_MatchesNothingRatherThanEverything()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        // The unfiltered total, established first so "everything" is a measured number rather than a guess.
+        PagedEnvelope<UserListItemDto> unfiltered = await ListAsync(client, "pageIndex=0&pageSize=100");
+
+        unfiltered.Meta.TotalCount.Should()
+            .BeGreaterThan(0, "the guard is only meaningful when there are rows it could wrongly return");
+
+        using HttpResponseMessage searched = await client.PostAsJsonAsync(
+            new Uri("/api/v1/users/search", UriKind.Relative),
+            new UserSearchRequest
+            {
+                PageIndex = 0,
+                PageSize = 100,
+                UserName = "\U0001F389\U0001F389\U0001F389",
+            },
+            ApiTestFixture.Json);
+
+        searched.StatusCode.Should().Be(HttpStatusCode.OK, "a search that matches nothing is not an error");
+
+        PagedEnvelope<UserListItemDto>? page = await searched.Content
+            .ReadFromJsonAsync<PagedEnvelope<UserListItemDto>>(ApiTestFixture.Json);
+
+        page.Should().NotBeNull();
+        page!.Items.Should().BeEmpty("no account name begins with those characters");
+        page.Meta.TotalCount.Should().Be(
+            0,
+            "a filter that cannot discriminate fails closed, never open");
+        page.Meta.TotalCount.Should().NotBe(
+            unfiltered.Meta.TotalCount,
+            "returning the complete set for a filter the operator typed is the unsafe direction");
+    }
+
+    /// <summary>
+    /// A filter MIXING weightless characters with ordinary text still discriminates on the ordinary part.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The guard is deliberately narrow. Catching a filter that merely CONTAINS a weightless character
+    /// would suppress a legitimate search, so only a filter composed entirely of them is treated as unable
+    /// to filter.
+    /// </remarks>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task SearchUsers_ByOrdinaryTextCarryingAWeightlessCharacter_StillFiltersOnTheOrdinaryPart()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        // The seeded member's own name, with an emoji appended. The ordinary part carries weight, so the
+        // filter is applied rather than being treated as unable to filter - and because the collation
+        // ignores the emoji, it matches exactly what the bare name matches.
+        using HttpResponseMessage searched = await client.PostAsJsonAsync(
+            new Uri("/api/v1/users/search", UriKind.Relative),
+            new UserSearchRequest
+            {
+                PageIndex = 0,
+                PageSize = 100,
+                UserName = IntegrationSeed.MemberUserName + "\U0001F389",
+            },
+            ApiTestFixture.Json);
+
+        searched.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        PagedEnvelope<UserListItemDto>? page = await searched.Content
+            .ReadFromJsonAsync<PagedEnvelope<UserListItemDto>>(ApiTestFixture.Json);
+
+        page.Should().NotBeNull();
+        page!.Items.Should().OnlyContain(item => item.Username.StartsWith(
+            IntegrationSeed.MemberUserName,
+            StringComparison.OrdinalIgnoreCase));
+    }
+
 }

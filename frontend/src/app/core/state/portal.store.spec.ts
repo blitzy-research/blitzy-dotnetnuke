@@ -26,12 +26,63 @@ import type {
 } from '../models/problem-details.model';
 import type { PortalFailure } from './portal.store';
 
+import { HttpParams } from '@angular/common/http';
+
+import type { HttpRequest } from '@angular/common/http';
+
+/**
+ * The filters a request carried, presented as ONE parameter bag whichever transport carried them. ⚠ A
+ * LISTING READ THAT CARRIES A TERM A PERSON TYPED SENDS ITS FILTERS IN THE BODY, because a query string is
+ * written into the reverse proxy's access log and into the API's own request log; a term-free read keeps
+ * them in the query string. Specifications below are about WHAT was sent, not about WHERE, so they read
+ * through here and stay true across both transports.
+ *
+ * @param request The request to read, or the raw request it wraps.
+ * @returns Every filter it carried, as query-parameter-shaped strings.
+ */
+function sentFilters(request: TestRequest | HttpRequest<unknown>): HttpParams {
+  const raw: HttpRequest<unknown> = 'request' in request ? request.request : request;
+  const body = raw.body as Record<string, unknown> | null | undefined;
+
+  if (body === null || body === undefined) {
+    return raw.params;
+  }
+
+  let carried: HttpParams = new HttpParams();
+
+  for (const [name, value] of Object.entries(body)) {
+    if (value !== null && value !== undefined) {
+      carried = carried.set(name, String(value));
+    }
+  }
+
+  return carried;
+}
+
+
+/**
+ * Whether a request is a listing read, on EITHER transport.
+ *
+ * @param candidate The request to test.
+ * @returns True for the term-free read and for the body-bound search alike.
+ */
+function isListingRead(candidate: HttpRequest<unknown>): boolean {
+  return candidate.url === PORTALS_URL || candidate.url === PORTALS_SEARCH_URL;
+}
+
+
 // ---------------------------------------------------------------------------
 // THE ADDRESSES UNDER TEST, AS RELATIVE LITERALS.
 // ---------------------------------------------------------------------------
 
 /** The portal collection. */
 const PORTALS_URL = '/api/v1/portals';
+
+/**
+ * The body-bound search address. ⚠ A SEPARATE ADDRESS FROM {@link PORTALS_URL} ON PURPOSE: a listing read that
+ * carries a term a person typed goes here, so the term never appears in a logged request line.
+ */
+const PORTALS_SEARCH_URL = '/api/v1/portals/search';
 
 /**
  * The identifier of the FIRST portal any legacy installation ever created. `01.00.00.SqlDataProvider:L77`
@@ -503,7 +554,7 @@ function validationProblem(
  * @returns The transmitted value, as transmitted.
  */
 function queryValue(request: TestRequest, key: string): string {
-  const held: string | null = request.request.params.get(key);
+  const held: string | null = sentFilters(request).get(key);
 
   if (held === null) {
     throw new Error(`The request carried no ${key} parameter; the addressed URL was ${request.request.urlWithParams}.`);
@@ -638,6 +689,9 @@ function mutatingMembers(candidate: object): { readonly setter: boolean; readonl
  * @param description What the request was, for the failure message.
  */
 function expectNoQueryString(request: TestRequest, description: string): void {
+  // ⚠ THIS HELPER READS THE REAL QUERY STRING AND MUST NOT GO THROUGH `sentFilters`. Its whole assertion is
+  // about the ADDRESS, so a view that folds a request body into parameter shape would make every body-bearing
+  // request appear to carry a query string and the assertion would invert its own meaning.
   expect(request.request.params.keys().length)
     .withContext(`${description}: carries no query parameter`)
     .toBe(0);
@@ -658,10 +712,10 @@ function expectNoQueryString(request: TestRequest, description: string): void {
  * @param request The observed request.
  */
 function expectNoLegacyListingKeys(request: TestRequest): void {
-  expect(request.request.params.has(LEGACY_URL_KEY.filter))
+  expect(sentFilters(request).has(LEGACY_URL_KEY.filter))
     .withContext('the legacy lower-case filter key is not sent')
     .toBeFalse();
-  expect(request.request.params.has(LEGACY_URL_KEY.currentPage))
+  expect(sentFilters(request).has(LEGACY_URL_KEY.currentPage))
     .withContext('the legacy lower-case one-based page key is not sent')
     .toBeFalse();
 }
@@ -708,7 +762,7 @@ describe('PortalStore', () => {
    */
   function expectListing(description: string): TestRequest {
     return httpMock.expectOne(
-      (candidate) => candidate.url === PORTALS_URL && candidate.method === 'GET',
+      (candidate) => isListingRead(candidate),
       description,
     );
   }
@@ -731,7 +785,7 @@ describe('PortalStore', () => {
    * @param description What the absence proves, quoted on failure.
    */
   function expectNoListingReread(description: string): void {
-    expect(httpMock.match((candidate) => candidate.url === PORTALS_URL))
+    expect(httpMock.match((candidate) => isListingRead(candidate)))
       .withContext(description)
       .toHaveSize(0);
   }
@@ -881,7 +935,7 @@ describe('PortalStore', () => {
 
       const unsized = expectListing('an unsized listing');
 
-      expect(unsized.request.params.has(QUERY_KEY.pageSize))
+      expect(sentFilters(unsized).has(QUERY_KEY.pageSize))
         .withContext('an unsupplied size is an omission, so the server applies its own')
         .toBeFalse();
       unsized.flush(singleRowPage(PORTAL_ID));
@@ -969,10 +1023,10 @@ describe('PortalStore', () => {
 
       const unordered = expectListing('the listing returned to the server own ordering');
 
-      expect(unordered.request.params.has(QUERY_KEY.sortBy))
+      expect(sentFilters(unordered).has(QUERY_KEY.sortBy))
         .withContext('no preference is an omission, not a blank value')
         .toBeFalse();
-      expect(unordered.request.params.has(QUERY_KEY.sortDir)).toBeFalse();
+      expect(sentFilters(unordered).has(QUERY_KEY.sortDir)).toBeFalse();
       unordered.flush(singleRowPage(PORTAL_ID));
     });
 
@@ -981,8 +1035,8 @@ describe('PortalStore', () => {
 
       const request = expectListing('a name-filtered listing');
 
-      expect(request.request.params.has(QUERY_KEY.query)).toBeFalse();
-      expect(request.request.params.keys().length)
+      expect(sentFilters(request).has(QUERY_KEY.query)).toBeFalse();
+      expect(sentFilters(request).keys().length)
         .withContext('the page index and the name, and nothing else')
         .toBe(2);
       request.flush(singleRowPage(PORTAL_ID));
@@ -1095,7 +1149,7 @@ describe('PortalStore', () => {
 
       const request = expectListing('a listing filtered by an empty value');
 
-      expect(request.request.params.has(QUERY_KEY.name))
+      expect(sentFilters(request).has(QUERY_KEY.name))
         .withContext('the parameter is present')
         .toBeTrue();
       expect(queryValue(request, QUERY_KEY.name))
@@ -1118,7 +1172,7 @@ describe('PortalStore', () => {
 
       const request = expectListing('the unfiltered listing');
 
-      expect(request.request.params.has(QUERY_KEY.name))
+      expect(sentFilters(request).has(QUERY_KEY.name))
         .withContext('null is an omission, not a blank value')
         .toBeFalse();
       expect(queryValue(request, QUERY_KEY.pageIndex)).toBe('0');
@@ -1788,7 +1842,7 @@ describe('PortalStore', () => {
         .withContext('the write itself still lands')
         .toBe('Renamed');
       httpMock.expectNone(
-        (candidate) => candidate.url === PORTALS_URL,
+        (candidate) => isListingRead(candidate),
         'no listing read follows a settings write when no listing has been read',
       );
     });
@@ -2318,7 +2372,7 @@ describe('PortalStore', () => {
       expect(secondOutcomes.map((entry) => entry.portalName)).toEqual(['Second']);
 
       for (const reread of httpMock.match(
-        (candidate) => candidate.method === 'GET' && candidate.url === PORTALS_URL,
+        (candidate) => isListingRead(candidate),
       )) {
         if (!reread.cancelled) {
           reread.flush(portalPage([], 0, 10, 0, 0));
@@ -2772,4 +2826,58 @@ describe('PortalStore', () => {
       settleListingReread('the listing re-read that follows a removal');
     });
   });
+  // =========================================================================
+  // THE SETTLED LATCH — "NOT ASKED YET" IS NOT "ASKED AND EMPTY"
+  // =========================================================================
+
+  // ⚠ THE MEASURED DEFECT THESE PROVE CLOSED. An un-asked listing and a listing that matched nothing are
+  // both an empty page with no request in flight, so a screen reading only the rows and the in-flight flag
+  // painted "No portals match the current filter." over a listing nobody had read yet — the empty-table
+  // flash reported on every post-save return to a listing.
+  describe('the settled latch', () => {
+    it('is DOWN on a fresh store, so a screen can tell an un-asked listing from an empty one', () => {
+      expect(store.listSettled()).toBeFalse();
+      expect(store.portals()).toEqual([]);
+      expect(store.listLoading())
+        .withContext('and nothing is in flight, which is exactly what made the two states identical')
+        .toBeFalse();
+    });
+
+    it('stays DOWN while the first read is outstanding and rises when it answers', () => {
+      store.loadPortals();
+      const request = expectListing('the first listing read');
+
+      expect(store.listSettled())
+        .withContext('a request in flight has not settled the question')
+        .toBeFalse();
+
+      request.flush(singleRowPage(PORTAL_ID));
+
+      expect(store.listSettled()).toBeTrue();
+    });
+
+    it('rises on a FAILED read too, because the question of whether one happened is answered either way', () => {
+      store.loadPortals();
+      expectListing('a listing read that fails').flush(
+        { title: 'Server Error', status: 500 },
+        { status: 500, statusText: 'Internal Server Error' },
+      );
+
+      expect(store.listSettled())
+        .withContext('a failure must not leave a waiting indicator standing over a reportable failure')
+        .toBeTrue();
+      expect(store.listFailure()).not.toBeNull();
+    });
+
+    it('goes back DOWN on reset, because the page it spoke for is discarded with the session', () => {
+      readListing(singleRowPage(PORTAL_ID), 'a listing read before the session ends');
+      expect(store.listSettled()).toBeTrue();
+
+      store.reset();
+
+      expect(store.listSettled()).toBeFalse();
+      expect(store.portals()).toEqual([]);
+    });
+  });
+
 });

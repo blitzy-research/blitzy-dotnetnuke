@@ -37,6 +37,13 @@ import type {
 /** The portal collection. */
 const PORTALS_URL = '/api/v1/portals';
 
+/**
+ * The body-bound search address. ⚠ A SEPARATE ADDRESS FROM {@link PORTALS_URL} ON PURPOSE: a listing read
+ * that carries a term a person typed goes here, because a query string is written into the reverse proxy's
+ * access log and into the API's own request log.
+ */
+const PORTALS_SEARCH_URL = '/api/v1/portals/search';
+
 /** The identifier used for every single-portal case. */
 const PORTAL_ID = 3;
 
@@ -568,24 +575,28 @@ describe('PortalService', () => {
         }),
       );
 
-      // A predicate matcher, because this call DOES carry a query string and a string matcher would have to
-      // spell out the serialised parameters — which would assert encoding order as though it were contract.
+      // ⚠ THE BODY-BOUND ADDRESS, BECAUSE THIS CALL CARRIES A TERM A PERSON TYPED. A query string is written
+      // into the reverse proxy's access log and into the API's own request log, so a search term must not
+      // travel in one. The account listing had already settled this the same way.
       const request = httpMock.expectOne(
-        (candidate) => candidate.url === PORTALS_URL && candidate.method === 'GET',
-        'the paged portal listing',
+        (candidate) => candidate.url === PORTALS_SEARCH_URL && candidate.method === 'POST',
+        'the body-bound portal search',
       );
 
-      expect(request.request.url)
-        .withContext('the path is unchanged by the presence of parameters')
-        .toBe(PORTALS_URL);
-      expect(request.request.params.get(QUERY_KEY.pageIndex)).toBe('1');
-      expect(request.request.params.get(QUERY_KEY.pageSize)).toBe('20');
-      expect(request.request.params.get(QUERY_KEY.sortBy)).toBe('portalName');
+      expect(request.request.params.keys().length)
+        .withContext('NOTHING travels in the query string once a term is present')
+        .toBe(0);
+
+      const body = request.request.body as Record<string, unknown>;
+
+      expect(body[QUERY_KEY.pageIndex]).toBe(1);
+      expect(body[QUERY_KEY.pageSize]).toBe(20);
+      expect(body[QUERY_KEY.sortBy]).toBe('portalName');
       // The capitalised member name, because the server binds the enumeration member
       // and answers an abbreviated or lower-cased value with a 400.
-      expect(request.request.params.get(QUERY_KEY.sortDir)).toBe('Ascending');
-      expect(request.request.params.get(QUERY_KEY.query)).toBe('Contoso');
-      expect(request.request.params.keys().length)
+      expect(body[QUERY_KEY.sortDir]).toBe('Ascending');
+      expect(body[QUERY_KEY.query]).toBe('Contoso');
+      expect(Object.keys(body).length)
         .withContext('and nothing beyond those five')
         .toBe(5);
 
@@ -637,11 +648,13 @@ describe('PortalService', () => {
       const observed = observe(service.list({ pageIndex: 0, pageSize: 20, query: 'Cont' }));
 
       const request = httpMock.expectOne(
-        (candidate) => candidate.url === PORTALS_URL && candidate.method === 'GET',
-        'a filtered portal listing',
+        (candidate) => candidate.url === PORTALS_SEARCH_URL && candidate.method === 'POST',
+        'a filtered portal search',
       );
 
-      const transmitted = request.request.params.get(QUERY_KEY.query);
+      const transmitted = (request.request.body as Record<string, unknown>)[QUERY_KEY.query] as
+        | string
+        | undefined;
       expect(transmitted)
         .withContext('the search text travels byte for byte, with no pattern syntax added')
         .toBe('Cont');
@@ -660,13 +673,17 @@ describe('PortalService', () => {
     it('transmits the portal-name filter exactly as typed, under its own wire name', () => {
       const observed = observe(service.list({ pageIndex: 0, pageSize: 20 }, { name: 'Cont' }));
 
+      // The site-name filter is a term a person typed just as much as the free-text member is, so it takes
+      // the same body-bound address.
       const request = httpMock.expectOne(
-        (candidate) => candidate.url === PORTALS_URL && candidate.method === 'GET',
-        'a name-filtered portal listing',
+        (candidate) => candidate.url === PORTALS_SEARCH_URL && candidate.method === 'POST',
+        'a name-filtered portal search',
       );
 
-      expect(request.request.params.get(QUERY_KEY.name)).toBe('Cont');
-      expect(request.request.params.keys().length)
+      const body = request.request.body as Record<string, unknown>;
+
+      expect(body[QUERY_KEY.name]).toBe('Cont');
+      expect(Object.keys(body).length)
         .withContext('the paging pair plus the name, and nothing else')
         .toBe(3);
 
@@ -1408,13 +1425,31 @@ describe('PortalService', () => {
       );
     });
 
-    it('refuses a registration mode outside the published code table', () => {
+    it('ADMITS a registration mode outside the published code table, keeping it as stored', () => {
+      // ⚠ INVERTED FROM WHAT THIS FILE USED TO REQUIRE, for the reason recorded on `decodePortalDetail`.
+      // `Portals.UserRegistration` is a plain `int` with no check constraint, so a mode this console
+      // publishes no wording for is reachable - and refusing the record would have cost the reader the whole
+      // portal, and on a listing every other portal on the page with it.
+      const received = observe<{ readonly userRegistration: number }>(service.getById(PORTAL_ID));
+
+      httpMock
+        .expectOne(PORTAL_URL)
+        .flush(envelope({ ...portalDetail(PORTAL_ID), userRegistration: 99 }));
+
+      expect(received.failures).withContext('nothing was refused').toHaveSize(0);
+      expect(received.values[0]?.userRegistration)
+        .withContext('kept, not coerced and not refused')
+        .toBe(99);
+    });
+
+    it('still refuses a registration mode that is not an integer at all', () => {
+      // Tolerance is bounded: the SET is open, the TYPE is not.
       const observed = observe<unknown>(service.getById(PORTAL_ID));
 
       expectViolationAt(
         observed,
         httpMock.expectOne(PORTAL_URL),
-        envelope({ ...portalDetail(PORTAL_ID), userRegistration: 99 }),
+        envelope({ ...portalDetail(PORTAL_ID), userRegistration: 'Public' }),
         'response.data.userRegistration',
       );
     });

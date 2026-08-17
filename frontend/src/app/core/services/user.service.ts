@@ -1,6 +1,6 @@
 import { HttpClient, type HttpParams } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
-import { type Observable, map } from 'rxjs';
+import { type Observable, map, of, switchMap } from 'rxjs';
 
 import { API_ENDPOINTS } from '../config/api-endpoints';
 import {
@@ -20,6 +20,7 @@ import { arrayOf, decodeResponse, envelopeOf, pageOf } from '../utils/decode.uti
 import { presentedInContext } from './notification.service';
 
 import type { Decoder } from '../utils/decode.util';
+import type { PagedResult } from '../models/paged-result.model';
 import type { PagedRequestParams } from '../utils/http-params.util';
 import type {
   CreateProfilePropertyDefinitionRequest,
@@ -70,9 +71,13 @@ const PROFILE_DEFINITION_RESPONSE: Decoder<ProfilePropertyDefinition> = envelope
 );
 const PROFILE_DEFINITION_LIST_RESPONSE: Decoder<readonly ProfilePropertyDefinition[]> =
   envelopeOf(arrayOf(decodeProfilePropertyDefinition));
-const MEMBER_SERVICE_LIST_RESPONSE: Decoder<readonly MemberService[]> = envelopeOf(
-  arrayOf(decodeMemberService),
-);
+const MEMBER_SERVICE_PAGE: Decoder<PagedResult<MemberService>> = pageOf(decodeMemberService);
+
+/**
+ * The page size used when the whole catalogue is wanted: the API's own ceiling, so the number of round trips
+ * is the smallest the server permits.
+ */
+const WHOLE_CATALOGUE_PAGE_SIZE = 100;
 const REDEEM_SERVICE_CODE_RESPONSE: Decoder<RedeemServiceCodeResult> = envelopeOf(
   decodeRedeemServiceCodeResult,
 );
@@ -437,18 +442,60 @@ export class UserService {
   // -------------------------------------------------------------------------
 
   /**
-   * Reads the services offered to one account, with whatever that account already holds against each of
-   * them.
+   * One page of the services offered to one account. `GET /api/v1/users/{userId}/services`, answering `200`
+   * with the page and the total across every page.
+   *
+   * The endpoint refuses `sortBy` and `query` with `400` - the catalogue is published in one order and has no
+   * filterable column of its own - so this method sends neither.
    *
    * @param userId The account whose catalogue to read.
-   * @returns The catalogue.
+   * @param request The page to return and its size.
+   * @returns The page, in the paged wire envelope.
    */
-  listMemberServices(userId: number): Observable<readonly MemberService[]> {
+  listMemberServicesPage(
+    userId: number,
+    request: PagedRequestParams,
+  ): Observable<PagedResult<MemberService>> {
     return this.http
       .get<unknown>(API_ENDPOINTS.users.services(userId), {
+        params: pagedRequestParams({ pageIndex: request.pageIndex, pageSize: request.pageSize }),
         context: presentedInContext(),
       })
-      .pipe(map((body) => decodeResponse(MEMBER_SERVICE_LIST_RESPONSE, body)));
+      .pipe(map((body) => decodeResponse(MEMBER_SERVICE_PAGE, body)));
+  }
+
+  /**
+   * The WHOLE catalogue offered to one account, read a hundred rows at a time.
+   *
+   * MIGRATION: THE RESPONSE THIS READS IS NOW BOUNDED AND THIS METHOD'S ANSWER IS NOT. The endpoint used to
+   * serve every published service in one response - a tenant publishing a thousand roles sent a thousand rows
+   * of eighteen fields, 437 KiB - and the screen that consumes this renders the catalogue as a whole, so the
+   * collection is assembled here from bounded pages. No single response is unbounded and no consumer changed.
+   *
+   * @param userId The account whose catalogue to read.
+   * @returns The catalogue, in the published order, across page boundaries.
+   */
+  listMemberServices(userId: number): Observable<readonly MemberService[]> {
+    const readFrom = (
+      pageIndex: number,
+      collected: readonly MemberService[],
+    ): Observable<readonly MemberService[]> =>
+      this.listMemberServicesPage(userId, {
+        pageIndex,
+        pageSize: WHOLE_CATALOGUE_PAGE_SIZE,
+      }).pipe(
+        switchMap((page) => {
+          const accumulated: readonly MemberService[] = [...collected, ...page.items];
+
+          // Bounded by the total the server reported rather than by a page count, so a tenant that publishes
+          // another service between two requests still terminates.
+          return page.items.length === 0 || accumulated.length >= page.meta.totalCount
+            ? of(accumulated)
+            : readFrom(pageIndex + 1, accumulated);
+        }),
+      );
+
+    return readFrom(0, []);
   }
 
   /**

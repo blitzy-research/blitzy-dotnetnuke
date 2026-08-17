@@ -12,3 +12,20 @@ app-empty-state {
   display: block;
   margin-block-start: var(--space-4);
 }
+
+// THE RECOVERY LINK — QA-18. The only control on the only screen a lost operator reaches, and it was a bare
+// inline anchor at the shared 17px line height. It is projected into the empty state's action slot, and under
+// emulated encapsulation projected content carries THIS component's scoping attribute, not the shared
+// component's — which is why the rule belongs here and could not have been written there.
+//
+// ⚠ NO `display` IS DECLARED, AND THAT IS MEASURED RATHER THAN ASSUMED. The slot this is projected into is a
+// flex container, so the anchor is a flex item and its `display` is already blockified to `block` — an
+// `inline-block` here computes to `block` anyway. Declaring it would have read as though it were doing
+// something. `align-content` needs a block container, which is exactly what the blockification supplies.
+//
+// The box grows and the caption re-centres inside it, so the link looks unchanged and only its hit area
+// changes; being block-level, a long caption still wraps inside the box rather than widening the panel.
+a {
+  min-block-size: var(--target-size-min);
+  align-content: center;
+}

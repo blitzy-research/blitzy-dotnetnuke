@@ -1,4 +1,6 @@
+using System.Globalization;
 using DnnMigration.Application.Abstractions;
+using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Application.Dtos.Tab;
 using DnnMigration.Application.Options;
 using DnnMigration.Application.Services;
@@ -31,6 +33,17 @@ public class TabServiceTests
     private const int TabId = 4;
 
     private const string TabName = "Measured Page";
+
+    /// <summary>
+    /// A request for the WHOLE collection, used by the assertions that are about narrowing and caching rather
+    /// than about paging.
+    /// </summary>
+    /// <remarks>
+    /// A page size of zero is the application layer's "unpaged" and is unreachable over HTTP, where the shared
+    /// validator requires at least one row - so these assertions can still read the whole permitted sequence
+    /// while no caller of the endpoint can.
+    /// </remarks>
+    private static TabPagedRequest WholeCollection => new TabPagedRequest { PageSize = 0 };
 
     /// <summary>The service refuses to be constructed without every collaborator it depends on.</summary>
     [Fact]
@@ -579,13 +592,16 @@ public class TabServiceTests
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result<IReadOnlyList<int>>.Success(permitted));
 
-        Result<IReadOnlyList<TabListItemDto>> outcome = await harness.Service
-            .GetTabsAsync(PortalId, CancellationToken.None);
+        Result<PagedResult<TabListItemDto>> outcome = await harness.Service
+            .GetTabsAsync(PortalId, WholeCollection, CancellationToken.None);
 
         outcome.IsSuccess.Should().BeTrue();
-        outcome.Value.Select(row => row.TabId).Should().Equal(
+        outcome.Value.Items.Select(row => row.TabId).Should().Equal(
             permitted,
             "only the permitted pages are offered, in the navigation order the read produced");
+        outcome.Value.TotalCount.Should().Be(
+            permitted.Length,
+            "the reported total is the size of the collection this caller is paging, not the tenant's raw count");
     }
 
     /// <summary>
@@ -612,10 +628,10 @@ public class TabServiceTests
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result<IReadOnlyList<int>>.Success([TabId]));
 
-        Result<IReadOnlyList<TabListItemDto>> outcome = await harness.Service
-            .GetTabsAsync(PortalId, CancellationToken.None);
+        Result<PagedResult<TabListItemDto>> outcome = await harness.Service
+            .GetTabsAsync(PortalId, WholeCollection, CancellationToken.None);
 
-        outcome.Value.Should().HaveCount(1, "this caller may act on one page");
+        outcome.Value.Items.Should().HaveCount(1, "this caller may act on one page");
 
         harness.Cached.Should().NotBeNull("the listing is cached per tenant");
         harness.Cached!.Should().HaveCount(
@@ -639,11 +655,12 @@ public class TabServiceTests
                 It.IsAny<CancellationToken>()))
             .ReturnsAsync(Result<IReadOnlyList<int>>.Failure("permission.unavailable", "unreachable"));
 
-        Result<IReadOnlyList<TabListItemDto>> outcome = await harness.Service
-            .GetTabsAsync(PortalId, CancellationToken.None);
+        Result<PagedResult<TabListItemDto>> outcome = await harness.Service
+            .GetTabsAsync(PortalId, WholeCollection, CancellationToken.None);
 
         outcome.IsSuccess.Should().BeTrue("an unresolvable grant state is a refusal, not a fault to propagate");
-        outcome.Value.Should().BeEmpty();
+        outcome.Value.Items.Should().BeEmpty();
+        outcome.Value.TotalCount.Should().Be(0);
     }
 
     /// <summary>Assembles a page service over a whole in-memory page set, for the traversal assertions.</summary>
@@ -818,6 +835,297 @@ public class TabServiceTests
             TabName = name,
             ParentId = parentId,
             TabOrder = order,
+            IsVisible = true,
+        };
+    }
+
+    /// <summary>
+    /// A host-level page carries no tenant, so its depth and its materialised path are recomputed from its
+    /// own parent chain and nothing else is renumbered.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// A host page with no parent is the base of that computation: the walk finds no ancestor, so the path is
+    /// the separator followed by the page's own name and the depth is the root depth.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateTab_ForARootHostPage_MaterialisesThePathFromItsOwnNameAlone()
+    {
+        HostPageHarness harness = HostPageHarness.WithRootPage();
+
+        Result<TabDetailDto> outcome = await harness.Service
+            .UpdateTabAsync(HostPageHarness.PageId, harness.Request(), CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value.PortalId.Should().BeNull("a host page belongs to no tenant");
+
+        outcome.Value.Level.Should().Be(0, "a page with no parent sits at the root depth");
+        outcome.Value.TabPath.Should().Be(
+            "//HostConsole",
+            "the path is the separator followed by the page's own name, with the space in "
+            + "\"Host Console\" removed exactly as the legacy path generator removed every non-word "
+            + "character");
+
+        harness.StoredPage.TabPath.Should().Be(
+            "//HostConsole",
+            "the path is written onto the page that is staged, not only onto the representation returned");
+    }
+
+    /// <summary>
+    /// A nested host page's path is assembled from its whole ancestor chain, outermost first, and the tenant
+    /// machinery - the sibling listing, the portal read, the renumbering pass and the tenant cache eviction -
+    /// is left entirely alone.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The negative half is the load-bearing half. A host page has no portal, and the legacy code had no way
+    /// to say so: it passed the page's portal identifier straight through, which for a host page was the
+    /// integer sentinel -1, and so evicted the cache of the tenant whose real identifier IS -1. Asserting
+    /// that this path evicts the host entries and touches no tenant's is what keeps that behaviour from
+    /// returning.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateTab_ForANestedHostPage_MaterialisesThePathFromItsWholeAncestorChain()
+    {
+        HostPageHarness harness = HostPageHarness.WithChain();
+
+        Result<TabDetailDto> outcome = await harness.Service
+            .UpdateTabAsync(
+                HostPageHarness.PageId,
+                harness.Request(HostPageHarness.BranchId),
+                CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+
+        outcome.Value.TabPath.Should().Be(
+            "//HostRoot//BranchTwo//HostConsole",
+            "the chain is walked upward and each ancestor's name is inserted ahead of the ones already "
+            + "collected, so the assembled path reads outermost first and ends with the page itself");
+
+        outcome.Value.Level.Should().Be(
+            2,
+            "depth is one deeper than the parent's own stored depth rather than a count of the walk");
+
+        harness.Cache.Verify(cache => cache.InvalidateHost(), Times.Once);
+        harness.Cache.Verify(cache => cache.InvalidateTabs(It.IsAny<int>()), Times.Never);
+        harness.Cache.Verify(cache => cache.InvalidatePortal(It.IsAny<int>()), Times.Never);
+
+        harness.Tabs.Verify(
+            tabs => tabs.GetByPortalIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        harness.Tabs.Verify(
+            tabs => tabs.UpdateOrderAsync(It.IsAny<Tab>(), It.IsAny<CancellationToken>()),
+            Times.Never);
+        harness.Portals.Verify(
+            portals => portals.GetByIdAsync(
+                It.IsAny<int>(),
+                It.IsAny<bool>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+
+        harness.Tabs.Verify(tabs => tabs.UpdateAsync(harness.StoredPage, It.IsAny<CancellationToken>()), Times.Once);
+        harness.UnitOfWork.Verify(unit => unit.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+
+        AuditEvent record = harness.AuditRecords.Should().ContainSingle().Subject;
+        record.EventName.Should().Be(AuditEventNames.TabUpdated);
+        record.PortalId.Should().BeNull(
+            "the record says the page has no tenant rather than naming the tenant whose identifier "
+            + "happens to be the legacy absent-integer sentinel");
+        record.ResourceId.Should().Be(HostPageHarness.PageId.ToString(CultureInfo.InvariantCulture));
+    }
+
+    /// <summary>
+    /// A cycle already present in the stored host pages terminates the ancestor walk at its bound and still
+    /// yields a path, rather than hanging the request.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The host tree has no portal-wide listing to bound the walk against - which is why the walk carries a
+    /// fixed bound of its own - and a cycle is representable in the stored data because
+    /// <c>dbo.Tabs.ParentId</c> is an ordinary self-referencing column with no constraint that forbids one.
+    /// This case is deliberately written so that a REMOVED bound is a hang rather than a wrong answer, which
+    /// is the failure mode the bound exists to prevent; the exact segment count is asserted so that a
+    /// widened or narrowed bound is reported as a number rather than as a timeout.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateTab_ForAHostPageWhoseParentChainCycles_TerminatesAtTheWalkBound()
+    {
+        HostPageHarness harness = HostPageHarness.WithCycle();
+
+        Result<TabDetailDto> outcome = await harness.Service
+            .UpdateTabAsync(
+                HostPageHarness.PageId,
+                harness.Request(HostPageHarness.BranchId),
+                CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+
+        string path = outcome.Value.TabPath.Should().NotBeNull().And.Subject!;
+
+        string[] segments = path.Split("//", StringSplitOptions.RemoveEmptyEntries);
+
+        segments.Should().HaveCount(
+            65,
+            "the walk is bounded at sixty-four ancestors, and the page's own name is appended after it - so "
+            + "a cycle produces exactly that many segments instead of running forever");
+
+        segments[^1].Should().Be(
+            "HostConsole",
+            "the page being updated is always the last segment of its own path");
+        segments[^2].Should().Be(
+            "BranchTwo",
+            "the segment before it is the page's immediate parent, which is where the walk began");
+    }
+
+    /// <summary>
+    /// Assembles the page service over a set of HOST-level pages - pages whose <c>PortalId</c> is absent -
+    /// which is the state that sends an update down the host branch.
+    /// </summary>
+    /// <remarks>
+    /// A separate harness rather than a parameter on the two above, because a host page differs from a
+    /// tenant page in what the service is allowed to touch, not merely in a field value: there is no sibling
+    /// listing to read, no portal to load and no tenant cache to evict, so those collaborators are left
+    /// unconfigured here and asserted to stay unused.
+    /// </remarks>
+    private sealed class HostPageHarness
+    {
+        /// <summary>Identifier of the host page every case updates.</summary>
+        internal const int PageId = 41;
+
+        /// <summary>Identifier of the page's immediate parent, where a chain is used.</summary>
+        internal const int BranchId = 42;
+
+        /// <summary>Identifier of the outermost page of the chain.</summary>
+        internal const int RootId = 43;
+
+        /// <summary>Name of the page under test, carrying a space the path generator removes.</summary>
+        private const string PageName = "Host Console";
+
+        private HostPageHarness(List<Tab> pages)
+        {
+            HostPages = pages;
+            AuditRecords = [];
+
+            Tabs = new Mock<ITabRepository>(MockBehavior.Loose);
+            Portals = new Mock<IPortalRepository>(MockBehavior.Loose);
+            UnitOfWork = new Mock<IUnitOfWork>(MockBehavior.Loose);
+            Cache = new Mock<ICacheService>(MockBehavior.Loose);
+            CurrentUser = new Mock<ICurrentUser>(MockBehavior.Loose);
+            Permissions = new Mock<IPermissionService>(MockBehavior.Loose);
+            Audit = new Mock<IAuditSink>(MockBehavior.Loose);
+
+            Tabs.Setup(tabs => tabs.GetByIdAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int tabId, CancellationToken _) =>
+                    HostPages.FirstOrDefault(page => page.TabId == tabId));
+
+            // The host scope is addressed as an absent portal, so the has-children lookup is answered for
+            // null rather than for an identifier.
+            Tabs.Setup(tabs => tabs.ListParentTabIdsAsync(null, It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => HostPages
+                    .Where(page => page.ParentId.HasValue)
+                    .Select(page => page.ParentId!.Value)
+                    .Distinct()
+                    .ToList());
+
+            UnitOfWork.Setup(unit => unit.SaveChangesAsync(It.IsAny<CancellationToken>()))
+                .ReturnsAsync(1);
+
+            CurrentUser.SetupGet(caller => caller.IsAuthenticated).Returns(true);
+            CurrentUser.SetupGet(caller => caller.UserId).Returns(7);
+            CurrentUser.SetupGet(caller => caller.UserName).Returns("host");
+
+            Audit.Setup(sink => sink.Record(It.IsAny<AuditEvent>()))
+                .Callback<AuditEvent>(AuditRecords.Add);
+
+            Service = new TabService(
+                Tabs.Object,
+                Portals.Object,
+                UnitOfWork.Object,
+                Cache.Object,
+                CurrentUser.Object,
+                Permissions.Object,
+                Audit.Object,
+                new CachingOptions());
+        }
+
+        /// <summary>Every host page the repository answers with.</summary>
+        internal List<Tab> HostPages { get; }
+
+        internal Mock<ITabRepository> Tabs { get; }
+
+        internal Mock<IPortalRepository> Portals { get; }
+
+        internal Mock<IUnitOfWork> UnitOfWork { get; }
+
+        internal Mock<ICacheService> Cache { get; }
+
+        internal Mock<ICurrentUser> CurrentUser { get; }
+
+        internal Mock<IPermissionService> Permissions { get; }
+
+        internal Mock<IAuditSink> Audit { get; }
+
+        /// <summary>Every audit record the service emitted, in order.</summary>
+        internal List<AuditEvent> AuditRecords { get; }
+
+        internal TabService Service { get; }
+
+        /// <summary>The host page under test, as the service left it.</summary>
+        internal Tab StoredPage => HostPages.Single(page => page.TabId == PageId);
+
+        /// <summary>A single host page with no parent.</summary>
+        /// <returns>The assembled harness.</returns>
+        internal static HostPageHarness WithRootPage() => new([HostPage(PageId, PageName, null)]);
+
+        /// <summary>A host page two levels below the outermost page of its chain.</summary>
+        /// <returns>The assembled harness.</returns>
+        /// <remarks>
+        /// Both ancestor names carry a character the path generator removes - a space and a colon - so the
+        /// assembled path proves the stripping is applied to every segment rather than only to the page's
+        /// own name. The parent's stored depth is 1, which is what the recomputed depth is measured against.
+        /// </remarks>
+        internal static HostPageHarness WithChain() => new(
+        [
+            HostPage(RootId, "Host Root", null),
+            HostPage(BranchId, "Branch: Two", RootId, level: 1),
+            HostPage(PageId, PageName, BranchId, level: 2),
+        ]);
+
+        /// <summary>A host page whose parent chain closes back on itself.</summary>
+        /// <returns>The assembled harness.</returns>
+        internal static HostPageHarness WithCycle() => new(
+        [
+            HostPage(BranchId, "Branch: Two", PageId, level: 1),
+            HostPage(PageId, PageName, BranchId, level: 2),
+        ]);
+
+        /// <summary>Builds an update carrying the stored name and the requested parent.</summary>
+        /// <param name="parentId">The parent to submit, or <see langword="null"/> for a root-level page.</param>
+        /// <returns>The request.</returns>
+        internal UpdateTabRequest Request(int? parentId = null) => new()
+        {
+            TabName = PageName,
+            ParentId = parentId,
+            IsVisible = true,
+            DisableLink = false,
+            IsSecure = false,
+            IsDeleted = false,
+        };
+
+        /// <summary>Builds one host-level page: a page whose portal is absent rather than -1.</summary>
+        /// <param name="tabId">The page identifier.</param>
+        /// <param name="name">The page name, as an operator typed it.</param>
+        /// <param name="parentId">The parent identifier, or <see langword="null"/> for a root-level page.</param>
+        /// <param name="level">The page's stored depth.</param>
+        /// <returns>The page.</returns>
+        private static Tab HostPage(int tabId, string name, int? parentId, int level = 0) => new()
+        {
+            TabId = tabId,
+            PortalId = null,
+            TabName = name,
+            ParentId = parentId,
+            Level = level,
+            TabOrder = 1,
             IsVisible = true,
         };
     }

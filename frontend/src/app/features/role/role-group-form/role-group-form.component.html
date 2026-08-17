@@ -5,7 +5,7 @@
 -->
 <section class="role-group-form">
   <!-- THE HEADING ONLY - nothing is projected into the slot. -->
-  <app-page-header [title]="pageTitle" />
+  <app-page-header [title]="pageTitle" [subtitle]="pageSubtitle" />
 
   <!-- BOUND UNCONDITIONALLY, and that is required rather than merely tidy. -->
   <app-error-banner [problem]="problem()" />
@@ -57,7 +57,7 @@
       check.
     -->
     <div class="role-group-form__actions">
-      <button type="submit" [disabled]="submitting()"
+      <button class="form-action--primary" type="submit" [disabled]="submitting()"
           [attr.aria-busy]="submitting() ? 'true' : null">{{ updateActionLabel }}</button>
       <button type="button" (click)="cancel()">{{ cancelActionLabel }}</button>
 

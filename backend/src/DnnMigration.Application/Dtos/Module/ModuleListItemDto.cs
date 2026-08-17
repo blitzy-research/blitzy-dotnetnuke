@@ -112,6 +112,28 @@ public sealed class ModuleListItemDto
     public string? Version { get; set; }
 
     /// <summary>
+    /// Whether this module was created from an ADMINISTRATION package, projected read-only from
+    /// <c>DesktopModules.IsAdmin</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// WHY A CLIENT NEEDS THIS: the generic settings surface refuses an administrative module outright with
+    /// <c>module.settings_protected</c>, because such a module's settings are owned by the typed screen that
+    /// administers them - the User Accounts package's settings are the portal's membership settings - and are
+    /// not editable as ordinary module settings. Without this member a client cannot tell which modules those
+    /// are, so it offers a settings affordance on every row and one of them always ends in a refusal. The
+    /// administrative definitions are also absent from the portal-placeable definition catalogue, so their
+    /// nature cannot be inferred from a second read either.
+    /// </para>
+    /// <para>
+    /// NULL IS NOT FALSE. The underlying column is <c>bit NOT NULL</c>, so a resolved package always answers
+    /// one or the other; null means the definition or its package could not be resolved and nothing is being
+    /// claimed. A client must treat only an explicit <see langword="true"/> as administrative.
+    /// </para>
+    /// </remarks>
+    public bool? IsAdmin { get; set; }
+
+    /// <summary>
     /// The module's position within its pane on the page, mapped from <c>TabModules.ModuleOrder</c> (<c>int
     /// NOT NULL</c>). Lower values render nearer the top of the pane.
     /// </summary>

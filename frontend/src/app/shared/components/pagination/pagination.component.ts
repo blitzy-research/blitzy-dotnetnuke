@@ -1,17 +1,4 @@
-import { DOCUMENT } from '@angular/common';
-import {
-  AfterViewChecked,
-  ChangeDetectionStrategy,
-  Component,
-  ElementRef,
-  EventEmitter,
-  inject,
-  Input,
-  OnChanges,
-  Output,
-  SimpleChanges,
-  ViewChild,
-} from '@angular/core';
+import { ChangeDetectionStrategy, Component, EventEmitter, Input, Output } from '@angular/core';
 
 /**
  * The index of the first page. ZERO, because the base carried across this component's boundary is the
@@ -124,7 +111,7 @@ function toPending(value: boolean | null | undefined): boolean {
   styleUrl: './pagination.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
-export class PaginationComponent implements OnChanges, AfterViewChecked {
+export class PaginationComponent {
   /**
    * The zero-based index of the page currently shown. Zero-based to match the API, so a consumer binds
    * the index it received and reads back the index it must request.
@@ -157,41 +144,13 @@ export class PaginationComponent implements OnChanges, AfterViewChecked {
   /** The pager's wording, bound by the template. */
   readonly labels = PAGINATION_LABELS;
 
-  /**
-   * The four step controls, read from the view so focus can be repaired after a terminal step. Read as
-   * element references rather than looked up by selector at the document level so that a screen mounting
-   * two pagers - a listing and a picker within it - can never move focus into the other one.
-   */
-  @ViewChild('firstStep') private firstStep?: ElementRef<HTMLButtonElement>;
-
-  @ViewChild('previousStep') private previousStep?: ElementRef<HTMLButtonElement>;
-
-  @ViewChild('nextStep') private nextStep?: ElementRef<HTMLButtonElement>;
-
-  @ViewChild('lastStep') private lastStep?: ElementRef<HTMLButtonElement>;
-
-  /**
-   * The document, for reading which element holds focus. Injected rather than referenced as the global so
-   * the component stays testable and renderer-agnostic; nothing here writes to the document beyond
-   * calling `focus()` on its own button.
-   */
-  private readonly document = inject(DOCUMENT);
-
-  /**
-   * Which terminal step a person just activated, while its effect is still pending. ⚠ THIS EXISTS BECAUSE
-   * FIRST AND LAST DISABLE THEMSELVES. Activating "Last page" moves to the last page, at which point
-   * "Last page" is unavailable and becomes genuinely `disabled` - and a browser discards focus on an
-   * element that becomes disabled, dropping it to `body`.
-   */
-  private pendingStep: 'first' | 'last' | null = null;
-
-  /**
-   * Whether the bound page has changed since a terminal step was activated. Separating "asked for" from
-   * "arrived" is what bounds the repair: without it a request that never completes would leave focus
-   * movement armed indefinitely, and a later unrelated render could then move focus with no person having
-   * asked for it.
-   */
-  private stepApplied = false;
+  // ⚠ NO FOCUS-REPAIR MACHINERY, AND ITS REMOVAL IS THE POINT RATHER THAN AN OMISSION. This class used
+  // to hold four element references, an injected document, two flags, an `ngOnChanges` and an
+  // `ngAfterViewChecked` for one purpose: First and Last disabled themselves by succeeding, a browser
+  // discards focus on an element that becomes disabled, and focus was measured landing on `body` after
+  // each of them. The template now states unavailability with `aria-disabled`, so the control never
+  // becomes disabled, focus is never discarded, and there is nothing left to repair. Every one of those
+  // members would have been unreachable code kept alive by a condition that can no longer be true.
 
   /** The number of pages the result set spans. DERIVED HERE, and only because it cannot be received. */
   get totalPages(): number {
@@ -293,13 +252,33 @@ export class PaginationComponent implements OnChanges, AfterViewChecked {
     return Math.min((this.effectivePage + 1) * this.pageSize, this.totalCount);
   }
 
+  // ⚠ EACH STEP REFUSES ITSELF WHEN ITS OWN AVAILABILITY FLAG IS FALSE, AND THAT IS BEHAVIOUR
+  // PRESERVATION RATHER THAN DEFENCE. While the template stated unavailability with the native `disabled`
+  // property the browser discarded the activation before any handler ran, so an unavailable step emitted
+  // nothing for free. `aria-disabled` is a statement to assistive technology and nothing more - the element
+  // still activates, from a pointer and from Enter or Space - so without these four checks swapping the
+  // attribute would have made unavailable steps start acting, which is a behaviour change smuggled in
+  // behind an accessibility fix.
+  //
+  // Two of the four are proven load-bearing by spec, and the inputs are named there: bound past the end,
+  // Last is unavailable while the emission rule would still accept the last real index because it differs
+  // from the bound one; and with a single page, First and Previous are unavailable while the emission rule
+  // would still accept index zero for the same reason. `goNext` is the one whose check its own arithmetic
+  // also happens to enforce in every reachable state - unavailable means the page is already at or past the
+  // last, so the index it would ask for is out of range regardless. It is kept so that all four steps state
+  // the same contract in the same shape, rather than leaving a reader to reconstruct four separate
+  // arithmetic arguments to satisfy themselves that the set is complete.
+
   /**
    * Requests the first page, or does nothing when it is already shown. Like every sibling below it names
    * the page it wants and lets {@link requestPage} decide, so the emission rule is stated in one place
    * rather than copied into each of them.
    */
   goFirst(): void {
-    this.armStepRepair('first');
+    if (!this.canGoPrevious) {
+      return;
+    }
+
     this.requestPage(FIRST_PAGE_INDEX);
   }
 
@@ -309,17 +288,28 @@ export class PaginationComponent implements OnChanges, AfterViewChecked {
    * last real page entirely.
    */
   goPrevious(): void {
+    if (!this.canGoPrevious) {
+      return;
+    }
+
     const target = this.page > this.lastPageIndex ? this.lastPageIndex : this.effectivePage - 1;
 
     this.requestPage(target);
   }
 
   goNext(): void {
+    if (!this.canGoNext) {
+      return;
+    }
+
     this.requestPage(this.effectivePage + 1);
   }
 
   goLast(): void {
-    this.armStepRepair('last');
+    if (!this.canGoNext) {
+      return;
+    }
+
     this.requestPage(this.lastPageIndex);
   }
 
@@ -344,70 +334,5 @@ export class PaginationComponent implements OnChanges, AfterViewChecked {
     }
 
     this.pageChange.emit(target);
-  }
-
-  // -------------------------------------------------------------------------
-  // FOCUS REPAIR AFTER A TERMINAL STEP
-  // -------------------------------------------------------------------------
-
-  /**
-   * Notes that the page a person stepped to has arrived.
-   *
-   * @param changes The bindings that changed.
-   */
-  ngOnChanges(changes: SimpleChanges): void {
-    if (this.pendingStep !== null && changes['page'] !== undefined) {
-      this.stepApplied = true;
-    }
-  }
-
-  /**
-   * Returns focus to a usable step once the activated one has disabled itself. Runs as a view-checked
-   * hook because the repair depends on the DISABLED PROPERTY HAVING BEEN WRITTEN, which happens during
-   * the same change-detection pass that binds the new page - not when the page arrives in the model.
-   */
-  ngAfterViewChecked(): void {
-    const step = this.pendingStep;
-
-    if (step === null || !this.stepApplied) {
-      return;
-    }
-
-    const source = step === 'first' ? this.firstStep : this.lastStep;
-    const target = step === 'first' ? this.nextStep : this.previousStep;
-    const sourceElement = source?.nativeElement;
-    const targetElement = target?.nativeElement;
-
-    this.pendingStep = null;
-    this.stepApplied = false;
-
-    if (sourceElement === undefined || targetElement === undefined) {
-      return;
-    }
-
-    if (!sourceElement.disabled || targetElement.disabled) {
-      return;
-    }
-
-    const active = this.document.activeElement;
-
-    if (active === null || active === sourceElement || active === this.document.body) {
-      targetElement.focus();
-    }
-  }
-
-  /**
-   * Arms the focus repair for a step that will disable itself, if focus is on it. The check that focus is
-   * ON THE BUTTON is what stops a programmatic call to {@link goLast} from pulling focus out of whatever
-   * a person was using.
-   *
-   * @param step Which terminal step was activated.
-   */
-  private armStepRepair(step: 'first' | 'last'): void {
-    const element = step === 'first' ? this.firstStep?.nativeElement : this.lastStep?.nativeElement;
-
-    this.pendingStep =
-      element !== undefined && this.document.activeElement === element ? step : null;
-    this.stepApplied = false;
   }
 }

@@ -360,6 +360,117 @@ function carriesFreeText(query: string | null | undefined): boolean {
 export type UserSearchBody = PagedRequestParams & UserListFilter;
 
 /**
+ * The body `POST /api/v1/modules/search` binds: the paging contract and the listing restrictions together,
+ * as one JSON object.
+ */
+export type ModuleSearchBody = PagedRequestParams & ModuleListFilter;
+
+/**
+ * The body `POST /api/v1/portals/search` binds: the paging contract and the site-name filter together, as
+ * one JSON object.
+ */
+export type PortalSearchBody = PagedRequestParams & PortalListFilter;
+
+/**
+ * Whether a module listing query carries text a person typed. ⚠ THE TRANSPORT SELECTOR: when this holds the
+ * read must go to the body-bound address, because a query string is written into the reverse proxy's access
+ * log and into the API's own request log, and a search term is content the caller chose. A page index, a
+ * page size, an ordering, a page restriction and a recycle-bin flag are not.
+ *
+ * @param request The paging contract, whose own free-text member carries the term.
+ * @returns True when a term is present and is not merely whitespace.
+ */
+export function carriesModuleSearchText(request?: PagedRequestParams | null): boolean {
+  return request !== undefined && request !== null && carriesFreeText(request.query);
+}
+
+/**
+ * Whether a portal listing query carries text a person typed. Two members can: the paging contract's own
+ * free-text term and the site-name filter. The reasoning is set out on {@link carriesModuleSearchText}.
+ *
+ * @param request The paging contract.
+ * @param filter The site-name restriction, or omitted.
+ * @returns True when either term is present and is not merely whitespace.
+ */
+export function carriesPortalSearchText(
+  request?: PagedRequestParams | null,
+  filter?: PortalListFilter | null,
+): boolean {
+  const inRequest: boolean =
+    request !== undefined && request !== null && carriesFreeText(request.query);
+  const inFilter: boolean = filter !== undefined && filter !== null && carriesFreeText(filter.name);
+
+  return inRequest || inFilter;
+}
+
+/**
+ * Builds the request body for a module search. ⚠ THE COUNTERPART OF {@link moduleListParams}, AND THE ONE
+ * TO USE WHENEVER {@link carriesModuleSearchText} HOLDS. Both carry the same information to the same server
+ * capability; the only difference is that this one puts the term somewhere that is not logged.
+ *
+ * @param request The page coordinate, page size, ordering and free-text term.
+ * @param filter The page restriction and recycle-bin flag, or omitted.
+ * @returns The body to send, carrying only the members that were supplied.
+ */
+export function moduleSearchBody(
+  request: PagedRequestParams,
+  filter?: ModuleListFilter | null,
+): ModuleSearchBody {
+  const supplied = filter ?? {};
+
+  return {
+    ...pagedRequestBody(request),
+    ...(supplied.tabId === undefined || supplied.tabId === null ? {} : { tabId: supplied.tabId }),
+    ...(supplied.includeDeleted === undefined || supplied.includeDeleted === null
+      ? {}
+      : { includeDeleted: supplied.includeDeleted }),
+  };
+}
+
+/**
+ * Builds the request body for a portal search. ⚠ THE COUNTERPART OF {@link portalListParams}, AND THE ONE
+ * TO USE WHENEVER {@link carriesPortalSearchText} HOLDS.
+ *
+ * @param request The page coordinate, page size, ordering and free-text term.
+ * @param filter The site-name restriction, or omitted.
+ * @returns The body to send, carrying only the members that were supplied.
+ */
+export function portalSearchBody(
+  request: PagedRequestParams,
+  filter?: PortalListFilter | null,
+): PortalSearchBody {
+  const supplied = filter ?? {};
+
+  return {
+    ...pagedRequestBody(request),
+    ...(supplied.name === undefined || supplied.name === null ? {} : { name: supplied.name }),
+  };
+}
+
+/**
+ * The paging members of a body-bound listing read, carrying only what was supplied. Extracted because three
+ * body builders need exactly the same five members and an absent member must be ABSENT rather than null.
+ *
+ * @param request The paging contract.
+ * @returns The paging members that were supplied.
+ */
+function pagedRequestBody(request: PagedRequestParams): PagedRequestParams {
+  return {
+    ...(request.pageIndex === undefined || request.pageIndex === null
+      ? {}
+      : { pageIndex: request.pageIndex }),
+    ...(request.pageSize === undefined || request.pageSize === null
+      ? {}
+      : { pageSize: request.pageSize }),
+    ...(request.sortBy === undefined || request.sortBy === null ? {} : { sortBy: request.sortBy }),
+    ...(request.sortDir === undefined || request.sortDir === null
+      ? {}
+      : { sortDir: request.sortDir }),
+    ...(request.query === undefined || request.query === null ? {} : { query: request.query }),
+  };
+}
+
+/**
  * Builds the request body for a portal's account search. ⚠ THE COUNTERPART OF {@link userListParams}, AND
  * THE ONE TO USE WHENEVER {@link identifiesAPerson} HOLDS. The two functions carry the same information
  * to the same server capability; the only difference is that this one puts it somewhere that is not

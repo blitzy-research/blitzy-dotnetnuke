@@ -335,6 +335,41 @@ const definitionWriteFixture = (
 const envelope = <T>(data: T): ApiResponse<T> => ({ data, meta: null });
 
 /**
+ * The page size the whole-catalogue reader asks for. Mirrors `WHOLE_CATALOGUE_PAGE_SIZE` in `UserService`.
+ */
+const CATALOGUE_PAGE_SIZE = 100;
+
+/**
+ * The PAGED wire envelope the member-services endpoint answers with. The catalogue used to arrive in one
+ * unbounded response; it is now read a bounded page at a time, so its body carries populated metadata where
+ * the single-payload envelope carries none.
+ *
+ * @param items The rows of this page.
+ * @param totalCount The total across every page. Defaults to a single complete page.
+ * @returns The body to flush.
+ */
+const cataloguePage = <TRow>(
+  items: readonly TRow[],
+  totalCount: number = items.length,
+): {
+  readonly items: readonly TRow[];
+  readonly meta: {
+    readonly totalCount: number;
+    readonly pageIndex: number;
+    readonly pageSize: number;
+    readonly totalPages: number;
+  };
+} => ({
+  items,
+  meta: {
+    totalCount,
+    pageIndex: 0,
+    pageSize: CATALOGUE_PAGE_SIZE,
+    totalPages: totalCount === 0 ? 0 : Math.ceil(totalCount / CATALOGUE_PAGE_SIZE),
+  },
+});
+
+/**
  * The report the account-policy write answers with, wrapped in the shared envelope. Defaults to "nothing
  * was swept", which is what an ordinary settings save produces, so a fact that merely needs the write to
  * succeed does not have to describe a rewrite it never asked for.
@@ -810,6 +845,40 @@ describe('UserStore', () => {
         .toBe('25');
 
       listing.flush(pageFixture([listItemFixture()], { pageSize: 25 }));
+    });
+
+    it('reuses a policy already in hand and still requests the listing', () => {
+      // ⚠ THE DEFECT THIS GUARDS: the policy was re-read on every entry to the listing, which is a
+      // tenant-wide constant being fetched again to learn a page size that had not changed. Reusing it must
+      // NOT cost the listing read, which is the whole purpose of bringing the screen up.
+      store.initialise();
+      expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({ recordsPerPage: 25 })));
+      expectRequest('GET', USERS_URL).flush(pageFixture([listItemFixture()], { pageSize: 25 }));
+
+      store.initialise();
+
+      httpMock.expectNone(SETTINGS_URL);
+
+      const listing = expectRequest('GET', USERS_URL);
+
+      expect(parameter(listing, 'pageSize'))
+        .withContext('and the reused policy still supplies the size')
+        .toBe('25');
+
+      listing.flush(pageFixture([listItemFixture()], { pageSize: 25 }));
+    });
+
+    it('re-reads the policy for the EDITOR even when the listing already holds one', () => {
+      // The editor's read is deliberately not guarded: an editor must show what the server holds now, and it
+      // is the one screen whose whole purpose is to change the policy.
+      store.initialise();
+      expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({ recordsPerPage: 25 })));
+      expectRequest('GET', USERS_URL).flush(pageFixture([listItemFixture()], { pageSize: 25 }));
+
+      store.loadMembershipSettings();
+
+      expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({ recordsPerPage: 50 })));
+      expect(store.membershipSettings()?.recordsPerPage).toBe(50);
     });
 
     it('requests the page size the account policy declared, not a hard-coded 10', () => {
@@ -1618,6 +1687,48 @@ describe('UserStore', () => {
       expect(request.request.urlWithParams).not.toContain('portalId');
 
       request.flush(pageFixture([listItemFixture({ portalId: -1 })]));
+    });
+
+    it('reads one account ONCE when the same account is selected again', () => {
+      // ⚠ THE DEFECT THIS GUARDS: three screens select the same account from their own route effects, and an
+      // edit load was measured issuing the detail read TWICE. The second dispatch cancelled the first
+      // mid-flight and then asked the server the identical question, so the work was doubled and the answer
+      // was not improved.
+      store.selectUser(7);
+      expectRequest('GET', `${USERS_URL}/7`).flush(envelope(detailFixture({ userId: 7 })));
+
+      store.selectUser(7);
+      store.selectUser(7);
+
+      httpMock.expectNone(`${USERS_URL}/7`);
+      expect(store.selectedUser()?.userId).toBe(7);
+    });
+
+    it('does not re-ask while the first read for that account is still outstanding', () => {
+      // The in-flight case is the one that actually occurred: two effects ran before the first answer
+      // arrived, so a held-value test alone would not have suppressed the second dispatch.
+      store.selectUser(7);
+
+      const first = httpMock.expectOne(`${USERS_URL}/7`);
+
+      store.selectUser(7);
+
+      httpMock.expectNone(`${USERS_URL}/7`);
+
+      first.flush(envelope(detailFixture({ userId: 7 })));
+      expect(store.selectedUser()?.userId).toBe(7);
+    });
+
+    it('reads the newly named account when the selection genuinely moves', () => {
+      // The guard must suppress a REPEAT, never a change. Without this the previous two specifications could
+      // be satisfied by a store that never read a second account at all.
+      store.selectUser(7);
+      expectRequest('GET', `${USERS_URL}/7`).flush(envelope(detailFixture({ userId: 7 })));
+
+      store.selectUser(8);
+      expectRequest('GET', `${USERS_URL}/8`).flush(envelope(detailFixture({ userId: 8 })));
+
+      expect(store.selectedUser()?.userId).toBe(8);
     });
 
     it('interpolates an identifier of 0 into a path without rewriting or skipping it', () => {
@@ -3737,17 +3848,20 @@ describe('UserStore', () => {
   // `Website/admin/Users/MemberServices.ascx` and its 530-line code-behind.
 
   describe("the account's own subscriptions", () => {
-    it('reads the catalogue unpaged and publishes the account it belongs to', () => {
+    it('reads the catalogue a bounded page at a time and publishes the account it belongs to', () => {
       store.loadMemberServices(7);
 
       const request = expectRequest('GET', SERVICES_URL);
 
-      // No page coordinate, no ordering, no filter: the legacy grid bound the whole answer in
-      // one pass, and the endpoint reads no parameter.
-      expect(request.request.params.keys()).toEqual([]);
+      // MIGRATION: THE CATALOGUE IS NOW READ A BOUNDED PAGE AT A TIME. The legacy grid bound the whole
+      // answer in one pass and the endpoint read no parameter; it now answers a page and refuses `sortBy`
+      // and `query`, so the two paging arguments are sent and nothing else is.
+      expect([...request.request.params.keys()].sort()).toEqual(['pageIndex', 'pageSize']);
+      expect(request.request.params.get('pageIndex')).toBe('0');
+      expect(request.request.params.get('pageSize')).toBe(String(CATALOGUE_PAGE_SIZE));
       expect(store.memberServicesLoading()).toBeTrue();
 
-      request.flush(envelope([serviceFixture(), serviceFixture({ roleId: 9, isSubscribed: false, isExpired: false, subscriptionAction: 'Subscribe' })]));
+      request.flush(cataloguePage([serviceFixture(), serviceFixture({ roleId: 9, isSubscribed: false, isExpired: false, subscriptionAction: 'Subscribe' })]));
 
       expect(store.memberServices().length).toBe(2);
       expect(store.memberServicesAccountId())
@@ -3760,7 +3874,7 @@ describe('UserStore', () => {
     it('derives held and lapsed sets from the rows rather than from a second request', () => {
       store.loadMemberServices(7);
       expectRequest('GET', SERVICES_URL).flush(
-        envelope([
+        cataloguePage([
           serviceFixture(),
           serviceFixture({ roleId: 9, isSubscribed: true, isExpired: false }),
           serviceFixture({ roleId: 11, isSubscribed: false, isExpired: false }),
@@ -3780,7 +3894,7 @@ describe('UserStore', () => {
 
     it('reports a tenant that offers nothing as an empty catalogue, not as a failure', () => {
       store.loadMemberServices(7);
-      expectRequest('GET', SERVICES_URL).flush(envelope([]));
+      expectRequest('GET', SERVICES_URL).flush(cataloguePage([]));
 
       expect(store.memberServices()).toEqual([]);
       expect(store.hasMemberServices()).toBeFalse();
@@ -3789,7 +3903,7 @@ describe('UserStore', () => {
 
     it('clears the rows when the account changes, and keeps them when it does not', () => {
       store.loadMemberServices(7);
-      expectRequest('GET', SERVICES_URL).flush(envelope([serviceFixture()]));
+      expectRequest('GET', SERVICES_URL).flush(cataloguePage([serviceFixture()]));
 
       // A refresh of the SAME account keeps what is on screen: blanking it would flicker a grid
       // that is about to answer with almost the same rows.
@@ -3797,7 +3911,7 @@ describe('UserStore', () => {
       expect(store.memberServices().length)
         .withContext('a refresh of the same account keeps the rows in hand')
         .toBe(1);
-      expectRequest('GET', SERVICES_URL).flush(envelope([serviceFixture()]));
+      expectRequest('GET', SERVICES_URL).flush(cataloguePage([serviceFixture()]));
 
       // A DIFFERENT account clears them at once, because rendering one account's subscriptions
       // under another account's key is the one outcome that cannot be allowed even briefly.
@@ -3806,12 +3920,12 @@ describe('UserStore', () => {
         .withContext("another account's catalogue is never shown while the read is in flight")
         .toEqual([]);
       expect(store.memberServicesAccountId()).toBe(11);
-      expectRequest('GET', '/api/v1/users/11/services').flush(envelope([]));
+      expectRequest('GET', '/api/v1/users/11/services').flush(cataloguePage([]));
     });
 
     it('keeps the rows in hand when a read fails, and records the failure by name', () => {
       store.loadMemberServices(7);
-      expectRequest('GET', SERVICES_URL).flush(envelope([serviceFixture()]));
+      expectRequest('GET', SERVICES_URL).flush(cataloguePage([serviceFixture()]));
 
       store.loadMemberServices(7);
       expectRequest('GET', SERVICES_URL).flush(problemFixture({ status: 500, title: 'Server' }), {
@@ -3840,7 +3954,7 @@ describe('UserStore', () => {
 
       // The command answers with no body, so the state on screen can only come from a re-read.
       expectRequest('GET', SERVICES_URL).flush(
-        envelope([serviceFixture({ isExpired: false, subscriptionAction: 'Unsubscribe' })]),
+        cataloguePage([serviceFixture({ isExpired: false, subscriptionAction: 'Unsubscribe' })]),
       );
 
       expect(store.memberServices()[0].subscriptionAction).toBe('Unsubscribe');
@@ -3883,7 +3997,7 @@ describe('UserStore', () => {
       command.flush(null, { status: 204, statusText: 'No Content' });
 
       expectRequest('GET', SERVICES_URL).flush(
-        envelope([serviceFixture({ isSubscribed: false, isExpired: false, subscriptionAction: 'Subscribe' })]),
+        cataloguePage([serviceFixture({ isSubscribed: false, isExpired: false, subscriptionAction: 'Subscribe' })]),
       );
 
       expect(store.heldMemberServices()).toEqual([]);
@@ -3899,7 +4013,7 @@ describe('UserStore', () => {
       command.flush(null, { status: 204, statusText: 'No Content' });
 
       expectRequest('GET', SERVICES_URL).flush(
-        envelope([serviceFixture({ trialOffered: false, isExpired: false })]),
+        cataloguePage([serviceFixture({ trialOffered: false, isExpired: false })]),
       );
 
       expect(store.memberServices()[0].trialOffered).toBeFalse();
@@ -3941,7 +4055,7 @@ describe('UserStore', () => {
         .withContext('the legacy walk had no early exit, so one code may join several roles')
         .toBe(2);
 
-      expectRequest('GET', SERVICES_URL).flush(envelope([serviceFixture()]));
+      expectRequest('GET', SERVICES_URL).flush(cataloguePage([serviceFixture()]));
 
       expect(store.memberServices().length).toBe(1);
     });
@@ -3968,7 +4082,7 @@ describe('UserStore', () => {
       expectRequest('POST', SERVICE_REDEMPTIONS_URL).flush(
         envelope({ roles: [{ roleId: 0, roleName: 'Premium Members' }] }),
       );
-      expectRequest('GET', SERVICES_URL).flush(envelope([serviceFixture()]));
+      expectRequest('GET', SERVICES_URL).flush(cataloguePage([serviceFixture()]));
 
       expect(store.lastRedemption()).not.toBeNull();
 
@@ -3982,7 +4096,7 @@ describe('UserStore', () => {
         status: 204,
         statusText: 'No Content',
       });
-      expectRequest('GET', SERVICES_URL).flush(envelope([]));
+      expectRequest('GET', SERVICES_URL).flush(cataloguePage([]));
     });
 
     it('dismisses its own redemption report without touching the catalogue', () => {
@@ -3990,7 +4104,7 @@ describe('UserStore', () => {
       expectRequest('POST', SERVICE_REDEMPTIONS_URL).flush(
         envelope({ roles: [{ roleId: 0, roleName: 'Premium Members' }] }),
       );
-      expectRequest('GET', SERVICES_URL).flush(envelope([serviceFixture()]));
+      expectRequest('GET', SERVICES_URL).flush(cataloguePage([serviceFixture()]));
 
       store.clearRedemption();
 
@@ -4002,7 +4116,7 @@ describe('UserStore', () => {
 
     it('discards the catalogue, its account and its report when the session ends', () => {
       store.loadMemberServices(7);
-      expectRequest('GET', SERVICES_URL).flush(envelope([serviceFixture()]));
+      expectRequest('GET', SERVICES_URL).flush(cataloguePage([serviceFixture()]));
       store.redeemServiceCode(7, 'Founders-2026');
       expectRequest('POST', SERVICE_REDEMPTIONS_URL).flush(
         envelope({ roles: [{ roleId: 0, roleName: 'Premium Members' }] }),
@@ -4105,7 +4219,11 @@ describe('UserStore', () => {
 
       const held = store.profileDefinitions();
 
-      store.loadProfileDefinitions();
+      // ⚠ THE SECOND READ IS THE EXPLICIT REFRESH, NOT THE BRING-UP COMMAND. The bring-up command reuses
+      // what is held, which is the point of the guard asserted below; the refresh command states in its own
+      // name that it must re-ask. This specification is about the published surface being REPLACED rather
+      // than mutated, so it needs a read that actually happens.
+      store.refreshProfileDefinitions();
       expectRequest('GET', DEFINITIONS_URL).flush(
         envelope([definitionFixture(), definitionFixture({ propertyDefinitionId: 4 })]),
       );
@@ -4113,6 +4231,46 @@ describe('UserStore', () => {
       expect(store.profileDefinitions()).not.toBe(held);
       expect(held.length).toBe(1);
       expect(store.profileDefinitions().length).toBe(2);
+    });
+
+    it('reads the tenant catalogue once and reuses it, because it is a tenant-wide constant', () => {
+      // ⚠ THE DEFECT THIS GUARDS: the catalogue was re-read on every entry to the account listing and to the
+      // catalogue screen, asking the server again for something that changes only when an operator edits it.
+      store.loadProfileDefinitions();
+      expectRequest('GET', DEFINITIONS_URL).flush(envelope([definitionFixture()]));
+
+      store.loadProfileDefinitions();
+      store.loadProfileDefinitions();
+
+      httpMock.expectNone(DEFINITIONS_URL);
+      expect(store.profileDefinitions().length)
+        .withContext('and what was already read is still published')
+        .toBe(1);
+    });
+
+    it('reuses a catalogue that is legitimately EMPTY rather than re-asking forever', () => {
+      // A tenant that declares no properties is a real answer. Were the guard an emptiness test on the held
+      // value instead of a record that a read succeeded, this tenant would re-ask on every screen entry.
+      store.loadProfileDefinitions();
+      expectRequest('GET', DEFINITIONS_URL).flush(envelope([]));
+
+      store.loadProfileDefinitions();
+
+      httpMock.expectNone(DEFINITIONS_URL);
+      expect(store.profileDefinitions()).toEqual([]);
+    });
+
+    it('re-asks after a FAILED read, so a transient fault is not cached as an answer', () => {
+      store.loadProfileDefinitions();
+      expectRequest('GET', DEFINITIONS_URL).flush(
+        { title: 'Service Unavailable', status: 503 },
+        { status: 503, statusText: 'Service Unavailable' },
+      );
+
+      store.loadProfileDefinitions();
+
+      expectRequest('GET', DEFINITIONS_URL).flush(envelope([definitionFixture()]));
+      expect(store.profileDefinitions().length).toBe(1);
     });
 
     it('answers with a stable reference while nothing has changed', () => {
@@ -4571,4 +4729,88 @@ describe('UserStore', () => {
         .toBeFalse();
     });
   });
+
+  // =========================================================================
+  // THE SETTLED LATCH — "NOT ASKED YET" IS NOT "ASKED AND EMPTY"
+  // =========================================================================
+
+  // ⚠ THE MEASURED DEFECT THESE PROVE CLOSED, AND THIS SLICE HELD ITS WORST INSTANCE. The opening sequence
+  // reads the tenant's policy BEFORE it knows what listing to ask for, and arriving at the screen empties the
+  // page, so for a whole round trip the grid held no rows with no request in flight — and painted "Nothing to
+  // Display" over a tenant whose accounts had simply not been requested yet.
+  describe('the settled latch', () => {
+    it('is DOWN on a fresh store and nothing is in flight, which is what made the two states identical', () => {
+      expect(store.listSettled()).toBeFalse();
+      expect(store.userRows()).toEqual([]);
+      expect(store.usersLoading()).toBeFalse();
+    });
+
+    it('stays DOWN for the WHOLE policy round trip, which is the window the flash appeared in', () => {
+      store.initialise();
+      const policy = expectRequest('GET', SETTINGS_URL);
+
+      expect(store.listSettled())
+        .withContext('the policy is outstanding, so what to list is not decided yet')
+        .toBeFalse();
+
+      policy.flush(envelope(storedSettingsFixture({ displayMode: 0 })));
+
+      // The policy has answered and the listing request now exists - still not settled.
+      const listing = expectRequest('GET', USERS_URL);
+      expect(store.listSettled()).toBeFalse();
+
+      listing.flush(pageFixture([listItemFixture()]));
+
+      expect(store.listSettled()).toBeTrue();
+    });
+
+    it('rises when the tenant\'s policy is that NOTHING is listed until somebody asks', () => {
+      store.initialise();
+      expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({ displayMode: 2 })));
+
+      httpMock.expectNone(() => true);
+
+      // ⚠ ANSWERED, NOT UNANSWERED. No read will be made, so a screen must stop indicating that one is
+      // coming - otherwise the no-query notice sat under a waiting indicator that never resolved.
+      expect(store.noQueryIssued()).toBeTrue();
+      expect(store.listSettled()).toBeTrue();
+      expect(store.usersLoading()).toBeFalse();
+    });
+
+    it('rises on a FAILED listing read too, so a waiting indicator cannot stand over a reportable failure', () => {
+      store.initialise();
+      expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({ displayMode: 0 })));
+      expectRequest('GET', USERS_URL).flush(
+        { title: 'Server Error', status: 500 },
+        { status: 500, statusText: 'Internal Server Error' },
+      );
+
+      expect(store.listSettled()).toBeTrue();
+      expect(store.failure()).not.toBeNull();
+    });
+
+    it('goes back DOWN when the criteria are cleared, because that empties the page it spoke for', () => {
+      store.initialise();
+      expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({ displayMode: 0 })));
+      expectRequest('GET', USERS_URL).flush(pageFixture([listItemFixture()]));
+      expect(store.listSettled()).toBeTrue();
+
+      // What arriving at the listing screen does, and the reason the flash was on EVERY arrival.
+      store.resetSearchCriteria();
+
+      expect(store.listSettled()).toBeFalse();
+      expect(store.userRows()).toEqual([]);
+    });
+
+    it('goes back DOWN on reset, because the page it spoke for is discarded with the session', () => {
+      store.initialise();
+      expectRequest('GET', SETTINGS_URL).flush(envelope(storedSettingsFixture({ displayMode: 0 })));
+      expectRequest('GET', USERS_URL).flush(pageFixture([listItemFixture()]));
+
+      store.reset();
+
+      expect(store.listSettled()).toBeFalse();
+    });
+  });
+
 });

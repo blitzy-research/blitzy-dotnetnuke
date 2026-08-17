@@ -38,6 +38,22 @@ export function activeRouteGuardsUnsavedChanges(router: Router): boolean {
  */
 export const UNSAVED_CHANGES_PROMPT = DISCARD_CHANGES_PROMPT;
 
+/**
+ * Puts the discard question to the operator and reports their answer.
+ *
+ * ⚠ ONE SENTENCE, ONE CALL SITE. The gate below asks this question when a navigation would abandon unsaved
+ * entry, and a screen with its own in-form Cancel has to ask exactly the same thing — measured on the profile
+ * screen, that button discarded in silence while the sidebar and the browser's Back button next to it were
+ * both refused until the operator confirmed. Exporting the question rather than letting each caller write its
+ * own `confirm` is what stops the two paths drifting into asking differently for the same thing, which is
+ * drift no reader could see from either call site.
+ *
+ * @returns True when the operator accepts that their unsaved entry will be discarded.
+ */
+export function confirmDiscardUnsavedChanges(): boolean {
+  return globalThis.confirm(DISCARD_CHANGES_PROMPT);
+}
+
 /** A predicate reporting whether one mounted screen currently holds unsaved entry. */
 export type UnsavedChangesProbe = () => boolean;
 
@@ -82,6 +98,58 @@ export class UnsavedChangesTracker {
   }
 
   /**
+   * Set while a departure the operator has ALREADY consented to is under way.
+   *
+   * One-shot, and consumed by the next {@link unsavedChangesGuard} invocation. It exists so that a caller
+   * who must ask the question BEFORE it navigates - see {@link UnsavedChangesTracker.confirmDiscard} - does
+   * not cause the same question to be asked a second time by the router a moment later.
+   */
+  private discardAcknowledged = false;
+
+  /**
+   * Asks the operator to confirm a discard BEFORE the caller does anything irreversible.
+   *
+   * ⚠ SIGN-OUT IS THE CASE THIS EXISTS FOR, AND ORDER IS THE WHOLE PROBLEM. The shell revoked the session
+   * and only then navigated to the sign-in screen, so by the time the router could ask `canDeactivate` the
+   * credential was already gone: answering "no" would have left the operator on a dirty form whose every
+   * save was doomed, which is worse than the silent discard it was meant to prevent. Asking here lets the
+   * caller abandon the whole gesture while the session is still alive.
+   *
+   * A confirmed answer is recorded so the navigation that follows is admitted without a second prompt. The
+   * record is consumed by the next gate invocation; a caller that confirms and then navigates elsewhere in
+   * the same task has still had exactly the consent it asked for, since the operator agreed to discard.
+   *
+   * @returns True when the caller may proceed, either because nothing is unsaved or because the operator
+   * agreed to lose it.
+   */
+  public confirmDiscard(): boolean {
+    if (this.isDirty() === false) {
+      return true;
+    }
+
+    if (globalThis.confirm(DISCARD_CHANGES_PROMPT) === false) {
+      return false;
+    }
+
+    this.discardAcknowledged = true;
+
+    return true;
+  }
+
+  /**
+   * Reads and clears the record of an already-answered discard.
+   *
+   * @returns True when the operator has already consented to this departure.
+   */
+  public consumeAcknowledgedDiscard(): boolean {
+    const acknowledged = this.discardAcknowledged;
+
+    this.discardAcknowledged = false;
+
+    return acknowledged;
+  }
+
+  /**
    * Whether any mounted screen currently holds unsaved entry.
    *
    * @returns True when at least one screen reports unsaved entry.
@@ -111,7 +179,13 @@ export class UnsavedChangesTracker {
 export const unsavedChangesGuard: CanDeactivateFn<unknown> = () => {
   const tracker = inject(UnsavedChangesTracker);
 
-  if (tracker.isDirty() === false) {
+  // ⚠ READ FIRST, AND UNCONDITIONALLY, BECAUSE IT IS A ONE-SHOT RECORD. A caller that had to ask the
+  // question before it could act - sign-out is the one - has already had the answer; asking again would put
+  // the same question twice to somebody who answered it once. Reading it even when nothing is dirty is what
+  // stops a stale acknowledgement outliving the gesture that set it.
+  const alreadyAnswered = tracker.consumeAcknowledgedDiscard();
+
+  if (tracker.isDirty() === false || alreadyAnswered) {
     return true;
   }
 
@@ -127,5 +201,5 @@ export const unsavedChangesGuard: CanDeactivateFn<unknown> = () => {
     return true;
   }
 
-  return globalThis.confirm(DISCARD_CHANGES_PROMPT);
+  return confirmDiscardUnsavedChanges();
 };

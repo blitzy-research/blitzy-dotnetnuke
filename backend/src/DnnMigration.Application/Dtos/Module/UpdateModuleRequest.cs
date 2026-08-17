@@ -154,6 +154,32 @@ public sealed class UpdateModuleRequest
     public string? IconFile { get; set; }
 
     /// <summary>
+    /// How the placement is aligned within its pane - <c>left</c>, <c>center</c>, <c>right</c>, or the empty
+    /// string for "Not Specified". NOT required.
+    /// </summary>
+    /// <remarks>
+    /// The three spellings are the legacy radio list's own values (<c>modulesettings.ascx:L122-L127</c>) and
+    /// are what the column already contains, so they are accepted verbatim. An unrecognised value is
+    /// refused by the validator rather than silently normalised, because a value the legacy container
+    /// rendering cannot interpret is stored appearance nobody can see or correct.
+    /// </remarks>
+    public string? Alignment { get; set; }
+
+    /// <summary>The container background colour, or <see langword="null"/> for none. NOT required.</summary>
+    /// <remarks>
+    /// Bounded at the column's twenty characters and otherwise unparsed: the legacy field had no validator,
+    /// and narrowing it here would reject values an installation already holds.
+    /// </remarks>
+    public string? Color { get; set; }
+
+    /// <summary>The container border width, a single digit, or <see langword="null"/> for none.</summary>
+    /// <remarks>
+    /// The legacy box was one character wide with an integer validator reading "must be a number between 0
+    /// and 9", which is the rule reproduced by the validator on this member.
+    /// </remarks>
+    public string? Border { get; set; }
+
+    /// <summary>
     /// How the module is presented on the page. Defaults to <see cref="ModuleVisibility.Maximized"/>.
     /// </summary>
     // 5.3 - THE LEGACY READER COLLAPSED THREE DISTINCT INPUTS INTO ONE STATE AND HAD NO DEFAULT BRANCH. Its

@@ -1,4 +1,6 @@
 import { DOCUMENT } from '@angular/common';
+import { ListReturnStore } from '../../../core/state/list-return.store';
+import { PORTAL_LIST_ROUTE } from '../../../core/config/app-routes.config';
 import {
   ChangeDetectionStrategy,
   Component,
@@ -20,10 +22,14 @@ import type { AbstractControl, ValidationErrors, ValidatorFn } from '@angular/fo
 import { NotificationService } from '../../../core/services/notification.service';
 import { PortalStore } from '../../../core/state/portal.store';
 import { CREDENTIAL_MAX_LENGTH } from '../../../core/utils/credential-bounds.util';
+import { EMAIL_PATTERN } from '../../../core/utils/email-grammar.util';
 import {
   conflictMessage,
   fieldErrorMessage,
   isDuplicateAliasCode,
+  missingEntityMessage,
+  missingEntityProblem,
+  missingEntityRecoveryLabel,
   problemSupportReference,
   summarizeProblem,
 } from '../../../core/utils/form-errors.util';
@@ -95,13 +101,6 @@ const PASSWORD_MAX_LENGTH = CREDENTIAL_MAX_LENGTH;
  */
 const PASSWORD_MIN_LENGTH = 7;
 
-/**
- * The pattern an administrator mail address must match. THE AUTHORITY IS THE DOMAIN ATTRIBUTE, NOT THIS
- * SCREEN'S MARKUP, because the markup has nothing to say: `signup.ascx:L106` declares a
- * `requiredfieldvalidator` on the address and NO regular-expression validator at all, so the legacy
- * screen accepted any non-empty text and let the write refuse it.
- */
-const EMAIL_PATTERN = /^[a-zA-Z0-9._%+'-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,63}$/;
 
 /**
  * Administrator mail address, 100 characters. PRESERVED AT THE LEGACY SCREEN'S FIGURE, WHICH IS THE
@@ -188,13 +187,34 @@ const UPDATE_ERROR_MESSAGE =
   'The portal could not be updated. Nothing was changed. Check the connection and try ' +
   'again.';
 
-/** The refusal wording for a change to a host-administered term. */
+/**
+ * The refusal wording for a change to a host-administered term.
+ *
+ * ⚠ #20 — ONE DENIAL VOCABULARY. This began "Only a host account may change…", which stated the same fact
+ * in a third grammar: a reader met "You do not have permission to…" on one screen, "You are not authorized
+ * to…" on another and this on a third. Every denial this application authors now opens with the shared stem
+ * and then adds what only this screen knows - which authority is required, and that nothing was saved.
+ */
 const HOST_FIELD_REFUSED_MESSAGE =
-  'Only a host account may change this portal’s host-administered terms, so the save ' +
-  'was refused. Nothing was changed.';
+  'You do not have permission to change this portal’s host-administered terms, which only a host ' +
+  'account may change. Nothing was changed.';
+
+/**
+ * The refusal wording when the server will not let this caller READ the portal at all.
+ *
+ * ⚠ IT MENTIONS NO SAVE, WHICH IS THE ENTIRE POINT. A `403` on the initial load was worded with
+ * {@link HOST_FIELD_REFUSED_MESSAGE}, which ends "so the save was refused. Nothing was changed." - a
+ * sentence about a write, announced to an operator who had done nothing but open the screen. It also
+ * misdescribed the cause: a refused read is not the host-administered-terms rule.
+ */
+const PORTAL_READ_REFUSED_MESSAGE =
+  'You are not permitted to view this portal, so nothing could be loaded.';
 
 /** The wording shown when the addressed portal is not on the server. */
-const PORTAL_NOT_FOUND_MESSAGE = 'That portal no longer exists, so nothing could be loaded.';
+const PORTAL_NOT_FOUND_MESSAGE = missingEntityMessage('portal');
+
+/** Where a reader is sent once the addressed portal has gone, and the only action offered there. */
+const RECOVERY_LABEL = missingEntityRecoveryLabel('Portals');
 
 /**
  * Confirmation shown after a successful write. MIGRATION: NET-NEW. The legacy screen reported success by
@@ -227,8 +247,6 @@ const EDIT_SUBMIT_LABEL = 'Update';
 /** Global `cmdCancel.Text` — `SharedResources.resx:L138-L140`. */
 const CANCEL_LABEL = 'Cancel';
 
-/** Where both buttons and both success paths lead. */
-const PORTAL_LIST_ROUTE = '/portals';
 
 /** The wording of the link to this portal's configuration screen. */
 const SETTINGS_LINK_LABEL = 'Site Settings';
@@ -504,9 +522,19 @@ export class PortalFormComponent {
    * navigation: Cancel, an in-application link and the browser's Back button are navigations a route
    * guard can refuse, while closing or reloading the tab is not, and only the browser's own unload prompt
    * covers that - which needs the dirty state at an arbitrary moment rather than at a navigation.
+   *
+   * ⚠ THE BUSY EXCLUSION WAS REMOVED, AND ITS REMOVAL CLOSES A MEASURED HOLE. This predicate used to read
+   * `dirty && busy === false`, which reported the screen CLEAN for exactly as long as a write was in flight -
+   * so navigating away mid-save was admitted in silence, the departure destroyed the component, and
+   * `takeUntilDestroyed` cancelled the request. The operator lost the write and was told nothing. A form
+   * holding an unfinished write is the LEAST safe moment to leave, not the safest.
+   *
+   * The exclusion was written to stop the application's OWN post-save navigation being challenged, and that
+   * case is already covered properly: every success path replaces the address imperatively, which
+   * `unsavedChangesGuard` admits explicitly. Nothing here has to approximate it a second time.
    */
   private readonly unsavedEntry = inject(UnsavedChangesTracker).watch(
-    () => (this.createForm.dirty || this.editForm.dirty) && this.saving() === false,
+    () => this.createForm.dirty || this.editForm.dirty,
   );
   // ---------------------------------------------------------------------------
   //  COLLABORATORS
@@ -520,6 +548,9 @@ export class PortalFormComponent {
 
   /** Navigation away from this screen: on success, and on cancel. */
   private readonly router = inject(Router);
+
+  /** Where the listing stood when the operator left it, so returning restores that place. */
+  private readonly listReturn = inject(ListReturnStore);
 
   /**
    * Binds this screen's write subscriptions to its own lifetime. ⚠ THE EXPLICIT REFERENCE IS REQUIRED,
@@ -571,7 +602,6 @@ export class PortalFormComponent {
   );
 
   /** The sentence shown when the address does not name a readable portal. */
-  protected readonly unreadableAddressMessage = UNREADABLE_ADDRESS_MESSAGE;
 
   // ---------------------------------------------------------------------------
   //  MODE
@@ -720,8 +750,40 @@ export class PortalFormComponent {
   });
 
   /** The RFC 7807 document for the shared error banner, or `null` for nothing to show. */
-  protected readonly problem: Signal<ProblemDetails | null> = computed(
-    () => this.failure()?.problem ?? null,
+  protected readonly problem: Signal<ProblemDetails | null> = computed(() => {
+    // ⚠ A PORTAL THAT IS NOT THERE IS STATED IN THE SHARED WORDING, and carries no support reference.
+    // The server's own 404 detail differs per resource, which is how four screens came to word one
+    // outcome four ways; and a record that is not there is a legitimate state rather than a fault, so
+    // there is no occurrence for support to look up and quoting one would send a reader nowhere.
+    if (this.addressUnreadable()) {
+      return missingEntityProblem(UNREADABLE_ADDRESS_MESSAGE);
+    }
+
+    if (this.portalMissing()) {
+      return missingEntityProblem(PORTAL_NOT_FOUND_MESSAGE);
+    }
+
+    return this.failure()?.problem ?? null;
+  });
+
+  /**
+   * Whether the addressed portal was read and is not there. Distinguished from a REFUSED read, which
+   * keeps its own document, and from a 404 answering a SAVE - where the portal had been read, so a toast
+   * naming what the operator just did is right and this is false.
+   */
+  protected readonly portalMissing: Signal<boolean> = computed(() => {
+    if (!this.isEditMode() || this.loading()) {
+      return false;
+    }
+
+    const failure: PortalFailure | null = this.failure();
+
+    return failure !== null && failure.status === NOT_FOUND_STATUS && this.portal() === null;
+  });
+
+  /** Whether this screen can show nothing but a way out: the address is unusable, or the portal is gone. */
+  protected readonly nothingToShow: Signal<boolean> = computed(
+    () => this.addressUnreadable() || this.portalMissing(),
   );
 
   /** The portal being edited, once it has actually been read, or `null`. */
@@ -815,23 +877,33 @@ export class PortalFormComponent {
   protected readonly cancelLabel: string = CANCEL_LABEL;
 
   /** The wording of the two sibling-screen links. */
+  /** The caption of the one way out offered once the addressed portal cannot be shown. */
+  protected readonly recoveryLabel: string = RECOVERY_LABEL;
+
   protected readonly settingsLinkLabel: string = SETTINGS_LINK_LABEL;
 
   protected readonly aliasesLinkLabel: string = ALIASES_LINK_LABEL;
 
   /**
-   * The one sentence describing the current failure, or `null` when there is none. The precedence is
+   * The one sentence describing a failure, or `null` when there is nothing to say. The precedence is
    * measured rather than arbitrary, and each arm has a reason: 1. a STATE REFUSAL is worded from the
    * shared conflict vocabulary, which already holds the legacy `DuplicatePortalAlias.Text` verbatim
    * against the code the server publishes for it.
+   *
+   * ⚠ A METHOD TAKING THE OPERATION, NOT A COMPUTED READING IT, AND THE CHANGE IS THE FIX. Two arms of
+   * this decision - the `403` and the documentless fallback - describe a WRITE, and as a computed they
+   * described one whether or not a write had happened. A read-only `403` on the initial load therefore
+   * announced "so the save was refused. Nothing was changed.", inventing a write the operator had never
+   * attempted, while the banner beside it correctly reported a refused read: two live regions telling two
+   * different stories about the same response. Taking the operation as an argument makes the caller state
+   * which it was, so the arm can no longer be reached from the wrong context, and no future reader can
+   * bind this in a template and silently resurrect the fault.
+   *
+   * @param failure The classified failure.
+   * @param fromWrite Whether this screen had a create or an update in flight when the failure arrived.
+   * @returns The sentence, or `null` when the document should speak for itself.
    */
-  protected readonly failureMessage: Signal<string | null> = computed(() => {
-    const failure: PortalFailure | null = this.failure();
-
-    if (failure === null) {
-      return null;
-    }
-
+  private describeFailure(failure: PortalFailure, fromWrite: boolean): string | null {
     const refusal: string | null = conflictMessage(failure.conflictCode);
 
     if (refusal !== null) {
@@ -839,19 +911,25 @@ export class PortalFormComponent {
     }
 
     if (failure.status === FORBIDDEN_STATUS) {
-      return HOST_FIELD_REFUSED_MESSAGE;
+      return fromWrite ? HOST_FIELD_REFUSED_MESSAGE : PORTAL_READ_REFUSED_MESSAGE;
     }
 
     if (failure.status === NOT_FOUND_STATUS) {
       return PORTAL_NOT_FOUND_MESSAGE;
     }
 
-    const modeFallback: string = this.isEditMode() ? UPDATE_ERROR_MESSAGE : CREATE_ERROR_MESSAGE;
+    // ⚠ A READ THAT FAILED MUST NOT BORROW EITHER WRITE SENTENCE. Both of them end "Nothing was changed.",
+    // which is true but beside the point when nothing was being changed - and it reads as a report about a
+    // save. On a read the document's own wording is the honest answer, so no fallback is supplied and the
+    // shared summary falls back to status-derived wording.
+    const modeFallback: string | null = fromWrite
+      ? (this.isEditMode() ? UPDATE_ERROR_MESSAGE : CREATE_ERROR_MESSAGE)
+      : null;
     const fallback: string | null =
       failure.status === BAD_REQUEST_STATUS ? null : modeFallback;
 
     return summarizeProblem(failure.synthesised ? null : failure.problem, fallback).message;
-  });
+  }
 
   // ---------------------------------------------------------------------------
   //  VALUES THE TEMPLATE NEEDS BUT MUST NOT RESTATE
@@ -932,7 +1010,19 @@ export class PortalFormComponent {
     }
 
     untracked(() => {
-      const message: string | null = this.failureMessage();
+      if (this.portalMissing()) {
+        // ⚠ NO TOAST FOR A RECORD THAT WAS NEVER THERE. A notification reports what an action did; an
+        // address that resolved to nothing on arrival is a state of the screen, and this screen used to
+        // report it twice - once in the banner and once in a toast carrying a support reference for an
+        // occurrence nobody can look up.
+        this.saveRequested.set(false);
+
+        return;
+      }
+
+      // Read BEFORE the flag is lowered below, because it is the only record of which operation this
+      // failure belongs to.
+      const message: string | null = this.describeFailure(failure, this.saveRequested());
 
       // The queue refuses a blank message, so nothing is gained by sending one; the
       // banner still shows the document either way.
@@ -1193,7 +1283,12 @@ export class PortalFormComponent {
   }
 
   protected onCancel(): void {
-    void this.router.navigate([PORTAL_LIST_ROUTE]);
+    // ⚠ THE LISTING'S OWN COORDINATE IS CARRIED BACK, NOT DISCARDED. A bare navigation here returned the
+    // operator to the first page of an unfiltered list, so cancelling out of a record they had reached by
+    // filtering and paging cost them the place they were working in - see ListReturnStore.
+    void this.router.navigate([PORTAL_LIST_ROUTE], {
+      queryParams: this.listReturn.coordinateFor(PORTAL_LIST_ROUTE),
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -1428,6 +1523,13 @@ export class PortalFormComponent {
     // the next line, so an unmarked confirmation was swept before it could be painted and the comment above
     // this method says the list 'is where the written row is visible', which is exactly why it has to
     // survive the trip there.
-    void this.router.navigate([PORTAL_LIST_ROUTE], { replaceUrl: true }).catch(() => false);
+    void this.router
+      .navigate([PORTAL_LIST_ROUTE], {
+        // The written row is only visible on the page the operator came from, so returning to page one of an
+        // unfiltered list hid the very record this navigation exists to show them.
+        queryParams: this.listReturn.coordinateFor(PORTAL_LIST_ROUTE),
+        replaceUrl: true,
+      })
+      .catch(() => false);
   }
 }

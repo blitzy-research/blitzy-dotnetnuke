@@ -20,6 +20,7 @@ using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.HttpsPolicy;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Infrastructure;
+using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.Options;
 
@@ -189,9 +190,53 @@ public static class ServiceCollectionExtensions
         AddTransportSecurity(services, configuration);
         AddForwardedHeaders(services, configuration);
         AddEphemeralDataProtection(services);
+        AddResponseCompressionPolicy(services);
         AddStartupDiagnostics(services);
 
         return services;
+    }
+
+    /// <summary>
+    /// Registers response compression for the JSON this API returns, on the plain-HTTP path only.
+    /// </summary>
+    /// <param name="services">The container being populated.</param>
+    /// <remarks>
+    /// <para>
+    /// A collection response is highly compressible - a performance review measured this payload class at
+    /// 16.1 times - and the documented deployment already compresses on the way through the reverse proxy. The
+    /// path that had NO compression at all is the direct one: a caller reaching Kestrel without the proxy in
+    /// front of it, which is how the API is reached inside the container network and how it is reached in any
+    /// deployment that terminates elsewhere. This registration covers that path, so the worst case is bounded
+    /// wherever the caller entered.
+    /// </para>
+    /// <para>
+    /// <b>Over HTTPS it stays off, and that is a security decision rather than an omission.</b> The framework
+    /// disables compression on TLS connections by default because compressing a response that mixes a secret
+    /// with attacker-influenced content is the CRIME and BREACH exposure; this API returns authenticated JSON,
+    /// so the default is kept. Transport security terminates at the proxy in the documented topology and the
+    /// proxy compresses there, which is where compressing an encrypted response belongs.
+    /// </para>
+    /// <para>
+    /// Brotli is registered ahead of Gzip so a caller advertising both is served the smaller encoding, and the
+    /// problem-details media type is added explicitly: the default MIME list covers <c>application/json</c>
+    /// but not <c>application/problem+json</c>, so without it every error body - the responses a client is
+    /// most likely to be reading in bulk while diagnosing - would travel uncompressed.
+    /// </para>
+    /// </remarks>
+    private static void AddResponseCompressionPolicy(IServiceCollection services)
+    {
+        services.AddResponseCompression(options =>
+        {
+            options.EnableForHttps = false;
+
+            options.Providers.Add<BrotliCompressionProvider>();
+            options.Providers.Add<GzipCompressionProvider>();
+
+            options.MimeTypes = ResponseCompressionDefaults.MimeTypes.Concat(
+            [
+                "application/problem+json",
+            ]);
+        });
     }
 
     /// <summary>

@@ -14,6 +14,16 @@
   font-size: var(--font-size-md);
   line-height: var(--line-height-tight);
 
+  // The widest label track in the token set, because six of this screen's captions are full policy sentences
+  // — "Number of minutes a user's authentication is cached for" and its neighbours — and the standard 150px
+  // track reflowed every one of them onto three or four lines.
+  //
+  // ⚠ THIS NO LONGER REACHES THE SIX CHOICE FIELDS, and that is deliberate. It used to: a 300px label track
+  // inside a roughly 350px grid cell left each switch about 300px from its own caption and roughly 30px from
+  // the NEXT one, so 4 to 6 of the 14 switches read as belonging to the wrong label and at 1024px three sat
+  // in the fieldset's right padding — QA-06. The shared field's choice variant is now sized to its caption
+  // instead of to this track, so the override applies only to the six text, number and select fields it was
+  // actually written for.
   --field-label-inline-size: var(--field-label-inline-size-wider);
 }
 
@@ -22,14 +32,12 @@
   gap: var(--space-4);
 }
 
-// THE TRANSPORT FAILURE LINE
-// The text variant of the danger token is used rather than the raw one: the raw value is tuned for a border
-// or an icon and falls below the ratio that governs body text, whereas the text variant clears it
-// comfortably.
-.membership-settings__transport-failure {
-  margin: 0;
+// THE REDUCED-AFFORDANCE NOTE ABOVE THE REDIRECT PICKERS
+// Shown only when the page listing could not be read. Muted rather than red: every setting on the screen can
+// still be saved, so this is not a failure and must not read as one - the failure channel is the shared
+// banner, which is now this screen's only owner of that category.
+.membership-settings__pages-unavailable {
   max-inline-size: mx.breakpoint('md');
-  color: var(--color-danger);
 }
 
 // The provenance disclosure - #6. Whether the values on this screen are a stored policy or the platform
@@ -120,9 +128,17 @@
 
 // A legend is normally painted into its fieldset's border and needs inline padding to open a gap in that
 // border. This fieldset has no border, so the padding is removed.
+// ⚠ #21 — THE NESTED HEADING STEPS DOWN FROM THE SECTION HEAD ABOVE IT. The section head is an `h2` held at
+// the compact `--font-size-lg` step that all three settings screens use for a disclosure head, and this
+// legend's `h3` took the same 15px from the element ramp - so the sub-region and the region containing it
+// were the same size. One step down restores the rank.
 .membership-settings__columns-legend {
   padding-inline: 0;
   margin-block-end: var(--space-2);
+
+  h3 {
+    font-size: var(--font-size-md);
+  }
 }
 
 // THE STORED VALIDATION EXPRESSION
@@ -148,9 +164,10 @@
   align-items: center;
 }
 
-.membership-settings__action--primary {
-  font-weight: var(--font-weight-bold);
-}
+// ⚠ #22 — THE PRIMARY MARKER IS THE SHARED ONE, `.form-action--primary` in _forms.scss. This screen used to
+// declare its own `--primary` modifier saying exactly the same thing, which is how one vocabulary becomes
+// several: the module form carried a third copy, and a reviewer walking the create screens met three
+// species of the same command. Nothing is declared here any more.
 
 // REMAINING DIVERGENCES, RECORDED RATHER THAN ABSORBED
 // MIGRATION: the control chrome the fields wear - border, padding, background and radius - is a net

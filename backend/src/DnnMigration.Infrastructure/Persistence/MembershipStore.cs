@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Data;
 using System.Data.Common;
 using DnnMigration.Domain.Enums;
@@ -86,6 +87,29 @@ internal sealed class MembershipStore
     /// </remarks>
     private static readonly DateTime NeverRecorded = new(1754, 1, 1, 0, 0, 0, DateTimeKind.Unspecified);
 
+    /// <summary>
+    /// Whether the membership objects are present, remembered per CATALOGUE for the life of the process.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THIS IS A SCHEMA QUESTION, AND ASKING IT PER REQUEST WAS MEASURED AS THE LARGEST REMAINING PIECE OF
+    /// FIXED PER-REQUEST INFRASTRUCTURE COST. This store is scoped to one request, so the instance-level memo
+    /// below answers it once per request and no more - which still put an object-existence probe on the wire
+    /// on every authenticated request, for a question whose answer cannot change while the process runs. The
+    /// migration plan makes the mapped schema immutable, so no code path in this solution can create or drop
+    /// the objects being probed.
+    /// </para>
+    /// <para>
+    /// KEYED BY CATALOGUE RATHER THAN GLOBAL, and that distinction is load bearing rather than defensive: the
+    /// integration suite provisions a database of its own per run within a single process, and a greenfield
+    /// catalogue genuinely lacks these objects while a DotNetNuke one has them. A single process-wide flag
+    /// would answer for the wrong catalogue the moment two are addressed; keying on the server and database
+    /// the connection actually names cannot.
+    /// </para>
+    /// </remarks>
+    private static readonly ConcurrentDictionary<string, bool> AvailabilityByCatalogue =
+        new(StringComparer.OrdinalIgnoreCase);
+
     private readonly DnnDbContext _context;
     private bool? _available;
 
@@ -113,6 +137,16 @@ internal sealed class MembershipStore
             return false;
         }
 
+        string catalogue = DescribeCatalogue();
+
+        if (AvailabilityByCatalogue.TryGetValue(catalogue, out bool remembered))
+        {
+            // Answered for this catalogue already, by this request or an earlier one. See the memo's own
+            // remarks for why the answer cannot have changed since.
+            _available = remembered;
+            return remembered;
+        }
+
         const string Sql = @"
 SELECT CASE
            WHEN OBJECT_ID(N'[dbo].[aspnet_Users]') IS NOT NULL
@@ -128,8 +162,31 @@ SELECT CASE
                 cancellationToken)
             .ConfigureAwait(false);
 
-        _available = probe is not null && Convert.ToInt32(probe, System.Globalization.CultureInfo.InvariantCulture) == 1;
-        return _available.Value;
+        bool available = probe is not null
+            && Convert.ToInt32(probe, System.Globalization.CultureInfo.InvariantCulture) == 1;
+
+        // Recorded for the catalogue rather than only for this instance, so the probe is issued once per
+        // catalogue per process instead of once per request. Two requests racing the first probe both write
+        // the same answer, so no lock is taken.
+        AvailabilityByCatalogue[catalogue] = available;
+
+        _available = available;
+        return available;
+    }
+
+    /// <summary>Names the catalogue this store's connection addresses, for the availability memo.</summary>
+    /// <returns>The server and database the connection names, joined by a separator neither can contain.</returns>
+    /// <remarks>
+    /// Built from the connection's own <see cref="DbConnection.DataSource"/> and <see
+    /// cref="DbConnection.Database"/> rather than from the connection STRING, so the key cannot carry a
+    /// credential even in memory, and so two connection strings differing only in a pooling or timeout
+    /// setting are recognised as naming one catalogue.
+    /// </remarks>
+    private string DescribeCatalogue()
+    {
+        DbConnection connection = _context.Database.GetDbConnection();
+
+        return string.Concat(connection.DataSource, "\u0000", connection.Database);
     }
 
     /// <summary>

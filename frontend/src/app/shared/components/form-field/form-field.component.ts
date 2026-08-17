@@ -24,6 +24,16 @@ import { stripLegacyBreakTags } from '../../../core/utils/form-errors.util';
  * The visible required marker. MIGRATION: a NET ADDITION, stated plainly because it would be easy to
  * present it as a translation and it is not one.
  */
+/**
+ * The opening of the sentence stating a field's typing bound, and the close that follows the number. Split
+ * around the number rather than written as a template so the number is never embedded in a translated
+ * string, and authored ONCE so every bounded field in the application states its bound the same way.
+ */
+const LIMIT_SENTENCE_LEAD = 'At most';
+
+/** @see LIMIT_SENTENCE_LEAD */
+const LIMIT_SENTENCE_TAIL = 'characters.';
+
 const REQUIRED_MARKER = '*';
 
 /** The visually-hidden word that gives {@link REQUIRED_MARKER} a meaning for a reader who cannot see it. */
@@ -260,6 +270,9 @@ export class FormFieldComponent implements AfterContentChecked {
   /** The help text exactly as supplied, before break markup is resolved. */
   private readonly helpValue = signal('');
 
+  /** The projected control's typing bound, or `null`. @see FormFieldComponent.limit */
+  private readonly limitValue = signal<number | null>(null);
+
   /** The normalised messages. */
   private readonly messages = signal<readonly string[]>(EMPTY_MESSAGES);
 
@@ -358,6 +371,30 @@ export class FormFieldComponent implements AfterContentChecked {
     return this.helpValue();
   }
 
+  /**
+   * The typing bound the projected control declares, or `null` when it declares none. ⚠ THIS EXISTS SO A
+   * BOUND IS STATED BEFORE IT BITES, AND THE MEASURED BEHAVIOUR IT ANSWERS IS SILENT LOSS. A native
+   * `maxlength` simply stops accepting keystrokes: nothing is said, nothing is marked invalid, and a reader
+   * pasting a longer value keeps only its head - measured on the portal creation form, where several boxes
+   * truncate without a word.
+   *
+   * Rendered as a permanently present, visually hidden sentence referenced by `aria-describedby`, so it is
+   * announced when the box takes focus - BEFORE anything is typed - at no visual cost, and repeated inside
+   * the help disclosure for a reader who opens it. It does NOT count characters as they are typed: a
+   * live counter on every bounded box in the application would announce on every keystroke, and the bound
+   * itself is the fact a reader needs.
+   */
+  @Input()
+  public set limit(value: number | null | undefined) {
+    const usable: boolean = typeof value === 'number' && Number.isFinite(value) && value > 0;
+
+    this.limitValue.set(usable ? Math.floor(value as number) : null);
+  }
+
+  public get limit(): number | null {
+    return this.limitValue();
+  }
+
   // IDENTIFIERS
   // Referenced, never displayed. Each is derived from {@link for} when the caller supplied one, so the
   // identifiers a caller sees are predictable from the value it already holds, and from the per-instance
@@ -382,6 +419,9 @@ export class FormFieldComponent implements AfterContentChecked {
 
   /** The `id` of the error region. */
   public readonly errorId: Signal<string> = computed(() => `${this.idBase()}-error`);
+
+  /** The identifier of the region stating the field's typing bound. */
+  public readonly limitId: Signal<string> = computed(() => `${this.idBase()}-limit`);
 
   /**
    * The identifier for one message inside the error region. Derived from the region's own identifier and
@@ -419,9 +459,29 @@ export class FormFieldComponent implements AfterContentChecked {
   });
 
   /** The help text as displayed, with break markup resolved. */
-  protected readonly helpText: Signal<string> = computed(() =>
-    stripLegacyBreakTags(this.helpValue()),
-  );
+  protected readonly helpText: Signal<string> = computed(() => {
+    const supplied: string = stripLegacyBreakTags(this.helpValue());
+    const bound: string = this.limitText();
+
+    // The bound is appended rather than replacing anything, and the join is on a single space so the two
+    // read as one paragraph. A field with a bound and no help text still gets a disclosure, which is how
+    // the bound becomes visible as well as announced.
+    if (supplied.length === 0) {
+      return bound;
+    }
+
+    return bound.length === 0 ? supplied : `${supplied} ${bound}`;
+  });
+
+  /** The sentence stating the field's typing bound, or the empty string when there is no bound. */
+  protected readonly limitText: Signal<string> = computed(() => {
+    const bound: number | null = this.limitValue();
+
+    return bound === null ? '' : `${LIMIT_SENTENCE_LEAD} ${String(bound)} ${LIMIT_SENTENCE_TAIL}`;
+  });
+
+  /** Whether a usable typing bound was supplied. */
+  protected readonly hasLimit: Signal<boolean> = computed(() => this.limitValue() !== null);
 
   /** Whether help text was supplied and survived cleaning. */
   protected readonly hasHelp: Signal<boolean> = computed(() => this.helpText().length > 0);
@@ -468,6 +528,12 @@ export class FormFieldComponent implements AfterContentChecked {
    */
   protected readonly describedBy: Signal<string | null> = computed(() => {
     const references: string[] = [];
+
+    // Always referenced when there is a bound, because it is always rendered when there is a bound - the
+    // point of it is to be heard on focus, before a keystroke is lost.
+    if (this.hasLimit()) {
+      references.push(this.limitId());
+    }
 
     if (this.helpExpanded()) {
       references.push(this.helpId());
@@ -618,6 +684,17 @@ export class FormFieldComponent implements AfterContentChecked {
 
     const invalid = this.hasError();
     const contributions: string[] = [];
+
+    // The bound is contributed FIRST, and whenever one exists rather than only while something is
+    // expanded, for the same reason the group references it: it has to be heard when the control is
+    // REACHED, before a keystroke is lost to a truncation that gives no feedback of its own. ⚠ OMITTING
+    // IT HERE IS NOT HARMLESS. An ARIA description on the composite group is not inherited by the
+    // control, so with the reference only on the group the bound was announced on entering the field and
+    // was silent on the box being typed into - Chrome computed NO accessible description for the control
+    // at all, which a runtime accessibility-tree read confirmed against a sibling that does carry one.
+    if (this.hasLimit()) {
+      contributions.push(this.limitId());
+    }
 
     if (this.helpExpanded()) {
       contributions.push(this.helpId());

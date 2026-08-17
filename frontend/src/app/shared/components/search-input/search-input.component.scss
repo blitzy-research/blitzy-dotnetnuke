@@ -92,3 +92,13 @@
   color: var(--color-text-muted);
   cursor: not-allowed;
 }
+
+
+// The advisory. Muted rather than alarming: an adjusted term is a remark about the search, not a failure of
+// it, and the search it describes did run.
+.search-input__advisory {
+  margin-block: var(--space-1) 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  overflow-wrap: anywhere;
+}

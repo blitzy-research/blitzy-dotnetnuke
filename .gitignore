@@ -102,6 +102,31 @@ speed-measure-plugin*.json
 /frontend/logs/
 
 # -----------------------------------------------------------------------------
+# Crash dumps from a refused start
+#
+# The configuration refusals documented in README.md §4 and §12 abort the process
+# rather than exiting gracefully, so on a host whose kernel.core_pattern names a
+# file the kernel writes a multi-hundred-megabyte dump into the aborted process's
+# working directory — `core` where core_uses_pid is 0, `core.<pid>` where it is 1,
+# and `core_<timestamp>` for a dump the .NET tooling writes itself. Measured at
+# 133,844,992 bytes for one refused start, which is exactly the size of mistake a
+# routine `git add -A` should not be able to make.
+#
+# ANCHORED, AND DELIBERATELY NOT WRITTEN AS A BARE `core`. Git applies a pattern
+# containing no slash at every depth and to directories as well as files, so the
+# bare spelling would exclude `frontend/src/app/core/` — a tracked source
+# directory holding the SPA's models, services, interceptors, guards and stores —
+# and every file added there afterwards would silently stop being tracked. The
+# same anchoring reasoning as the NuGet and log rules above, for a worse failure.
+# -----------------------------------------------------------------------------
+/core
+/core.[0-9]*
+/core_[0-9]*
+/backend/**/core
+/backend/**/core.[0-9]*
+/backend/**/core_[0-9]*
+
+# -----------------------------------------------------------------------------
 # IDE and editor state
 # -----------------------------------------------------------------------------
 .idea/

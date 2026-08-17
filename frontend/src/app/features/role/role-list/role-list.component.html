@@ -207,7 +207,7 @@
       `SharedResources.resx`.
     -->
     <div class="role-list__group-editor-commands">
-      <button type="submit" class="role-list__command" [disabled]="saving()"
+      <button type="submit" class="role-list__command form-action--primary" [disabled]="saving()"
           [attr.aria-busy]="saving() ? 'true' : null">{{ saving() ? 'Saving…' : 'Update' }}</button>
 
       <button
@@ -234,13 +234,49 @@
 <app-data-table
   [columns]="columns()"
   [rows]="roles()"
+  [totalCount]="totalCount()"
+  [rowOffset]="pageIndex() * servedPageSize()"
   [rowKey]="roleRowKey"
-  [loading]="loading()"
+  [loading]="listWaiting()"
+  [loadingLabel]="loadingLabel"
+  [failed]="listFailed()"
   [sortBy]="sortBy()"
   [sortDir]="sortDir()"
+  [emptyMessage]="emptyMessage()"
   (sortChange)="onSortChange($event)"
 >
   <span dataTableCaption>{{ pageTitle }}</span>
+
+  <!--
+    ⚠ THE ZERO-RESULT SURFACE'S WAY FORWARD, and it was empty. A reader who narrowed this listing to a group
+    with no roles in it was shown a generic sentence and nothing to do about it, with the group selector the
+    only route out - and the selector is above the table, past the empty surface the reader is looking at. An
+    address past the end was worse still: a grid reading "No records found." beside a pager claiming
+    "21-30 of 30", with no route back at all.
+
+    THE HOME IS THE GRID'S OWN EMPTY ROW rather than a panel of this screen's, because substituting a panel
+    for the grid destroys the polite `role="status"` region along with it.
+
+    The affordance offered is the one that can actually change the answer for the state that holds: return to
+    the first page when the address is past the end, otherwise widen the filter and add a role.
+  -->
+  <div dataTableEmptyAction class="role-list__empty-actions">
+    @if (isPastEnd()) {
+      <button type="button" class="role-list__first-page" (click)="onReturnToFirstPage()">
+        {{ firstPageLabel }}
+      </button>
+    } @else {
+      @if (isNarrowedByGroup()) {
+        <!--
+          The SAME affordance and the SAME wording this screen's own action bar offers, reached from where the
+          reader is looking rather than from above the table they have scrolled past.
+        -->
+        <a class="role-list__filter-action" [routerLink]="showAllRolesLink">{{ showAllRolesLabel }}</a>
+      }
+
+      <a class="role-list__filter-action" [routerLink]="addRoleLink">{{ addRoleLabel }}</a>
+    }
+  </div>
 </app-data-table>
 
 <!--
@@ -248,13 +284,20 @@
   the code-behind holds no page index, size or record total anywhere. The pager style declared at
   `roles.ascx:L32` never rendered.
 -->
-<app-pagination
-  [page]="pageIndex()"
-  [pageSize]="servedPageSize()"
-  [totalCount]="totalCount()"
-  [loading]="loading()"
-      (pageChange)="onPageChange($event)"
-/>
+<!--
+  ⚠ GATED ON THE ROWS IN HAND, NOT ON THE TOTAL - R5. A page past the end of a real result set has a total
+  and no rows, and mounting the pager on the total alone is what put a populated range beside a grid showing
+  nothing. The portal and module listings gate on their rows for the same reason.
+-->
+@if (hasRows()) {
+  <app-pagination
+    [page]="pageIndex()"
+    [pageSize]="servedPageSize()"
+    [totalCount]="totalCount()"
+    [loading]="loading()"
+    (pageChange)="onPageChange($event)"
+  />
+}
 
 <!-- THE GROUP-REMOVAL CONFIRMATION. -->
 @if (pendingGroupRemoval() !== null) {
@@ -265,7 +308,7 @@
     `Delete Module`, `Delete Profile Property` and `Delete role group` across the screens.
   -->
   <app-confirm-dialog
-    [message]="removalMessage"
+    [message]="groupRemovalMessage()"
     [confirmLabel]="removalConfirmLabel"
     [danger]="true"
     (confirm)="onGroupRemovalConfirmed()"
@@ -276,7 +319,7 @@
 <!-- THE ROLE-REMOVAL CONFIRMATION. -->
 @if (pendingRoleRemoval() !== null) {
   <app-confirm-dialog
-    [message]="removalMessage"
+    [message]="roleRemovalMessage()"
     [confirmLabel]="removalConfirmLabel"
     [danger]="true"
     (confirm)="onRoleRemovalConfirmed()"
@@ -388,14 +431,51 @@
   from the figure that is stored - measured as `922337203685477.5807` stored against
   `922337203685477.63` painted, in the same colour and weight as an exact amount.
 -->
+<!--
+  R3: A NEGATIVE AMOUNT IS MARKED, IN THE TREATMENT THE PORTAL LISTING ALREADY USES FOR THE SAME STATE. There
+  a fee below zero is painted in the danger colour at bold weight with the word "negative" clipped beside it;
+  here the identical state was a bare text node in the ordinary colour and weight, so a credit and a charge
+  differed by one minus glyph and nothing else.
+-->
+<!--
+  ⚠ THE `&nbsp;` IS LOAD-BEARING AND IS NOT DECORATION - R7. Angular compiles templates with
+  `preserveWhitespaces` disabled, which DELETES a whitespace-only text node standing between two elements. A
+  clipped qualifier written on its own line therefore joins the value it qualifies with no separator at all,
+  and the accessibility tree reports "-99.99negative" as one word. The date cells nearby need no such thing:
+  their interpolation and the newline after it live in ONE text node, which is collapsed to a single space
+  rather than removed, which is exactly why "1/1/2020 Expired" already reads correctly.
+
+  ⚠ IT IS `&nbsp;` RATHER THAN `&ngsp;` DELIBERATELY. An ordinary space reaches the DOM but is dropped from
+  the ACCESSIBILITY TREE whenever Angular's anchor comments leave it an isolated whitespace-only text node -
+  Blink builds no text box for one, so it never becomes a StaticText node and the accessible name
+  concatenates anyway. That was measured through the CDP Accessibility domain on the sibling role-assignment
+  screen, where the `@else if` branch computed "9/20/2027Active" behind a DOM that read "9/20/2027 Active".
+  U+00A0 is not collapsible, so it always produces a text box and cannot be dropped. The qualifier here is
+  1x1 and clipped, so a non-breaking space has no visual consequence whatsoever.
+-->
 <ng-template #feeCell let-row let-column="column">
   @if (isFeeAbsent(row, column.key)) {
-    <span aria-hidden="true">{{ absentValueMark }}</span>
-    <span class="role-list__absent-value">{{ absentValueDescription }}</span>
+    <!-- The shared absent-value rendering: the same mark, colour and words as every other listing. -->
+    <app-absent-value />
+  } @else if (isFeeNegative(row, column.key)) {
+    <span class="role-list__fee--negative" data-atomic-value>{{ feeText(row, column.key) }}</span
+    >&nbsp;<span class="role-list__absent-value">{{ negativeFeeQualifier }}</span
+    >@if (isFeeApproximate(row, column.key)) {&nbsp;<span class="role-list__absent-value">{{ approximateValueDescription }}</span>
+    }
   } @else {
-    {{ feeText(row, column.key)
-    }}@if (isFeeApproximate(row, column.key)) {
-      <span class="role-list__absent-value">{{ approximateValueDescription }}</span>
+    <!--
+      ⚠ A FREE ROLE IS NAMED RATHER THAN PRICED, and it is a measured correction. A stored zero rendered
+      "0.00" in the same colour and weight as "0.01", so a free role and a charged one were told apart only by
+      reading two decimal places - the same failure the negative fee already had a qualifier for. The word is
+      the state; the figure is still available to a reader who wants it, in the announced text.
+    -->
+    @if (isFeeFree(row, column.key)) {
+      <span class="role-list__fee-state" data-atomic-value>{{ freeFeeLabel }}</span>
+      <span class="role-list__absent-value">{{ freeFeeDescription }}{{ feeText(row, column.key) }}</span>
+    } @else {
+      <span data-atomic-value>{{ feeText(row, column.key) }}</span
+      >@if (isFeeApproximate(row, column.key)) {&nbsp;<span class="role-list__absent-value">{{ approximateValueDescription }}</span>
+      }
     }
   }
 </ng-template>
@@ -407,10 +487,9 @@
 -->
 <ng-template #periodCell let-row let-column="column">
   @if (isPeriodAbsent(row, column.key)) {
-    <span aria-hidden="true">{{ absentValueMark }}</span>
-    <span class="role-list__absent-value">{{ absentValueDescription }}</span>
+    <app-absent-value />
   } @else {
-    {{ periodText(row, column.key) }}
+    <span data-atomic-value>{{ periodText(row, column.key) }}</span>
   }
 </ng-template>
 
@@ -419,11 +498,39 @@
   description, so `M` rendered as `M`, and it still does - the character is load-bearing data
   constrained by `FK_Roles_CodeFrequency`.
 -->
+<!--
+  ⚠ AN UNRECORDED FREQUENCY RENDERED A COMPLETELY EMPTY CELL, AND IT WAS THE LAST ONE THAT DID — QA-15.
+  Measured on the role whose whole paid-membership configuration is unset: its fee, billing-every, trial and
+  trial-every cells all rendered the shared absent mark, while these two rendered nothing at all — no text, no
+  children, nothing announced — in the same row. A reader could not tell "no frequency recorded" from "this
+  cell failed to draw", and the two states are told apart everywhere else on the same screen.
+-->
 <ng-template #frequencyCell let-row let-column="column">
-  <span aria-hidden="true">{{ frequencyCode(row, column.key) }}</span>
-  @if (frequencyName(row, column.key) !== '') {
+  @if (isFrequencyAbsent(row, column.key)) {
+    <!-- The shared absent-value rendering: the same mark, colour and words as every other listing. -->
+    <app-absent-value />
+  } @else if (isNameableFrequency(row, column.key)) {
+    <span aria-hidden="true">{{ frequencyCode(row, column.key) }}</span>
     <span class="role-list__absent-value">{{ frequencyName(row, column.key) }}</span>
+  } @else {
+    <!--
+      A STORED CODE WITH NO WORD. Still painted verbatim, but muted and carrying a `title`, so a sighted
+      reader can see the cell holds a reference rather than a value and can read what it is. The same
+      treatment the profile-definition listing gives an unnameable data type.
+    -->
+    <span
+      aria-hidden="true"
+      class="role-list__unnameable-code"
+      [attr.title]="frequencyDescription(row, column.key)"
+      >{{ frequencyCode(row, column.key) }}</span
+    >
   }
+  <!--
+    ALWAYS RENDERED, and unconditionally is the whole point: this sibling is the only thing a reader who
+    cannot see the painted character receives, and it used to be omitted for exactly the codes that needed
+    it most.
+  -->
+  <span class="role-list__absent-value">{{ frequencyDescription(row, column.key) }}</span>
 </ng-template>
 
 <ng-template #publicCell let-row>

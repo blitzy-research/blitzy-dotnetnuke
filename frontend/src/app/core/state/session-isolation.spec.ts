@@ -17,6 +17,7 @@ import { TokenStorageService } from '../services/token-storage.service';
 
 import type { TestRequest } from '@angular/common/http/testing';
 import type { AuthSession, CurrentUser } from '../models/auth.model';
+import { HttpParams } from '@angular/common/http';
 
 const PORTALS_URL = '/api/v1/portals';
 const USERS_URL = '/api/v1/users';
@@ -120,7 +121,36 @@ describe('cross-session isolation', () => {
 
   /** Claims the one open request at a path, whatever its method. */
   function expectOne(url: string): TestRequest {
-    return httpMock.expectOne((candidate) => candidate.url === url);
+    // ⚠ A LISTING READ CARRYING A TERM A PERSON TYPED GOES TO THE BODY-BOUND SIBLING OF ITS COLLECTION, so
+    // that the term never appears in a logged request line. Both addresses are accepted here because this
+    // suite is about WHOSE state a read carries, not about which transport carried it.
+    return httpMock.expectOne(
+      (candidate) => candidate.url === url || candidate.url === `${url}/search`,
+    );
+  }
+
+  /**
+   * The filters a request carried, whichever transport carried them.
+   *
+   * @param request The request to read.
+   * @returns Its filters, as query-parameter-shaped strings.
+   */
+  function filtersOf(request: TestRequest): HttpParams {
+    const body = request.request.body as Record<string, unknown> | null | undefined;
+
+    if (body === null || body === undefined) {
+      return request.request.params;
+    }
+
+    let carried: HttpParams = new HttpParams();
+
+    for (const [name, value] of Object.entries(body)) {
+      if (value !== null && value !== undefined) {
+        carried = carried.set(name, String(value));
+      }
+    }
+
+    return carried;
   }
 
   /** A paged envelope. ⚠ The body is at the TOP LEVEL for a collection, never under `data`. */
@@ -236,6 +266,7 @@ describe('cross-session isolation', () => {
           moduleName: 'Announcements',
           description: null,
           version: '01.00.00',
+          isAdmin: false,
         },
       ]),
     );
@@ -495,7 +526,7 @@ describe('cross-session isolation', () => {
 
       const narrowedModuleRead = expectOne(MODULES_URL);
 
-      expect(narrowedModuleRead.request.params.get('query')).toBe('announcements');
+      expect(filtersOf(narrowedModuleRead).get('query')).toBe('announcements');
       narrowedModuleRead.flush(page([]));
 
       session.endSession();
@@ -511,8 +542,8 @@ describe('cross-session isolation', () => {
 
       // A residual filter would silently hide records the second operator is entitled to see,
       // which reads as missing data rather than as a leak and is therefore harder to notice.
-      expect(portalRead.request.params.has('name')).toBeFalse();
-      expect(portalRead.request.params.get('pageIndex')).toBe('0');
+      expect(filtersOf(portalRead).has('name')).toBeFalse();
+      expect(filtersOf(portalRead).get('pageIndex')).toBe('0');
       portalRead.flush(page([]));
 
       modules.loadModules();

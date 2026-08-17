@@ -1201,6 +1201,36 @@ public sealed class PortalService : IPortalService
     }
 
     /// <inheritdoc />
+    public async Task<Result<TenantPathPrefixDto>> ResolveTenantPathPrefixAsync(
+        string hostAuthority,
+        string segment,
+        CancellationToken cancellationToken = default)
+    {
+        // ⚠ A MALFORMED OR RESERVED SEGMENT IS ANSWERED "NO", NOT REFUSED, AND THE DIFFERENCE MATTERS TO THE
+        // CALLER. The client asking this is deciding whether to hold the segment aside or match it as a
+        // route; a refusal gives it neither answer and leaves it exactly where the defect left it. "Not a
+        // tenant" is a complete, actionable answer for a segment nobody could have stored.
+        if (string.IsNullOrWhiteSpace(hostAuthority)
+            || !PortalAliasTopology.IsAddressableSegment(segment))
+        {
+            return Result<TenantPathPrefixDto>.Success(
+                new TenantPathPrefixDto { Segment = segment ?? string.Empty, IsTenantPath = false });
+        }
+
+        string candidate = $"{hostAuthority}{PortalAliasTopology.PathSeparator}{segment}";
+
+        // The SAME reader the request pipeline resolves tenants through, deliberately. A second predicate
+        // written here could accept a segment the pipeline rejects, and a client told "tenant" about an
+        // address the pipeline then refuses to scope is worse off than one told nothing.
+        IReadOnlyList<TenantResolution> matches = await _aliases
+            .ResolveTenantsByHttpAliasAsync(new[] { candidate }, cancellationToken)
+            .ConfigureAwait(false);
+
+        return Result<TenantPathPrefixDto>.Success(
+            new TenantPathPrefixDto { Segment = segment, IsTenantPath = matches.Count > 0 });
+    }
+
+    /// <inheritdoc />
     public async Task<Result<PortalAliasDto?>> GetPortalAliasAsync(
         int? portalId,
         int portalAliasId,
@@ -1879,7 +1909,16 @@ public sealed class PortalService : IPortalService
             throw new DomainException("A portal alias must carry a host name.");
         }
 
-        return trimmed;
+        // MIGRATION: LOWER CASE IS THE LEGACY RULE, AND IT WAS BEING LOST. Every path in
+        // Library/Components/Portal/PortalAliasController.vb that touched an alias applied .ToLower -
+        // AddPortalAlias at L31, UpdatePortalAliasInfo at L97, and both read paths at L52 and L76 - so a
+        // DotNetNuke installation never held a mixed-case alias. Trimming alone let "WWW.Example.Test" and
+        // "www.example.test" be stored as written; because an alias is the sole means by which an incoming
+        // request resolves to a tenant, that is a tenant-resolution difference rather than a cosmetic one.
+        // ToLowerInvariant, not ToLower: the current culture's casing rules would map a dotted capital I to
+        // a dotless one under tr-TR, so the same submitted alias would canonicalise two different ways
+        // depending on the server's locale.
+        return trimmed.ToLowerInvariant();
     }
 
     /// <summary>

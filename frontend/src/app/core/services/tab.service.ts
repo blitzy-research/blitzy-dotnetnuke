@@ -1,18 +1,27 @@
 import { HttpClient } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
-import { map, type Observable } from 'rxjs';
+import { map, of, switchMap, type Observable } from 'rxjs';
 
 import { API_ENDPOINTS } from '../config/api-endpoints';
 import { decodeTabDetail, decodeTabListItem } from '../models/tab.model';
-import { arrayOf, decodeResponse, envelopeOf } from '../utils/decode.util';
+import { decodeResponse, envelopeOf, pageOf } from '../utils/decode.util';
+import { pagedRequestParams } from '../utils/http-params.util';
 import { presentedInContext } from './notification.service';
 
 import type { Decoder } from '../utils/decode.util';
+import type { PagedResult } from '../models/paged-result.model';
 import type { TabDetail, TabListItem, UpdateTabRequest } from '../models/tab.model';
+import type { PagedRequestParams } from '../utils/http-params.util';
 
 /** One decoder per response shape this transport reads, composed once at module scope. */
-const TAB_LIST_RESPONSE: Decoder<readonly TabListItem[]> = envelopeOf(arrayOf(decodeTabListItem));
+const TAB_PAGE: Decoder<PagedResult<TabListItem>> = pageOf(decodeTabListItem);
 const TAB_DETAIL_RESPONSE: Decoder<TabDetail> = envelopeOf(decodeTabDetail);
+
+/**
+ * The page size used when a caller needs the WHOLE collection. It is the API's own ceiling, so the number of
+ * round trips is the smallest the server permits.
+ */
+const WHOLE_COLLECTION_PAGE_SIZE = 100;
 
 /**
  * Transport for the page resource - the abstraction the database, the legacy source and the wire contract
@@ -25,16 +34,63 @@ export class TabService {
   private readonly http = inject(HttpClient);
 
   /**
-   * Lists every page belonging to one portal, as a flat collection. `GET
-   * /api/v1/portals/{portalId}/tabs`, answering `200` with the rows.
+   * One page of the pages belonging to one portal. `GET /api/v1/portals/{portalId}/tabs`, answering `200`
+   * with the page and the total across every page.
+   *
+   * The endpoint refuses `sortBy` and `query` with `400`, because a page tree has one meaningful order and
+   * no filterable column of its own - so this method sends neither, whatever a caller puts on the request.
    *
    * @param portalId The tenant whose pages are wanted.
-   * @returns The portal's pages, in the order the server returned them.
+   * @param request The page to return and its size.
+   * @returns The page, in the paged wire envelope.
+   */
+  getPageByPortal(
+    portalId: number,
+    request: PagedRequestParams,
+  ): Observable<PagedResult<TabListItem>> {
+    return this.http
+      .get<unknown>(API_ENDPOINTS.tabs.forPortal(portalId), {
+        params: pagedRequestParams({ pageIndex: request.pageIndex, pageSize: request.pageSize }),
+        context: presentedInContext(),
+      })
+      .pipe(map((body) => decodeResponse(TAB_PAGE, body)));
+  }
+
+  /**
+   * Every page belonging to one portal, as a flat collection, read a hundred rows at a time.
+   *
+   * MIGRATION: THE RESPONSE THIS READS IS NOW BOUNDED AND THIS METHOD'S ANSWER IS NOT, WHICH IS DELIBERATE.
+   * The endpoint used to return a tenant's entire page tree in one response - three thousand pages measured
+   * at 764 KiB - and the screens that consume this need the whole set, because they render it as a chooser
+   * rather than as a browsable list. So the collection is assembled here from bounded pages: no single
+   * response is unbounded, and no consumer had to change. A tenant large enough for the round trips to be
+   * noticeable is a tenant whose page chooser wants a search rather than a longer list, which is a change to
+   * those screens rather than to this transport.
+   *
+   * @param portalId The tenant whose pages are wanted.
+   * @returns The portal's pages, in the navigation order the server returned them, across page boundaries.
    */
   getByPortal(portalId: number): Observable<readonly TabListItem[]> {
-    return this.http
-      .get<unknown>(API_ENDPOINTS.tabs.forPortal(portalId), { context: presentedInContext() })
-      .pipe(map((body) => decodeResponse(TAB_LIST_RESPONSE, body)));
+    const readFrom = (
+      pageIndex: number,
+      collected: readonly TabListItem[],
+    ): Observable<readonly TabListItem[]> =>
+      this.getPageByPortal(portalId, {
+        pageIndex,
+        pageSize: WHOLE_COLLECTION_PAGE_SIZE,
+      }).pipe(
+        switchMap((page) => {
+          const accumulated: readonly TabListItem[] = [...collected, ...page.items];
+
+          // Bounded by the total the server reported rather than by a page count, so a tenant that gains a
+          // page between two requests still terminates.
+          return page.items.length === 0 || accumulated.length >= page.meta.totalCount
+            ? of(accumulated)
+            : readFrom(pageIndex + 1, accumulated);
+        }),
+      );
+
+    return readFrom(0, []);
   }
 
   /**

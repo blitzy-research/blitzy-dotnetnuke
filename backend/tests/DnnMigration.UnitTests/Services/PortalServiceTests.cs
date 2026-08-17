@@ -123,13 +123,23 @@ public class PortalServiceTests
 
     private static readonly DateTime Now = new(2026, 8, 2, 12, 0, 0, DateTimeKind.Utc);
 
-    /// <summary>The tenant contract exposes thirteen asynchronous operations and nothing else.</summary>
+    /// <summary>
+    /// The tenant contract exposes fourteen asynchronous operations and nothing else.
+    /// </summary>
+    /// <remarks>
+    /// The fourteenth is <c>ResolveTenantPathPrefixAsync</c>. It was added so that a browser can ask whether
+    /// a leading path segment names a configured child-portal alias INSTEAD OF GUESSING, which is what the
+    /// single-page application previously did: any unrecognised first segment was claimed as a tenant
+    /// prefix, the router's base href was set to it, and the not-found view therefore became unreachable for
+    /// every mistyped address. The count is asserted exactly so that widening this contract stays a
+    /// deliberate act.
+    /// </remarks>
     [Fact]
-    public void PortalContract_OffersExactlyThirteenOperations()
+    public void PortalContract_OffersExactlyFourteenOperations()
     {
         MethodInfo[] members = typeof(IPortalService).GetMethods();
 
-        members.Should().HaveCount(13);
+        members.Should().HaveCount(14);
         foreach (MethodInfo member in members)
         {
             member.Name.Should().EndWith("Async");
@@ -1584,7 +1594,7 @@ public class PortalServiceTests
             {
                 PermissionId = 3,
                 PermissionCode = TabScopeCode,
-                PermissionKey = PermissionKey.VIEW,
+                PermissionKey = nameof(PermissionKey.VIEW),
                 PermissionName = "View Tab",
             },
         ];
@@ -1642,7 +1652,7 @@ public class PortalServiceTests
             {
                 PermissionId = 3,
                 PermissionCode = TabScopeCode,
-                PermissionKey = PermissionKey.VIEW,
+                PermissionKey = nameof(PermissionKey.VIEW),
                 PermissionName = "View Tab",
             },
         ];
@@ -4147,8 +4157,8 @@ public class PortalServiceTests
 
             PageScopeCatalogue =
             [
-                new Permission { PermissionId = 3, PermissionCode = TabScopeCode, PermissionKey = PermissionKey.VIEW, PermissionName = "View Tab" },
-                new Permission { PermissionId = 4, PermissionCode = TabScopeCode, PermissionKey = PermissionKey.EDIT, PermissionName = "Edit Tab" },
+                new Permission { PermissionId = 3, PermissionCode = TabScopeCode, PermissionKey = nameof(PermissionKey.VIEW), PermissionName = "View Tab" },
+                new Permission { PermissionId = 4, PermissionCode = TabScopeCode, PermissionKey = nameof(PermissionKey.EDIT), PermissionName = "Edit Tab" },
             ];
 
             Portals = new Mock<IPortalRepository>(MockBehavior.Loose);
@@ -4491,7 +4501,10 @@ public class PortalServiceTests
                 .ReturnsAsync((string code, PermissionKey key, CancellationToken _) =>
                     harness.PageScopeCatalogue
                         .Where(entry => string.Equals(entry.PermissionCode, code, StringComparison.Ordinal)
-                            && entry.PermissionKey == key)
+                            && string.Equals(
+                                entry.PermissionKey,
+                                key.ToString(),
+                                StringComparison.OrdinalIgnoreCase))
                         .OrderBy(entry => entry.PermissionId)
                         .ToArray());
             harness.Permissions

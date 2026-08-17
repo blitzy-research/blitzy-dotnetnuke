@@ -127,6 +127,31 @@ internal static class SortableFields
             "DisplayName",
         };
 
+    /// <summary>Field names that may order the page listing served by <c>GET /api/v1/portals/{id}/tabs</c>.</summary>
+    /// <remarks>
+    /// ⚠ DELIBERATELY EMPTY, WHICH MAKES EVERY <c>sortBy</c> A 400 ON THIS COLLECTION. A portal's pages are
+    /// returned in NAVIGATION ORDER - depth-first through the hierarchy, each child following the parent it
+    /// belongs to, which is how the legacy page tree was read and how a page tree is meaningful at all. Any
+    /// re-ordering flattens that: a child ordered away from its parent still carries a <c>parentId</c> and a
+    /// <c>level</c>, so the response would still look well formed while describing a tree that does not
+    /// exist. Refusing the parameter says so, where accepting and ignoring it would not.
+    /// </remarks>
+    internal static readonly IReadOnlySet<string> Tabs =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Field names that may order the member-service catalogue served by
+    /// <c>GET /api/v1/users/{id}/services</c>.
+    /// </summary>
+    /// <remarks>
+    /// ⚠ DELIBERATELY EMPTY, for the same reason and a different order. The catalogue is returned in the
+    /// order the tenant's subscribable roles are read, which is the order the legacy member-services grid
+    /// bound and therefore the order a subscriber has always been shown the price list in. Nothing about the
+    /// catalogue makes a second order more correct, so none is offered rather than silently accepted.
+    /// </remarks>
+    internal static readonly IReadOnlySet<string> MemberServices =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>
     /// The union of every per-collection set: the outer bound that <c>PagedRequestValidator</c> applies to
     /// any request, whichever collection it addresses.
@@ -210,6 +235,12 @@ internal static class SortableFields
         union.UnionWith(UserChoices);
         union.UnionWith(Modules);
         union.UnionWith(RoleUsers);
+
+        // The two collections with a single defined order contribute nothing, and are united anyway so that
+        // this method stays a statement about EVERY set rather than about the ones that happen to be
+        // non-empty: were either to gain a sortable field, the outer bound would follow without an edit here.
+        union.UnionWith(Tabs);
+        union.UnionWith(MemberServices);
 
         return union;
     }

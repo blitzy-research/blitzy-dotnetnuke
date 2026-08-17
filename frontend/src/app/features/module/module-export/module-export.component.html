@@ -72,7 +72,7 @@
         as anchors - elements that navigate rather than act, are announced as links, and are not
         activated by the space key.
       -->
-      <button type="submit" [disabled]="exporting() || !hasModuleToExport"
+      <button class="form-action--primary" type="submit" [disabled]="exporting() || !hasModuleToExport"
           [attr.aria-busy]="exporting() ? 'true' : null">{{ exportLabel }}</button>
 
       <!-- `type="button"` is the faithful translation of `causesvalidation="False"` on `export.ascx:L16`. -->

@@ -171,9 +171,21 @@ public sealed class SuccessEnvelopeContractTests
                 "UserChoiceDtoPagedResponse",
 
                 "UserListItemDtoPagedResponse",
+
+                // THE TWO COLLECTIONS THAT PAGE IN ONE FIXED ORDER, AND THE DISTINCTION IS DELIBERATE. A
+                // tenant's page listing is a hierarchy - depth-first by parent then by stored order - and an
+                // account's member-service catalogue is a published price list. Neither has a second
+                // meaningful order, so each pages without publishing a sort vocabulary and each refuses
+                // `sortBy` and `query` outright. They are paged because their responses were unbounded: the
+                // listing sent 764 KiB for a tenant with three thousand pages and the catalogue 437 KiB for a
+                // tenant publishing a thousand services.
+                "MemberServiceDtoPagedResponse",
+
+                "TabListItemDtoPagedResponse",
             },
-            "these are the listings this API pages, and one arriving here without a covering sort vocabulary "
-            + "and an ordering implementation would be a contract with no behaviour behind it");
+            "these are the listings this API pages, and one arriving here without either a covering sort "
+            + "vocabulary and an ordering implementation, or a documented single order and a refusal of every "
+            + "sort field, would be a contract with no behaviour behind it");
 
         foreach (string name in pagedSchemas)
         {

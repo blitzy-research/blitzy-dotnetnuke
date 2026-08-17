@@ -557,6 +557,115 @@ describe('APP_ROUTES', () => {
         );
       });
 
+      /**
+       * Enters the group at one address and then walks to a SIBLING address inside the same group.
+       *
+       * ⚠ THE TWO-STEP SHAPE IS THE WHOLE POINT AND MUST NOT BE COLLAPSED INTO ONE NAVIGATION. Angular does
+       * not re-run a RETAINED route's `canActivate`, so entering the group and then moving within it is a
+       * materially different code path from arriving at the second address cold. A single navigation passes
+       * whether or not the gate covers child activations; only this sequence can tell them apart.
+       *
+       * @param advisories The advisory members to raise on the held session.
+       * @param user The identity to hold.
+       * @param from The address to enter the group at.
+       * @param to The sibling address to walk to.
+       * @returns The address the router came to rest at.
+       */
+      async function walkWithinTheGroup(
+        advisories: Partial<
+          Pick<AuthSession, 'mustChangePassword' | 'mustUpdateProfile' | 'passwordExpiring'>
+        >,
+        user: Partial<AuthSession['user']>,
+        from: string,
+        to: string,
+      ): Promise<string> {
+        TestBed.resetTestingModule();
+        configure();
+        TestBed.inject(TokenStorageService).store({
+          ...ADMIN_SESSION,
+          ...advisories,
+          user: { ...ADMIN_SESSION.user, ...user },
+        });
+
+        const harness = await RouterTestingHarness.create('/login');
+
+        await harness.navigateByUrl(from).catch(() => undefined);
+        expect(TestBed.inject(Router).url)
+          .withContext('precondition: the caller must actually be on the screen they walk from')
+          .toBe(from);
+
+        await harness.navigateByUrl(to).catch(() => undefined);
+
+        return TestBed.inject(Router).url;
+      }
+
+      it('holds the gate when a caller walks between SIBLING screens inside the group', async () => {
+        // ⚠ THIS PINS A DEFECT THAT REACHED A BROWSER AND SURVIVED A FIRST ATTEMPT AT FIXING IT, because
+        // the gate was correct and simply never ran. `authGuard` sat only on the GROUP route, and Angular
+        // retains that node when moving between its children — so the gate ran once on entry and never
+        // again. A caller owing a password change followed the header's "Manage Profile" link straight out
+        // of `/users/{id}/password`, unguarded, and the server then refused that screen's own data with
+        // 403 auth.not_permitted, stranding them on a Forbidden screen with no password form in sight.
+        // `canActivateChild` on the group route is what closes it, and this case is what proves it stays
+        // closed.
+        const userId = String(ORDINARY.userId);
+
+        expect(
+          await walkWithinTheGroup(
+            { mustChangePassword: true },
+            ORDINARY,
+            `/users/${userId}/password`,
+            `/users/${userId}/profile`,
+          ),
+        )
+          .withContext('the server refuses the profile screen while a CREDENTIAL change is owed')
+          .toBe(`/users/${userId}/password`);
+      });
+
+      it('holds the mirror case too, so neither obligation leaks the other screen', async () => {
+        const userId = String(ORDINARY.userId);
+
+        expect(
+          await walkWithinTheGroup(
+            { mustUpdateProfile: true },
+            ORDINARY,
+            `/users/${userId}/profile`,
+            `/users/${userId}/password`,
+          ),
+        )
+          .withContext('the server refuses the password screen while a PROFILE completion is owed')
+          .toBe(`/users/${userId}/profile`);
+      });
+
+      it('still lets a caller carrying BOTH walk on to the second screen', async () => {
+        // Both advisories stand, so the server admits both screens - and a caller who has just changed
+        // their password must be able to move on to the profile rather than be pushed backwards.
+        const userId = String(ORDINARY.userId);
+
+        expect(
+          await walkWithinTheGroup(
+            { mustChangePassword: true, mustUpdateProfile: true },
+            ORDINARY,
+            `/users/${userId}/password`,
+            `/users/${userId}/profile`,
+          ),
+        ).toBe(`/users/${userId}/profile`);
+      });
+
+      it('does not impede a caller who owes nothing from walking the same path', async () => {
+        // The control. Without it, the three cases above would also pass if the group were simply broken.
+        const userId = String(ADMIN_SESSION.user.userId);
+
+        expect(
+          await walkWithinTheGroup(
+            {},
+            { isSuperUser: true },
+            `/users/${userId}/password`,
+            `/users/${userId}/profile`,
+          ),
+        ).toBe(`/users/${userId}/profile`);
+      });
+
       it('does NOT divert a caller whose password is merely approaching expiry', async () => {
         // ⚠ THE THIRD ADVISORY IS INFORMATIONAL AND MUST NOT BE TREATED AS BLOCKING. The server
         // refuses nothing over it and asks for nothing, so diverting on it would strand a caller

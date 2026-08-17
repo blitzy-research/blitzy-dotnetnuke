@@ -287,12 +287,60 @@
 .data-table__actions {
   display: inline-flex;
   flex-wrap: wrap;
-  align-items: center;
+
+  // ⚠ THE COMMANDS ALIGN WITH THE ROW'S FIRST LINE, NOT WITH ITS MIDDLE. Centred, they drifted downward as
+  // soon as any cell in the row wrapped - measured at about twelve pixels below the first data baseline on
+  // the portal, role and account listings, where a wrapping title makes rows several lines tall - so the
+  // commands stopped reading as belonging to the line the eye starts on. Starting them matches the
+  // `vertical-align: top` every cell already uses.
+  align-items: flex-start;
   gap: var(--space-1);
 }
 
 .data-table__message {
+  // The inline padding lives on the pinned wrapper below rather than here, so that the wrapper can be given
+  // the scrollport's exact width and still keep its breathing room inside it. A cell padding plus a
+  // scrollport-width child would have put the last 32 pixels of the child beyond the visible edge - the
+  // narrower cousin of the very defect being fixed.
+  padding-inline: 0;
+}
+
+// The message row's content, pinned to the visible part of the scrollport.
+.data-table__message-viewport {
+  // Sticky against the container, whose scrollport this is. It has room to slide because the cell spans the
+  // table's floored width while this box is only as wide as the visible area - which is exactly the gap the
+  // operator previously had to scroll across to read a sentence telling them there was nothing to read.
+  position: sticky;
+  inset-inline-start: 0;
+
+  // The width binding is applied to the box itself, so the padding has to come out of it rather than add to
+  // it, or the right edge would land outside the scrollport again.
+  box-sizing: border-box;
   padding-inline: var(--space-4);
+}
+
+// THE REFETCH STRIP — the seen half of `aria-busy`, and it must not move the rows it sits above.
+// Positioned in flow rather than over the grid, so it can neither obscure a row nor intercept a pointer.
+// It occupies the same block space as the result-status paragraph it follows, which is visually hidden, so
+// its appearance and disappearance shift the grid by its own height ONCE per read - the same displacement
+// the first-read placeholder already causes, rather than a new class of movement.
+.data-table__refetch {
+  display: flex;
+  justify-content: flex-end;
+  margin: 0;
+  padding-block: var(--space-1);
+  color: var(--color-text-muted);
+}
+
+// THE FAILED-READ SENTENCE. Centred and vertically spaced like the empty state it stands in for, so the
+// body does not jump between the two, but deliberately WITHOUT the empty state's glyph and heading: this is
+// one plain fact, and the reason for it belongs to the caller's error banner.
+.data-table__unread {
+  margin: 0;
+  padding-block: var(--space-6);
+
+  color: var(--color-text-muted);
+  text-align: center;
 }
 
 // DELIBERATE ABSENCES — read this before adding a rule
@@ -329,4 +377,17 @@ th.data-table__cell {
 // the region silent which is the exact defect it exists to fix.
 .data-table__result-status {
   @include mx.visually-hidden;
+}
+
+// THE AFFORDANCE THAT PASSES OVER THE ROW COMMANDS. Invisible at rest and revealed on focus, which is the
+// same bargain the application shell's own skip link strikes: it costs a keyboard user one press and costs a
+// sighted mouse user nothing at all. The reveal is a focus state rather than a hover one, because the only
+// person who can use it is the person who reached it with a key.
+.data-table__skip {
+  // The house mixin rather than a hand-rolled reveal, and its shape is the reason it exists: the hidden
+  // state is scoped to `:not(:focus-visible)` rather than applied unconditionally and then reversed, so
+  // there is no moment at which two rules disagree about whether the affordance is on screen.
+  @include mx.visually-hidden-focusable;
+
+  margin-block-end: var(--space-2);
 }

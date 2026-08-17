@@ -4,6 +4,7 @@ import {
   DestroyRef,
   ElementRef,
   Input,
+  afterNextRender,
   computed,
   inject,
   signal,
@@ -15,6 +16,8 @@ import { NavigationEnd, Router, RouterOutlet } from '@angular/router';
 import { environment } from '../../../environments/environment';
 import { SIGN_IN_ROUTE as SHARED_SIGN_IN_ROUTE } from '../../core/config/app-routes.config';
 import { AuthStore } from '../../core/state/auth.store';
+import { NotificationService } from '../../core/services/notification.service';
+import { UnsavedChangesTracker } from '../../core/guards/unsaved-changes.guard';
 import { SessionLifecycleService } from '../../core/state/session-lifecycle.service';
 import { FooterComponent } from '../footer/footer.component';
 import { HeaderComponent } from '../header/header.component';
@@ -32,6 +35,17 @@ import type { Signal } from '@angular/core';
 const CONTENT_EDIT_PERMISSION_KEY = 'EDIT';
 
 const MAIN_REGION_ID = 'main-content';
+
+/**
+ * The class the shell's grid puts on the header band, and the hook this component measures.
+ *
+ * The class is used rather than the element name because `_layout.scss` keys the grid area on exactly this
+ * class, so measuring it measures the band the stylesheet pins.
+ */
+const HEADER_CLASS = 'shell__header';
+
+/** The custom property `_reset.scss` reads as the document's scroll padding above the side-by-side step. */
+const HEADER_BLOCK_SIZE_PROPERTY = '--layout-header-block-size';
 
 /**
  * The fragment the skip link's `href` ends with. ⚠ A FRAGMENT ALONE IS NOT A SAFE `href` IN THIS
@@ -74,6 +88,31 @@ export class ShellComponent {
    * documents the domain stores are still holding.
    */
   private readonly session = inject(SessionLifecycleService);
+
+  /** The transient-message queue, read only to know whether anything is currently on screen. */
+  /**
+   * The application's unsaved-entry register, consulted before a session is ended.
+   *
+   * ⚠ THE SHELL IS THE ONLY PLACE THAT CAN ASK THIS QUESTION IN TIME. Sign-out is not a plain navigation:
+   * it revokes the credential first and navigates afterwards, so the router's own `canDeactivate` gate could
+   * only ever run after the session had already gone.
+   */
+  private readonly unsavedChanges = inject(UnsavedChangesTracker);
+
+  private readonly notifications = inject(NotificationService);
+
+  /**
+   * Whether the main region should reserve space at its foot for a transient message.
+   *
+   * ⚠ THE MESSAGE SURFACE IS FIXED-POSITIONED, SO IT WAS COVERING THE CONTENT UNDERNEATH IT. Anchored to the
+   * bottom corner and outside the flow, a message sat on top of the LAST ROW of a grid - which after a save
+   * or a delete is precisely the record the operator had just acted on and now wanted to check. Reserving
+   * the space only while the queue is non-empty keeps every screen free of dead space at rest, and no
+   * screen has to know the surface exists.
+   */
+  protected readonly reservesNotificationSpace: Signal<boolean> = computed(
+    () => this.notifications.notifications().length > 0,
+  );
 
   private readonly router = inject(Router);
 
@@ -192,6 +231,72 @@ export class ShellComponent {
 
   private readonly hostElement: ElementRef<HTMLElement> = inject(ElementRef);
 
+  constructor() {
+    // ⚠ THE HEADER'S MEASURED HEIGHT IS PUBLISHED SO THE DOCUMENT CAN RESERVE EXACTLY THAT MUCH ROOM AT THE
+    // TOP OF EVERY SCROLL. `_reset.scss` consumes `--layout-header-block-size` as the document's
+    // `scroll-padding-block-start` above the side-by-side step, which is what stops the browser scrolling a
+    // target flush to the viewport top and leaving it behind the pinned band - the defect that concealed the
+    // page title and all three page actions when the skip link was activated.
+    //
+    // MEASURED rather than declared, and that is the whole reason this code exists instead of a second
+    // hard-coded number. The band's height is intrinsic: 69 pixels once the account cluster fits on one line,
+    // but taller the moment it wraps, which a longer display name or one more account link would cause at the
+    // narrow end of the step. A literal would then under-reserve and quietly reopen the defect, so the value
+    // is taken from the element itself and kept in step.
+    afterNextRender(() => {
+      this.publishHeaderBlockSize();
+
+      const header = this.headerElement();
+
+      // `ResizeObserver` is guarded rather than assumed: the publication above has already run, so a host
+      // without it keeps a correct value for the height it measured and merely stops tracking changes.
+      if (header === null || typeof ResizeObserver === 'undefined') {
+        return;
+      }
+
+      const observer = new ResizeObserver(() => this.publishHeaderBlockSize());
+
+      observer.observe(header);
+      this.destroyRef.onDestroy(() => observer.disconnect());
+    });
+  }
+
+  /** The pinned header band, or null before the view exists. */
+  private headerElement(): HTMLElement | null {
+    return this.hostElement.nativeElement.querySelector<HTMLElement>(`.${HEADER_CLASS}`);
+  }
+
+  /**
+   * Writes the header's current height onto the document element as a custom property.
+   *
+   * The property lands on `documentElement` because that is where the declaration consuming it lives and
+   * where `document.scrollingElement` points - a custom property set on this component's host would flow
+   * DOWNWARD into its own subtree and never reach `html`. It is read through the host's own document rather
+   * than the global, matching how the modal dialog takes its background scroll lock, so the property lands on
+   * the document this component is actually rendered in.
+   *
+   * A zero or absent measurement is not published: it would reserve nothing and silently restore the defect,
+   * and the token's own declared value is the better answer until a real measurement arrives.
+   */
+  private publishHeaderBlockSize(): void {
+    const header = this.headerElement();
+
+    if (header === null) {
+      return;
+    }
+
+    const measured = header.getBoundingClientRect().height;
+
+    if (measured <= 0) {
+      return;
+    }
+
+    this.hostElement.nativeElement.ownerDocument.documentElement.style.setProperty(
+      HEADER_BLOCK_SIZE_PROPERTY,
+      `${measured}px`,
+    );
+  }
+
   /**
    * Ends the session the operator asked to end, then sends them to the sign-in screen. ⚠ SUBSCRIBED
    * EXACTLY ONCE, AND THAT IS WHAT ISSUES THE REQUEST. The command is cold by design —
@@ -201,6 +306,16 @@ export class ShellComponent {
    */
   protected onSignOut(): void {
     if (this.signingOut()) {
+      return;
+    }
+
+    // ⚠ ASKED BEFORE THE CREDENTIAL IS REVOKED, WHICH IS THE WHOLE POINT OF ASKING HERE. Logout discarded a
+    // dirty form in silence while navigating from the very same form raised the confirmation, and the reason
+    // was ordering rather than a missing gate: the revocation and the local teardown both ran before the
+    // router could reach `canDeactivate`, so the question either came too late to be answerable or - worse -
+    // could be answered "no" and leave the operator holding unsaved work on a screen whose session had
+    // already ended. Asking first makes declining genuinely free: nothing has happened yet.
+    if (this.unsavedChanges.confirmDiscard() === false) {
       return;
     }
 

@@ -9,7 +9,24 @@
 .confirm-dialog {
   box-sizing: border-box;
   max-inline-size: var(--dialog-max-inline-size);
-  max-block-size: var(--dialog-max-block-size);
+
+  // ⚠ ANCHORED NEAR THE TOP RATHER THAN CENTRED, AND A MEASUREMENT IS WHY. A modal dialog takes its
+  // position from `margin: auto` against `inset: 0` in the user-agent stylesheet, which centres it in the
+  // viewport - and the centre of the viewport on every listing in this application is the grid. Measured while
+  // confirming the deletion of the FIFTH row: the frame occupied 326.55 by 177 at (469.22, 361.5) and covered
+  // rows two, three, four and the top of row five, so the one record the operator was being asked about was
+  // underneath the question. The dialog now names that record, which is the substantive half of the fix, but
+  // covering the data an operator is verifying is not something a name makes acceptable.
+  //
+  // Only the BLOCK margin is set. `margin: auto` in the user-agent rule is a shorthand, so overriding
+  // `margin-block` leaves `margin-inline: auto` intact and the frame stays horizontally centred - which is
+  // what keeps this a reposition rather than a redesign.
+  margin-block: var(--space-8) auto;
+
+  // The height cap absorbs the offset, so a dialog long enough to reach the cap still fits between the top
+  // margin and the bottom of the viewport instead of being pushed off the end of it.
+  max-block-size: calc(var(--dialog-max-block-size) - var(--space-8));
+
   padding: 0;
   border: var(--border-width) var(--border-style) var(--color-primary);
   border-radius: var(--radius-lg);
@@ -86,7 +103,12 @@
   line-height: var(--line-height-none);
   cursor: pointer;
 
-  @include mx.focus-ring;
+  // ⚠ #27 — THE ALWAYS-VISIBLE VARIANT, because this dialog moves focus itself. Opening it puts focus on the
+  // cancelling affordance so an immediate Enter cannot destroy anything - but a dialog opened by CLICKING
+  // leaves the browser's last input modality set to pointer, so `:focus-visible` did not match and the
+  // dialog presented no visible focus at all until the reader pressed Tab. A modal that has taken focus away
+  // from the page must show where it put it.
+  @include mx.focus-ring-always;
 
   // Pointer and keyboard hover. Enabled only: `:hover` is excluded on a disabled button by the `:enabled`
   // qualifier, so a disabled control gives no hover feedback that would imply it can be actioned.

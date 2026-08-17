@@ -37,8 +37,12 @@
     }
   </app-page-header>
 
-  <!-- The failure surface. -->
-  <app-error-banner [problem]="problem()" />
+  <!--
+    The failure surface. The label dictionary is the SAME one the fields use, so a refusal keyed by the
+    contract's `portalName` / `hostFee` / `expiryDate` is listed as Title / Hosting Fee / Expiry Date -
+    the names actually on screen - instead of quoting wire property names at an operator.
+  -->
+  <app-error-banner [problem]="problem()" [fieldLabels]="fieldLabel" />
 
   @if (!hasPortalId()) {
     <!-- The address named no usable portal. -->
@@ -69,9 +73,22 @@
           [attr.aria-selected]="isTabActive(tab)"
           [attr.aria-controls]="isTabActive(tab) ? tabPanelId(tab) : null"
           [attr.tabindex]="isTabActive(tab) ? 0 : -1"
+          [class.portal-settings__tab--errored]="tabHasErrors(tab)"
           (click)="selectTab(tab)"
         >
           {{ tabLabel[tab] }}
+
+          <!--
+            THE ERRORS THAT ARE NOT ON SCREEN. A rejected save can name fields on the tab that is not
+            selected, and because the unselected panel is destroyed rather than hidden those fields have no
+            node to carry `aria-invalid` and no way to be found. The marker is the only thing that makes
+            them discoverable. The glyph is decorative and the sentence beside it is the real announcement,
+            so the tab reads as "Advanced Settings, has fields needing attention".
+          -->
+          @if (tabHasErrors(tab)) {
+            <span class="portal-settings__tab-error-marker" aria-hidden="true">!</span>
+            <span data-visually-hidden>{{ tabHasErrorsLabel }}</span>
+          }
         </button>
       }
     </div>
@@ -121,6 +138,7 @@
                   four are withdrawn together as a parity break.
                 -->
                 <app-form-field
+                  [limit]="maxLength.portalName"
                   [label]="fieldLabel['portalName']"
                   [for]="controlId('portalName')"
                   [help]="fieldHelp['portalName']"
@@ -139,6 +157,7 @@
 
                 <!-- A plain multi-line box. -->
                 <app-form-field
+                  [limit]="maxLength.description"
                   class="portal-settings__field--wide"
                   [label]="fieldLabel['description']"
                   [for]="controlId('description')"
@@ -156,6 +175,7 @@
                 </app-form-field>
 
                 <app-form-field
+                  [limit]="maxLength.keyWords"
                   class="portal-settings__field--wide"
                   [label]="fieldLabel['keyWords']"
                   [for]="controlId('keyWords')"
@@ -173,6 +193,7 @@
                 </app-form-field>
 
                 <app-form-field
+                  [limit]="maxLength.footerText"
                   [label]="fieldLabel['footerText']"
                   [for]="controlId('footerText')"
                   [help]="fieldHelp['footerText']"
@@ -428,6 +449,116 @@
                     </select>
                   </div>
                 </app-form-field>
+
+                <!--
+                  THE HOME DIRECTORY, SHOWN AND NOT EDITABLE - WHICH IS EXACT LEGACY PARITY RATHER THAN A
+                  COMPROMISE. `Website/admin/Portal/sitesettings.ascx:L289-L290` declares this box
+                  `Enabled="False"`, so the legacy screen displayed the path and refused to let anybody
+                  change it; the code-behind read it back out on save purely to round-trip it
+                  (`SiteSettings.ascx.vb:L419` in, `L781` out). It sits at the end of Page Management
+                  because that is the section legacy declared it in (L285, inside the block opened at L239).
+                  Nothing on this screen wrote it before, and nothing does now - the request composer still
+                  returns it unchanged.
+
+                  `readonly` RATHER THAN `disabled`, DELIBERATELY. The two are equivalent for editing, but a
+                  disabled control is removed from the tab order and skipped by assistive technology, so the
+                  legacy spelling would have hidden the value from the readers most in need of it. This is
+                  not a form control at all - it is bound by value - so nothing here can reach the payload.
+                -->
+                <app-form-field
+                  [label]="fieldLabel['homeDirectory']"
+                  [for]="controlId('homeDirectory')"
+                  [help]="fieldHelp['homeDirectory']"
+                >
+                  <div class="portal-settings__control portal-settings__control--medium">
+                    <input
+                      type="text"
+                      readonly
+                      [id]="controlId('homeDirectory')"
+                      [value]="homeDirectoryText()"
+                      [attr.aria-describedby]="'portal-settings-homeDirectory-fixed'"
+                      autocomplete="off"
+                    />
+                  </div>
+                </app-form-field>
+
+                <p class="portal-settings__notice" id="portal-settings-homeDirectory-fixed">
+                  {{ homeDirectoryNotice }}
+                </p>
+              </div>
+            }
+          </fieldset>
+
+          <!--
+            PAYMENT SETTINGS, RESTORED. Neither of these two could be configured anywhere in the
+            application, while the role screen still tells an operator to configure a payment processor.
+            Placed between Page Management and Other Settings because that is the legacy order:
+            `sitesettings.ascx` declares its Advanced heads as Security (L218), Page Management (L239),
+            Payment (L294), Usability (L339), Other (L385) and Host (L420).
+          -->
+          <fieldset
+            class="portal-settings__section"
+            [class.portal-settings__section--collapsed]="!isSectionOpen('payment')"
+          >
+            <legend>
+              <h2>
+              <button
+                type="button"
+                class="portal-settings__toggle"
+                [attr.aria-expanded]="isSectionOpen('payment')"
+                [attr.aria-controls]="isSectionOpen('payment') ? sectionBodyId('payment') : null"
+                (click)="toggleSection('payment')"
+              >
+                <svg viewBox="0 0 8 8" aria-hidden="true" focusable="false">
+                  <path d="M1 0 L7 4 L1 8 Z" fill="currentColor" />
+                </svg>
+                {{ sectionLabel['payment'] }}
+              </button>
+              </h2>
+            </legend>
+
+            @if (isSectionOpen('payment')) {
+              <div class="portal-settings__grid" [id]="sectionBodyId('payment')">
+                <!--
+                  A TEXT BOX RATHER THAN THE LEGACY SELECTOR. `cboProcessor` (L314) was filled from the
+                  legacy list subsystem, which the plan excludes, so its closed value set does not exist
+                  here - the same position the currency and language boxes are already in.
+                -->
+                <app-form-field
+                  [label]="fieldLabel['paymentProcessor']"
+                  [for]="controlId('paymentProcessor')"
+                  [help]="fieldHelp['paymentProcessor']"
+                  [error]="messagesFor('paymentProcessor')"
+                >
+                  <div class="portal-settings__control portal-settings__control--medium">
+                    <input
+                      type="text"
+                      formControlName="paymentProcessor"
+                      [id]="controlId('paymentProcessor')"
+                      [maxlength]="maxLength.processor"
+                      autocomplete="off"
+                    />
+                  </div>
+                </app-form-field>
+
+                <app-form-field
+                  [label]="fieldLabel['processorUserId']"
+                  [for]="controlId('processorUserId')"
+                  [help]="fieldHelp['processorUserId']"
+                  [error]="messagesFor('processorUserId')"
+                >
+                  <div class="portal-settings__control portal-settings__control--medium">
+                    <input
+                      type="text"
+                      formControlName="processorUserId"
+                      [id]="controlId('processorUserId')"
+                      [maxlength]="maxLength.processor"
+                      autocomplete="off"
+                    />
+                  </div>
+                </app-form-field>
+
+                <p class="portal-settings__notice">{{ processorCredentialNotice }}</p>
               </div>
             }
           </fieldset>
@@ -462,7 +593,15 @@
                   [help]="fieldHelp['administratorId']"
                   [error]="messagesFor('administratorId')"
                 >
-                  <div class="portal-settings__control portal-settings__control--medium">
+                  <!--
+                    NOT a medium slot, and the difference is what makes this control readable. Its options
+                    are a person's display name AND their login name, so the longest real option measured
+                    231.77px against 144px of slot - roughly 110px of it usable once the native arrow is
+                    deducted - and every administrator rendered clipped mid-word at every viewport from 320
+                    through 1920. This slot grows with its column instead, floored at a measure that fits the
+                    longest real option.
+                  -->
+                  <div class="portal-settings__control portal-settings__control--name">
                     <select formControlName="administratorId" [id]="controlId('administratorId')">
                       @for (option of administratorOptions(); track option.value) {
                         <option [ngValue]="option.value">{{ option.label }}</option>
@@ -498,18 +637,34 @@
                       autocomplete="off"
                     />
                   </div>
+
+                  <!--
+                    ⚠ THE UNIT NOTE IS PROJECTED INTO THE FIELD, AND IT USED TO BE A SIBLING OF IT. As a
+                    sibling it was its own item in the two-column settings grid, so from 768 upwards it was
+                    laid out in the LEFT column while the input it describes sat in the RIGHT one — measured
+                    at 1024, note at x=214 and input at x=769. On screen it read as belonging to whichever
+                    field happened to be above or below it. The wiring was never wrong: the input's
+                    `aria-describedby` always named it, so a screen-reader user got the right association and
+                    only a sighted reader was misled.
+                    Projected into the field it can no longer be placed by the settings grid at all, which is
+                    the same arrangement the Banners host-lock notice above already uses.
+                    It sits OUTSIDE the width-capped wrapper rather than inside it: that wrapper caps the
+                    control at 9rem, which is right for a numeric offset and far too narrow for two sentences
+                    of prose.
+                    ⚠ IT CARRIES THE SHARED `form-note` CLASS, NOT THIS SCREEN'S NOTICE CLASS. Both would look
+                    the same, but a note projected into a field needs its own line inside the field's wrapping
+                    control row, and that is a property of the SHARED field rather than of this screen — so it
+                    belongs with `form-help` and `form-error` in the global form-region family, where every
+                    screen can reach it.
+                  -->
+                  <p class="form-note" id="portal-settings-timeZoneOffset-unit">
+                    The offset from Coordinated Universal Time, in minutes. Behind UTC is
+                    negative — for example −480 for Pacific Time.
+                  </p>
                 </app-form-field>
 
-                <!--
-                  THE UNIT NOTE IS A SIBLING OF THE FIELD, NOT A CHILD OF IT, and the placement is
-                  load-bearing rather than incidental.
-                -->
-                <p class="portal-settings__notice" id="portal-settings-timeZoneOffset-unit">
-                  The offset from Coordinated Universal Time, in minutes. Behind UTC is
-                  negative — for example −480 for Pacific Time.
-                </p>
-
                 <app-form-field
+                  [limit]="maxLength.currency"
                   [label]="fieldLabel['currency']"
                   [for]="controlId('currency')"
                   [help]="fieldHelp['currency']"
@@ -528,6 +683,7 @@
 
                 <!-- ⚠ A TEXT BOX RATHER THAN THE LEGACY CULTURE SELECTOR, for the same class of reason. -->
                 <app-form-field
+                  [limit]="maxLength.defaultLanguage"
                   [label]="fieldLabel['defaultLanguage']"
                   [for]="controlId('defaultLanguage')"
                   [help]="fieldHelp['defaultLanguage']"
@@ -573,6 +729,7 @@
               @if (isSectionOpen('host')) {
                 <div class="portal-settings__grid" [id]="sectionBodyId('host')">
                   <app-form-field
+                    [limit]="maxLength.expiryDate"
                     [label]="fieldLabel['expiryDate']"
                     [for]="controlId('expiryDate')"
                     [help]="fieldHelp['expiryDate']"
@@ -589,6 +746,7 @@
                   </app-form-field>
 
                   <app-form-field
+                    [limit]="maxLength.hostFee"
                     [label]="fieldLabel['hostFee']"
                     [for]="controlId('hostFee')"
                     [help]="fieldHelp['hostFee']"
@@ -608,6 +766,7 @@
 
                   <!-- The three quota boxes show the stored number, INCLUDING zero. -->
                   <app-form-field
+                    [limit]="maxLength.hostSpace"
                     [label]="fieldLabel['hostSpace']"
                     [for]="controlId('hostSpace')"
                     [help]="fieldHelp['hostSpace']"
@@ -626,6 +785,7 @@
                   </app-form-field>
 
                   <app-form-field
+                    [limit]="maxLength.pageQuota"
                     [label]="fieldLabel['pageQuota']"
                     [for]="controlId('pageQuota')"
                     [help]="fieldHelp['pageQuota']"
@@ -644,6 +804,7 @@
                   </app-form-field>
 
                   <app-form-field
+                    [limit]="maxLength.userQuota"
                     [label]="fieldLabel['userQuota']"
                     [for]="controlId('userQuota')"
                     [help]="fieldHelp['userQuota']"
@@ -669,7 +830,7 @@
 
       <!-- The form's own action bar. -->
       <div class="portal-settings__actions">
-        <button type="submit" [disabled]="busy()"
+        <button class="form-action--primary" type="submit" [disabled]="busy()"
           [attr.aria-busy]="busy() ? 'true' : null">Update</button>
         <button type="button" [disabled]="busy()" (click)="onCancel()">Cancel</button>
 
@@ -684,11 +845,23 @@
         }
       </div>
 
-      @if (submitRejected()) {
-        <!-- Named once at form level for a reader who never saw the individual fields. -->
-        <p class="portal-settings__notice" role="alert">{{ formInvalidMessage }}</p>
-      }
+      <!--
+        ⚠ THE FORM-LEVEL SUMMARY IS GONE, AND SO IS THE SECOND LIVE REGION IT LIVED IN. It restated, in an
+        assertive region of this screen's own, the news that the field receiving focus already carries -
+        two owners for one category, beside the shared banner. `submitRejected()` survives because the
+        reveal logic uses it; only the restatement has gone. See the submit handler's contract note.
+      -->
     </form>
+  } @else if (settingsUnreadable()) {
+    <!--
+      ⚠ THE BRANCH THAT WAS MISSING. Without a final alternative here a refused read painted the page
+      chrome and then 656 measured pixels of nothing - no statement of what had happened, and no way to
+      try again. The REASON is not repeated: the banner above owns the problem document and its support
+      reference, and this states only what the blank region means and what to do about it.
+    -->
+    <app-empty-state [message]="settingsUnreadableMessage">
+      <button type="button" (click)="retrySettingsRead()">{{ settingsRetryLabel }}</button>
+    </app-empty-state>
   }
 
   <!--

@@ -1,4 +1,4 @@
-<app-page-header [title]="heading"></app-page-header>
+<app-page-header [title]="heading" [subtitle]="pageSubtitle"></app-page-header>
 
 <!--
   The rejected-write surface: it renders the problem document the server sent, resolved to plain text by
@@ -9,6 +9,39 @@
 
 @if (loading) {
   <app-loading-spinner label="Loading module settings…"></app-loading-spinner>
+} @else if (administeredElsewhere()) {
+  <!--
+    ⚠ A BOUNDARY, EXPLAINED, RATHER THAN A REFUSAL LEFT ON SCREEN. This branch precedes the refusal branch
+    below deliberately: the server DOES answer 403 here, and the refusal branch would render the problem
+    document and nothing else - measured as a heading, a Forbidden banner reading "Administrative module
+    settings are available only through their typed privileged endpoint", and no way on. That sentence is
+    addressed to a client, not to an operator. This states the same fact in the operator's terms and, where
+    this console has the screen that owns those settings, takes them to it.
+  -->
+  <div class="module-settings__administered" role="note">
+    <p class="module-settings__administered-message">{{ administrativeMessage }}</p>
+
+    @if (administeringScreen(); as owner) {
+      <p class="module-settings__administered-message">
+        {{ administeredElsewhereMessage }}
+        <a class="module-settings__administered-link" [routerLink]="owner.route">{{ owner.label }}</a>
+        screen.
+      </p>
+    } @else {
+      <p class="module-settings__administered-message">{{ administeredNowhereMessage }}</p>
+    }
+
+    <a class="module-settings__administered-link" [routerLink]="moduleListRoute">{{ returnToModulesLabel }}</a>
+
+    <!--
+      Carried even though this is not presented as a failure: the server DID refuse, and an operator who
+      believes the boundary is wrong needs the identifier to raise it. Introduced with the same wording the
+      shared error banner uses, so one value is never announced two ways.
+    -->
+    @if (administrativeReference(); as reference) {
+      <p class="module-settings__administered-reference">{{ supportReferenceLabel }} {{ reference }}</p>
+    }
+  </div>
 } @else if (readRefused() || settingsRefused()) {
   <!--
     THE READ WAS REFUSED, OR FAILED. The banner above IS the presentation, and this branch exists to
@@ -122,34 +155,221 @@
                     [help]="hints['permissions']"
                     [error]="messagesFor('inheritViewPermissions')"
                   >
+                    <!--
+                      WITHHELD WHILE THE VOCABULARY IS UNKNOWN. Inheritance chooses which permission set
+                      applies, so it cannot be chosen against a vocabulary that is still being read or that
+                      failed to read - see permissionControlsWithheld, which is deliberately scoped to
+                      this control alone and does not touch the rest of the screen. The lock itself is
+                      applied to the FORM CONTROL rather than through an attribute, because Angular's
+                      reactive-form directive owns the disabled state of a bound control and discards an
+                      `[attr.disabled]` binding on it outright - proven by a spec that measured
+                      `aria-disabled` applied while the property stayed false. The submission reads
+                      `getRawValue()`, which includes disabled controls, so the operator's choice still
+                      reaches the server.
+                    -->
                     <label [for]="controlId('inheritViewPermissions')">
                       <input
                         type="checkbox"
                         formControlName="inheritViewPermissions"
                         [id]="controlId('inheritViewPermissions')"
                         [attr.aria-invalid]="messagesFor('inheritViewPermissions').length > 0"
+                        [attr.aria-disabled]="permissionControlsWithheld() ? 'true' : null"
                       />
                       {{ labels['inheritViewPermissions'] }}
                     </label>
 
                       <!--
-                        The condition tests `!== null` AND a non-empty length because the two carry
-                        different meanings on the signal behind it: `null` is "not read" - the caller
-                        does not administer the tenant, or the read has not returned, or it failed - and
-                        an empty array is the answer "this definition declares none".
+                        ⚠ FOUR STATES, THREE OF WHICH USED TO LOOK IDENTICAL. This region once rendered
+                        nothing whenever the backing signal was `null`, and `null` meant "not applicable"
+                        OR "still loading" OR "failed" - so a refused or failed catalogue read was
+                        pixel-for-pixel identical to a definition that declares no keys, and the screen
+                        silently asserted an empty vocabulary it had never read. The switch above is
+                        choosing between exactly these keys, so that blank misrepresented the decision
+                        being made. `aria-busy` marks the outstanding read: this is the six-second
+                        sub-request that previously had no loading affordance of any kind.
                       -->
-                      @if (definitionPermissionKeys(); as declaredKeys) {
-                        @if (declaredKeys.length > 0) {
-                          <p class="module-settings__declared-permissions">
-                            <span class="module-settings__declared-permissions-label">
-                              {{ definitionPermissionKeysLabel }}
-                            </span>
-                            @for (key of declaredKeys; track key) {
-                              <span class="module-settings__declared-permission">{{ key }}</span>
+                      <div
+                        class="module-settings__declared-permissions-region"
+                        [attr.aria-busy]="declaredKeysLoading() ? 'true' : null"
+                      >
+                        @if (declaredKeysLoading()) {
+                          <!--
+                            The spinner accompanies the sentence rather than replacing it. A six-second wait
+                            with text alone reads as a finished state that happens to say "reading"; the
+                            moving indicator is what distinguishes "still working" from "this is the answer".
+                          -->
+                          <p class="module-settings__declared-permissions-pending" role="status">
+                            <!--
+                              THE SPINNER IS PASSED AN EMPTY LABEL SO IT RENDERS AS A BARE INDICATOR. Given
+                              one it renders its own VISIBLE label and takes `role="status"` itself, which
+                              printed the sentence twice side by side and nested one live region inside
+                              another - measured in a real browser, with both copies painting and the
+                              announcement duplicated. The paragraph owns the sentence and the live region;
+                              the spinner contributes only the motion, and marks itself `aria-hidden`.
+                            -->
+                            <app-loading-spinner size="small" label="" />
+                            {{ declaredKeysLoadingLabel }}
+                          </p>
+                        } @else if (declaredKeysUnread()) {
+                          <!--
+                            Announced politely rather than assertively: the read is advisory, so it must
+                            report itself without interrupting whatever the operator is typing.
+                          -->
+                          <p class="module-settings__declared-permissions-unread" role="status">
+                            {{ declaredKeysFailedLabel }}
+                            @if (declaredKeysFailureDetail(); as reason) {
+                              <span class="module-settings__declared-permissions-reason">{{ reason }}</span>
+                            }
+                            @if (declaredKeysFailureReference(); as reference) {
+                              <!--
+                                The support reference for an INLINE failure. Without it this was the one
+                                failure on the screen an operator could not quote, because it never reaches
+                                the page-level banner that renders references for everything else.
+                              -->
+                              <span class="module-settings__declared-permissions-reference">
+                                Reference: {{ reference }}
+                              </span>
                             }
                           </p>
+
+                          <button
+                            type="button"
+                            class="module-settings__declared-permissions-retry"
+                            (click)="onRetryDeclaredKeys()"
+                          >
+                            {{ declaredKeysRetryLabel }}
+                          </button>
+                        } @else {
+                          <!--
+                            ⚠ THE GRID ITSELF, WHICH THIS SCREEN PREVIOUSLY DID NOT HAVE AT ALL. The legacy
+                            screen declared `<dnn:modulepermissionsgrid id="dgPermissions">`
+                            (`modulesettings.ascx:L42`) and persisted `objModule.ModulePermissions`
+                            (`ModuleSettings.ascx.vb:L378-L379`); the first port rendered only the four
+                            declared key names as inert text, so a portal administrator could read the
+                            vocabulary but could not grant or withdraw a single permission. The help text
+                            above still said "by checking/unchecking the boxes in the grid" - there were no
+                            boxes and no grid.
+                          -->
+                          @if (permissionGridEmpty()) {
+                            <!--
+                              ⚠ ITS OWN CLASS, NOT THE FAILURE'S. The unread class is the idiom for "the
+                              vocabulary could not be read", and the whole point of separating that state was
+                              that an EMPTY answer and an UNREAD one must never look alike. This one is a
+                              real answer, stated positively.
+                            -->
+                            <p class="module-settings__permission-grid-empty" role="status">
+                              {{ permissionGridEmptyMessage }}
+                            </p>
+                          }
+
+                          @if (permissionGridPresent()) {
+                            <div class="module-settings__permission-grid-scroll">
+                              <table class="module-settings__permission-grid">
+                                <!--
+                                  A CAPTION RATHER THAN A HEADING, so the table carries its own name in the
+                                  accessibility tree instead of borrowing the field's. The legacy grid's
+                                  first column header was the literal `&nbsp;` (`PermissionsGrid.vb:L490`),
+                                  which named nothing; a column of role names is given the name it holds.
+                                -->
+                                <caption [attr.data-visually-hidden]="true">
+                                  {{ permissionGridCaption }}
+                                </caption>
+
+                                <thead>
+                                  <tr>
+                                    <th scope="col">{{ permissionGridRoleHeading }}</th>
+                                    @for (column of permissionColumns(); track column.permissionId) {
+                                      <th scope="col">
+                                        {{ column.permissionName }}
+                                        @if (column.inherited) {
+                                          <!--
+                                            The column is not merely disabled, it is being decided
+                                            elsewhere, and saying so is what stops the locked boxes reading
+                                            as a fault.
+                                          -->
+                                          <span class="module-settings__permission-column-note">
+                                            inherited from page
+                                          </span>
+                                        }
+                                      </th>
+                                    }
+                                  </tr>
+                                </thead>
+
+                                <tbody>
+                                  @for (row of permissionRows(); track row.key) {
+                                    <tr>
+                                      <!--
+                                        `scope="row"` so each checkbox is announced against the role it
+                                        belongs to as well as the column, which a bare cell cannot convey.
+                                      -->
+                                      <th scope="row">
+                                        {{ row.name }}
+                                        @if (row.isAdministrator) {
+                                          <span class="module-settings__permission-row-note">
+                                            always granted
+                                          </span>
+                                        }
+                                      </th>
+
+                                      @for (cell of row.cells; track cell.permissionId) {
+                                        <td>
+                                          <!--
+                                            ⚠ THE LABEL IS VISUALLY HIDDEN, NOT ABSENT. A grid of bare
+                                            checkboxes announces "checkbox, checked" with nothing to
+                                            distinguish one from another, and `aria-label` alone would not
+                                            give the box a clickable label. The `title` repeats the reason a
+                                            locked box cannot be changed, so a pointer user is told too.
+                                          -->
+                                          <label
+                                            [for]="permissionCellId(row, cell)"
+                                            [attr.data-visually-hidden]="true"
+                                          >
+                                            {{ permissionCellLabel(row, cell) }}
+                                          </label>
+                                          <input
+                                            type="checkbox"
+                                            [id]="permissionCellId(row, cell)"
+                                            [checked]="cell.allowAccess"
+                                            [disabled]="!cell.editable"
+                                            [attr.title]="cell.lockedReason"
+                                            (change)="
+                                              onPermissionCellToggle(
+                                                row,
+                                                cell,
+                                                $any($event.target).checked
+                                              )
+                                            "
+                                          />
+                                        </td>
+                                      }
+                                    </tr>
+                                  }
+                                </tbody>
+                              </table>
+                            </div>
+                          }
+
+                          <!--
+                            An EMPTY array is a real answer - this definition declares no keys - and it is
+                            correct for that to render nothing, now that it can no longer be confused with
+                            a read that did not happen. The binding sits on its own primary `@if` because
+                            `as` is not permitted on an `@else if`.
+                          -->
+                          @if (definitionPermissionKeys(); as declaredKeys) {
+                            @if (declaredKeys.length > 0) {
+                              <p class="module-settings__declared-permissions">
+                                <span class="module-settings__declared-permissions-label">
+                                  {{ definitionPermissionKeysLabel }}
+                                </span>
+                                @for (key of declaredKeys; track key) {
+                                  <span class="module-settings__declared-permission">{{ key }}</span>
+                                }
+                              </p>
+                            }
+                          }
                         }
-                      }
+                      </div>
                   </app-form-field>
                 </div>
               </div>
@@ -350,6 +570,78 @@
                       [id]="controlId('iconFile')"
                       [maxlength]="limits.iconFile"
                       [attr.aria-invalid]="messagesFor('iconFile').length > 0"
+                    />
+                  </app-form-field>
+
+                  <!--
+                    ⚠ THREE CONTROLS THAT DID NOT EXIST, FOR THREE COLUMNS THAT WERE UNREACHABLE. The legacy
+                    screen edited all three (`modulesettings.ascx:L120-L139`, saved at
+                    `ModuleSettings.ascx.vb:L345-L347`); the first port carried none of them, so an
+                    installation's stored container appearance could be neither seen nor changed - while the
+                    settings section further down this same screen asserted the module had no stored settings
+                    of its own.
+                  -->
+                  <app-form-field
+                    #alignmentField
+                    [label]="labels['alignment']"
+                    [help]="hints['alignment']"
+                    [error]="messagesFor('alignment')"
+                  >
+                    <div
+                      class="module-settings__choices"
+                      role="radiogroup"
+                      [attr.aria-labelledby]="alignmentField.labelId()"
+                    >
+                      @for (choice of alignmentOptions; track choice.value) {
+                        <label [for]="choiceId('alignment', $index)">
+                          <!-- The static `name` is not redundant beside `formControlName`. -->
+                          <input
+                            type="radio"
+                            name="alignment"
+                            formControlName="alignment"
+                            [id]="choiceId('alignment', $index)"
+                            [value]="choice.value"
+                            [attr.aria-invalid]="messagesFor('alignment').length > 0"
+                          />
+                          {{ choice.label }}
+                        </label>
+                      }
+                    </div>
+                  </app-form-field>
+
+                  <app-form-field
+                    [label]="labels['color']"
+                    [help]="hints['color']"
+                    [error]="messagesFor('color')"
+                    [for]="controlId('color')"
+                  >
+                    <input
+                      type="text"
+                      formControlName="color"
+                      [id]="controlId('color')"
+                      [maxlength]="limits.color"
+                      [attr.aria-invalid]="messagesFor('color').length > 0"
+                    />
+                  </app-form-field>
+
+                  <app-form-field
+                    [label]="labels['border']"
+                    [help]="hints['border']"
+                    [error]="messagesFor('border')"
+                    [for]="controlId('border')"
+                  >
+                    <!--
+                      `inputmode="numeric"` rather than `type="number"`: the stored column is `nvarchar(1)`
+                      and the empty string is a real value, whereas a number input reports an empty value as
+                      the empty string too but also admits a spinner and an exponent this column cannot hold.
+                    -->
+                    <input
+                      type="text"
+                      inputmode="numeric"
+                      formControlName="border"
+                      [id]="controlId('border')"
+                      [maxlength]="limits.border"
+                      [attr.aria-invalid]="messagesFor('border').length > 0"
                     />
                   </app-form-field>
 
@@ -559,7 +851,7 @@
     </section>
 
     <div class="module-settings__actions">
-      <button type="submit" [disabled]="saving"
+      <button class="form-action--primary" type="submit" [disabled]="saving"
           [attr.aria-busy]="saving ? 'true' : null">{{ saving ? 'Saving…' : 'Update' }}</button>
       <button type="button" (click)="onCancel()">Cancel</button>
       @if (canDelete) {

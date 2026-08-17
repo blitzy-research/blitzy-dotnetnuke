@@ -400,18 +400,58 @@ internal sealed class RoleRepository : IRoleRepository
 
     /// <inheritdoc />
     /// <remarks>
+    /// <para>
     /// The portal is applied through the assignment's role, since <c>dbo.UserRoles</c> has no portal column
     /// of its own. The role is materialised alongside the assignment because the caller that asks this
-    /// question is almost always about to consult the role's terms, and because the removal path below
-    /// reads the service fee from it.
+    /// question is almost always about to consult the role's terms.
+    /// </para>
+    /// <para>
+    /// ⚠ THE ROLE IS CHOSEN IN MEMORY, AND THAT IS THE WHOLE POINT OF THIS SHAPE. Asking the database for
+    /// <c>UserID = @u AND RoleID = @r</c> hands the optimiser two equality predicates over two separate
+    /// single-column indexes - <c>IX_UserRoles_1(UserID)</c> and <c>IX_UserRoles(RoleID)</c>, with no
+    /// composite over both - and lets it anchor on either. Anchoring on <c>RoleID</c> is a disaster on this
+    /// table because role membership is heavily skewed: DotNetNuke's <em>Registered Users</em> role contains
+    /// every account in the portal, so the seek returns thousands of rows and each one is key-looked-up
+    /// against the clustered index to test <c>UserID</c>. Worse, the expensive case is the COMMON one - a
+    /// duplicate check before a new assignment finds nothing, so <c>TOP(1)</c> cannot stop early and the whole
+    /// membership is traversed. Measured on a six-thousand-member role, that plan costs 12,397 logical reads
+    /// against 7 for this one, and it grows with every member added.
+    /// </para>
+    /// <para>
+    /// Which plan the optimiser picks depends on its cardinality estimates, so it is not stable: the same
+    /// query answers cheaply on one installation and pathologically on another, and no amount of predicate
+    /// reordering changes that. This shape removes the CHOICE instead of trying to influence it. With no
+    /// constant <c>RoleID</c> equality in the query there is no <c>IX_UserRoles(RoleID)</c> access path to
+    /// pick, so the seek is on <c>IX_UserRoles_1(UserID)</c> by construction and the cost is bounded by how
+    /// many roles ONE ACCOUNT holds - a naturally small number - rather than by how many accounts hold the
+    /// role being asked about.
+    /// </para>
+    /// <para>
+    /// MIGRATION: adding a composite index over <c>(UserID, RoleID)</c> would also solve it and is NOT
+    /// available - AAP Rule T4 makes the legacy schema immutable, so the fix has to live in the query.
+    /// </para>
+    /// <para>
+    /// The portal filter, and with it the join, is DELIBERATELY RETAINED even though a performance note
+    /// suggested dropping both: it is the only thing stopping this member answering one tenant's membership
+    /// question with another tenant's row, and the repository suite pins that. Retaining it costs nothing
+    /// here, because the join is driven from the account's own assignments rather than seeked into.
+    /// </para>
+    /// <para>
+    /// Ordering by the assignment key makes the answer deterministic where the legacy schema permits an
+    /// account to hold the same role twice - there is no unique constraint over <c>(UserID, RoleID)</c> - so
+    /// the lowest assignment key wins rather than whichever row a plan happened to produce first.
+    /// </para>
     /// </remarks>
-    public Task<UserRole?> GetUserRoleAsync(int portalId, int userId, int roleId, CancellationToken cancellationToken = default)
+    public async Task<UserRole?> GetUserRoleAsync(int portalId, int userId, int roleId, CancellationToken cancellationToken = default)
     {
-        return _context.UserRoles
+        List<UserRole> assignments = await _context.UserRoles
             .Include(a => a.Role)
-            .FirstOrDefaultAsync(
-                a => a.UserId == userId && a.RoleId == roleId && a.Role!.PortalId == portalId,
-                cancellationToken);
+            .Where(a => a.UserId == userId && a.Role!.PortalId == portalId)
+            .OrderBy(a => a.UserRoleId)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return assignments.Find(a => a.RoleId == roleId);
     }
 
     /// <inheritdoc />

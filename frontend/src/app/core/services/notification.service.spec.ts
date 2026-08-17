@@ -586,7 +586,7 @@ describe('NotificationService', () => {
       expect(stored.reference)
         .withContext('the reference is a member of its own and cannot be truncated away')
         .toBe('trace-0001');
-      expect(stored.message.endsWith('Reference: trace-0001'))
+      expect(stored.message.endsWith('If you report this, quote reference trace-0001.'))
         .withContext('the reference is appended AFTER the message is bounded')
         .toBeTrue();
       expect(stored.message.startsWith('a'.repeat(MAX_MESSAGE_LENGTH)))
@@ -597,7 +597,9 @@ describe('NotificationService', () => {
     it('composes the label exactly once, with a single separating space', () => {
       service.notify('error', 'Something failed.', 'abc123');
 
-      expect(service.notifications()[0].message).toBe('Something failed. Reference: abc123');
+      expect(service.notifications()[0].message).toBe(
+        'Something failed. If you report this, quote reference abc123.',
+      );
     });
 
     it('reports no reference when none is supplied', () => {
@@ -636,7 +638,9 @@ describe('NotificationService', () => {
       const stored: AppNotification = service.notifications()[0];
 
       expect(stored.reference?.length).toBe(128);
-      expect(stored.message).toBe(`Something failed. Reference: ${'r'.repeat(128)}`);
+      expect(stored.message).toBe(
+        `Something failed. If you report this, quote reference ${'r'.repeat(128)}.`,
+      );
     });
   });
 

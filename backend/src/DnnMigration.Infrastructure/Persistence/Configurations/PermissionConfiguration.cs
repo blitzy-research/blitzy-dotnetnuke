@@ -1,5 +1,4 @@
 using DnnMigration.Domain.Entities;
-using DnnMigration.Domain.Enums;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
@@ -20,6 +19,15 @@ namespace DnnMigration.Infrastructure.Persistence.Configurations;
 /// <b>Every text column on this table is ANSI, and that is unusual.</b> All three are declared
 /// <c>varchar(50)</c> in the terminal schema, never the Unicode counterpart. The provider maps a string
 /// property to the Unicode type by default, so each of the three says otherwise explicitly.
+/// </para>
+/// <para>
+/// <b>All three text columns are bound as FREE TEXT, and none carries a value conversion.</b> Not one of
+/// them is constrained by the schema - no check constraint, no lookup foreign key - so an installation
+/// carrying a scope code, a permission key or a display name this migration has never seen must
+/// materialise it intact. <c>PermissionKey</c> is the one that has to say so out loud, because the four
+/// keys the upgrade chain seeds happen to be enumerated elsewhere in the solution and mapping the column
+/// through that enumeration turns every other legal value into an unhandled fault at read time. See the
+/// annotation on that property below.
 /// </para>
 /// </remarks>
 internal sealed class PermissionConfiguration : IEntityTypeConfiguration<Permission>
@@ -66,11 +74,24 @@ internal sealed class PermissionConfiguration : IEntityTypeConfiguration<Permiss
             .HasColumnType("int")
             .IsRequired();
 
-        // The conversion contract for this column, which is the single most consequential decision in this
-        // file.
+        // MIGRATION: THIS COLUMN IS BOUND AS FREE TEXT, WITH NO VALUE CONVERSION, and that absence is the
+        // single most consequential decision in this file. The property is a plain string for the same
+        // reason PermissionCode above is: the column is varchar(50) NOT NULL with no check constraint and
+        // no lookup foreign key - created varchar(20) at 02.02.00:L688 and deliberately widened to fifty
+        // characters at 04.06.00:L398 ("enlarge permission key field"), with AddPermission accepting
+        // @PermissionKey varchar(50) from L407 - and the legacy property it replaces is declared As String
+        // at Permission.vb:L69.
+        //
+        // An enum-typed property with .HasConversion<string>() was tried here first and is FORBIDDEN. EF
+        // Core's StringEnumConverter throws InvalidOperationException from inside the materialiser for any
+        // stored spelling outside the enumeration, which no Result<T> can intercept: it surfaced as an
+        // unhandled 500 on the catalogue read endpoint AND on the module authorisation path for every
+        // non-superuser caller, because DotNetNuke's extensibility model has third-party modules register
+        // their own keys through that very procedure at install time. A tolerant converter folding unknown
+        // spellings onto a sentinel member was rejected in turn: it would make the read endpoint report a
+        // value the row does not hold and would rewrite the column on the next tracked save.
         builder.Property(p => p.PermissionKey)
             .HasColumnName("PermissionKey")
-            .HasConversion<string>()
             .HasColumnType("varchar(50)")
             .HasMaxLength(50)
             .IsUnicode(false)

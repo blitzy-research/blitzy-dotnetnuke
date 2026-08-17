@@ -963,6 +963,165 @@ public sealed class HealthCheckTests
     }
 
     /// <summary>
+    /// THE WARM-POOL CASE. When the dependency is WEDGED rather than absent - sockets alive, requests never
+    /// answered - and the instance has already been serving traffic, readiness must still report 503 while
+    /// liveness continues to report 200.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THIS IS THE ONLY TEST IN THE SUITE THAT CAN FAIL WHEN THE PROBE STOPS REACHING THE SERVER, and it
+    /// exists because a probe that merely OPENS a connection passes every other test here while being wrong in
+    /// production. <c>Open</c> draws from the ADO.NET pool: once an instance has served traffic the pool holds
+    /// a connection, <c>Open</c> completes without a network round trip, and an open-only probe answers Healthy
+    /// in under two milliseconds while the same instance answers real requests with 503 after thirty-five
+    /// seconds. Readiness exists to take exactly that instance out of rotation.
+    /// </para>
+    /// <para>
+    /// The cold-dependency test above cannot catch it: with an unreachable address the pool is always empty,
+    /// so even an open-only probe fails correctly. What distinguishes the two is a pool that is WARM, which is
+    /// why this test serves a request through the host before wedging the dependency.
+    /// </para>
+    /// <para>
+    /// The two facts asserted at the end - that the liveness views stay 200 and that the readiness document
+    /// still discloses nothing - are what keep the fix from being bought at the price of something else: the
+    /// container's <c>HEALTHCHECK</c> and the compose <c>service_healthy</c> gate both read a liveness view, so
+    /// a probe that reported a dependency outage there would stop the whole topology instead of draining one
+    /// instance.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Readiness_WhenTheDependencyIsWedgedAndThePoolIsWarm_Answers503()
+    {
+        (WedgeableDependencyProxy proxy, string relayedConnectionString) =
+            WedgeableDependencyProxy.InFrontOf(_fixture.Database.ConnectionString);
+
+        await using (proxy)
+        {
+            Dictionary<string, string?> environment =
+                new(_fixture.HostConfiguration(), StringComparer.Ordinal)
+                {
+                    ["ConnectionStrings__Default"] = relayedConnectionString,
+                };
+
+            using IDisposable scope = ApiTestFixture.OverrideEnvironment(environment);
+            await using var host = new UnreachableDependencyHost();
+
+            using HttpClient client = host.CreateClient();
+
+            // WARM THE POOL, and warm it through the host so the connection the probe will later draw on is
+            // one this composition actually opened. A healthy answer here is also the control: it proves the
+            // relay is transparent and that what follows is caused by the wedge alone.
+            using (HttpResponseMessage healthyReadiness = await client.GetAsync(ReadinessEndpoint))
+            {
+                healthyReadiness.StatusCode.Should().Be(
+                    HttpStatusCode.OK,
+                    "the relay is transparent while it is passing, so readiness through it must be healthy "
+                    + "before the wedge - otherwise this test would prove nothing about the wedge");
+            }
+
+            proxy.Wedge();
+
+            using HttpResponseMessage readiness = await client.GetAsync(ReadinessEndpoint);
+            string body = await readiness.Content.ReadAsStringAsync();
+
+            readiness.StatusCode.Should().Be(
+                HttpStatusCode.ServiceUnavailable,
+                "a wedged dependency must be reported even though the pooled connection still opens - a probe "
+                + "that only opens answers Healthy here, which is the defect this test exists to prevent");
+
+            using JsonDocument document = JsonDocument.Parse(body);
+
+            document.RootElement.GetProperty("status").GetString().Should().Be(
+                UnhealthyStatus,
+                "the readiness aggregate reports the dependency, and 503 can only carry an unhealthy one");
+
+            ReadMemberNames(document.RootElement).Should().HaveCount(
+                DocumentedMembers.Count,
+                "the outage report publishes the four documented members and no fifth, whichever bound ended "
+                + "the attempt");
+
+            body.Should().NotContainEquivalentOf(
+                "password",
+                "the endpoint is anonymous, so a credential in a failing report is published to anyone");
+            body.Should().NotContainEquivalentOf(
+                "127.0.0.1",
+                "the relay address identifies the instance's dependency to an anonymous caller");
+
+            using HttpResponseMessage liveness = await client.GetAsync(HealthEndpoint);
+            using HttpResponseMessage explicitLiveness = await client.GetAsync(
+                new Uri(LivenessPath, UriKind.Relative));
+
+            liveness.StatusCode.Should().Be(
+                HttpStatusCode.OK,
+                "the liveness view runs no readiness-tagged probe, so a wedged dependency must not hold the "
+                + "container unhealthy and must not hold the front-end service back behind service_healthy");
+            explicitLiveness.StatusCode.Should().Be(HttpStatusCode.OK);
+        }
+    }
+
+    /// <summary>
+    /// A wedged dependency that is restored is reported ready again, without restarting the process.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The other half of the contract, and the half a too-eager probe breaks. An instance drained by a
+    /// dependency outage has to return to rotation on its own once the dependency comes back; a probe that
+    /// latched, cached its answer, or poisoned something on the way down would leave the instance out of
+    /// rotation until someone noticed and restarted it.
+    /// </remarks>
+    [Fact]
+    public async Task Readiness_WhenAWedgedDependencyIsRestored_AnswersHealthyAgainWithoutARestart()
+    {
+        (WedgeableDependencyProxy proxy, string relayedConnectionString) =
+            WedgeableDependencyProxy.InFrontOf(_fixture.Database.ConnectionString);
+
+        await using (proxy)
+        {
+            Dictionary<string, string?> environment =
+                new(_fixture.HostConfiguration(), StringComparer.Ordinal)
+                {
+                    ["ConnectionStrings__Default"] = relayedConnectionString,
+                };
+
+            using IDisposable scope = ApiTestFixture.OverrideEnvironment(environment);
+            await using var host = new UnreachableDependencyHost();
+
+            using HttpClient client = host.CreateClient();
+
+            using (HttpResponseMessage warm = await client.GetAsync(ReadinessEndpoint))
+            {
+                warm.StatusCode.Should().Be(HttpStatusCode.OK);
+            }
+
+            proxy.Wedge();
+
+            using (HttpResponseMessage wedged = await client.GetAsync(ReadinessEndpoint))
+            {
+                wedged.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
+            }
+
+            proxy.Restore();
+
+            // The pool may still hold connections the wedge broke, so recovery is asserted as "within a few
+            // probes" rather than "on the first" - which is what an orchestrator does too, and which keeps
+            // this test from depending on the provider's internal decision about when to discard a connection.
+            HttpStatusCode recovered = HttpStatusCode.ServiceUnavailable;
+
+            for (int attempt = 0; attempt < 5 && recovered != HttpStatusCode.OK; attempt++)
+            {
+                using HttpResponseMessage probe = await client.GetAsync(ReadinessEndpoint);
+                recovered = probe.StatusCode;
+            }
+
+            recovered.Should().Be(
+                HttpStatusCode.OK,
+                "an instance drained by a dependency outage must return to rotation once the dependency does, "
+                + "without an operator restarting the process");
+        }
+    }
+
+    /// <summary>
     /// Builds the fixture's own configuration with the connection string repointed at an address nothing is
     /// listening on.
     /// </summary>

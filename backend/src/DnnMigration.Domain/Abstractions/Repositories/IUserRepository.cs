@@ -132,6 +132,27 @@ public interface IUserRepository
     /// </remarks>
     Task<User?> GetAsync(int? portalId, int userId, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Reports whether the account bearing the supplied key carries the host (super-user) flag, without
+    /// composing the account.
+    /// </summary>
+    /// <param name="userId">The account key.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>
+    /// The value of the flag, or <see langword="null"/> when no account bears the key - so that "there is no
+    /// such account" is distinguishable from "that account is not a host account".
+    /// </returns>
+    /// <remarks>
+    /// ⚠ THIS EXISTS SO THAT ASKING WHETHER A CALLER IS A HOST ACCOUNT DOES NOT COMPOSE ONE. A performance
+    /// review measured the authorisation pipeline answering that one-bit question through <see
+    /// cref="GetAsync"/>, which joins the account's portal memberships and then issues a SECOND statement
+    /// against the credential store to attach the approval, lockout and date facts - two statements and a
+    /// three-table join, on every protected request, to read a single column. Deliberately NOT
+    /// portal-scoped: a host account holds no membership in any portal, so scoping the question would answer
+    /// it wrongly.
+    /// </remarks>
+    Task<bool?> GetHostAccountFlagAsync(int userId, CancellationToken cancellationToken = default);
+
     /// <summary>Returns one user by username, or <see langword="null"/>.</summary>
     /// <param name="portalId">
     /// Portal identifier the user must belong to, or <see langword="null"/> to ignore membership.

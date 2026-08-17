@@ -1057,6 +1057,8 @@ public class MappingTests
         dto.ModuleName.Should().Be("Announcements");
         dto.Description.Should().Be("Displays a list of announcements.");
         dto.Version.Should().Be("04.09.00");
+        dto.IsAdmin.Should().BeFalse(
+            "an ordinary module reports the package's own administrative flag, not an absence");
         dto.ModuleOrder.Should().Be(6, "the ordinal within the pane belongs to the placement");
         dto.AllTabs.Should().BeTrue();
         dto.Visibility.Should().Be(ModuleVisibility.Minimized);
@@ -1099,6 +1101,51 @@ public class MappingTests
         unresolved.ModuleName.Should().BeNull();
         unresolved.Description.Should().BeNull();
         unresolved.Version.Should().BeNull();
+
+        // ⚠ NULL, NOT FALSE, AND THE DIFFERENCE IS WHAT A CLIENT ACTS ON. The column behind this member is
+        // `bit NOT NULL`, so false is a POSITIVE claim that the module is ordinary - and a client reads that
+        // claim as licence to offer the generic settings screen. Reporting it for a package nobody could read
+        // would be inventing the very fact the caller asked about.
+        unresolved.IsAdmin.Should().BeNull(
+            "an unresolved package makes no claim either way about being administrative");
+    }
+
+    /// <summary>
+    /// An administrative package is reported as such on both module contracts, which is the only way a client
+    /// can tell that the generic settings surface will refuse it.
+    /// </summary>
+    /// <remarks>
+    /// Reported against the running application: the module listing offered a Settings command on every row,
+    /// and on the row created from the administrative User Accounts package it led to a screen that answered
+    /// 403 `module.settings_protected` every time. The administrative definitions are also withheld from the
+    /// portal-placeable definition catalogue, so a second read could not have told the client either.
+    /// </remarks>
+    [Fact]
+    public void ModuleProjections_ReportAnAdministrativePackageAsAdministrative()
+    {
+        Module module = FullModule();
+        TabModule placement = FullPlacement();
+
+        ModuleCatalogueFacts administrative = ModuleCatalogueFacts.From(
+            new ModuleDefinition
+            {
+                ModuleDefinitionId = 4,
+                FriendlyName = "User Accounts",
+                DesktopModuleId = 9,
+            },
+            new DesktopModule
+            {
+                DesktopModuleId = 9,
+                ModuleName = "DNN_UserAccounts",
+                FriendlyName = "User Accounts",
+                IsAdmin = true,
+            });
+
+        administrative.IsAdmin.Should().BeTrue("the facts are resolved from the package row itself");
+
+        ModuleMappings.ToListItem(module, placement, administrative).IsAdmin.Should().BeTrue();
+        ModuleMappings.ToDetail(module, placement, administrative).IsAdmin.Should().BeTrue(
+            "the detail contract is what the settings screen reads before it offers a form");
     }
 
     /// <summary>The module detail projection draws each field from the correct one of its two sources.</summary>
@@ -1116,6 +1163,7 @@ public class MappingTests
         dto.PortalId.Should().Be(-1);
         dto.ModuleDefId.Should().Be(4);
         dto.FriendlyName.Should().Be("Announcements");
+        dto.IsAdmin.Should().BeFalse();
         dto.ModuleTitle.Should().Be("Measured Module");
         dto.ModuleOrder.Should().Be(6);
         dto.AllTabs.Should().BeTrue();
@@ -1151,11 +1199,33 @@ public class MappingTests
     }
 
     /// <summary>
-    /// The placement's appearance fields are write-only in the target: settable through the update request,
-    /// but absent from every response contract. Neither read contract invents a container.
+    /// The three appearance columns the legacy settings screen administered are carried on both the detail
+    /// and the update contract; the four that only a renderer ever chose are on neither. No contract invents
+    /// a container.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THE THREE ADMINISTERED COLUMNS USED TO BE ON NEITHER CONTRACT, AND THIS TEST ASSERTED THAT. Reported
+    /// against the running application: the settings screen told the operator the module "has no stored
+    /// settings of its own" while `dbo.TabModules` held an Alignment, a Color and a Border for it, and the
+    /// screen offered no way to read or change any of them. `modulesettings.ascx:L120-L139` declares all three
+    /// as fields - a radio list, a free-text colour and a one-character border - and
+    /// `ModuleSettings.ascx.vb:L144-L147` reads them while `:L345-L347` saves them, so they are part of the
+    /// legacy screen's workflow and MCC item 4 requires the workflow to be supported.
+    /// </para>
+    /// <para>
+    /// They also still have a live consumer: this migration is side-by-side, the legacy site runs against the
+    /// same database, and its container rendering is what paints these three columns. Declining to administer
+    /// them did not make them unused - it made them unreachable.
+    /// </para>
+    /// <para>
+    /// The four below are a different case and stay excluded. A pane is chosen by the skin that declares it, a
+    /// container IS a skin object, and print and syndicate are rendering affordances of the legacy page
+    /// framework - none of them is a field this migration's screens can honestly offer.
+    /// </para>
+    /// </remarks>
     [Fact]
-    public void ModuleReadProjections_TreatTheAppearanceFieldsAsWriteOnlyAndOfferNoContainer()
+    public void ModuleReadProjections_CarryTheAdministeredAppearanceAndOfferNoContainer()
     {
         Module module = FullModule();
         TabModule placement = FullPlacement();
@@ -1163,17 +1233,38 @@ public class MappingTests
         ModuleDetailDto detail = ModuleMappings.ToDetail(module, placement, AnnouncementsCatalogue);
         ModuleSettingsDto settings = ModuleMappings.ToSettings(module, placement, [], []);
 
+        foreach (string administered in new[] { "Alignment", "Color", "Border" })
+        {
+            typeof(UpdateModuleRequest).GetProperty(administered).Should().NotBeNull(
+                $"the legacy settings screen let an administrator set {administered}, so the update contract "
+                + "must carry it or the workflow is gone");
+
+            typeof(ModuleDetailDto).GetProperty(administered).Should().NotBeNull(
+                $"a screen cannot show the stored {administered} it is about to replace unless the detail "
+                + "contract reports it");
+
+            typeof(ModuleSettingsDto).GetProperty(administered).Should().BeNull(
+                $"{administered} is a column on the placement, not a key-value setting, so it belongs to the "
+                + "detail contract and must not be duplicated onto the settings map");
+        }
+
+        detail.Alignment.Should().Be(
+            placement.Alignment,
+            "the projection reports what is stored rather than a default");
+        detail.Color.Should().Be(placement.Color);
+        detail.Border.Should().Be(placement.Border);
+
         foreach (string appearance in new[]
         {
-            "PaneName", "Alignment", "Color", "Border", "DisplayPrint", "DisplaySyndicate",
+            "PaneName", "DisplayPrint", "DisplaySyndicate",
         })
         {
             typeof(UpdateModuleRequest).GetProperty(appearance).Should().BeNull(
-                $"the placement's {appearance} drives server-side markup, which this migration excludes, "
+                $"the placement's {appearance} is chosen by the page framework this migration excludes, "
                 + "so the update contract must not offer it either");
 
             typeof(ModuleDetailDto).GetProperty(appearance).Should().BeNull(
-                $"the placement's {appearance} drives server-side markup, which this migration excludes, "
+                $"the placement's {appearance} is chosen by the page framework this migration excludes, "
                 + "so no response contract carries it");
 
             typeof(ModuleSettingsDto).GetProperty(appearance).Should().BeNull(
@@ -1198,8 +1289,9 @@ public class MappingTests
     }
 
     /// <summary>
-    /// The seven pane-layout, rendering and skinning columns the update contract excludes are left exactly
-    /// as they were stored, rather than being cleared by an update that cannot name them.
+    /// The four pane-layout, rendering and skinning columns the update contract excludes are left exactly as
+    /// they were stored, rather than being cleared by an update that cannot name them - while the three the
+    /// contract DOES carry are written from the request, including to nothing.
     /// </summary>
     [Fact]
     public void ModuleApplyUpdate_PreservesEveryExcludedAppearanceColumn()
@@ -1234,17 +1326,74 @@ public class MappingTests
         ModuleMappings.ApplyUpdate(module, placement, request);
 
         placement.PaneName.Should().Be(storedPane, "the pane column is NOT NULL, so clearing it would fail the write");
-        placement.Alignment.Should().Be(storedAlignment);
-        placement.Color.Should().Be(storedColor);
-        placement.Border.Should().Be(storedBorder);
         placement.ContainerSrc.Should().Be(storedContainer);
         placement.DisplayPrint.Should().Be(storedPrint);
         placement.DisplaySyndicate.Should().Be(storedSyndicate);
+
+        // ⚠ AND THE THREE ADMINISTERED COLUMNS ARE CLEARED, WHICH IS THE CONTRACT AND NOT AN OVERSIGHT. This
+        // is a full-replacement update: every member it carries is written from the request, so a request
+        // that names none of the three withdraws all three. That is what makes clearing the colour field on
+        // the settings screen mean something, and it is why every screen that submits this contract must
+        // round-trip the values it is not editing - the module form does exactly that.
+        storedColor.Should().NotBeNull("the fixture must start with values for this to prove anything");
+        storedBorder.Should().NotBeNull();
+
+        placement.Alignment.Should().BeNull("the request named no alignment, and the update replaces");
+        placement.Color.Should().BeNull();
+        placement.Border.Should().BeNull();
 
         // The members the contract DOES carry still applied, proving preservation is targeted rather than a
         // wholesale refusal to write.
         placement.ModuleOrder.Should().Be(7);
         placement.IconFile.Should().Be("changed.gif");
+    }
+
+    /// <summary>
+    /// The three administered appearance columns are written from the request, exactly as submitted.
+    /// </summary>
+    /// <remarks>
+    /// The empty string is a REAL stored alignment - it is the value behind the legacy radio list's "Not
+    /// Specified" entry at `modulesettings.ascx:L120-L139` - so it must reach the column as an empty string
+    /// rather than being folded into a null on the way.
+    /// </remarks>
+    [Fact]
+    public void ModuleApplyUpdate_WritesTheAdministeredAppearanceAsSubmitted()
+    {
+        Module module = FullModule();
+        TabModule placement = FullPlacement();
+
+        UpdateModuleRequest request = new()
+        {
+            TabId = placement.TabId,
+            ModuleOrder = placement.ModuleOrder,
+            Alignment = "center",
+            Color = "#003366",
+            Border = "3",
+        };
+
+        ModuleMappings.ApplyUpdate(module, placement, request);
+
+        placement.Alignment.Should().Be("center");
+        placement.Color.Should().Be("#003366");
+        placement.Border.Should().Be("3");
+
+        UpdateModuleRequest unspecified = new()
+        {
+            TabId = placement.TabId,
+            ModuleOrder = placement.ModuleOrder,
+            Alignment = string.Empty,
+            Color = null,
+            Border = null,
+        };
+
+        ModuleMappings.ApplyUpdate(module, placement, unspecified);
+
+        placement.Alignment.Should().Be(
+            string.Empty,
+            "the empty string is the legacy list's own \"Not Specified\" value, which is a stored alignment "
+            + "and not an absent one");
+        placement.Color.Should().BeNull("a cleared colour is a withdrawal, and null is how the column holds it");
+        placement.Border.Should().BeNull();
     }
 
     /// <summary>The settings projection keeps the two setting scopes apart.</summary>
@@ -1531,7 +1680,7 @@ public class MappingTests
         Module module = FullModule();
         TabModule placement = FullPlacement();
 
-        // Every one of the sixteen members the contract carries, so this exercises the whole surface.
+        // Every one of the nineteen members the contract carries, so this exercises the whole surface.
         UpdateModuleRequest request = new()
         {
             TabId = placement.TabId,
@@ -1548,6 +1697,9 @@ public class MappingTests
             IconFile = "renamed.gif",
             Visibility = ModuleVisibility.Maximized,
             DisplayTitle = true,
+            Alignment = "right",
+            Color = "#003366",
+            Border = "2",
             SetAsDefaultSettings = false,
             ApplyToAllModules = false,
         };
@@ -1568,15 +1720,18 @@ public class MappingTests
         placement.Visibility.Should().Be(ModuleVisibility.Maximized);
         placement.DisplayTitle.Should().BeTrue();
 
-        // The six pane-layout and rendering columns keep their FIXTURE values, because the update contract
+        // The three pane-layout and rendering columns keep their FIXTURE values, because the update contract
         // carries no field for any of them. The same reasoning as the container below: excluding a column
         // means declining to manage it, not wiping it.
         placement.PaneName.Should().Be("RightPane");
-        placement.Alignment.Should().Be("left");
-        placement.Color.Should().Be("#EEEEEE");
-        placement.Border.Should().Be("1");
         placement.DisplayPrint.Should().BeFalse();
         placement.DisplaySyndicate.Should().BeFalse();
+
+        // The three the contract DOES carry were named by this request and are written from it, which is the
+        // whole surface being exercised here.
+        placement.Alignment.Should().Be("right");
+        placement.Color.Should().Be("#003366");
+        placement.Border.Should().Be("2");
 
         placement.ContainerSrc.Should().Be(
             "[G]Containers/DNN/Blue.ascx",
@@ -4007,7 +4162,12 @@ public class MappingTests
         FriendlyName: "Announcements",
         ModuleName: "Announcements",
         Description: "Displays a list of announcements.",
-        Version: "04.09.00");
+        Version: "04.09.00",
+
+        // FALSE RATHER THAN NULL, AND STATED EXPLICITLY: the fixture stands for a resolved package, and a
+        // resolved package always answers this one way or the other. Null is reserved for a package that
+        // could not be read at all, which is a different fixture and a different assertion.
+        IsAdmin: false);
 
     /// <summary>
     /// Builds a module whose every mapped column carries a distinguishable value and whose definition

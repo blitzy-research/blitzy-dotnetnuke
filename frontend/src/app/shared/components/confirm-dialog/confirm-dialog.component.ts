@@ -1,6 +1,7 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  DestroyRef,
   ElementRef,
   EventEmitter,
   Input,
@@ -12,6 +13,9 @@ import {
   type AfterViewInit,
   type OnDestroy,
 } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { NavigationStart, Router } from '@angular/router';
+import { filter } from 'rxjs/operators';
 
 /**
  * How long focus loss is watched for after the invoker is re-focused, in milliseconds. The window exists
@@ -275,6 +279,19 @@ export class ConfirmDialogComponent implements AfterViewInit, OnDestroy {
   private readonly zone: NgZone = inject(NgZone);
 
   /**
+   * The router, watched so this dialog cannot outlive the screen that raised it.
+   *
+   * ⚠ OPTIONAL BY DESIGN, NOT BY OVERSIGHT. A router is always present in the running application, but
+   * this component is instantiated directly by fourteen specification suites that configure no routing, and
+   * a hard dependency would make an accessibility repair break every one of them for no behavioural reason.
+   * When it is absent the watch below simply does not run, which is the correct behaviour for a fixture
+   * that cannot navigate.
+   */
+  private readonly router: Router | null = inject(Router, { optional: true });
+
+  private readonly destroyRef: DestroyRef = inject(DestroyRef);
+
+  /**
    * The element that held focus when this dialog was created. Captured in a field initialiser because
    * construction is the last moment the invoker still holds focus: the consumer's control-flow block
    * flips in response to a click, and reading this after `showModal()` would capture a button inside the
@@ -295,7 +312,47 @@ export class ConfirmDialogComponent implements AfterViewInit, OnDestroy {
    * Opens the dialog and places focus on the cancelling affordance. The view children exist by the time
    * this hook runs, which is exactly when `showModal()` becomes legal.
    */
+  /**
+   * Dismisses this dialog when a navigation begins.
+   *
+   * ⚠ THE MEASURED DEFECT, AND WHY `ngOnDestroy` DID NOT ALREADY COVER IT. Teardown closes the element and
+   * releases the scroll lock correctly - but only when this component is destroyed, and a route change does
+   * not always destroy the screen that holds it. Measured: with the confirmation open on
+   * `/users?searchby=all`, browser Back reached `/users` - the SAME route with different query parameters -
+   * so Angular retained the listing component, `ngOnDestroy` never ran, and the modal survived the
+   * navigation still `open`, still `:modal`, still holding focus on Cancel, with `dnn-scroll-locked` intact
+   * on the document element. Calling `focus()` on a sidebar link outside it did not move focus at all, over
+   * a list that no longer contained the record. Worse than the focus trap: the confirming affordance stayed
+   * live and would have destroyed a record no longer visible beneath it.
+   *
+   * IT LISTENS FOR THE START OF A NAVIGATION RATHER THAN ITS END, and that is the conservative reading for a
+   * DESTRUCTIVE confirmation. Waiting for the end would leave the modal standing over a route that has begun
+   * changing, and would keep the confirming affordance live throughout. A navigation that a guard then
+   * cancels leaves the person on the same screen having to re-open the confirmation, which is a safe failure
+   * mode; the alternative failure mode destroys a record.
+   *
+   * Dismissal goes through the same path Escape takes, so the consumer clears its pending state and removes
+   * this component exactly as it does for any other decline - there is no second teardown route to keep in
+   * step with the first.
+   */
+  private dismissOnNavigation(): void {
+    if (this.router === null) {
+      return;
+    }
+
+    this.router.events
+      .pipe(
+        filter((event): event is NavigationStart => event instanceof NavigationStart),
+        takeUntilDestroyed(this.destroyRef),
+      )
+      .subscribe(() => {
+        this.emitCancel();
+      });
+  }
+
   public ngAfterViewInit(): void {
+    this.dismissOnNavigation();
+
     const dialog = this.resolveDialogElement();
     if (dialog === undefined) {
       return;

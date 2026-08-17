@@ -252,6 +252,15 @@ export class AuthStore {
    */
   private readonly _failureStatus = signal<number | null>(null);
 
+  /**
+   * The window the server asked the caller to wait, in milliseconds, or null when it named none.
+   *
+   * Recorded ONLY for a rate-limited refusal: on any other status a `Retry-After` header would be
+   * describing something other than the caller being early, and presenting it as a cool-off would be a
+   * misreading.
+   */
+  private readonly _retryAfterMs = signal<number | null>(null);
+
   /** Whether the last command failed. */
   private readonly _failed = signal(false);
 
@@ -531,6 +540,17 @@ export class AuthStore {
   readonly rateLimited: Signal<boolean> = computed(
     () => this._failureStatus() === RATE_LIMITED_STATUS,
   );
+
+  /**
+   * How many whole seconds the server asked the caller to wait before trying again, or null when it named
+   * no window. Published in seconds because that is the unit the header states and the unit a person is
+   * told, and rounded UP so the advice is never shorter than the server's own window.
+   */
+  readonly retryAfterSeconds: Signal<number | null> = computed(() => {
+    const advertised: number | null = this._retryAfterMs();
+
+    return advertised === null ? null : Math.ceil(advertised / 1_000);
+  });
 
   // -------------------------------------------------------------------------
   // THE VERIFICATION LADDER
@@ -1050,8 +1070,18 @@ export class AuthStore {
    * @param error The value the observable failed with, of unknown type by contract.
    */
   private recordFailure(error: unknown): void {
-    this._failureStatus.set(readTransportStatus(error));
+    const status: number | null = readTransportStatus(error);
+
+    this._failureStatus.set(status);
     this._problem.set(readProblemDocument(error));
+
+    // ⚠ THE ADVERTISED WINDOW IS RECORDED, WHERE IT USED TO BE DISCARDED. The server answers a rate-limited
+    // sign-in with `Retry-After`, and this store already knew how to read that header - it used it for the
+    // sign-out backoff ladder and nowhere else. So the one place a person is actually waiting was the one
+    // place the number never reached: the screen said "Wait a moment and try again" without saying how long,
+    // and nothing stopped them from hammering the button and extending their own lockout.
+    this._retryAfterMs.set(status === RATE_LIMITED_STATUS ? readRetryAfterMs(error) : null);
+
     // Set unconditionally, so a failure carrying neither a document nor a status is
     // still reported as a failure rather than mistaken for success.
     this._failed.set(true);
@@ -1062,6 +1092,7 @@ export class AuthStore {
   private clearFailure(): void {
     this._problem.set(null);
     this._failureStatus.set(null);
+    this._retryAfterMs.set(null);
     this._failed.set(false);
   }
 

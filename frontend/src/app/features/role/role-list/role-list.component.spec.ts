@@ -40,6 +40,13 @@ const USER_ZERO_ROLES_URL = '/api/v1/users/0/roles';
 /** The account key these cases narrow to. */
 const ACCOUNT_ID = 42;
 
+/**
+ * The scope line the header carries when the listing is NOT narrowed to one account. Under the
+ * application's subtitle rule every screen states its scope, so the slot is never empty: it holds the
+ * account's identity while filtered, and the listing's own scope otherwise.
+ */
+const UNFILTERED_SUBTITLE = 'The security roles on this site, and the groups they belong to.';
+
 /** A second account key. */
 const OTHER_ACCOUNT_ID = 43;
 const ROLE_GROUPS_URL = '/api/v1/role-groups';
@@ -58,6 +65,12 @@ const ADD_ROLE_GROUP_LABEL = 'Add New Role Group';
 const MEMBERSHIP_SETTINGS_LABEL = 'User Settings';
 const EDIT_LABEL = 'Edit';
 const MANAGE_USERS_LABEL = 'Manage Users';
+
+/**
+ * The word a fee of nought is NAMED with rather than priced — QA-19. The exact amount is not withheld: it is
+ * announced beside the word, so nothing a reader could have read from "0.00" is lost.
+ */
+const FREE_FEE_LABEL = 'Free';
 const ALL_ROLES_OPTION_LABEL = '< All Roles >';
 const GLOBAL_ROLES_OPTION_LABEL = '< Global Roles >';
 const RETRY_LABEL = 'Try again';
@@ -869,7 +882,7 @@ describe('RoleListComponent', () => {
       arrive();
 
       expect(pageActions()).not.toContain('Show All Roles');
-      expect(subtitle()).toBe('');
+      expect(subtitle()).toBe(UNFILTERED_SUBTITLE);
       httpMock.expectNone(
         (candidate) => candidate.url.startsWith('/api/v1/users/'),
         'no membership read without an account',
@@ -1018,7 +1031,7 @@ describe('RoleListComponent', () => {
       fixture.detectChanges();
 
       expect(renderedRoleNames()).toEqual(['Subscribers']);
-      expect(subtitle()).toBe('');
+      expect(subtitle()).toBe(UNFILTERED_SUBTITLE);
       httpMock.expectNone(
         (candidate) => candidate.url.startsWith('/api/v1/users/'),
         'a malformed key reads nothing',
@@ -1034,7 +1047,7 @@ describe('RoleListComponent', () => {
       fixture.detectChanges();
 
       expect(renderedRoleNames()).toEqual(['Subscribers']);
-      expect(subtitle()).toBe('');
+      expect(subtitle()).toBe(UNFILTERED_SUBTITLE);
       expect(pageActions()).not.toContain('Show All Roles');
     });
 
@@ -1493,7 +1506,21 @@ describe('RoleListComponent', () => {
       pressGroupCommand('remove');
 
       expect(query('.confirm-dialog')).withContext('the question is asked').not.toBeNull();
-      expect((query('.confirm-dialog__message')?.textContent ?? '').trim()).toBe(REMOVAL_MESSAGE);
+      // ⚠ THE QUESTION IS ASSERTED AS A PREFIX AND THE RECORD BY NAME, WHICH IS STRONGER THAN THE EQUALITY
+      // THIS REPLACES. The body used to be the bare legacy sentence and named nothing - searched against
+      // every identifier on the page it matched none of them - while the dialog is a real modal that covers
+      // the grid, including the row being destroyed. Keeping the sentence as a PREFIX is what still proves
+      // the measured wording survives verbatim; asserting the name is what proves the operator can tell
+      // which record is at risk without seeing the row.
+      const body: string = (query('.confirm-dialog__message')?.textContent ?? '').trim();
+
+      expect(body.startsWith(REMOVAL_MESSAGE))
+        .withContext(`the measured question, verbatim, at the front of: ${body}`)
+        .toBeTrue();
+      // ⚠ AND IT NAMES THE GROUP, NOT A ROLE. This screen mounts TWO confirmations that shared one message
+      // while the wording named nothing; naming a role group in the dialog that destroys a ROLE would be
+      // worse than naming nothing, so the two are now separate and this asserts the group's own name.
+      expect(body).toContain('Paid Services');
       expect(query('.confirm-dialog__button--danger'))
         .withContext('marked destructive')
         .not.toBeNull();
@@ -1719,29 +1746,54 @@ describe('RoleListComponent', () => {
     it('renders a stored frequency code outside the published six exactly as it is stored', () => {
       arrive([roleGroup()], [roleRow(0, { billingFrequency: '4', trialFrequency: 'm' })]);
 
-      const cells: readonly string[] = Array.from(
-        (rows()[0] as HTMLTableRowElement).querySelectorAll('td,th'),
-      ).map((cell) => (cell.textContent ?? '').trim());
+      // The PAINTED characters are what is asserted, read from the `aria-hidden` spans alone. Each cell's
+      // whole text now also carries the clipped wording that names the code for a reader, so a whole-cell
+      // comparison would test two facts at once.
+      const painted: readonly string[] = Array.from(
+        (rows()[0] as HTMLTableRowElement).querySelectorAll('[aria-hidden="true"]'),
+      ).map((span) => (span.textContent ?? '').trim());
 
       expect(rows()).withContext('the page is rendered rather than refused').toHaveSize(1);
-      expect(cells).toContain('4');
-      expect(cells)
+      expect(painted).toContain('4');
+      expect(painted)
         .withContext('case is data: a lower-case code is not folded onto the upper-case one')
         .toContain('m');
     });
 
-    it('renders the absent-money and absent-period markers as empty cells', () => {
+    // ⚠ THIS REPLACES A FACT THAT REQUIRED THE ABSENT CELLS TO BE EMPTY, AND THE EMPTINESS WAS THE DEFECT —
+    // QA-15. The claim it exists for is unchanged and is what the expectations below still pin: a fee of
+    // "nothing" is not a fee of zero and must never be drawn as one. What changed is what "nothing" LOOKS
+    // like. An empty cell said nothing to a sighted reader and nothing to a screen reader, and on this grid it
+    // was measurably inconsistent with itself — the fee and period columns of the same row rendered a mark
+    // while the two frequency columns rendered nothing at all. All four columns now use the ONE shared idiom.
+    it('marks every absent money, period and frequency with the one shared absence idiom', () => {
       arrive([roleGroup()], [roleRow(0, { serviceFee: null, billingPeriod: null })]);
 
       const cells: readonly string[] = Array.from(
         (rows()[0] as HTMLTableRowElement).querySelectorAll('td,th'),
       ).map((cell) => (cell.textContent ?? '').trim());
 
-      // Two absences on the wire and one rendering, because a fee of "nothing" is not a fee of zero and
-      // must not be drawn as one.
-      expect(cells.filter((text) => text.length === 0).length)
-        .withContext('both absences render empty')
-        .toBeGreaterThanOrEqual(2);
+      // ⚠ THIS TEST USED TO COUNT EMPTY CELLS, AND WHAT IT WAS ACTUALLY COUNTING WERE THE TWO FREQUENCY
+      // CELLS. Money and period absences already painted the shared em-dash mark with clipped wording
+      // beside it; the two frequency columns painted nothing at all for the same absence, which is one of
+      // the eleven separate absent-value idioms this application was measured to be using where two would
+      // do. All four now use the one idiom, so NO cell is silently empty.
+      expect(cells.filter((text) => text.length === 0))
+        .withContext('no absence renders as a silently empty cell')
+        .toHaveSize(0);
+
+      const marked: readonly string[] = cells.filter((text) => text.startsWith('\u2014'));
+
+      expect(marked.length)
+        .withContext('money, period and frequency absences all carry the mark')
+        .toBeGreaterThanOrEqual(4);
+      expect(marked.every((text) => text.endsWith('not recorded')))
+        .withContext('and every mark is explained in words')
+        .toBeTrue();
+
+      // NOT as zero, which is the failure this case has always guarded against.
+      expect(cells).not.toContain('0.00');
+      expect(cells).not.toContain('0');
     });
   });
 
@@ -1931,6 +1983,17 @@ describe('RoleListComponent', () => {
     }
 
     /**
+     * Every clipped-content convention a cell on this screen can carry.
+     *
+     * ⚠ THERE ARE TWO BECAUSE ONE OF THEM IS NOW SHARED — QA-15. `.role-list__absent-value` is this screen's
+     * own clipped span, still used for the frequency expansion and the free-fee amount; `.absent-value__
+     * description` belongs to the shared absent-value component, which replaced the mark-and-words pair this
+     * screen used to compose for itself. A helper that knew only the local class reported the shared
+     * component's hidden sentence as PAINTED text, which is the opposite of what it is.
+     */
+    const CLIPPED_SELECTOR = '.role-list__absent-value,.absent-value__description';
+
+    /**
      * What a cell of the FIRST row actually PAINTS, with clipped content excluded. Two cell kinds on this
      * screen now carry content that is deliberately in the accessibility tree and deliberately not on the
      * screen: the absent-value mark's own words, and the expansion of a stored frequency character.
@@ -1949,7 +2012,7 @@ describe('RoleListComponent', () => {
 
       const copy: HTMLTableCellElement = cell.cloneNode(true) as HTMLTableCellElement;
 
-      copy.querySelectorAll('.role-list__absent-value').forEach((clipped) => {
+      copy.querySelectorAll(CLIPPED_SELECTOR).forEach((clipped) => {
         clipped.remove();
       });
 
@@ -1967,7 +2030,26 @@ describe('RoleListComponent', () => {
         rows()[0]?.querySelectorAll<HTMLTableCellElement>('td,th') ?? [],
       )[columnIndexOf(heading)];
 
-      return (cell?.querySelector('.role-list__absent-value')?.textContent ?? '').trim();
+      return (cell?.querySelector(CLIPPED_SELECTOR)?.textContent ?? '').trim();
+    }
+
+    /**
+     * The body cell ELEMENT sitting beneath a named heading, so a case can assert on what is inside one cell
+     * rather than on what is anywhere in the row.
+     *
+     * @param heading The column heading to read under.
+     * @returns The cell element, asserted to exist.
+     */
+    function cellElementUnder(heading: string): HTMLTableCellElement {
+      const cell: HTMLTableCellElement | undefined = Array.from(
+        rows()[0]?.querySelectorAll<HTMLTableCellElement>('td,th') ?? [],
+      )[columnIndexOf(heading)];
+
+      if (cell === undefined) {
+        throw new Error(`no body cell under "${heading}"`);
+      }
+
+      return cell;
     }
 
     /** The ordinal of the column carrying a named heading, asserted to exist. */
@@ -2027,6 +2109,32 @@ describe('RoleListComponent', () => {
      * them — `If Not String.IsNullOrEmpty(col.HeaderText)` is the guard — and the legacy grid rendered
      * two blank headings.
      */
+    // ⚠ EXACTLY ONE COLUMN TRACK IS LEFT FLEXIBLE, AND THAT IS A REQUIREMENT RATHER THAN AN OMISSION — QA-09.
+    //
+    // Under `table-layout: fixed` the percentage tracks are resolved against the table width and whatever is
+    // LEFT OVER is handed to the columns that declared something else. With every column weighted, that
+    // leftover went to the three icon command columns: each asked for 3.25rem and painted 63.906px, wider than the fee columns beside them. A single unweighted column absorbs the slack
+    // instead, so every other track resolves to exactly the share it declares.
+    it('leaves exactly one column track flexible so the declared tracks resolve as written', () => {
+      arrive();
+
+      const tracks = queryAll<HTMLTableColElement>('colgroup col');
+
+      expect(tracks.length).withContext('one track per rendered column').toBe(13);
+
+      const flexible: readonly number[] = tracks
+        .map((track, index) => ({ index, declared: track.style.inlineSize }))
+        .filter((entry) => entry.declared === '')
+        .map((entry) => entry.index);
+
+      expect(flexible).withContext('one and only one flexible track').toEqual([4]);
+
+      // And the command tracks declare the token they are supposed to, rather than inheriting the slack.
+      for (let index = 0; index < 3; index += 1) {
+        expect(tracks[index]?.style.inlineSize).toContain('--table-command-column-inline-size');
+      }
+    });
+
     it('clips the heading of each command column rather than publishing one', () => {
       arrive();
 
@@ -2041,11 +2149,40 @@ describe('RoleListComponent', () => {
       expect(clipped).toEqual([EDIT_LABEL, MANAGE_USERS_LABEL, 'Delete']);
     });
 
-    it('renders a fee of zero as zero money in both fee columns', () => {
+    // ⚠ THIS REPLACES A FACT THAT REQUIRED A ZERO FEE TO PAINT "0.00", AND THE REPLACEMENT IS A MEASURED
+    // CORRECTION — QA-19. The legacy formatter's only test is `If fee <> Null.NullSingle`, so a stored zero
+    // prints rather than being withheld, and THAT half is unchanged: the amount is still stated, and it is
+    // still stated exactly. What changed is that it is no longer stated ONLY as a figure. A free role and a
+    // role costing a penny were told apart by reading two decimal places, in identical colour, weight and
+    // slant, on the one column an administrator scans to find the free roles — while the two sibling listings
+    // had by then each grown a deliberate non-colour vocabulary for exactly this shape of fact.
+    //
+    // The figure remains available to a reader who wants it: it is announced, in full, beside the word.
+    it('names a fee of zero as free in both fee columns, and still states the amount', () => {
       arrive([roleGroup()], [roleRow(0, { serviceFee: 0, trialFee: 0 })]);
 
-      expect(cellUnder('Fee')).toBe('0.00');
-      expect(cellUnder('Trial')).toBe('0.00');
+      expect(paintedCellUnder('Fee')).toBe(FREE_FEE_LABEL);
+      expect(paintedCellUnder('Trial')).toBe(FREE_FEE_LABEL);
+      expect(clippedCellUnder('Fee')).toBe('no charge, amount 0.00');
+      expect(clippedCellUnder('Trial')).toBe('no charge, amount 0.00');
+
+      // NOT the absent rendering. A recorded zero and an unrecorded fee are different facts and this is the
+      // expectation that keeps them different — the mark must not appear in EITHER FEE CELL. Scoped to the two
+      // cells rather than to the row, because this fixture's periods are genuinely unrecorded and their cells
+      // carry the mark correctly.
+      expect(cellElementUnder('Fee').querySelector('app-absent-value')).toBeNull();
+      expect(cellElementUnder('Trial').querySelector('app-absent-value')).toBeNull();
+    });
+
+    // The counterpart, and the one that stops the naming from over-reaching: a penny is a charge, and it is
+    // painted as the figure it is with no state word anywhere near it.
+    it('paints the smallest real charge as a figure, with no state word', () => {
+      arrive([roleGroup()], [roleRow(0, { serviceFee: 0.01, trialFee: 0.01 })]);
+
+      expect(paintedCellUnder('Fee')).toBe('0.01');
+      expect(paintedCellUnder('Trial')).toBe('0.01');
+      expect(cellElementUnder('Fee').querySelector('.role-list__fee-state')).toBeNull();
+      expect(cellElementUnder('Trial').querySelector('.role-list__fee-state')).toBeNull();
     });
 
     /**
@@ -2095,18 +2232,34 @@ describe('RoleListComponent', () => {
       expect(clippedCellUnder('Trial Every')).toBe('not recorded');
     });
 
+    // ⚠ THE FEE EXPECTATIONS HERE MOVED WITH THE ONE ABOVE — QA-19: a zero fee is now NAMED "Free" and its
+    // exact amount announced beside the word. The claim this case exists for is unchanged and is what the
+    // period columns still pin: a stored zero is DATA and must never be rendered as an absence, because the
+    // legacy guard withholds -1 and nothing else.
     it('renders a zero fee and a zero period as themselves, never as absent', () => {
       arrive(
         [roleGroup()],
         [roleRow(0, { serviceFee: 0, trialFee: 0, billingPeriod: 0, trialPeriod: 0 })],
       );
 
-      expect(paintedCellUnder('Fee')).toBe('0.00');
-      expect(paintedCellUnder('Trial')).toBe('0.00');
+      expect(paintedCellUnder('Fee')).toBe(FREE_FEE_LABEL);
+      expect(paintedCellUnder('Trial')).toBe(FREE_FEE_LABEL);
+      expect(clippedCellUnder('Fee'))
+        .withContext('the exact stored amount is still available, in words')
+        .toBe('no charge, amount 0.00');
+
       expect(paintedCellUnder('Billing Every')).toBe('0');
       expect(paintedCellUnder('Trial Every')).toBe('0');
-      expect(clippedCellUnder('Fee')).toBe('');
       expect(clippedCellUnder('Billing Every')).toBe('');
+
+      // The decisive expectation: none of the four cells this fixture RECORDS a value in claims an absence.
+      // Scoped to those four rather than to the row, because the fixture leaves both frequency characters
+      // unset and their cells state that absence correctly.
+      for (const heading of ['Fee', 'Trial', 'Billing Every', 'Trial Every'] as const) {
+        expect(cellElementUnder(heading).querySelector('app-absent-value'))
+          .withContext(`${heading} records a value and must not claim an absence`)
+          .toBeNull();
+      }
     });
 
     /**
@@ -2115,6 +2268,39 @@ describe('RoleListComponent', () => {
      * is data and is displayed. That behaviour is unchanged — what changed is that the sentinel case
      * beside it is no longer indistinguishable from it.
      */
+    // ⚠ THE TWO FREQUENCY COLUMNS WERE THE LAST CELLS ON THIS SCREEN THAT SAID NOTHING AT ALL — QA-15.
+    // Measured on the role whose whole paid-membership configuration is unset: its fee, billing-every, trial
+    // and trial-every cells each rendered the shared absent mark while these two rendered an entirely empty
+    // cell — no text, no children, nothing announced — in the SAME row. A reader could not tell "no frequency
+    // recorded" from "this cell failed to draw", and every other unrecorded value beside it could be.
+    it('states an unrecorded frequency with the shared absent value rather than an empty cell', () => {
+      arrive(
+        [roleGroup()],
+        [roleRow(0, { billingFrequency: null, trialFrequency: null })],
+      );
+
+      for (const heading of ['Billing Period', 'Trial Period'] as const) {
+        expect(paintedCellUnder(heading))
+          .withContext(`${heading} states its absence`)
+          .toBe('\u2014');
+        expect(clippedCellUnder(heading)).toBe('not recorded');
+        expect(cellElementUnder(heading).querySelector('app-absent-value')).not.toBeNull();
+      }
+    });
+
+    // The counterpart: a recorded character is STILL painted verbatim, because it is load-bearing data
+    // constrained by `FK_Roles_CodeFrequency` and the legacy grid bound the raw field rather than a join.
+    it('paints a recorded frequency character verbatim, with its expansion announced', () => {
+      arrive([roleGroup()], [roleRow(0, { billingFrequency: 'M', trialFrequency: 'D' })]);
+
+      expect(paintedCellUnder('Billing Period')).toBe('M');
+      expect(clippedCellUnder('Billing Period')).toBe('Month');
+      expect(cellElementUnder('Billing Period').querySelector('app-absent-value')).toBeNull();
+
+      expect(paintedCellUnder('Trial Period')).toBe('D');
+      expect(clippedCellUnder('Trial Period')).toBe('Day');
+    });
+
     it('renders a negative period that is not the sentinel as itself', () => {
       arrive([roleGroup()], [roleRow(0, { billingPeriod: -3, trialPeriod: -3 })]);
 
@@ -2145,6 +2331,75 @@ describe('RoleListComponent', () => {
         .toBe('922337203685477.63');
       expect(clippedCellUnder('Fee')).toBe('approximate');
       expect(clippedCellUnder('Trial')).toBe('approximate');
+    });
+
+    /**
+     * R3 — A NEGATIVE AMOUNT IS MARKED, IN THE TREATMENT THE PORTAL LISTING ALREADY USES. There a fee below
+     * zero is painted in the danger colour at bold weight with the word "negative" clipped beside it. Here
+     * the identical state was a bare text node in the ordinary colour and weight, so a credit and a charge
+     * differed by a single minus glyph and by nothing a screen reader could report.
+     */
+    it('marks a negative amount, in words as well as in colour', () => {
+      arrive([roleGroup()], [roleRow(0, { serviceFee: -99.99, trialFee: -1.5 })]);
+
+      expect(paintedCellUnder('Fee')).toBe('-99.99');
+      expect(clippedCellUnder('Fee')).toBe('negative');
+      expect(clippedCellUnder('Trial')).toBe('negative');
+      expect(query('.role-list__fee--negative'))
+        .withContext('and the sign is not carried by the clipped word alone')
+        .not.toBeNull();
+    });
+
+    /**
+     * R7 — THE ACCESSIBLE NAME MUST SEPARATE THE VALUE FROM ITS QUALIFIER. Angular compiles templates with
+     * `preserveWhitespaces` disabled, which DELETES a whitespace-only text node standing between two
+     * elements, so a clipped qualifier written on its own line joins the value with no separator at all and
+     * the cell announces one run-together word. Measured on the sibling listing as `-99.99negative`.
+     *
+     *
+     * ⚠ THE ASSERTION PINS U+00A0 RATHER THAN "SOME WHITESPACE", AND THAT PRECISION IS ITSELF THE FIX. An
+     * ordinary space reaches the DOM but is not always handed to a screen reader: where Angular's anchor
+     * comments leave the separator an isolated whitespace-only text node, Blink builds no text box for it, so
+     * it never becomes a StaticText node and name-from-contents concatenates regardless. That was measured
+     * through the CDP Accessibility domain in two independent browsers on the sibling role-assignment screen,
+     * where a cell whose DOM `textContent` read "9/20/2027 Active" computed an accessible name of
+     * "9/20/2027Active". A spec asserting only `\s` would accept the very character that regressed.
+     *
+     * This is the case that discriminates: the mark and the word are both present either way, and only the
+     * separator tells a correct implementation from the one that shipped.
+     */
+    it('separates the amount from its clipped qualifier, rather than running them together', () => {
+      arrive([roleGroup()], [roleRow(0, { serviceFee: -99.99 })]);
+
+      const first: HTMLTableRowElement | undefined = rows()[0];
+
+      expect(first).withContext('a row is rendered').not.toBeUndefined();
+
+      const whole: string = (
+        Array.from(first?.querySelectorAll<HTMLTableCellElement>('td,th') ?? [])[
+          columnIndexOf('Fee')
+        ]?.textContent ?? ''
+      ).trim();
+
+      expect(whole).toContain('-99.99\u00a0negative');
+      expect(whole).not.toContain('-99.99negative');
+    });
+
+    it('leaves a positive amount unmarked, so the mark keeps its meaning', () => {
+      arrive([roleGroup()], [roleRow(0, { serviceFee: 25, trialFee: 5 })]);
+
+      expect(clippedCellUnder('Fee')).toBe('');
+      expect(query('.role-list__fee--negative')).toBeNull();
+    });
+
+    it('does not call an ABSENT amount negative, though its sentinel is far below zero', () => {
+      // `Null.NullSingle` is `Single.MinValue`, so a truthiness-free implementation would mark every absent
+      // fee as a negative one. The absent branch owns that row.
+      arrive([roleGroup()], [roleRow(0, { serviceFee: -3.4028234663852886e38 })]);
+
+      expect(paintedCellUnder('Fee')).toBe('\u2014');
+      expect(clippedCellUnder('Fee')).toBe('not recorded');
+      expect(query('.role-list__fee--negative')).toBeNull();
     });
 
     /**
@@ -2231,15 +2486,20 @@ describe('RoleListComponent', () => {
     });
 
     /**
-     * A character outside the closed vocabulary contributes NOTHING rather than a guess. The column is
-     * constrained by `FK_Roles_CodeFrequency`, so anything else is data this application cannot
-     * interpret, and narrating it would be inventing a meaning.
+     * ⚠ THIS ASSERTION USED TO REQUIRE SILENCE, AND SILENCE WAS THE DEFECT. The reasoning was that a
+     * character outside the closed vocabulary should contribute NOTHING rather than a guess, because
+     * narrating it would invent a meaning. The measured consequence was worse than a guess: the painted
+     * character sits in an `aria-hidden` span, so with the clipped sibling empty the cell reached a
+     * screen-reader user as NOTHING AT ALL, while a sighted reader saw an unexplained 9x15-pixel letter with
+     * no legend anywhere on the screen. Naming the code without claiming to know what it means - the same
+     * treatment the profile-definition listing gives a data type it cannot name - invents nothing and
+     * leaves nobody with an empty cell.
      */
-    it('says nothing about a frequency character it cannot interpret', () => {
+    it('names a frequency character it cannot interpret, without claiming to know its meaning', () => {
       arrive([roleGroup()], [roleRow(0, { billingFrequency: 'Q' })]);
 
       expect(paintedCellUnder('Billing Period')).toBe('Q');
-      expect(clippedCellUnder('Billing Period')).toBe('');
+      expect(clippedCellUnder('Billing Period')).toBe('frequency code Q, name unavailable');
     });
 
     it('renders both flags as announced words, one cell each', () => {
@@ -2299,7 +2559,9 @@ describe('RoleListComponent', () => {
 
       const pager: Element | null = query('app-pagination');
 
-      expect(pager).withContext('mounted unconditionally, so the range summary always shows').not.toBeNull();
+      expect(pager)
+        .withContext('mounted whenever the page in hand holds rows, so the range summary shows')
+        .not.toBeNull();
       expect(pager?.querySelectorAll('button') ?? [])
         .withContext('no page-to-page steps for a single page')
         .toHaveSize(0);
@@ -2658,6 +2920,81 @@ describe('RoleListComponent', () => {
       return router.parseUrl(router.url).queryParams as Readonly<Record<string, string>>;
     }
 
+    /**
+     * R5 — A PAGE PAST THE END OF A REAL RESULT SET IS NOT AN EMPTY RESULT SET.
+     *
+     * `?currentpage=99` against a real dataset left this grid reading "No records found." beside a pager
+     * claiming "21-30 of 30" — a range describing records it was not showing and could not show — with no
+     * route back. The portal and module listings already answer the same address by naming the state and
+     * offering the button that undoes it.
+     *
+     * @param totalCount The dataset total the server keeps reporting for a page that holds nothing.
+     */
+    function arrivePastEnd(totalCount = 30): void {
+      create();
+      expectRequest('GET', ROLE_GROUPS_URL, 'the group read').flush(envelope([roleGroup()]));
+      fixture.detectChanges();
+      // A real total with NO rows: exactly what the server answers for a coordinate past the end.
+      expectRequest('GET', ROLES_URL, 'the role read').flush(pageOf([], totalCount));
+      fixture.detectChanges();
+    }
+
+    it('states that the page is past the end, rather than that nothing matched', () => {
+      arrivePastEnd();
+
+      expect((host().textContent ?? '')).toContain(
+        'This page is past the end of the results. Return to the first page.',
+      );
+    });
+
+    it('withholds the pager entirely, so no range describes records it cannot show', () => {
+      arrivePastEnd();
+
+      expect(query('app-pagination'))
+        .withContext('a range beside an empty grid is the defect itself')
+        .toBeNull();
+      expect((host().textContent ?? '')).not.toContain('of 30');
+    });
+
+    it('offers the recovery, and taking it clears the page from the address', async () => {
+      await enterAt('/roles?currentpage=99');
+      arrivePastEnd();
+
+      const recovery: HTMLButtonElement | null = host().querySelector<HTMLButtonElement>(
+        '.role-list__first-page',
+      );
+
+      expect(recovery).withContext('the state names itself AND offers a way out').not.toBeNull();
+
+      recovery?.click();
+      fixture.detectChanges();
+      await settleAddress();
+      expectRequest('GET', ROLES_URL, 'the corrected read').flush(pageOf([roleRow()], 30));
+      fixture.detectChanges();
+
+      expect(addressParams()['currentpage'])
+        .withContext('removed outright rather than rewritten to a number')
+        .toBeUndefined();
+    });
+
+    /**
+     * THE NARROWING GUARD, and the case that discriminates. An ordinarily empty result set is NOT past the
+     * end: it keeps the legacy sentence and is offered no page recovery, because there is no page to
+     * recover from. An implementation that showed the past-end wording whenever a grid was empty would
+     * satisfy every case above and fail this one.
+     */
+    it('keeps the legacy sentence, and offers no recovery, when the set is simply empty', () => {
+      create();
+      expectRequest('GET', ROLE_GROUPS_URL, 'the group read').flush(envelope([roleGroup()]));
+      fixture.detectChanges();
+      expectRequest('GET', ROLES_URL, 'the role read').flush(pageOf([], 0));
+      fixture.detectChanges();
+
+      expect((host().textContent ?? '')).toContain('No records found.');
+      expect((host().textContent ?? '')).not.toContain('past the end');
+      expect(host().querySelector('.role-list__first-page')).toBeNull();
+    });
+
     it('writes a chosen narrowing into the address rather than keeping it privately', async () => {
       await arrive([roleGroup(4, { roleGroupName: 'Paid Services' })]);
 
@@ -2816,5 +3153,215 @@ describe('RoleListComponent', () => {
         .withContext('the groups are not re-read for a page turn')
         .toHaveSize(0);
     });
+  });
+
+  // ---------------------------------------------------------------------------------------------------
+  // THE EMPTY-TABLE FLASH
+  // ---------------------------------------------------------------------------------------------------
+
+  // ⚠ THE MEASURED DEFECT THESE PROVE CLOSED. An un-asked listing and a listing that matched nothing are
+  // both an empty page with no request in flight, so the grid painted "No records found." over a listing it
+  // had not yet asked about - reported as an empty-table flash on every post-save return to a listing.
+  describe('an un-asked listing waits rather than claiming to be empty', () => {
+    /** Navigates before the screen mounts, which is how an entry at a given address is simulated. */
+    async function enterAt(url: string): Promise<void> {
+      await TestBed.inject(Router).navigateByUrl(url);
+    }
+
+    it('shows the waiting placeholder, and NO zero-result surface, while the address correction is in flight', async () => {
+      // An unusable address takes the correction arm, which replaces the address and returns WITHOUT
+      // reading. The replacement navigation happens a task later, so this is exactly the window in which
+      // nothing is in flight and nothing is held.
+      await enterAt('/roles?currentpage=abc');
+      create();
+
+      expect(httpMock.match(() => true))
+        .withContext('the precondition: the uncorrected address reads nothing')
+        .toHaveSize(0);
+
+      expect(queryAll('td[data-placeholder] app-loading-spinner').length)
+        .withContext('the listing has not been asked about, so the grid is waiting')
+        .toBe(1);
+      expect(queryAll('app-empty-state').length)
+        .withContext('nothing may assert that this tenant has no roles before one has been read')
+        .toBe(0);
+
+      await settleAddress();
+      answerArrival([roleGroup()], [roleRow()]);
+    });
+
+    it('shows the zero-result surface once a read has genuinely answered with nothing', () => {
+      arrive([roleGroup()], []);
+
+      expect(queryAll('td[data-placeholder] app-loading-spinner').length).toBe(0);
+      expect(queryAll('app-empty-state').length)
+        .withContext('a settled read that matched nothing IS the empty state')
+        .toBe(1);
+    });
+  });
+
+});
+
+/**
+ * Every style rule the document holds, component stylesheets included, flattened out of any media or
+ * supports block that contains them.
+ *
+ * @returns Every style rule, with the media conditions that guard each one.
+ */
+function everyStyleRuleWithConditions(): readonly { rule: CSSStyleRule; conditions: readonly string[] }[] {
+  const collected: { rule: CSSStyleRule; conditions: readonly string[] }[] = [];
+
+  const walk = (rules: CSSRuleList, conditions: readonly string[]): void => {
+    for (const rule of Array.from(rules)) {
+      if (rule instanceof CSSStyleRule) {
+        collected.push({ rule, conditions });
+      }
+
+      const nested: unknown = (rule as { cssRules?: CSSRuleList }).cssRules;
+
+      if (nested instanceof CSSRuleList) {
+        const condition: unknown = (rule as { conditionText?: string }).conditionText;
+        const next =
+          typeof condition === 'string' ? [...conditions, condition] : [...conditions];
+
+        walk(nested, next);
+      }
+    }
+  };
+
+  for (const sheet of Array.from(document.styleSheets)) {
+    try {
+      walk(sheet.cssRules, []);
+    } catch {
+      continue;
+    }
+  }
+
+  return collected;
+}
+
+/**
+ * The hover rules that apply to one class, with the media conditions guarding each.
+ *
+ * @param className The class whose hover rules are wanted, without a leading dot.
+ * @returns One entry per hover rule found.
+ */
+function hoverRulesFor(
+  className: string,
+): readonly { readonly declarations: string; readonly conditions: readonly string[] }[] {
+  return everyStyleRuleWithConditions()
+    .filter(
+      (entry) =>
+        entry.rule.selectorText.includes(`.${className}`) &&
+        entry.rule.selectorText.includes(':hover'),
+    )
+    .map((entry) => ({ declarations: entry.rule.style.cssText, conditions: entry.conditions }));
+}
+
+/**
+ * Specification for the hover feedback on the row commands of this listing.
+ *
+ * ⚠ WHAT WAS MEASURED, AND WHY A CSSOM TEST IS THE RIGHT INSTRUMENT. All three row commands reported an EMPTY
+ * set of changed computed properties on hover, so the pointer shape was the only response the operator got from
+ * a command that navigates away or destroys a role. Two separate causes were behind it: the declarations sat
+ * inside a pointer-capability media block that was not being satisfied, and the destructive command re-set the
+ * colour it already had while having stripped away the background and border that the global button hover
+ * changes. Neither cause can be caught by hovering in a runner that reports its own pointer capability - the
+ * rules themselves have to be read.
+ */
+describe('RoleListComponent row-command hover feedback', () => {
+  // ⚠ THE COMPONENT IS MOUNTED FIRST, AND WITHOUT IT THIS WHOLE GROUP MEASURES NOTHING. A component's
+  // stylesheet is injected into the document when the component is first instantiated, so reading the CSSOM
+  // before that finds no rules at all - which reads as "the hover is missing" whatever the source says.
+  beforeEach(async () => {
+    await TestBed.configureTestingModule({
+      imports: [RoleListComponent],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        provideRouter([{ path: '**', component: RoleListComponent }]),
+        RoleStore,
+        { provide: AuthStore, useValue: { administersCurrentPortal: signal<boolean>(true) } },
+      ],
+    }).compileComponents();
+
+    const fixture = TestBed.createComponent(RoleListComponent);
+
+    fixture.detectChanges();
+    TestBed.inject(HttpTestingController)
+      .match(() => true)
+      .forEach((pending) => pending.flush({ data: [], meta: null }));
+    fixture.detectChanges();
+  });
+
+  it('declares the hover for the two navigating commands OUTSIDE any pointer-capability guard', () => {
+    const rules = hoverRulesFor('role-list__row-action');
+
+    expect(rules.length).withContext('a hover rule exists at all').toBeGreaterThan(0);
+
+    for (const rule of rules) {
+      // The guard is what silently disabled the treatment. Any media condition mentioning hover or pointer
+      // capability is the guard, whatever its exact spelling.
+      const guarded = rule.conditions.some(
+        (condition) => condition.includes('hover') || condition.includes('pointer'),
+      );
+
+      expect(guarded)
+        .withContext(`no pointer-capability guard around: ${rule.declarations}`)
+        .toBeFalse();
+    }
+  });
+
+  it('changes the ink of the two navigating commands, so hovering is perceivable', () => {
+    const declarations = hoverRulesFor('role-list__row-action')
+      .map((rule) => rule.declarations)
+      .join(' ');
+
+    expect(declarations)
+      .withContext('the hover moves the brand ink to its hover companion')
+      .toContain('--color-primary-hover');
+  });
+
+  it('changes the SURFACE of the destructive command, because its ink is pinned', () => {
+    const rules = hoverRulesFor('role-list__row-action--danger');
+
+    expect(rules.length).toBeGreaterThan(0);
+
+    const declarations = rules.map((rule) => rule.declarations).join(' ');
+
+    // The colour cannot move - a destructive command stays in the danger hue and the vocabulary declares one
+    // danger token - so the change has to be a surface. The selected tint is the only token that differs from
+    // both the plain row surface and the alternating one.
+    expect(declarations)
+      .withContext('a background change the operator can actually see')
+      .toContain('--color-selected');
+    expect(declarations)
+      .withContext('and the danger ink is kept rather than traded away')
+      .toContain('--color-danger');
+
+    for (const rule of rules) {
+      expect(
+        rule.conditions.some(
+          (condition) => condition.includes('hover') || condition.includes('pointer'),
+        ),
+      )
+        .withContext(`no pointer-capability guard around: ${rule.declarations}`)
+        .toBeFalse();
+    }
+  });
+
+  it('leaves the press state able to win over the hover it shares an element with', () => {
+    // A pressed control is also a hovered one, so the press rule must come after the hover rule at equal
+    // weight - otherwise pressing paints the hover and the command has no press state at all.
+    const rules = everyStyleRuleWithConditions().filter((entry) =>
+      entry.rule.selectorText.includes('.role-list__row-action'),
+    );
+
+    const hoverIndex = rules.findIndex((entry) => entry.rule.selectorText.includes(':hover'));
+    const activeIndex = rules.findIndex((entry) => entry.rule.selectorText.includes(':active'));
+
+    expect(hoverIndex).withContext('a hover rule exists').toBeGreaterThan(-1);
+    expect(activeIndex).withContext('a press rule exists').toBeGreaterThan(-1);
+    expect(activeIndex).withContext('and the press is declared after the hover').toBeGreaterThan(hoverIndex);
   });
 });

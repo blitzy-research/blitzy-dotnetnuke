@@ -13,10 +13,13 @@
 -->
 <app-error-banner [problem]="problem()" />
 
-<!-- The transport failure, for the case the banner cannot cover. -->
-@if (failureMessage(); as message) {
-  <p class="membership-settings__transport-failure" role="alert">{{ message }}</p>
-}
+<!--
+  A SECOND FAILURE SURFACE USED TO SIT HERE, FOR "THE CASE THE BANNER CANNOT COVER", AND THERE IS NO SUCH
+  CASE ANY MORE. It covered a failure carrying no problem document - a response this client could not decode -
+  and the account store now synthesises a well-formed document for exactly that, so the banner above renders
+  it with a title, a severity and a support reference. Two live regions describing one failure was itself a
+  measured defect elsewhere in this application, so the weaker one is removed rather than kept as a spare.
+-->
 
 <!--
   THE PROVENANCE DISCLOSURE — #6. Says whether the values below are a policy this site STORED or the
@@ -214,6 +217,13 @@
           />
         </app-form-field>
 
+        <!--
+          THE THREE REDIRECT DESTINATIONS. A page CHOICE, not a page number: the help text beside each of
+          these promises the operator can "select a page", and until now each offered a bare numeric spinner
+          with nothing on screen to say which numbers were legal. The identifier is still shown, beneath the
+          picker, because it is what the setting stores and an operator comparing this screen against the
+          database needs to see it - but it is now the secondary fact rather than the only one.
+        -->
         @for (field of redirectFields; track field) {
           <app-form-field
             [label]="labelFor(field)"
@@ -222,15 +232,37 @@
             [help]="helpFor(field)"
             [error]="errorFor(field)"
           >
-            <input
-              type="number"
+            <select
               [id]="controlId(field)"
               [formControlName]="field"
-              [attr.min]="minimumPageIdentifier"
               [attr.aria-required]="isRequired(field) ? 'true' : null"
               [attr.aria-invalid]="errorFor(field) === null ? null : 'true'"
-            />
+              [attr.aria-describedby]="controlId(field) + '-stored'"
+            >
+              <!--
+                Absence is spelled with a NULL here rather than with the legacy -1 sentinel, because this
+                setting's own contract already carries absence as a null on the wire and through the form.
+              -->
+              <option [ngValue]="null">{{ noRedirectLabel }}</option>
+              @for (option of pageOptions(); track option.value) {
+                <option [ngValue]="option.value">{{ option.label }}</option>
+              }
+            </select>
+            <p class="form-note" [id]="controlId(field) + '-stored'">
+              {{ storedPageNote(field) }}
+            </p>
           </app-form-field>
+        }
+
+        <!--
+          Said once for all three pickers, and only when it is true. The pickers still hold whatever the
+          tenant stored, so this is a reduced affordance rather than a failure - which is why it is a note
+          and not the shared error banner.
+        -->
+        @if (pagesUnavailable()) {
+          <p class="form-note membership-settings__pages-unavailable">
+            {{ text.pagesUnavailableNotice }}
+          </p>
         }
 
         <!-- The address validation expression. -->
@@ -350,7 +382,7 @@
 
     <div class="membership-settings__actions">
       <button
-        class="membership-settings__action membership-settings__action--primary"
+        class="membership-settings__action form-action--primary"
         type="submit"
         [disabled]="canSubmit() === false"
           [attr.aria-busy]="saving() ? 'true' : null"

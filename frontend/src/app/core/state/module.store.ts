@@ -5,7 +5,13 @@ import { isProblemDetails } from '../models/problem-details.model';
 import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, emptyPagedResult } from '../models/paged-result.model';
 import { ModuleService } from '../services/module.service';
 import { TabService } from '../services/tab.service';
-import { failureCode, summarizeProblem, transportProblem } from '../utils/form-errors.util';
+import {
+  contractProblem,
+  failureCode,
+  summarizeProblem,
+  transportProblem,
+} from '../utils/form-errors.util';
+import { isContractViolation } from '../utils/decode.util';
 import { OperationGeneration } from '../utils/operation-generation.util';
 
 import type {
@@ -16,6 +22,8 @@ import type {
   ModuleImportRequest,
   ModuleListItem,
   ModuleListPage,
+  ModulePermissionGrid,
+  ModulePermissionReplacement,
   ModuleSettingsBag,
   UpdateModuleRequest,
 } from '../models/module.model';
@@ -105,6 +113,8 @@ export type ModuleStoreOperation =
   | 'deleteModule'
   | 'loadSettings'
   | 'saveSettings'
+  | 'loadPermissions'
+  | 'savePermissions'
   | 'exportModule'
   | 'importModule'
   | 'loadTabs'
@@ -123,12 +133,16 @@ export interface ModuleStoreFailure {
   readonly operation: ModuleStoreOperation;
 
   /**
-   * The problem document as the server sent it, or `null` when the response carried none. RETAINED WHOLE,
-   * AND `traceId` IS THE REASON. The document's trace identifier is derived server-side from the ambient
-   * activity or the request identifier, so the correlation value the application sends on every request
-   * round-trips back into this body.
+   * The problem document for this failure. RETAINED WHOLE, AND `traceId` IS THE REASON. The document's
+   * trace identifier is derived server-side from the ambient activity or the request identifier, so the
+   * correlation value the application sends on every request round-trips back into this body.
+   *
+   * ⚠ NEVER `null`. A failure that carried no document — one that never reached the server, or a response
+   * this client could not decode — is given one synthesised from what IS known; see the note on
+   * `problemFromCause`. The member used to be nullable, and every consumer that binds it to the shared
+   * error banner rendered NOTHING when it was null.
    */
-  readonly problem: ProblemDetails | null;
+  readonly problem: ProblemDetails;
 
   /** Everything the presentation layer needs about the failure, resolved once. */
   readonly summary: ProblemSummary;
@@ -158,15 +172,31 @@ function readMember(source: unknown, key: string): unknown {
 }
 
 /**
- * Extracts the RFC 7807 document from a failed request, or synthesises the minimum from its status. ⚠ THE
- * TRANSPORT STATUS IS RESOLVED FIRST, AND A STATUS OF ZERO SHORT-CIRCUITS BEFORE THE BODY IS LOOKED AT.
- * That ordering is a correctness requirement, and getting it wrong produced incoherent wording rather
- * than an obvious fault.
+ * Extracts the RFC 7807 document from a failed request, or synthesises one. ⚠ THE TRANSPORT STATUS IS
+ * RESOLVED FIRST, AND A STATUS OF ZERO SHORT-CIRCUITS BEFORE THE BODY IS LOOKED AT. That ordering is a
+ * correctness requirement, and getting it wrong produced incoherent wording rather than an obvious fault.
+ *
+ * ⚠ IT NEVER RETURNS `null`, AND THAT CHANGE FIXED THE WORST DEFECT THIS STORE HAS HELD. It used to return
+ * `null` for any cause carrying neither a numeric `status` nor an `error` body — which is exactly the shape
+ * of a `ContractViolationError`. The consequence was measured on the module listing against a single row
+ * holding `TabModules.Visibility = 9`: the decoder refused the row, `pageOf` propagated the refusal, the
+ * subscriber's error path ran, `problem` came back `null`, the error banner therefore had no document to
+ * render and its retry control was never created, the listing kept the PREVIOUS page's rows and pager
+ * text, and the console logged nothing. A successful HTTP 200 carrying every module presented itself as
+ * an empty site, or worse as stale data, with no signal anywhere. A synthesised document is always
+ * returned now, so a failure this store cannot describe is still a failure the screen can show.
  *
  * @param cause The value a subscriber's error callback received.
- * @returns The problem document, or `null` when neither a document nor a status could be read.
+ * @returns The problem document. Never `null`.
  */
-function problemFromCause(cause: unknown): ProblemDetails | null {
+function problemFromCause(cause: unknown): ProblemDetails {
+  // THE CONTRACT VIOLATION IS TESTED FIRST, because it carries no status and no body and would otherwise
+  // fall through every arm below to the transport fallback and be reported as "the server could not be
+  // reached" — which is the opposite of what happened.
+  if (isContractViolation(cause)) {
+    return contractProblem(cause.path);
+  }
+
   const status: unknown = readMember(cause, 'status');
 
   // ⚠ IT USED TO RETURN `{ status: 0 }`, AND THAT LEFT THE BANNER WITHOUT A TITLE. Measured on the module
@@ -191,7 +221,10 @@ function problemFromCause(cause: unknown): ProblemDetails | null {
     }
   }
 
-  return typeof status === 'number' ? { status } : null;
+  // The last resort synthesises a document from whatever status is readable, so the banner always has a
+  // title and a sentence. `transportProblem(null)` words itself as unreachable, which is the truthful
+  // reading of a failure that carried no status at all.
+  return transportProblem(typeof status === 'number' ? status : null);
 }
 
 /**
@@ -364,6 +397,7 @@ export class ModuleStore implements OnDestroy {
   private listRequest: Subscription | null = null;
   private moduleRequest: Subscription | null = null;
   private settingsRequest: Subscription | null = null;
+  private permissionRequest: Subscription | null = null;
   private definitionsRequest: Subscription | null = null;
   private definitionRequest: Subscription | null = null;
   private desktopDefinitionsRequest: Subscription | null = null;
@@ -385,6 +419,9 @@ export class ModuleStore implements OnDestroy {
 
   /** Guards the settings bag. */
   private readonly settingsReads = new OperationGeneration();
+
+  /** Generation guard for grant-grid reads, so a superseded answer cannot overwrite a newer one. */
+  private readonly permissionReads = new OperationGeneration();
 
   /** Guards the exported document, whose delivery is the most consequential commit in this store. */
   private readonly exportOperations = new OperationGeneration();
@@ -412,6 +449,21 @@ export class ModuleStore implements OnDestroy {
 
   /** Whether a listing request is in flight. */
   private readonly _listLoading = signal(false);
+
+  /**
+   * Whether a listing read has ever SETTLED for this store instance - succeeded or failed.
+   *
+   * ⚠ PUBLISHED, BECAUSE A LISTING CANNOT OTHERWISE TELL "NOT ASKED YET" FROM "ASKED AND EMPTY". Both
+   * states hold an empty page with nothing in flight, and the grid reads that as a genuine zero-result and
+   * paints "Nothing to Display" - the empty-table flash. Every route into this screen that does NOT issue a
+   * read on the spot opens that window: the address subscription's non-canonical-address arm rewrites the
+   * address and returns WITHOUT reading, and the replacement navigation is a task later.
+   *
+   * Set on BOTH the success and the failure path, because a failure has also settled the question of
+   * whether a read happened; what to show for a failure is the failure slot's own concern, and the shared
+   * grid already prefers its failure placeholder over its empty one.
+   */
+  private readonly _listSettled = signal(false);
 
   /**
    * Modules read as CHOICES for a picker, held apart from the browsable listing. ⚠ THIS SLICE EXISTS SO
@@ -460,6 +512,29 @@ export class ModuleStore implements OnDestroy {
 
   /** Whether a settings replacement is in flight. */
   private readonly _settingsSaving = signal(false);
+
+  /**
+   * The grant grid of one module, or `null` when none has been read.
+   *
+   * MIGRATION: the legacy `<dnn:modulepermissionsgrid>` server control held its rows in ViewState and
+   * round-tripped them on every postback (`ModulePermissionsGrid.vb:L417-L474` load, `:L465-L490` save).
+   * There is no ViewState here, so the read state is held once and the operator's edits are held by the
+   * screen that is making them.
+   */
+  private readonly _permissionGrid = signal<ModulePermissionGrid | null>(null);
+
+  /** Whether a grant-grid read is in flight. */
+  private readonly _permissionsLoading = signal(false);
+
+  /** Whether a grant-grid replacement is in flight. */
+  private readonly _permissionsSaving = signal(false);
+
+  /**
+   * How the grant-grid READ ended, held apart from the shared failure slot for the same reason the
+   * settings read is: this read is advisory to the screen that issues it, so its refusal must be
+   * reportable without competing with a rejected write for the page banner.
+   */
+  private readonly _permissionsFailure = signal<ModuleStoreFailure | null>(null);
 
   /** The definition catalogue. */
   private readonly _definitions = signal<readonly ModuleDefinition[]>([]);
@@ -532,6 +607,12 @@ export class ModuleStore implements OnDestroy {
   /** Whether a listing request is in flight. */
   readonly listLoading = this._listLoading.asReadonly();
 
+  /**
+   * Whether a listing read has settled at least once, so a screen can tell an un-asked listing from an
+   * empty one. See {@link ModuleStore._listSettled} for why this is published.
+   */
+  readonly listSettled = this._listSettled.asReadonly();
+
   /** Every module read as a picker choice. */
   readonly choices = this._choices.asReadonly();
 
@@ -573,6 +654,30 @@ export class ModuleStore implements OnDestroy {
 
   /** Whether a settings replacement is in flight. */
   readonly settingsSaving = this._settingsSaving.asReadonly();
+
+  /**
+   * Whether the coordinate in force addresses a page beyond the end of the result set: the server reports a
+   * non-zero total and returned no rows for it.
+   *
+   * The same computation the portal listing publishes, and the reason both need it is the same: a page past
+   * the end is NOT an empty result set, and a caption reading "21-30 of 30" beside "No records found."
+   * describes records the grid is not showing and cannot show.
+   */
+  readonly isPastEnd = computed<boolean>(
+    () => this._page().meta.totalCount > 0 && this._page().items.length === 0,
+  );
+
+  /** The grant grid of one module, or `null` when none has been read. */
+  readonly permissionGrid = this._permissionGrid.asReadonly();
+
+  /** Whether a grant-grid read is in flight. */
+  readonly permissionsLoading = this._permissionsLoading.asReadonly();
+
+  /** Whether a grant-grid replacement is in flight. */
+  readonly permissionsSaving = this._permissionsSaving.asReadonly();
+
+  /** How the grant-grid read ended, independently of the shared slot. */
+  readonly permissionsFailure = this._permissionsFailure.asReadonly();
 
   /** The definition catalogue, unpaged. */
   readonly definitions = this._definitions.asReadonly();
@@ -632,6 +737,24 @@ export class ModuleStore implements OnDestroy {
 
   /** Whether the current page carries at least one row. */
   readonly hasModules = computed<boolean>(() => this._page().items.length > 0);
+
+  /**
+   * Whether the LAST LISTING READ failed, so the absence of rows describes a failure rather than a site
+   * with no modules on it.
+   *
+   * ⚠ THE ONE SIGNAL AN EMPTY STATE MUST CONSULT BEFORE IT WORDS ITSELF. A failed read and an empty result
+   * both leave zero rows, and a screen that renders "No records found." from the row count alone tells the
+   * reader the site has no modules when in fact nothing is known about it. The operation is compared
+   * explicitly rather than testing the failure slot for null, because a write that failed says nothing at
+   * all about whether the listing is trustworthy.
+   */
+  readonly listFailed = computed<boolean>(() => this._failure()?.operation === 'listModules');
+
+  /**
+   * Whether the LAST CHOICE READ failed, so an empty choice list describes a failure rather than a site
+   * with nothing to choose from. See {@link ModuleStore.listFailed}.
+   */
+  readonly choicesFailed = computed<boolean>(() => this._failure()?.operation === 'loadChoices');
 
   /** Whether any request this store issues is in flight. */
   readonly busy = computed<boolean>(
@@ -786,9 +909,18 @@ export class ModuleStore implements OnDestroy {
       next: (page: ModuleListPage) => {
         this._page.set(page);
         this._listLoading.set(false);
+        this._listSettled.set(true);
       },
       error: (cause: unknown) => {
         this._listLoading.set(false);
+        this._listSettled.set(true);
+
+        // ⚠ THE PAGE IS DISCARDED, AND LEAVING IT IN PLACE WAS THE DEFECT. Measured: a read that failed left
+        // the PREVIOUS page's rows, its `11–20 of 23` summary and its `2 / 3` indicator on screen, all of
+        // which then corroborated one another. Sorting, paging and searching each looked as though they had
+        // succeeded while showing data from before the request. A failed read has no rows, and the screen
+        // must be able to say so; the failure recorded below is what it says instead.
+        this._page.set(emptyPagedResult<ModuleListItem>());
         this.recordFailure('listModules', cause);
       },
     });
@@ -812,6 +944,12 @@ export class ModuleStore implements OnDestroy {
         this._choicesLoading.set(false);
       },
       error: (cause: unknown) => {
+        // ⚠ THE EMPTY LIST HERE IS NOT A CLAIM THAT THERE ARE NONE, and a consumer must not read it as one.
+        // The transfer panels used to render "There are no modules available to import content into." from
+        // this slice alone, which turned a failed read into a confident false statement while 24 modules
+        // existed. The slice is cleared because stale choices are worse than none, and the failure recorded
+        // below is what a consumer must consult before it words an empty state — `choicesFailed` exists for
+        // exactly that.
         this._choices.set([]);
         this._choicesTotalCount.set(0);
         this._choicesLoading.set(false);
@@ -1196,6 +1334,83 @@ export class ModuleStore implements OnDestroy {
   }
 
   // ---------------------------------------------------------------------------------------------------
+  // GRANTS
+  // ---------------------------------------------------------------------------------------------------
+
+  /**
+   * Reads one module's grant grid.
+   *
+   * ⚠ THE SHARED FAILURE SLOT IS NOT WRITTEN BY THIS READ, AND THAT IS DELIBERATE. The grid is advisory to
+   * the screen that shows it - the rest of the settings form remains usable without it - and the shared
+   * slot is what a submission's conclusion inspects to decide whether a WRITE was refused. A failed read
+   * landing there would make the next successful save report itself as failed.
+   *
+   * @param moduleId The module whose grants to read.
+   */
+  loadPermissions(moduleId: number): void {
+    this.permissionRequest?.unsubscribe();
+    this._permissionsLoading.set(true);
+
+    // The dedicated slot describes THIS read from here on; whatever the previous one was told is gone.
+    this._permissionsFailure.set(null);
+
+    // Cleared with the failure, because a grid left standing from a previous module would be shown as this
+    // module's grants - and the identifiers in it are what a save would then withdraw.
+    this._permissionGrid.set(null);
+
+    const ticket = this.permissionReads.begin();
+
+    this.permissionRequest = this.moduleService.getModulePermissions(moduleId).subscribe({
+      next: (grid: ModulePermissionGrid) => {
+        if (!this.permissionReads.isCurrent(ticket)) {
+          return;
+        }
+
+        this._permissionGrid.set(grid);
+        this._permissionsLoading.set(false);
+        this._permissionsFailure.set(null);
+      },
+      error: (cause: unknown) => {
+        if (!this.permissionReads.isCurrent(ticket)) {
+          return;
+        }
+
+        this._permissionsLoading.set(false);
+        this._permissionsFailure.set(this.describeFailure('loadPermissions', cause));
+      },
+    });
+  }
+
+  /**
+   * Replaces one module's grant grid, then RE-READS it. The replacement answers `204` with no body, so the
+   * stored state is read back rather than assumed to equal what was sent: the server withholds view grants
+   * while inheritance is on, so what it stored is knowably not always what was submitted.
+   *
+   * ⚠ THIS ONE DOES WRITE THE SHARED FAILURE SLOT, because it is a WRITE: an operator whose grant change
+   * was refused must see it on the page banner, and the screen's submission conclusion must treat the
+   * submission as failed.
+   *
+   * @param moduleId The module whose grants to replace.
+   * @param replacement The complete grant state, and the state of the inheritance switch.
+   */
+  savePermissions(moduleId: number, replacement: ModulePermissionReplacement): void {
+    this._permissionsSaving.set(true);
+
+    this.track(
+      this.moduleService.replaceModulePermissions(moduleId, replacement).subscribe({
+        next: () => {
+          this._permissionsSaving.set(false);
+          this.loadPermissions(moduleId);
+        },
+        error: (cause: unknown) => {
+          this._permissionsSaving.set(false);
+          this.recordFailure('savePermissions', cause);
+        },
+      }),
+    );
+  }
+
+  // ---------------------------------------------------------------------------------------------------
   // CONTENT TRANSFER
   // ---------------------------------------------------------------------------------------------------
 
@@ -1319,6 +1534,10 @@ export class ModuleStore implements OnDestroy {
     this._query.set({ pageIndex: 0, pageSize: DEFAULT_PAGE_SIZE });
     this._filter.set({});
     this._listLoading.set(false);
+    // ⚠ THE LATCH GOES WITH THE SLICE IT DESCRIBES. It records that a listing read COMPLETED, and the page
+    // it described has just been emptied - so a latch left standing would tell the next session's first
+    // arrival that a listing is in hand when none is, which is the very state it exists to distinguish.
+    this._listSettled.set(false);
 
     this._choices.set([]);
     // Zeroed with the rows it describes. Leaving the previous session's total behind would make an
@@ -1337,6 +1556,13 @@ export class ModuleStore implements OnDestroy {
     this._settingsLoading.set(false);
     this._settingsFailure.set(null);
     this._settingsSaving.set(false);
+
+    // The grant grid. It names roles and accounts of the tenant being left, so nothing here may survive
+    // the sign-out that empties this store.
+    this._permissionGrid.set(null);
+    this._permissionsLoading.set(false);
+    this._permissionsFailure.set(null);
+    this._permissionsSaving.set(false);
 
     // The definition catalogue and the single definition read from it.
     this._definitions.set([]);
@@ -1409,6 +1635,8 @@ export class ModuleStore implements OnDestroy {
     this.moduleRequest = null;
     this.settingsRequest?.unsubscribe();
     this.settingsRequest = null;
+    this.permissionRequest?.unsubscribe();
+    this.permissionRequest = null;
     this.cancelDefinitionReads();
     this.tabsRequest?.unsubscribe();
     this.tabsRequest = null;
@@ -1543,6 +1771,7 @@ export class ModuleStore implements OnDestroy {
   private abandonOperations(): void {
     this.moduleReads.invalidate();
     this.settingsReads.invalidate();
+    this.permissionReads.invalidate();
     this.exportOperations.invalidate();
   }
 
@@ -1599,7 +1828,7 @@ export class ModuleStore implements OnDestroy {
    * @param cause The value the error callback received.
    */
   private recordFailure(operation: ModuleStoreOperation, cause: unknown): void {
-    const problem: ProblemDetails | null = problemFromCause(cause);
+    const problem: ProblemDetails = problemFromCause(cause);
 
     this._failure.set({
       operation,
@@ -1607,6 +1836,28 @@ export class ModuleStore implements OnDestroy {
       summary: summarizeProblem(problem),
       code: failureCode(problem),
     });
+  }
+
+  /**
+   * Resolves a cause into a failure record WITHOUT writing the shared slot.
+   *
+   * Extracted so an advisory read can describe its own refusal in full - the document, its summary and its
+   * code - without that refusal reaching the page banner or the submission conclusion. {@link
+   * ModuleStore.recordFailure} remains the only route to the shared slot.
+   *
+   * @param operation The command that failed.
+   * @param cause Whatever the transport threw.
+   * @returns The failure record.
+   */
+  private describeFailure(operation: ModuleStoreOperation, cause: unknown): ModuleStoreFailure {
+    const problem: ProblemDetails = problemFromCause(cause);
+
+    return {
+      operation,
+      problem,
+      summary: summarizeProblem(problem),
+      code: failureCode(problem),
+    };
   }
 }
 

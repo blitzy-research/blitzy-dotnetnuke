@@ -25,18 +25,31 @@
   border-style: var(--border-style);
   border-color: var(--color-border);
 
-  // The accent arc inherits from context rather than naming a colour, so the indicator tints itself to
-  // whatever text it sits beside.
-  border-block-start-color: currentColor;
+  // ⚠ THE ACCENT ARC NAMES ITS OWN TOKEN AND NO LONGER INHERITS `currentColor`, and the change is a fix
+  // rather than a preference. Inheriting made the indicator a different colour on every screen it appeared
+  // on: inside the shared grid's placeholder cell it resolved to the muted token, because that cell
+  // declares it, while the same component beside ordinary body text resolved to inherited BLACK - a value
+  // that is not in the colour vocabulary at all. Measured on the portal listing, whose indicator sits
+  // outside the grid. Naming the token makes the one indicator identical everywhere and keeps every value
+  // inside the vocabulary.
+  border-block-start-color: var(--color-text-muted);
 
+  // THE ROTATION, DECLARED EXACTLY ONCE.
+  //
+  // ⚠ THIS FILE USED TO DECLARE IT TWICE, AND THE SECOND DECLARATION FROZE THE INDICATOR ON EVERY SCREEN.
+  // The mixin below binds the animation to the keyframes published in `styles.scss`, under a name that is
+  // GLOBAL and therefore stable. A second, component-local `@keyframes` block was also declared here and
+  // bound by a later `animation-name`, which won the cascade - but emulated view encapsulation rewrites a
+  // component's own keyframes name and left that reference unprefixed, so the winning declaration named a
+  // keyframe list that did not exist. Measured consequence: `animation-play-state` reported `running` and
+  // `animation-duration` reported `1s`, yet Chrome created no `CSSAnimation` at all and `transform` read
+  // `none` in 24 of 24 samples across four seconds of continuous loading state. Nothing reported it - no
+  // console error, no failed request, and the computed style looked healthy.
+  //
+  // The lesson is narrow and worth keeping: a component stylesheet must not declare `@keyframes`, because
+  // the name it writes is not the name that is emitted. Motion keyframes belong in the global stylesheet,
+  // which is where the only one in this application lives.
   @include mx.indeterminate-spin;
-  // The indicator does NOT rotate, and two design-system constraints decide it rather than preference.
-  @include mx.motion-safe {
-    animation-name: loading-spinner-rotate;
-    animation-duration: var(--duration-rotate);
-    animation-timing-function: var(--easing-rotate);
-    animation-iteration-count: infinite;
-  }
 }
 
 :host([data-size='small']) .indicator {
@@ -65,15 +78,9 @@
   overflow-wrap: break-word;
 }
 
-// Declared at the top level rather than inside the guard because `@keyframes` is not a declaration and
-// cannot live in a rule; the GUARD is applied where the animation is bound, so these frames are simply
-// never referenced when the reader has asked for less motion.
-@keyframes loading-spinner-rotate {
-  from {
-    transform: rotate(var(--rotate-none));
-  }
-
-  to {
-    transform: rotate(var(--rotate-full-turn));
-  }
-}
+// ⚠ NO `@keyframes` BLOCK BELONGS IN THIS FILE, AND THE ONE THAT WAS HERE HAS BEEN REMOVED. Emulated view
+// encapsulation rewrites the name of a component's own keyframes but not the `animation-name` that
+// references it, so a component-local rotation is authored, emitted, and then never played. The rotation
+// this component uses is published once in `src/styles.scss` and bound through `mx.indeterminate-spin`
+// above; the reduced-motion guard lives inside that mixin, so the frames are simply never referenced when
+// the reader has asked for less motion.

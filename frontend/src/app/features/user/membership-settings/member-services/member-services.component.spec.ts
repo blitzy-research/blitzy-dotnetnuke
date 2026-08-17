@@ -217,25 +217,46 @@ describe('MemberServicesComponent', () => {
     });
   }
 
+  /**
+   * The page size the whole-catalogue reader asks for. Mirrors `WHOLE_CATALOGUE_PAGE_SIZE` in `UserService`.
+   */
+  const CATALOGUE_PAGE_SIZE = 100;
+
+  /**
+   * The PAGED wire envelope the member-services endpoint answers with. MIGRATION: the catalogue used to
+   * arrive in one unbounded response and is now read a bounded page at a time, so its body carries populated
+   * metadata where the single-payload envelope carried none.
+   *
+   * @param services The rows of this page.
+   * @returns The body to flush.
+   */
+  function cataloguePage(services: readonly MemberService[]): object {
+    return {
+      items: services,
+      meta: {
+        totalCount: services.length,
+        pageIndex: 0,
+        pageSize: CATALOGUE_PAGE_SIZE,
+        totalPages: services.length === 0 ? 0 : Math.ceil(services.length / CATALOGUE_PAGE_SIZE),
+      },
+    };
+  }
+
   /** Arrives as the account holder and satisfies the catalogue read. */
   function arrive(services: readonly MemberService[] = [offer()]): void {
     seatIdentity(ACCOUNT_ID);
     fixture.componentRef.setInput('accountId', ACCOUNT_ID);
     fixture.detectChanges();
 
-    expectRequest('GET', SERVICES_URL, 'the catalogue read').flush({
-      data: services,
-      meta: null,
-    });
+    expectRequest('GET', SERVICES_URL, 'the catalogue read').flush(cataloguePage(services));
     fixture.detectChanges();
   }
 
   /** Satisfies the re-read every command issues on success. */
   function settleAfterCommand(services: readonly MemberService[] = [offer()]): void {
-    expectRequest('GET', SERVICES_URL, 'the re-read after a command').flush({
-      data: services,
-      meta: null,
-    });
+    expectRequest('GET', SERVICES_URL, 'the re-read after a command').flush(
+      cataloguePage(services),
+    );
     fixture.detectChanges();
   }
 

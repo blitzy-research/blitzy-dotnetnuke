@@ -3,6 +3,8 @@ using DnnMigration.Api.Middleware;
 using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Domain.Common;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
+using Microsoft.AspNetCore.WebUtilities;
 
 namespace DnnMigration.Api.ErrorHandling;
 
@@ -27,14 +29,16 @@ public static class ApiResults
         "module.controller.not_specified", "module.move_destination_invalid", "module.not_portable",
         "module.request_invalid", "module.setting_invalid", "module.update.wide_effect",
         "permission.filter_invalid", "permission.key_invalid", "permission.module_foreign_tenant",
-        "permission.module_unknown", "permission.tab_foreign_tenant", "permission.tab_unknown",
+        "permission.module_unknown", "permission.request_invalid", "permission.tab_foreign_tenant",
+        "permission.tab_unknown",
         "portal.administrator_invalid", "portal.delete.partially_applied", "portal.paging_invalid",
         "portal.parent_alias_too_deep", "portal.parent_alias_unresolved",
         "portal.permission_catalogue_incomplete", "portal.processor_reference_invalid",
         "portal.tab_reference_invalid", "portal.tenant_unresolved", "portal_alias_ambiguous",
         "portal_context_incomplete", "profile_definition.validation_expression_invalid", "request.failed",
         "request.invalid", "role.paging_invalid", "role_assignment.expired_not_removed",
-        "role_group.scope_invalid", "tab.name_reserved", "tab.parent_cross_portal", "tab.parent_cycle",
+        "role_group.scope_invalid", "tab.name_reserved", "tab.paging_invalid", "tab.parent_cross_portal",
+        "tab.parent_cycle",
         "tenant_path_prefix_mismatch", "user.choices.sort_unsupported", "user.create.invalid_email",
         "user.create.invalid_password", "user.create.invalid_username", "user.create.password_mismatch",
         "user.create.portal_assignment_failed", "user.display_name.too_long", "user.list.filter_invalid",
@@ -45,7 +49,7 @@ public static class ApiResults
         "user.password.unsupported_operation", "user.profile.property_validation_failed",
         "user.profile.required_property_missing", "user.profile.too_many_properties",
         "user.profile.value_too_long", "user.profile.visibility_invalid", "user.service.code_not_matched",
-        "user.service.code_required", "user.unlock.not_locked",
+        "user.service.code_required", "user.service.paging_invalid", "user.unlock.not_locked",
     };
 
     /// <summary>
@@ -299,6 +303,13 @@ public static class ApiResults
     /// <summary>The detail reported with a 404 produced from a successful outcome that carried no value.</summary>
     private const string ResourceNotFoundDetail = "The requested resource does not exist.";
 
+    /// <summary>
+    /// The media type every problem document is published as. Stated here because the per-field payload is
+    /// returned through an <see cref="ObjectResult"/> built in this file rather than through
+    /// <see cref="ControllerBase.Problem(string, string, int?, string, string)"/>, which sets it itself.
+    /// </summary>
+    private const string ProblemContentType = "application/problem+json";
+
     /// <summary>Translates an outcome that carries no value.</summary>
     /// <param name="controller">The controller producing the response.</param>
     /// <param name="result">The outcome to translate.</param>
@@ -528,11 +539,56 @@ public static class ApiResults
         ResultReason? error = result.Error;
         string code = error?.Code ?? "request.failed";
         string detail = SafeDetail(error?.Message);
+        int status = MapStatusCode(code);
+        string type = BuildProblemType(code);
+
+        // A FAILURE THAT NAMES ITS FIELDS IS PUBLISHED WITH RFC 7807'S `errors` MEMBER, and one that does not
+        // is published flat exactly as before. This is the ONE place in the solution where an expected failure
+        // becomes a response, so extending it here is what gives every action the per-field shape without any
+        // action having to opt in.
+        //
+        // ⚠ THE DISTINCTION IS `null` VERSUS EMPTY, NOT PRESENT VERSUS ABSENT. A reason that carries no field
+        // attribution leaves the property `null`; an empty dictionary would publish an `errors` member with
+        // nothing in it, which tells a client there are field errors and then names none.
+        if (error?.FieldErrors is { Count: > 0 } fieldErrors)
+        {
+            // ⚠ ROUTED THROUGH MODEL STATE AND THE SHARED FACTORY, NOT BUILT BY HAND. The factory is what
+            // attaches `traceId` and `correlationId` and resolves the problem-type link, so a payload
+            // constructed here directly would be the one problem document in the solution missing them. Going
+            // through a model-state dictionary reaches the factory's own override, which is the same path a
+            // request-shape failure takes — so a client cannot tell the two apart, which is the point.
+            var modelState = new ModelStateDictionary();
+
+            foreach (KeyValuePair<string, IReadOnlyList<string>> entry in fieldErrors)
+            {
+                foreach (string message in entry.Value)
+                {
+                    // Each message passes the same publication guard as the summary detail, because these are
+                    // published verbatim for the same reason and carry the same risk.
+                    modelState.AddModelError(entry.Key, SafeDetail(message));
+                }
+            }
+
+            ValidationProblemDetails validationProblem = controller.ProblemDetailsFactory
+                .CreateValidationProblemDetails(
+                    controller.HttpContext,
+                    modelState,
+                    statusCode: status,
+                    title: ReasonPhrases.GetReasonPhrase(status),
+                    type: type,
+                    detail: detail);
+
+            return new ObjectResult(validationProblem)
+            {
+                StatusCode = status,
+                ContentTypes = { ProblemContentType },
+            };
+        }
 
         return controller.Problem(
             detail: detail,
-            statusCode: MapStatusCode(code),
-            type: BuildProblemType(code));
+            statusCode: status,
+            type: type);
     }
 
     /// <summary>Publishes an expected failure's explanation, or a stand-in when it does not look authored.</summary>

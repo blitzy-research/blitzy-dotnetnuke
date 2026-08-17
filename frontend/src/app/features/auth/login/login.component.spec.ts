@@ -1,6 +1,6 @@
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
-import { TestBed } from '@angular/core/testing';
+import { TestBed, discardPeriodicTasks, fakeAsync, tick } from '@angular/core/testing';
 import { ActivatedRoute, Router, convertToParamMap, provideRouter } from '@angular/router';
 
 import type { TestRequest } from '@angular/common/http/testing';
@@ -24,6 +24,9 @@ import {
 } from '../../../core/utils/form-errors.util';
 import {
   DEFAULT_SIGNED_IN_ROUTE,
+  ECHOED_ADDRESS_MAX_LENGTH,
+  EDIT_INVALIDATED_FAILURE_CODES,
+  EJECTION_NOTICE_WITHOUT_ADDRESS,
   LOGIN_BOUND_MESSAGES,
   LOGIN_CONTROL_IDS,
   LOGIN_PASSWORD_MAX_BYTES,
@@ -35,6 +38,7 @@ import {
   USERNAME_QUERY_KEY,
   VERIFICATION_CODE_QUERY_KEY,
   LoginComponent,
+  ejectionNoticeFor,
 } from './login.component';
 
 // ADDRESSES
@@ -447,6 +451,18 @@ describe('LoginComponent', () => {
   /** Fills both credential fields with the fixture values. */
   function fillCredentials(): void {
     type(LOGIN_CONTROL_IDS.username, ACCOUNT_NAME);
+    type(LOGIN_CONTROL_IDS.password, SUBMITTED_PASSWORD);
+  }
+
+  /**
+   * Re-enters the credential before a SECOND attempt.
+   *
+   * ⚠ EVERY REFUSAL NOW EMPTIES THE PASSWORD BOX, so a second attempt genuinely requires this and a
+   * specification that omits it is client-blocked before any request is issued. That is legacy parity, not
+   * a new obstacle: `Login.ascx` declared the box as `<asp:TextBox TextMode="Password">`, whose value
+   * ASP.NET never re-renders across a post-back, so every refused legacy attempt came back with it empty.
+   */
+  function retypePassword(): void {
     type(LOGIN_CONTROL_IDS.password, SUBMITTED_PASSWORD);
   }
 
@@ -1159,7 +1175,15 @@ describe('LoginComponent', () => {
       expect(navigateSpy).toHaveBeenCalledTimes(1);
     });
 
-    it('leaves the credential in the box and writes it into no attribute', () => {
+    it('empties the credential box and writes the credential into no attribute', () => {
+      // ⚠ THIS CASE USED TO ASSERT THE OPPOSITE, AND THAT IS THE DEFECT IT NOW PROVES CLOSED. It required
+      // `password.value` to still be the rejected credential - a faithful encoding of what the screen did,
+      // and measured as such: the rejected password sat in the box with the caret placed inside it, so
+      // correcting a single mistyped character began with clearing the whole field.
+      //
+      // Emptying it is legacy parity rather than a new idea. `Login.ascx` declared the box as
+      // `<asp:TextBox TextMode="Password">`, and ASP.NET deliberately never re-renders such a control's
+      // value across a post-back, so a refused legacy attempt always came back with an empty box.
       create();
 
       attemptAndRefuse(
@@ -1168,10 +1192,13 @@ describe('LoginComponent', () => {
 
       const password = requiredControl(LOGIN_CONTROL_IDS.password);
 
-      // ⚠ `Login.ascx.vb:L123` IS NOT CARRIED FORWARD. It read `txtPassword.Attributes.Add("value",
-      // txtPassword.Text)`, deliberately writing the submitted credential into an HTML attribute so the box
-      // survived a post-back.
-      expect(password.value).toBe(SUBMITTED_PASSWORD);
+      expect(password.value)
+        .withContext('the rejected credential is discarded, as the legacy post-back discarded it')
+        .toBe('');
+
+      // ⚠ `Login.ascx.vb:L123` IS STILL NOT CARRIED FORWARD, which is the other half of this case. It read
+      // `txtPassword.Attributes.Add("value", txtPassword.Text)`, deliberately writing the submitted
+      // credential into an HTML attribute so the box survived a post-back.
       expect(password.getAttribute('value'))
         .withContext('the credential is not written into an attribute')
         .toBeNull();
@@ -1180,6 +1207,12 @@ describe('LoginComponent', () => {
       expect(host().outerHTML).not.toContain(
         SUBMITTED_PASSWORD.trim(),
       );
+
+      expect(queryAll('.form-field__error').map((node) => (node.textContent ?? '').trim()))
+        .withContext(
+          'and the emptiness the SCREEN caused is not reported as an omission the person made',
+        )
+        .not.toContain(LOGIN_REQUIRED_MESSAGES.password);
     });
   });
 
@@ -1220,6 +1253,37 @@ describe('LoginComponent', () => {
 
       // A refusal is not a navigation.
       expect(navigateSpy).not.toHaveBeenCalled();
+    });
+
+    it('keeps the failure region immediately after the banner, because the spacing rule matches on that', () => {
+      create();
+
+      attemptAndRefuse(
+        refusal(INVALID_CREDENTIALS_CODE, 401, 'The account name or credential is not correct.'),
+      );
+
+      const banner = queryOrFail('app-error-banner');
+      const failure = queryOrFail('.login__failure');
+
+      // ⚠ THIS IS A STYLING CONTRACT ENFORCED FROM THE TEMPLATE SIDE. The paired stylesheet
+      // cancels the shared banner's trailing margin with `app-error-banner + .login__failure`,
+      // so the Dismiss control sits one step beneath the banner instead of two and reads as the
+      // banner's own affordance. An adjacent-sibling selector is a property of THIS template,
+      // not of the stylesheet: put anything between the two, or move the region, and the rule
+      // silently stops matching - the doubled gap returns to the screen and no other assertion
+      // here notices. This one does. A computed-value assertion would not, because the spacing
+      // tokens are declared by the global stylesheet, which a component test does not load.
+      expect(banner.nextElementSibling)
+        .withContext("the failure region is the banner's immediate next sibling")
+        .toBe(failure);
+
+      // And the control lives INSIDE that region rather than inside the banner, which is what
+      // keeps it on the screen for a failure that carries no problem document at all - a
+      // transport failure, or an intermediary answering on its own behalf, either of which
+      // leaves the banner painting nothing while the failure flag is still set.
+      expect(failure.querySelector('.login__dismiss'))
+        .withContext('the Dismiss control belongs to the failure region')
+        .not.toBeNull();
     });
 
     it('renders the refusal INLINE and announces nothing globally', () => {
@@ -1292,7 +1356,9 @@ describe('LoginComponent', () => {
         refusal(INVALID_CREDENTIALS_CODE, 401, 'The account name or credential is not correct.'),
       );
 
-      expect(textOf('.error-banner__trace')).toBe(`Reference: ${CORRELATION_ID}`);
+      expect(textOf('.error-banner__trace')).toBe(
+        `If you report this, quote reference ${CORRELATION_ID}.`,
+      );
 
       expect(queryAll('.error-banner__trace').length).toBe(1);
     });
@@ -1324,6 +1390,75 @@ describe('LoginComponent', () => {
       expect(RATE_LIMIT_MESSAGE).toBe(TOO_MANY_ATTEMPTS);
       expect(RATE_LIMIT_MESSAGE).not.toBe(statusMessage(500));
       expect(authFailureMessage(VERIFICATION_REQUIRED_CODE)).not.toBe(RATE_LIMIT_MESSAGE);
+    });
+
+    // ⚠ THE ADVERTISED WINDOW, WHICH USED TO BE DISCARDED ENTIRELY. The server answers a rate-limited
+    // sign-in with `Retry-After`, the store already knew how to read that header - it used it for the
+    // sign-out backoff and nowhere else - and the screen said "Wait a moment and try again" without the
+    // duration while leaving the button live. On a limiter that counts refused attempts, that let a person
+    // push their own window further out by hammering it.
+    it('states the advertised window and withholds the button for its duration', fakeAsync(() => {
+      create();
+      fillCredentials();
+      submit();
+
+      expectLoginRequest().flush(
+        refusal(RATE_LIMITED_CODE, 429, 'Too many requests have been submitted.'),
+        {
+          status: 429,
+          statusText: 'Too Many Requests',
+          headers: { 'Content-Type': PROBLEM_MEDIA_TYPE, 'Retry-After': '5' },
+        },
+      );
+      fixture.detectChanges();
+
+      const notice = (): string => (query('.login__notice')?.textContent ?? '').trim();
+      const submitButton = (): HTMLButtonElement =>
+        queryOrFail<HTMLButtonElement>('button[type="submit"]');
+
+      expect(notice())
+        .withContext('the window the server named is stated, not merely "a moment"')
+        .toBe('Too many attempts. Try again in 5 seconds.');
+      expect(submitButton().disabled)
+        .withContext('and another attempt is genuinely withheld')
+        .toBeTrue();
+
+      // ⚠ `fakeAsync`/`tick`, NOT `jasmine.clock()`. The clock replaces the global timers this framework's
+      // own scheduler runs on, which deadlocks change detection and hangs the browser; `fakeAsync` patches
+      // them through the zone and keeps the scheduler working.
+      tick(4_000);
+      fixture.detectChanges();
+
+      expect(notice())
+        .withContext('the countdown is singular at one second')
+        .toBe('Too many attempts. Try again in 1 second.');
+      expect(submitButton().disabled).toBeTrue();
+
+      tick(1_000);
+      fixture.detectChanges();
+
+      expect(submitButton().disabled)
+        .withContext('the button returns once the window has elapsed')
+        .toBeFalse();
+
+      // ⚠ STILL NO AUTOMATIC RE-ATTEMPT. The cool-off withholds the control; it does not submit for the
+      // operator, which would defeat the very limiter that produced the refusal.
+      expect(matchLoginRequests().length).toBe(0);
+
+      // The interval clears itself at zero; this is the guard against a future change leaking one.
+      discardPeriodicTasks();
+    }));
+
+    it('keeps the unquantified sentence when the server named no window', () => {
+      create();
+
+      // No `Retry-After`: the screen must not invent a duration the server did not state.
+      attemptAndRefuse(refusal(RATE_LIMITED_CODE, 429, 'Too many requests have been submitted.'));
+
+      expect((query('.login__notice')?.textContent ?? '').trim()).toBe(RATE_LIMIT_MESSAGE);
+      expect(queryOrFail<HTMLButtonElement>('button[type="submit"]').disabled)
+        .withContext('and nothing is withheld for a window that was never named')
+        .toBeFalse();
     });
 
     it('issues exactly one request for a rate-limited refusal, and never a second on its own', () => {
@@ -1551,6 +1686,7 @@ describe('LoginComponent', () => {
         .withContext('echoed on the rung itself')
         .toBe('true');
 
+      retypePassword();
       type(LOGIN_CONTROL_IDS.verificationCode, '123456');
       submit();
       expectLoginRequest().flush('<html>Gateway failure</html>', {
@@ -1675,6 +1811,7 @@ describe('LoginComponent', () => {
         ),
       );
 
+      retypePassword();
       type(LOGIN_CONTROL_IDS.verificationCode, SUBMITTED_CODE);
       submit();
 
@@ -1719,23 +1856,29 @@ describe('LoginComponent', () => {
         .toBe(1);
     });
 
-    it('keeps the form-level line assertive on the rung that reveals no field', () => {
+    /**
+     * The rung that reveals no field. What matters here is that the refusal reaches an assertive region and
+     * that the verification box is NOT offered - not which element carries the sentence. It used to demand
+     * `.login__message` with `role="alert"` specifically, which is the duplicate the banner made redundant.
+     */
+    it('announces the rung that reveals no field, without offering the code box', () => {
       create();
 
-      attemptAndRefuse(
-        refusal(
-          ACCOUNT_NOT_APPROVED_CODE,
-          401,
-          'This account has not been authorised to sign in to this portal.',
-        ),
+      const serverSentence = 'This account has not been authorised to sign in to this site.';
+
+      attemptAndRefuse(refusal(ACCOUNT_NOT_APPROVED_CODE, 401, serverSentence));
+
+      expect(control(LOGIN_CONTROL_IDS.verificationCode))
+        .withContext('no code is being asked for, so no box is offered')
+        .toBeNull();
+
+      const announced = queryAll('[role="alert"], [aria-live="assertive"]').filter((node) =>
+        (node.textContent ?? '').includes(serverSentence),
       );
 
-      expect(control(LOGIN_CONTROL_IDS.verificationCode)).toBeNull();
-
-      const message = queryOrFail('.login__message');
-
-      expect((message.textContent ?? '').trim()).toBe(ACCOUNT_NOT_APPROVED_MESSAGE);
-      expect(message.getAttribute('role')).toBe('alert');
+      expect(announced.length)
+        .withContext('the refusal is announced, exactly once')
+        .toBe(1);
     });
 
     it('asks again, and keeps the field, when the server repeats the request for a code', () => {
@@ -1752,6 +1895,7 @@ describe('LoginComponent', () => {
       // What the wire CAN still carry is the server repeating its request for a code after a second
       // attempt, and this is that: the field must stay on screen and the sentence must be asked again
       // rather than replaced by a wrong-code message.
+      retypePassword();
       type(LOGIN_CONTROL_IDS.verificationCode, 'a-code-the-server-has-not-approved');
       submit();
 
@@ -1791,6 +1935,7 @@ describe('LoginComponent', () => {
         ),
       );
 
+      retypePassword();
       type(LOGIN_CONTROL_IDS.verificationCode, ' ');
       submit();
 
@@ -1819,18 +1964,38 @@ describe('LoginComponent', () => {
       expect(textOf('.login__message')).toBe(VERIFICATION_CODE_INVALID_MESSAGE);
     });
 
-    it('reports the third ladder outcome with its own measured wording', () => {
+    /**
+     * ⚠ THIS CASE USED TO REQUIRE THE SECOND ANNOUNCEMENT, AND THAT IS WHY IT CHANGED. It asserted the
+     * ladder's own wording in `.login__message` while the shared banner was independently rendering the
+     * server's sentence for the same refusal - so the two together announced one fact twice, in two
+     * assertive regions and two different sets of words, which runtime testing measured on a real unapproved
+     * account. The wording is still owned and still asserted; what is no longer asserted is that it be said
+     * on top of the server's own sentence.
+     */
+    it('states the third ladder outcome ONCE, leaving it to the banner that already carries it', () => {
       create();
 
-      attemptAndRefuse(
-        refusal(
-          ACCOUNT_NOT_APPROVED_CODE,
-          401,
-          'This account has not been authorised to sign in to this portal.',
-        ),
+      const serverSentence = 'This account has not been authorised to sign in to this site.';
+
+      attemptAndRefuse(refusal(ACCOUNT_NOT_APPROVED_CODE, 401, serverSentence));
+
+      // The wording this screen owns for the code is unchanged, and is still what would be shown if the
+      // server sent no document at all.
+      expect(authFailureMessage(ACCOUNT_NOT_APPROVED_CODE)).toBe(ACCOUNT_NOT_APPROVED_MESSAGE);
+
+      // But the screen adds no second copy of a refusal the banner is already stating.
+      expect(query('.login__message'))
+        .withContext('one refusal, one statement')
+        .toBeNull();
+
+      const announced = queryAll('[role="alert"], [aria-live="assertive"]').filter(
+        (node) => (node.textContent ?? '').trim().length > 0,
       );
 
-      expect(textOf('.login__message')).toBe(ACCOUNT_NOT_APPROVED_MESSAGE);
+      expect(announced.length)
+        .withContext('exactly one assertive region carries it')
+        .toBe(1);
+      expect(announced[0].textContent ?? '').toContain(serverSentence);
     });
 
     it('does not reveal the field for an ordinary refused credential', () => {
@@ -1857,6 +2022,7 @@ describe('LoginComponent', () => {
 
       expect(control(LOGIN_CONTROL_IDS.verificationCode)).toBeNull();
 
+      retypePassword();
       submit();
       refuseSignIn(
         refusal(
@@ -1880,6 +2046,7 @@ describe('LoginComponent', () => {
         ),
       );
 
+      retypePassword();
       type(LOGIN_CONTROL_IDS.verificationCode, SUBMITTED_CODE);
       submit();
       completeSignIn();
@@ -2507,20 +2674,384 @@ describe('LoginComponent', () => {
   // -------------------------------------------------------------------------
 
   describe('deliberate omissions', () => {
-    it('offers no keep-me-signed-in box, no recovery link and no registration link', () => {
+    it('offers no keep-me-signed-in box and no registration link', () => {
       create();
 
-      // The 37 lines of legacy markup contain none of the three, and the authentication surface is closed
-      // at four endpoints - sign in, renew, sign out, read one's own identity - so no endpoint exists for
-      // any of them.
+      // The 37 lines of legacy markup contain none of these, and the authentication surface is closed at
+      // four endpoints - sign in, renew, sign out, read one's own identity - so no endpoint exists for any
+      // of them.
       const text = host().textContent ?? '';
 
       expect(text).not.toContain('Remember');
       expect(text).not.toContain('Register');
-      expect(text).not.toContain('Forgot');
 
       expect(queryAll('input[type="checkbox"]').length).toBe(0);
-      expect(queryAll('a').length).withContext('no navigational affordance at all').toBe(0);
+      expect(queryAll('a').length)
+        .withContext('no navigational affordance, because there is no screen any of them could reach')
+        .toBe(0);
+    });
+
+    /**
+     * ⚠ THIS CASE INVERTS AN EARLIER ONE, DELIBERATELY. The suite used to assert that the word "Forgot"
+     * appeared nowhere on this screen, on the reasoning that password retrieval was removed and so nothing
+     * about it should be offered. Runtime testing showed what that produced: two links in every state, no
+     * pointer of any kind, and a person who could not sign in left with no next step available to them
+     * anywhere in the application. Removing the CAPABILITY was right; removing the EXPLANATION was not.
+     *
+     * What must still not appear is a LINK - there is no screen to link to, and one that answered nothing
+     * would be worse than the sentence. The case above still holds the anchor count at zero.
+     */
+    it('explains what to do about a forgotten password, without pretending it can send one', () => {
+      create();
+
+      const pointer = queryOrFail('.login__recovery');
+      const said = (pointer.textContent ?? '').replace(/\s+/g, ' ').trim();
+
+      expect(said).toContain('Forgotten your password?');
+      expect(said)
+        .withContext('it says WHY, so the absence reads as a decision rather than a gap')
+        .toContain('nobody');
+      expect(said)
+        .withContext('and it names the route that does exist')
+        .toContain('Ask an administrator');
+
+      // Standing guidance, not an outcome: someone who cannot remember their password never submits, so
+      // gating it behind a refusal would withhold it from exactly the person who needs it.
+      expect(query('.login__failure'))
+        .withContext('shown before any attempt has been made')
+        .toBeNull();
+    });
+
+    /**
+     * The locked-account advisory, which is the whole of the fix for a measured misdirection. A user who
+     * typed their CORRECT password into a locked account used to be told "the account name or credential is
+     * not correct" - a false statement - with no wait, no counter and no recovery route, and the sentence was
+     * byte-identical to the one a wrong password produced. The server now discloses the state to whoever
+     * proved the credential, and this screen's job is to put that document in front of them.
+     *
+     * The wait is deliberately NOT asserted as a literal here: it is read from the installation's own
+     * automatic-unlock setting, so a fixed number in a specification would be a second source of truth that
+     * could disagree with the mechanism.
+     */
+    it('renders the locked-account advisory the server discloses, with its support reference', () => {
+      create();
+
+      const advisory =
+        'This account has been locked out after too many unsuccessful sign-in attempts. Please wait 10'
+        + ' minutes before trying again. If you cannot wait, or you no longer know the password, ask an'
+        + ' administrator to unlock the account or reset it for you.';
+
+      attemptAndRefuse(refusal('auth.locked_out', 401, advisory));
+
+      const shown = (host().textContent ?? '').replace(/\s+/g, ' ');
+
+      expect(shown)
+        .withContext('the advisory reaches the reader rather than being swallowed')
+        .toContain(advisory);
+      expect(shown)
+        .withContext('and it is NOT the generic credential refusal, which would be untrue')
+        .not.toContain('The account name or credential is not correct.');
+      expect(shown)
+        .withContext('the reference stays available, because this is a state an administrator resolves')
+        .toContain(CORRELATION_ID);
+
+      // Stated once. The banner owns it; the screen adds no second copy.
+      const announced = queryAll('[role="alert"], [aria-live="assertive"]').filter((node) =>
+        (node.textContent ?? '').includes('locked out'),
+      );
+
+      expect(announced.length).toBe(1);
+    });
+
+    // -------------------------------------------------------------------------------------------------
+    // A REFUSAL THE PERSON HAS ALREADY INVALIDATED
+    // -------------------------------------------------------------------------------------------------
+
+    // ⚠ THE MEASURED DEFECT THESE PROVE CLOSED. A refused sign-in left an assertive banner on screen, and
+    // it stayed there while the person typed a correction - so the screen went on asserting that the
+    // credentials were wrong about a pair of boxes that no longer held them. The withdrawal is deliberately
+    // narrow: only refusals ABOUT THE SUBMITTED VALUES go stale when those values change.
+
+    describe('a refusal the edit has invalidated', () => {
+      /** The banner's sentence, or the empty string when no banner is on screen. */
+      function bannerSentence(): string {
+        return (query('.error-banner')?.textContent ?? '').replace(/\s+/g, ' ').trim();
+      }
+
+      it('withdraws a rejected credential once either box changes, and leaves the caret alone', () => {
+        create();
+
+        attemptAndRefuse(
+          refusal(INVALID_CREDENTIALS_CODE, 401, 'The account name or credential is not correct.'),
+        );
+
+        expect(bannerSentence())
+          .withContext('the refusal is stated when it arrives, which is the whole point of showing it')
+          .toContain('The account name or credential is not correct.');
+
+        // The refusal placed the caret in the password box. Typing must not move it.
+        const password = requiredControl(LOGIN_CONTROL_IDS.password);
+
+        password.focus();
+        type(LOGIN_CONTROL_IDS.password, 'a-corrected-credential');
+
+        expect(query('.error-banner'))
+          .withContext('and withdrawn the moment the value it judged stops being the value on screen')
+          .toBeNull();
+        expect(document.activeElement)
+          .withContext('the caret stays where the person is typing - no focus is taken mid-word')
+          .toBe(password);
+      });
+
+      it('withdraws it when the ACCOUNT NAME changes too, because a credential is the pair', () => {
+        create();
+
+        attemptAndRefuse(
+          refusal(INVALID_CREDENTIALS_CODE, 401, 'The account name or credential is not correct.'),
+        );
+
+        type(LOGIN_CONTROL_IDS.username, 'a-different-account');
+
+        expect(query('.error-banner')).toBeNull();
+      });
+
+      it('withdraws a per-field validator refusal, whichever box is corrected', () => {
+        create();
+
+        fillCredentials();
+        submit();
+        expectLoginRequest().flush(
+          validationRefusal('One or more fields are invalid.', {
+            [SERVER_USERNAME_KEY]: ['That account name is not usable here.'],
+          }),
+          {
+            status: 400,
+            statusText: STATUS_TITLE[400] ?? 'Error',
+            headers: { 'Content-Type': PROBLEM_MEDIA_TYPE },
+          },
+        );
+        fixture.detectChanges();
+
+        expect(queryAll('.form-field__error').map((node) => (node.textContent ?? '').trim()))
+          .withContext('the server\u2019s finding is bound to the field it names')
+          .toContain('That account name is not usable here.');
+
+        type(LOGIN_CONTROL_IDS.username, 'another-account');
+
+        expect(queryAll('.form-field__error').map((node) => (node.textContent ?? '').trim()))
+          .withContext('and withdrawn when that field changes')
+          .not.toContain('That account name is not usable here.');
+      });
+
+      it('KEEPS a locked-account advisory, which an edit cannot make untrue', () => {
+        create();
+
+        const advisory =
+          'This account has been locked out after too many unsuccessful sign-in attempts. Please wait 10'
+          + ' minutes before trying again.';
+
+        attemptAndRefuse(refusal('auth.locked_out', 401, advisory));
+
+        type(LOGIN_CONTROL_IDS.password, 'a-corrected-credential');
+
+        expect((host().textContent ?? '').replace(/\s+/g, ' '))
+          .withContext('the wait is standing information the person still needs while they retype')
+          .toContain('Please wait 10 minutes before trying again.');
+      });
+
+      it('KEEPS an unapproved-account refusal, which is about the account and not the values', () => {
+        create();
+
+        attemptAndRefuse(
+          refusal(ACCOUNT_NOT_APPROVED_CODE, 401, 'This account is awaiting approval for this site.'),
+        );
+
+        type(LOGIN_CONTROL_IDS.password, 'a-corrected-credential');
+
+        expect((host().textContent ?? '').replace(/\s+/g, ' '))
+          .toContain('This account is awaiting approval for this site.');
+      });
+
+      it('KEEPS a verification rung, whose sentence labels the box being filled in', () => {
+        create();
+
+        attemptAndRefuse(
+          refusal(VERIFICATION_REQUIRED_CODE, 401, 'Submit the verification code sent to this account.'),
+        );
+
+        expect(control(LOGIN_CONTROL_IDS.verificationCode))
+          .withContext('the rung revealed the field')
+          .not.toBeNull();
+
+        retypePassword();
+
+        expect(control(LOGIN_CONTROL_IDS.verificationCode))
+          .withContext('and retyping the credential does not strip the field away again')
+          .not.toBeNull();
+        expect(textOf('.login__message'))
+          .withContext('nor the instruction the field depends on')
+          .toBe(VERIFICATION_REQUIRED_MESSAGE);
+      });
+
+      it('KEEPS a rate-limited refusal, so the cool-off is not cut short', () => {
+        create();
+
+        attemptAndRefuse(
+          refusal(RATE_LIMITED_CODE, 429, 'Too many requests have been submitted.'),
+        );
+
+        type(LOGIN_CONTROL_IDS.password, 'a-corrected-credential');
+
+        expect((host().textContent ?? '').replace(/\s+/g, ' '))
+          .withContext('withdrawing this would stop the countdown and re-enable a refused button')
+          .toContain('Too many attempts.');
+      });
+
+      it('KEEPS a failure that carried no document, which no keystroke repairs', () => {
+        create();
+
+        fillCredentials();
+        submit();
+        expectLoginRequest().flush('<html>Gateway failure</html>', {
+          status: 504,
+          statusText: 'Gateway Timeout',
+        });
+        fixture.detectChanges();
+
+        const before = (host().textContent ?? '').replace(/\s+/g, ' ');
+
+        type(LOGIN_CONTROL_IDS.password, 'a-corrected-credential');
+
+        expect((host().textContent ?? '').replace(/\s+/g, ' '))
+          .withContext('a transport failure is not a statement about the typed values')
+          .toBe(before);
+      });
+
+      it('names exactly the refusals an edit invalidates, so the set cannot drift open', () => {
+        // A closed set, asserted as a set. Adding a code here is a decision, not an accident.
+        expect([...EDIT_INVALIDATED_FAILURE_CODES].sort()).toEqual([
+          'auth.invalid_credentials',
+          'auth.request_invalid',
+          'request.invalid',
+        ]);
+      });
+    });
+
+    // -------------------------------------------------------------------------------------------------
+    // WHY THIS SCREEN APPEARED
+    // -------------------------------------------------------------------------------------------------
+
+    // ⚠ THE MEASURED DEFECT THESE PROVE CLOSED. A caller ejected here from a screen that needs a signed-in
+    // account was told NOTHING - measured as both live regions empty. The address was preserved in the query
+    // string and honoured after a successful sign-in, so the BEHAVIOUR was right; it was simply never
+    // explained, and a sign-in form arriving unbidden reads as a fault rather than as a step.
+
+    describe('the ejection explanation', () => {
+      /** The ejection notice element, or null when none is on screen. */
+      function notice(): HTMLElement | null {
+        return query('.login__ejection');
+      }
+
+      it('names the address the caller asked for, politely and once', () => {
+        queryParams = { [RETURN_URL_QUERY_KEY]: '/portals' };
+
+        create();
+
+        const shown = notice();
+
+        expect(shown).withContext('the ejection is explained rather than left silent').not.toBeNull();
+        expect((shown?.textContent ?? '').trim())
+          .withContext('and the explanation names what was asked for, so the caller can recognise it')
+          .toBe(ejectionNoticeFor('/portals'));
+        expect(shown?.getAttribute('role'))
+          .withContext('polite: nothing has gone wrong, so it must not interrupt')
+          .toBe('status');
+        expect(queryAll('.login__ejection').length)
+          .withContext('stated once')
+          .toBe(1);
+      });
+
+      it('sits above the form, so it is met before the boxes it explains', () => {
+        queryParams = { [RETURN_URL_QUERY_KEY]: '/portals' };
+
+        create();
+
+        const order = queryAll('.login__ejection, .login__form').map((node) =>
+          node.classList.contains('login__ejection') ? 'notice' : 'form',
+        );
+
+        expect(order).toEqual(['notice', 'form']);
+      });
+
+      it('says nothing to somebody who came here of their own accord', () => {
+        create();
+
+        expect(notice())
+          .withContext('no requested address means no ejection to explain')
+          .toBeNull();
+      });
+
+      it('says nothing when the requested address is the ordinary landing address', () => {
+        queryParams = { [RETURN_URL_QUERY_KEY]: DEFAULT_SIGNED_IN_ROUTE };
+
+        create();
+
+        expect(notice())
+          .withContext('that is where an unprompted sign-in leads anyway, so narrating it says nothing')
+          .toBeNull();
+      });
+
+      it('explains an ejection WITHOUT quoting an address it would refuse to navigate to', () => {
+        // ⚠ THE SAME JUDGEMENT DECIDES BOTH, WHICH IS THE POINT. A second, looser test for display would be
+        // how a screen ends up printing an address the navigation logic rejects.
+        const hostile = '//evil.test/portals';
+
+        queryParams = { [RETURN_URL_QUERY_KEY]: hostile };
+
+        create();
+
+        expect((notice()?.textContent ?? '').trim())
+          .withContext('still explained - a crafted value must not buy silence')
+          .toBe(EJECTION_NOTICE_WITHOUT_ADDRESS);
+        expect(host().outerHTML)
+          .withContext('and the hostile value reaches the document nowhere at all')
+          .not.toContain('evil.test');
+      });
+
+      it('refuses to echo an over-long address, bounding attacker-supplied prose', () => {
+        const overlong = `/portals?note=${'a'.repeat(ECHOED_ADDRESS_MAX_LENGTH)}`;
+
+        queryParams = { [RETURN_URL_QUERY_KEY]: overlong };
+
+        create();
+
+        expect((notice()?.textContent ?? '').trim()).toBe(EJECTION_NOTICE_WITHOUT_ADDRESS);
+        expect(host().outerHTML)
+          .withContext('interpolation makes it inert as markup; the bound makes it inert as prose')
+          .not.toContain('a'.repeat(ECHOED_ADDRESS_MAX_LENGTH));
+      });
+
+      it('gives up the slot once a refusal has something more urgent to say', () => {
+        queryParams = { [RETURN_URL_QUERY_KEY]: '/portals' };
+
+        create();
+
+        expect(notice()).not.toBeNull();
+
+        attemptAndRefuse(
+          refusal(INVALID_CREDENTIALS_CODE, 401, 'The account name or credential is not correct.'),
+        );
+
+        expect(notice())
+          .withContext('two explanations of two different things must not share one position')
+          .toBeNull();
+
+        // And it comes back once the refusal is withdrawn, because the reason for being here has not changed.
+        query('.login__dismiss')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        fixture.detectChanges();
+
+        expect((notice()?.textContent ?? '').trim()).toBe(ejectionNoticeFor('/portals'));
+      });
     });
 
     it('offers no human-verification challenge', () => {

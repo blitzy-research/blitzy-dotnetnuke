@@ -41,6 +41,46 @@
   gap: var(--space-2);
 }
 
+// ONE STEP OF SEPARATION, NOT TWO - which is what makes the Dismiss control read as the
+// banner's own affordance rather than as something adrift in the middle of the card.
+//
+// The gap above this region was being applied TWICE by two files that cannot see each other,
+// and both applications are correct in isolation: the card's `:host` above is a grid with
+// `gap: var(--space-4)`, so every child is already separated by one step, and the shared
+// banner's own box carries `margin-block-end: var(--space-4)` (error-banner.component.scss)
+// so that it stands clear of whatever follows it on the twenty other screens that render it
+// with no such grid. Together they measured 32px between the banner's bottom edge and this
+// region - double the rhythm every other pair of elements in this card keeps, and far more
+// than the `--space-2` that separates the sentence inside this region from the button below
+// it. The button therefore grouped with nothing: too far from the banner to belong to it,
+// and no closer to the form.
+//
+// SCOPED HERE ON PURPOSE, AND THE SCOPE IS NARROWER THAN THE MECHANISM. Every screen whose
+// host is a gap-bearing grid double-counts the same step, and this one is corrected because
+// it is the only screen where what follows the banner is a CONTROL rather than page content:
+// a button 32px from the message it dismisses but only 16px from the form below it groups
+// with the form, which is the defect. Where the next element is a form or a paragraph the
+// extra step reads as separation and orphans nothing, so it is left alone rather than
+// corrected screen by screen from here.
+//
+// Cancelling exactly the duplicate is the whole fix. The adjacent-sibling combinator is
+// deliberate: it applies only where the region actually follows the banner, and Angular's
+// emulated encapsulation rewrites both halves with THIS component's content attribute, so it
+// reaches the banner host on this screen and no banner anywhere else - the shared component
+// keeps its trailing margin, and its other consumers are untouched.
+//
+// ⚠ THE SHARED COMPONENT IS NOT THE PLACE TO FIX THIS, AND MOVING THE BUTTON INSIDE IT WOULD
+// DELETE AN AFFORDANCE. A failure here can carry no problem document at all - a transport
+// failure, or an intermediary answering on its own behalf - which is exactly why
+// `login.component.ts` reads the store's failure flag instead of testing the document for
+// null. The banner paints nothing without a document, so a Dismiss control projected into it
+// would vanish in the very states a person most needs to clear. The AAP also fixes this
+// component's contract at a single `problem` input with no content slot (§0.3.2), so a slot
+// would be a divergence from it.
+app-error-banner + .login__failure {
+  margin-block-start: calc(-1 * var(--space-4));
+}
+
 // The failure region's only start-aligned item. Declared here rather than as a
 // container-wide alignment so the shared banner beside it keeps the full content width.
 .login__dismiss {
@@ -62,6 +102,25 @@
 .login__message {
   color: var(--color-danger);
   font-weight: var(--font-weight-bold);
+}
+
+// The ejection explanation. Shares the calm bordered treatment of `.login__notice` because it reports the
+// same class of thing - a state of affairs, not a fault - and must not borrow the danger colour that
+// `.login__message` uses for a refusal.
+.login__ejection {
+  margin-block: 0 var(--space-4);
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) var(--border-style) var(--color-border);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-surface);
+}
+
+// The standing recovery pointer. Muted and unbordered so it reads as guidance rather than as an outcome:
+// it is present on every load, including the ones where nothing has gone wrong.
+.login__recovery {
+  margin-block: var(--space-4) 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
 }
 
 // THE FORM

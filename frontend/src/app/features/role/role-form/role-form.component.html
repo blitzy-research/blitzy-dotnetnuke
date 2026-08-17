@@ -4,7 +4,15 @@
     This screen's resource file declares NO create-mode title key, so the legacy add form showed the
     same "Edit Security Roles" heading over a blank creation form.
   -->
-  <app-page-header [title]="heading()" />
+  <app-page-header [title]="heading()" [subtitle]="pageSubtitle()">
+    <!--
+      THE ONE WAY OUT, offered in the same place, with the same caption shape, as the other three detail
+      screens. ⚠ THIS SCREEN USED TO MOVE THE READER INSTEAD - see the arrival effect's migration note.
+    -->
+    @if (nothingToShow()) {
+      <a class="page-action" routerLink="/roles">{{ recoveryLabel }}</a>
+    }
+  </app-page-header>
 
   <!-- The failure surface. -->
   <app-error-banner [problem]="problem()" [fallbackMessage]="failureFallback()" />
@@ -28,15 +36,30 @@
     </div>
   }
 
-  @if (addressUnreadable()) {
-    <!-- The address carries something that is not a role identifier. -->
-    <p class="role-form__notice">{{ unreadableAddressMessage }}</p>
+  @if (nothingToShow()) {
+    <!--
+      Either the address does not name a role, or the role it names has gone. Stated by the banner above -
+      the application's one assertive owner for a refusal - and recovered through the header, so the state
+      is one statement rather than two.
+    -->
   } @else if (loading()) {
     <app-loading-spinner size="large" label="Loading role…" />
   } @else {
     <!-- One form for the whole screen, as the legacy postback was one submission for the whole page. -->
     <!-- `aria-busy` while a save issued by THIS screen is in flight. -->
+    <!--
+      ⚠ `appBlockImplicitSubmit` — ENTER IN A VALUE BOX MUST NOT COMMIT THIS FORM, and that restores the
+      legacy outcome rather than departing from it. Every command in `editroles.ascx` L179-L188 is an
+      `asp:LinkButton`, which renders as an anchor and not a submit control, and the same markup declares
+      eight text boxes - so HTML's implicit-submission rule left Enter doing nothing at all. The port
+      renders a real submit button, so Enter dispatched a genuine save; and this screen's save is the one
+      that legitimately OVERWRITES stored paid-membership values it does not render
+      (`EditRoles.ascx.vb:L212-L231`), which made an accidental keystroke destructive. The save itself is
+      unchanged - it is parity - and both commands stay fully keyboard-operable, because Enter on a button
+      is a click and is never suppressed.
+    -->
     <form
+      appBlockImplicitSubmit
       class="role-form__form"
       [formGroup]="form"
       [attr.aria-busy]="saving() ? 'true' : null"
@@ -202,9 +225,17 @@
         ADVANCED SETTINGS. `dshAdvanced` at L68-L70 declares `IsExpanded="False"`, so this block is
         COLLAPSED ON FIRST RENDER - the `open` attribute is deliberately absent below.
       -->
+      <!--
+        ⚠ THE DISCLOSURE OPENS ITSELF WHEN THERE IS A WITHHELD-VALUES WARNING TO READ, and that is a safety
+        requirement rather than a convenience. The warning lives here because it describes THESE boxes, but
+        the Update command sits OUTSIDE this section and is reachable without ever expanding it - so a
+        collapsed disclosure let an operator run the destructive save with the warning never once on screen.
+        Measured in the browser: the section renders collapsed by default and Update is fully operable.
+      -->
       <details
         #advancedSection
         class="role-form__section role-form__section--advanced"
+        [open]="withheldTermsNotice() !== ''"
         (toggle)="advancedSection.open"
       >
         <summary class="role-form__summary" [attr.aria-expanded]="advancedSection.open">
@@ -230,7 +261,7 @@
           order is untouched.
         -->
         @if (withheldTermsNotice()) {
-          <p class="role-form__notice">{{ withheldTermsNotice() }}</p>
+          <p class="role-form__notice" aria-live="polite">{{ withheldTermsNotice() }}</p>
         }
 
         <div class="role-form__grid">
@@ -397,7 +428,14 @@
             [error]="messageFor('rsvpCode')"
             [class.form-field--disabled]="readOnly()"
           >
-            <div class="role-form__control role-form__control--narrow">
+            <!--
+              NOT a narrow slot. An invitation code is bounded at fifty characters and REQUIRED to be at
+              least twelve, so the narrow measure - sized for a money amount and a period count - was too
+              small for every legal value: a thirteen-character code measured 124.79px inside a 78px content
+              box and six characters were simply clipped away, with no ellipsis and no title. This slot takes
+              the ordinary control measure every other text field on the screen uses.
+            -->
+            <div class="role-form__control">
               <input
                 id="role-form-rsvp-code"
                 type="text"
@@ -442,8 +480,8 @@
       -->
       <div class="role-form__actions">
         @if (canSave()) {
-          <button type="submit" [disabled]="saving()"
-          [attr.aria-busy]="saving() ? 'true' : null">Update</button>
+          <button class="form-action--primary" type="submit" [disabled]="saving()"
+          [attr.aria-busy]="saving() ? 'true' : null">{{ submitLabel() }}</button>
         }
 
         <button type="button" [disabled]="saving()" (click)="onCancel()">Cancel</button>

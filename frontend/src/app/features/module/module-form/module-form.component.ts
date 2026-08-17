@@ -16,6 +16,8 @@ import {
   type Signal,
 } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
+import { MODULE_LIST_ROUTE } from '../../../core/config/app-routes.config';
+import { ListReturnStore } from '../../../core/state/list-return.store';
 import {
   FormControl,
   FormGroup,
@@ -24,13 +26,24 @@ import {
   type AbstractControl,
   type ValidationErrors,
 } from '@angular/forms';
-import { Router } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 
-import { ModuleVisibility } from '../../../core/models/module.model';
+import {
+  ModuleVisibility,
+  UNPUBLISHED_VISIBILITY_ERROR,
+  UNPUBLISHED_VISIBILITY_MESSAGE,
+  isPublishedModuleVisibility,
+} from '../../../core/models/module.model';
 import { NotificationService } from '../../../core/services/notification.service';
 import { AuthStore } from '../../../core/state/auth.store';
 import { ModuleStore } from '../../../core/state/module.store';
-import { fieldErrorMessage } from '../../../core/utils/form-errors.util';
+import {
+  fieldErrorMessage,
+  missingEntityMessage,
+  missingEntityProblem,
+  missingEntityRecoveryLabel,
+} from '../../../core/utils/form-errors.util';
+import { buildPageOptions } from '../../../core/utils/page-options.util';
 import {
   containedIconPathValidator,
   ICON_NOT_CONTAINED_ERROR,
@@ -49,6 +62,7 @@ import type {
   UpdateModuleRequest,
 } from '../../../core/models/module.model';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
+import type { SelectOption } from '../../../core/models/select-option.model';
 import type { TabListItem } from '../../../core/models/tab.model';
 import type { ModuleStoreOperation } from '../../../core/state/module.store';
 import { FocusFirstInvalidDirective } from '../../../shared/directives/focus-first-invalid.directive';
@@ -80,13 +94,6 @@ const ISO_DATE_LENGTH = 10;
 // ROUTES THIS SCREEN NAVIGATES TO
 // =====================================================================================================
 
-/**
- * Where the screen returns after a save, a removal or a cancellation. THE LEGACY SCREEN LEFT ON ALL THREE
- * OUTCOMES. Its update handler ended with `Response.Redirect(NavigateURL(), True)`, and its cancel
- * (`:L281`) and removal (`:L307`) handlers did the same, each returning to the administration page the
- * operator came from.
- */
-const MODULE_LIST_PATH = '/modules';
 
 // WORDING
 // Every string below is taken from the VALUE of a resource entry, never from a markup attribute.
@@ -174,8 +181,18 @@ const FIELD_HINTS: Readonly<Record<ModuleFormField, string>> = Object.freeze({
     + 'existing modules in the site.',
 });
 
-/** The heading shown when an existing module is being edited, from `ModuleSettings.Text`. */
-const EDIT_HEADING = 'Module Settings';
+/**
+ * The heading shown when an existing module is being edited, from `ControlTitle_module.Text` - the resource
+ * key DotNetNuke uses for the CONTROL'S OWN TITLE, which is what the legacy screen showed above its first
+ * section head.
+ *
+ * ⚠ IT WAS `ModuleSettings.Text`, AND THAT IS THE ONE THE FIRST SECTION HEAD BELOW STILL USES. Measured
+ * finding: the page heading and the first section legend both read "Module Settings", one directly above
+ * the other, so the screen appeared to state its own name twice and the section head carried no
+ * information. Both wordings are legacy-verbatim; only which level shows which has changed, and the two
+ * module screens now agree on it.
+ */
+const EDIT_HEADING = 'Module';
 
 /**
  * The heading shown when a module is being placed for the first time. MIGRATION: A NET ADDITION, because
@@ -248,8 +265,21 @@ const UNSTORABLE_DATE_ERROR = 'unstorableDate';
 
 const DATE_OUT_OF_RANGE_MESSAGE = `Enter a date between ${SQL_DATETIME_MINIMUM_DATE} and ${SQL_DATETIME_MAXIMUM_DATE}.`;
 
-/** The label on the save affordance, from `cmdUpdate.Text` in the shared resource file. */
+/**
+ * The label on the save affordance in EDIT mode, from `cmdUpdate.Text` in the shared resource file.
+ *
+ * ⚠ #22 — CREATE AND EDIT NO LONGER SHARE ONE WORD. The legacy screens reused a single `cmdUpdate` button
+ * for both, so "Update" was the only documented wording and this form applied it even at `/modules/new`,
+ * where the operator has created nothing to update yet. Two of the four create screens had already departed
+ * from that - the portal and user forms name what they are about to create - so a reviewer walking the four
+ * met three different words for one action. The vocabulary is settled here in the direction the majority
+ * already went: create names its subject, edit says "Update". The legacy wording is preserved exactly where
+ * the legacy screen actually applied it, which is edit.
+ */
 const SAVE_LABEL = 'Update';
+
+/** The label on the save affordance in CREATE mode. A net addition, for the reason {@link SAVE_LABEL} sets out. */
+const CREATE_LABEL = 'Create Module';
 
 /** The label on the abandon affordance, from `cmdCancel.Text`. */
 const CANCEL_LABEL = 'Cancel';
@@ -258,12 +288,6 @@ const CANCEL_LABEL = 'Cancel';
 const DELETE_LABEL = 'Delete';
 
 const DELETE_CONFIRM_MESSAGE = 'Are You Sure You Wish To Delete This Item?';
-
-/**
- * The sentence shown when the operator submits a form that still carries a validation message. A net
- * addition.
- */
-const FORM_INVALID_MESSAGE = 'Correct the highlighted fields and try again.';
 
 /** The sentence shown when a submission names no module definition. */
 const DEFINITION_REQUIRED_MESSAGE = 'Choose a module before saving.';
@@ -282,8 +306,15 @@ const NOT_LOADED_MESSAGE = 'The module has not finished loading. Wait a moment a
 const UNREADABLE_ADDRESS_MESSAGE =
   'This address does not name a module that can be read. Return to the module list and try again.';
 
-/** The sentence shown when the addressed module could not be found. */
-const NOT_FOUND_MESSAGE = 'The module could not be found. It may have been removed.';
+/**
+ * The sentence shown when the addressed module could not be found, taken from the SHARED shape so the
+ * four detail screens state the same outcome the same way. Resolves byte-for-byte to the wording this
+ * screen already used, which is why this screen's sentence is the one the shared builder produces.
+ */
+const NOT_FOUND_MESSAGE = missingEntityMessage('module');
+
+/** Where a reader is sent once the addressed module has gone, and the only action offered there. */
+const RECOVERY_LABEL = missingEntityRecoveryLabel('Modules');
 
 /** The one status that answers the question of existence in the negative. */
 const NOT_FOUND_STATUS = 404;
@@ -307,6 +338,18 @@ const NAVIGATION_FAILED_MESSAGE = 'The module list could not be opened.';
 // =====================================================================================================
 // THE VISIBILITY CHOICES
 // =====================================================================================================
+
+/**
+ * Refuses a visibility code this screen cannot offer, so the operator is told rather than the API.
+ *
+ * @param control The visibility control, whose value is the stored code until the operator changes it.
+ * @returns The single error, or `null` when the code is one of the published three.
+ */
+function publishedVisibilityValidator(control: AbstractControl<number>): ValidationErrors | null {
+  return isPublishedModuleVisibility(control.value)
+    ? null
+    : { [UNPUBLISHED_VISIBILITY_ERROR]: true };
+}
 
 /** One choice offered by the visibility control. */
 export interface ModuleVisibilityChoice {
@@ -545,6 +588,26 @@ function integerValidator(control: AbstractControl<string>): ValidationErrors | 
   return parseIntegerText(value) === null ? { invalidInteger: true } : null;
 }
 
+/**
+ * A cache period may not be negative. ⚠ MIGRATION - A DELIBERATE, DOCUMENTED DIVERGENCE FROM THE LEGACY
+ * RULE, WHICH ADMITTED IT. `modulesettings.ascx:L172` declares one validator on this box, a
+ * `CompareValidator` with `Operator="DataTypeCheck" Type="Integer"`, and the code-behind stored whatever
+ * parsed - so `-1` was accepted and written. That is an omission rather than a decision: the box's own help
+ * text calls the value "the time this object is kept in the Cache", and a duration cannot run backwards.
+ *
+ * The bound is enforced on the server as well, so the two agree; a client stricter than the server would
+ * refuse a value the system accepts. NO UPPER BOUND IS IMPOSED: neither the legacy validator, the `int`
+ * column, nor the server declares one, and a long cache period is an unusual choice rather than an error.
+ *
+ * @param control The control to inspect.
+ * @returns An error map when the value is negative, or `null` when it is not.
+ */
+function nonNegativeValidator(control: AbstractControl<string>): ValidationErrors | null {
+  const parsed = parseIntegerText(control.value);
+
+  return parsed !== null && parsed < 0 ? { negativeNotAllowed: true } : null;
+}
+
 /** The message each field shows for its own local rule, keyed by control name. */
 const LOCAL_VALIDATION_MESSAGES: Readonly<Partial<Record<keyof ModuleFormModel, string>>> =
   Object.freeze({
@@ -576,6 +639,7 @@ const SUCCESS_MESSAGES: Readonly<Record<ModuleFormOperation, string>> = Object.f
     FocusFirstInvalidDirective,
     SubmitGuardDirective,
     ReactiveFormsModule,
+    RouterLink,
     PageHeaderComponent,
     FormFieldComponent,
     LoadingSpinnerComponent,
@@ -593,9 +657,19 @@ export class ModuleFormComponent {
    * navigation: Cancel, an in-application link and the browser's Back button are navigations a route
    * guard can refuse, while closing or reloading the tab is not, and only the browser's own unload prompt
    * covers that - which needs the dirty state at an arbitrary moment rather than at a navigation.
+   *
+   * ⚠ THE BUSY EXCLUSION WAS REMOVED, AND ITS REMOVAL CLOSES A MEASURED HOLE. This predicate used to read
+   * `dirty && busy === false`, which reported the screen CLEAN for exactly as long as a write was in flight -
+   * so navigating away mid-save was admitted in silence, the departure destroyed the component, and
+   * `takeUntilDestroyed` cancelled the request. The operator lost the write and was told nothing. A form
+   * holding an unfinished write is the LEAST safe moment to leave, not the safest.
+   *
+   * The exclusion was written to stop the application's OWN post-save navigation being challenged, and that
+   * case is already covered properly: every success path replaces the address imperatively, which
+   * `unsavedChangesGuard` admits explicitly. Nothing here has to approximate it a second time.
    */
   private readonly unsavedEntry = inject(UnsavedChangesTracker).watch(
-    () => this.form.dirty && this.saving() === false,
+    () => this.form.dirty,
   );
   // DEPENDENCIES
   // Injected, never provided: this component declares no provider of its own, because every provider in the
@@ -615,6 +689,9 @@ export class ModuleFormComponent {
   private readonly notifications = inject(NotificationService);
 
   private readonly router = inject(Router);
+
+  /** Where the listing stands, so a return lands on the page, ordering and search it was showing. */
+  private readonly listReturn = inject(ListReturnStore);
 
   // ---------------------------------------------------------------------------------------------------
   // THE ROUTE PARAMETER
@@ -658,12 +735,19 @@ export class ModuleFormComponent {
     endDate: new FormControl('', { nonNullable: true, validators: [calendarDateValidator] }),
     inheritViewPermissions: new FormControl(false, { nonNullable: true }),
     moduleOrder: new FormControl(MODULE_ORDER_APPEND, { nonNullable: true }),
-    cacheTime: new FormControl('', { nonNullable: true, validators: [integerValidator] }),
+    cacheTime: new FormControl('', {
+      nonNullable: true,
+      validators: [integerValidator, nonNegativeValidator],
+    }),
     iconFile: new FormControl('', {
       nonNullable: true,
       validators: [Validators.maxLength(MODULE_ICON_MAX_LENGTH), containedIconPathValidator],
     }),
+    // ⚠ THE VALIDATOR GUARDS THE SEEDED VALUE, NOT THE RADIO GROUP. The group can only ever produce one of
+    // the three published codes; `TabModules.Visibility` is `int` with no check constraint, so an edit of an
+    // existing placement can seed a code this screen cannot offer, and it used to be sent straight back.
     visibility: new FormControl<ModuleVisibility>(ModuleVisibility.Maximized, {
+      validators: [publishedVisibilityValidator],
       nonNullable: true,
     }),
     displayTitle: new FormControl(true, { nonNullable: true }),
@@ -741,8 +825,26 @@ export class ModuleFormComponent {
   /** Every definition the tenant may instantiate. A read-only catalogue with no write half. */
   protected readonly definitions: Signal<readonly ModuleDefinition[]> = this.store.definitions;
 
-  /** The portal's pages, flat and unpaged, as the page picker's options. */
+  /** The portal's pages, flat and unpaged. */
   protected readonly tabs: Signal<readonly TabListItem[]> = this.store.tabs;
+
+  /**
+   * The page picker's options.
+   *
+   * ⚠ THIS SCREEN BOUND THE RAW PAGE LIST INTO ITS `@for` AND OFFERED SOFT-DELETED PAGES AS PLACEMENT
+   * TARGETS. A module placed on a page in the recycle bin is orphaned invisibly: the bin does not list
+   * modules and the page is not navigable, so there is no screen from which the module can be recovered.
+   * The legacy picker never had the problem - `GetPortalTabs` was called with `blnDeleted:=False`. The
+   * shared builder also disambiguates two pages that share a name, using the title the page contract
+   * carries and this screen previously discarded.
+   *
+   * On the CREATE route there is no current page, so nothing is exempted from the exclusion; on the edit
+   * route the addressed placement's own page is passed, so a module already sitting on a deleted page keeps
+   * a truthful option instead of the picker silently proposing a move.
+   */
+  protected readonly pageOptions = computed<readonly SelectOption<number>[]>(() =>
+    buildPageOptions(this.store.tabs(), this.store.module()?.tabId),
+  );
 
   /** Whether the page list is being read. */
   protected readonly tabsLoading: Signal<boolean> = this.store.tabsLoading;
@@ -769,6 +871,20 @@ export class ModuleFormComponent {
 
   /** The problem document behind the current failure, or `null` when there is none. */
   protected readonly problem = computed<ProblemDetails | null>(() => {
+    // ⚠ THE TWO "NOT THERE" STATES ARE STATED THROUGH THE BANNER, not through a paragraph of this
+    // screen's own. Both were previously rendered as a plain paragraph inside a branch, which is a live
+    // region created at the moment it first has something to say - and that is announced inconsistently.
+    // The banner's region is already in the document, so its contents changing is heard. The document is
+    // synthesised because the server's own 404 wording differs per resource, and four screens wording one
+    // outcome four ways is exactly the inconsistency being closed.
+    if (this.addressUnreadable()) {
+      return missingEntityProblem(UNREADABLE_ADDRESS_MESSAGE);
+    }
+
+    if (this.moduleMissing()) {
+      return missingEntityProblem(NOT_FOUND_MESSAGE);
+    }
+
     const failure = this.store.failure();
 
     return failure === null ? null : failure.problem;
@@ -978,7 +1094,9 @@ export class ModuleFormComponent {
   protected readonly visibilityChoices = VISIBILITY_CHOICES;
 
   /** The label on the save affordance. */
-  protected readonly saveLabel = SAVE_LABEL;
+  protected readonly saveLabel: Signal<string> = computed(() =>
+    this.isEditMode() ? SAVE_LABEL : CREATE_LABEL,
+  );
 
   /** The label on the abandon affordance. */
   protected readonly cancelLabel = CANCEL_LABEL;
@@ -990,10 +1108,14 @@ export class ModuleFormComponent {
   protected readonly deleteConfirmMessage = DELETE_CONFIRM_MESSAGE;
 
   /** The sentence shown when the address names a module that cannot be read. */
-  protected readonly unreadableAddressMessage = UNREADABLE_ADDRESS_MESSAGE;
+  /** The caption of the one way out offered once the addressed module cannot be shown. */
+  protected readonly recoveryLabel = RECOVERY_LABEL;
 
-  /** The sentence shown when the addressed module could not be found. */
-  protected readonly notFoundMessage = NOT_FOUND_MESSAGE;
+  /** Whether this screen can show nothing but a way out: the address is unusable, or the record is gone. */
+  protected readonly nothingToShow = computed<boolean>(
+    () => this.addressUnreadable() || this.moduleMissing(),
+  );
+
 
   // ---------------------------------------------------------------------------------------------------
   // WIRING
@@ -1134,10 +1256,15 @@ export class ModuleFormComponent {
     // ⚠ CHOSEN BY WHICH RULE FAILED, not by the control being invalid.
     const localMessage = this.localMessageFor(controlName, control);
 
+    // ⚠ THE UNPUBLISHED-CODE ARM IS EXEMPT FROM THE TOUCH GATE, and the exemption is the point: that failure
+    // describes the value the SERVER supplied rather than one the operator typed, so withholding it until
+    // they touch the control would withhold the explanation until after the surprise.
+    const seededFailure: boolean = control.hasError(UNPUBLISHED_VISIBILITY_ERROR);
+
     if (
       localMessage !== undefined
       && control.invalid
-      && (control.touched || this.submitAttempted())
+      && (seededFailure || control.touched || this.submitAttempted())
     ) {
       messages.push(localMessage);
     }
@@ -1164,6 +1291,10 @@ export class ModuleFormComponent {
     controlName: keyof ModuleFormModel,
     control: AbstractControl,
   ): string | undefined {
+    if (control.hasError(UNPUBLISHED_VISIBILITY_ERROR)) {
+      return UNPUBLISHED_VISIBILITY_MESSAGE;
+    }
+
     if (control.hasError(UNSTORABLE_DATE_ERROR)) {
       return DATE_OUT_OF_RANGE_MESSAGE;
     }
@@ -1211,8 +1342,12 @@ export class ModuleFormComponent {
     this.form.markAllAsTouched();
 
     if (this.form.invalid) {
-      this.notifications.notify('warning', FORM_INVALID_MESSAGE);
-
+      // ⚠ NO PAGE-LEVEL SUMMARY, UNDER THE ONE VALIDATION-SUMMARY CONTRACT. Sixteen of the eighteen forms
+      // already answered a client-blocked submit with touched controls and focus on the first invalid
+      // field, which is the specific and actionable statement; this screen additionally raised a summary
+      // toast, so the same news had two owners and the toast self-dismissed while the fields stayed
+      // wrong. The three notifications below are NOT summaries and stay: each names a condition no control
+      // on this form carries a validator for, so nothing else would state it at all.
       return;
     }
 
@@ -1356,6 +1491,12 @@ export class ModuleFormComponent {
     const request: UpdateModuleRequest = {
       tabId: detail.tabId,
       moveToTabId: tabId === detail.tabId ? null : tabId,
+      // ROUND-TRIPPED, NOT EDITED HERE. The three container-appearance columns belong to the settings
+      // screen; this form offers no control over them, and the replacement writes every member it is given -
+      // so omitting them would silently clear whatever the settings screen stored.
+      alignment: detail.alignment,
+      color: detail.color,
+      border: detail.border,
       moduleTitle: textOrNull(raw.moduleTitle),
       allTabs: raw.allTabs,
       header: textOrNull(raw.header),
@@ -1469,11 +1610,22 @@ export class ModuleFormComponent {
     this.returnToListing(true);
   }
 
-  /** Navigates to the module listing. */
+  /**
+   * Navigates to the module listing, carrying the coordinate the listing was showing.
+   *
+   * ⚠ THE ARRAY OVERLOAD, NOT `navigateByUrl`, AND THAT IS WHY THIS CHANGED. Only the array form accepts
+   * `queryParams`, and without them the listing's page, ordering and search were dropped on every return -
+   * so a module written from a sorted, filtered page reappeared on an unsorted, unfiltered page one.
+   *
+   * @param replaceEntry Whether to replace the current history entry rather than adding one.
+   */
   private returnToListing(replaceEntry = false): void {
-    const departure = replaceEntry
-      ? this.router.navigateByUrl(MODULE_LIST_PATH, { replaceUrl: true })
-      : this.router.navigateByUrl(MODULE_LIST_PATH);
+    const options = {
+      queryParams: this.listReturn.coordinateFor(MODULE_LIST_ROUTE),
+      ...(replaceEntry ? { replaceUrl: true } : {}),
+    };
+
+    const departure = this.router.navigate([MODULE_LIST_ROUTE], options);
 
     departure.catch(() => {
       this.notifications.notify('error', NAVIGATION_FAILED_MESSAGE);

@@ -1,6 +1,7 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  ElementRef,
   booleanAttribute,
   computed,
   effect,
@@ -10,6 +11,7 @@ import {
   untracked,
   type Signal,
 } from '@angular/core';
+import { DOCUMENT } from '@angular/common';
 import { Router } from '@angular/router';
 import {
   FormControl,
@@ -17,6 +19,8 @@ import {
   FormRecord,
   ReactiveFormsModule,
   Validators,
+  type AbstractControl,
+  type ValidationErrors,
   type ValidatorFn,
 } from '@angular/forms';
 
@@ -38,6 +42,10 @@ import { AuthStore } from '../../../core/state/auth.store';
 import { UserStore, type UserFailure, type UserMutation } from '../../../core/state/user.store';
 import { parseRouteId, readRouteId } from '../../../core/utils/route-id.util';
 import { requiredText } from '../../../core/utils/required-text.validator';
+import {
+  compileTenantPattern,
+  matchesTenantPattern,
+} from '../../../core/utils/tenant-pattern.util';
 import { EmptyStateComponent } from '../../../shared/components/empty-state/empty-state.component';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
 import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
@@ -45,7 +53,10 @@ import { LoadingSpinnerComponent } from '../../../shared/components/loading-spin
 import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
 import { FocusFirstInvalidDirective } from '../../../shared/directives/focus-first-invalid.directive';
 import { SubmitGuardDirective } from '../../../shared/directives/submit-guard.directive';
-import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
+import {
+  UnsavedChangesTracker,
+  confirmDiscardUnsavedChanges,
+} from '../../../core/guards/unsaved-changes.guard';
 
 /** Which of the screen's two modes is rendered. */
 export type UserProfileMode = 'edit' | 'view';
@@ -92,6 +103,16 @@ const NO_PROPERTIES_MESSAGE =
  * absence of one is explained by the legacy mechanism rather than by an omission.
  */
 const PROFILE_SAVED_MESSAGE = 'The profile was saved.';
+
+/** Stated beside the actions while the write itself is outstanding. */
+const SAVING_MESSAGE = 'Saving the profile…';
+
+/**
+ * Stated while the read that CONFIRMS a save is outstanding. Worded as a confirmation rather than as a load,
+ * because the fields are still on screen and still hold what was submitted: a "Loading profile…" sentence
+ * beside visible, populated fields would describe a screen the operator is not looking at.
+ */
+const CONFIRMING_MESSAGE = 'Confirming the stored profile…';
 
 /** The sentence shown when the address names no readable account. */
 const NO_USER_MESSAGE = "This account doesn't exist";
@@ -304,9 +325,30 @@ function validatorsFor(definition: ProfilePropertyDefinition): ValidatorFn[] {
     validators.push(Validators.maxLength(definition.length));
   }
 
-  // The consequence is a refusal that arrives from the server rather than beside the box as it is typed.
-  // That is the correct trade: the rule is still enforced, still reported per field through the server's
-  // model-state message, and a tenant can no longer author a declaration that hangs an operator's browser.
+  // THE DECLARED FORMAT, CHECKED HERE WHENEVER IT IS SAFE TO DO SO.
+  //
+  // ⚠ THIS USED TO BE SKIPPED ENTIRELY, and the comment that stood here justified the omission by saying the
+  // rule was "still reported per field through the server's model-state message". Measured, it was not: the
+  // server's refusal was published as a FLAT problem document with no `errors` member, so there was nothing
+  // for the screen to attach to a control — no field was marked invalid, no message appeared beside a box and
+  // focus never moved. An operator typing `not a url` into a Website property was told nothing at all.
+  //
+  // Both halves of that are now fixed, and this is the half that gives immediate feedback. The safety concern
+  // the omission was protecting against is real and is NOT waved away — `compileTenantPattern` returns `null`
+  // for any expression that could backtrack catastrophically, and those are left to the server, which runs
+  // them under a real timeout on a linear-time engine. So the browser checks the expressions administrators
+  // actually write, and declines to run the ones that could freeze a tab.
+  const pattern =
+    definition.validationExpression === null ? null : compileTenantPattern(definition.validationExpression);
+
+  if (pattern !== null) {
+    validators.push((control: AbstractControl): ValidationErrors | null =>
+      matchesTenantPattern(pattern, typeof control.value === 'string' ? control.value : '')
+        ? null
+        : { tenantPattern: true },
+    );
+  }
+
   return validators;
 }
 
@@ -346,6 +388,64 @@ function initialValueFor(value: UserProfileValue): string {
 }
 
 /**
+ * Whether one property is withheld from the account's own owner - U13. `required` is the exception, and
+ * it is the ONE case where the declaration is deliberately overruled.
+ *
+ * ⚠ WITHOUT THE EXCEPTION THIS FIX WOULD LOCK AN ACCOUNT OUT PERMANENTLY. The remediation gate is
+ * `ProfileController.ValidateProfile` (`Library/Components/Users/Profile/ProfileController.vb` L305-L319),
+ * reproduced faithfully by `UserService.RequiresProfileCompletionAsync`, and BOTH test `Required` alone
+ * with no reference to `Visible`. So a property declared required and not visible made
+ * `ValidateProfile` return `False` for ever while `Profile.ascx.vb` rendered no control to satisfy it -
+ * a deadlock legacy shipped. Honouring the declaration without this exception would reproduce it.
+ *
+ * @param value The property and its declaration.
+ * @returns `true` when the owner is not shown the property.
+ */
+function isWithheldFromOwner(value: UserProfileValue): boolean {
+  if (value.definition.visible) {
+    return false;
+  }
+
+  // The site is gating on this value, so it is shown whatever the visibility says.
+  if (value.definition.required && initialValueFor(value).trim().length === 0) {
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * States the rules a declaration carries, so they are known BEFORE a save is refused for breaking them -
+ * U12 and U15. A tenant-declared property carries no curated wording, so it previously rendered no help
+ * affordance at all even though its declaration bounded its length and could demand a format.
+ *
+ * The format rule is stated rather than applied here. `UserService.ValidateProfileValue` enforces it
+ * server-side through a length-bounded, well-formedness-checked, {@link RegExp}-cached matcher with a
+ * 50ms timeout, and a tenant-authored expression must not be handed to the browser's own matcher where
+ * no such timeout exists.
+ *
+ * @param definition The tenant's declaration.
+ * @returns The sentence, or the empty string when the declaration bounds nothing.
+ */
+function declaredConstraintsSentence(definition: ProfilePropertyDefinition): string {
+  const parts: string[] = [];
+
+  if (definition.length > 0) {
+    parts.push(`at most ${definition.length} characters`);
+  }
+
+  if ((definition.validationExpression ?? '').trim().length > 0) {
+    parts.push('a specific format this site requires');
+  }
+
+  if (parts.length === 0) {
+    return '';
+  }
+
+  return `Accepts ${parts.join(' and ')}.`;
+}
+
+/**
  * Orders two properties by their declared view order. `ViewOrder int NOT NULL` is the tenant's chosen
  * display order and the declaration marks it required.
  *
@@ -364,19 +464,29 @@ function compareByViewOrder(left: UserProfileValue, right: UserProfileValue): nu
 }
 
 /**
- * Groups a profile's properties into the sections the screen renders. EVERY DECLARED PROPERTY IS
- * RENDERED, INCLUDING ONE MARKED NOT VISIBLE, and that is the legacy behaviour rather than a relaxation
- * of it.
+ * Groups a profile's properties into the sections the screen renders.
+ *
+ * ⚠ U13 - WHICH PROPERTIES ARE RENDERED DEPENDS ON WHO IS LOOKING, and that is the legacy rule rather
+ * than a relaxation of it. `Profile.ascx.vb` L164-L168 forced `profProperty.Visible = True` for an
+ * administrator and left the declaration alone for everyone else, and the declaration then reached
+ * `FieldEditorControl.Visible` (L963), which is an ASP.NET server control property - so a `Visible =
+ * False` property rendered NOTHING for the account's own owner. `PropertyEditorControl` L270 and L293
+ * confirm the rest of the contract: an invisible editor was neither considered dirty nor validated.
  *
  * @param profile The profile to group, or `null` when none has been read.
  * @returns The sections to render, in order.
  */
-function toSections(profile: UserProfile | null): readonly ProfileSection[] {
+function toSections(
+  profile: UserProfile | null,
+  withheld: ReadonlySet<number>,
+): readonly ProfileSection[] {
   if (profile === null) {
     return [];
   }
 
-  const ordered = [...profile.properties].sort(compareByViewOrder);
+  const ordered = [...profile.properties]
+    .filter((value) => !withheld.has(value.definition.propertyDefinitionId))
+    .sort(compareByViewOrder);
   const headings: string[] = [];
   const grouped = new Map<string, UserProfileValue[]>();
 
@@ -413,6 +523,17 @@ function resolveUserId(raw: string | number | undefined): number | null {
   return parseRouteId(raw);
 }
 
+/**
+ * Why the caller is on this screen when they did not choose to be. Authored inline in English, like every
+ * other user-facing string in this workspace.
+ *
+ * It names the obligation, states that the rest of the site is waiting on it, and says what happens when it
+ * is met - which is what makes the state legible as a TASK rather than as a permanent condition.
+ */
+export const PROFILE_REMEDIATION_EXPLANATION =
+  'This site requires some profile details before you can use the rest of it. Fill in the fields marked as'
+  + ' required and save; everything else becomes available straight away.';
+
 @Component({
   selector: 'app-user-profile',
   standalone: true,
@@ -437,12 +558,25 @@ export class UserProfileComponent {
    * navigation: Cancel, an in-application link and the browser's Back button are navigations a route
    * guard can refuse, while closing or reloading the tab is not, and only the browser's own unload prompt
    * covers that - which needs the dirty state at an arbitrary moment rather than at a navigation.
+   *
+   * ⚠ THE BUSY EXCLUSION WAS REMOVED, AND ITS REMOVAL CLOSES A MEASURED HOLE. This predicate used to read
+   * `dirty && busy === false`, which reported the screen CLEAN for exactly as long as a write was in flight -
+   * so navigating away mid-save was admitted in silence, the departure destroyed the component, and
+   * `takeUntilDestroyed` cancelled the request. The operator lost the write and was told nothing. A form
+   * holding an unfinished write is the LEAST safe moment to leave, not the safest.
+   *
+   * The exclusion was written to stop the application's OWN post-save navigation being challenged, and that
+   * case is already covered properly: every success path replaces the address imperatively, which
+   * `unsavedChangesGuard` admits explicitly. Nothing here has to approximate it a second time.
    */
   private readonly unsavedEntry = inject(UnsavedChangesTracker).watch(
-    () => this.form().dirty && this.saving() === false,
+    () => this.form().dirty,
   );
   private readonly store = inject(UserStore);
   private readonly notifications = inject(NotificationService);
+
+  /** This screen's own element, so a focus move can be scoped to the controls it actually rendered. */
+  private readonly host = inject(ElementRef);
 
   /**
    * The signed-in session, read for ONE fact: whether the caller is the account on screen. `core/state`
@@ -450,6 +584,9 @@ export class UserProfileComponent {
    * - the credential screen beside this one reads the same store for the same predicate.
    */
   private readonly auth = inject(AuthStore);
+
+  /** The document, used only to bring one named control into view - U12. */
+  private readonly document = inject(DOCUMENT);
 
   /**
    * The router, used for exactly one navigation: leaving this screen once a MANDATORY profile completion
@@ -508,6 +645,22 @@ export class UserProfileComponent {
   protected readonly unreadableAddressMessage: string = NO_USER_MESSAGE;
 
   /** Whether the CALLER is the account whose profile is on screen. */
+  /**
+   * Whether this screen is being shown BECAUSE the caller's own session cannot proceed without it, as
+   * opposed to being opened deliberately.
+   *
+   * ⚠ THE SCREEN USED TO EXPLAIN NOTHING, AND THAT WAS HALF OF A MEASURED DEFECT. A caller with unfilled
+   * required properties was landed here with no text of any kind saying why, so the screen read as an
+   * ordinary profile page they had chosen to visit - while every other address they tried was refused. The
+   * refusal and the landing were both silent, so nothing connected the two.
+   */
+  protected readonly landedForRemediation: Signal<boolean> = computed(
+    () => this.auth.mustUpdateProfile() && this.isSelf(),
+  );
+
+  /** The sentence that explains the landing. */
+  protected readonly remediationExplanation = PROFILE_REMEDIATION_EXPLANATION;
+
   protected readonly isSelf: Signal<boolean> = computed(() => {
     const key = this.resolvedUserId();
     const caller = this.auth.currentUser();
@@ -541,6 +694,42 @@ export class UserProfileComponent {
   protected readonly saving: Signal<boolean> = this.store.saving;
 
   /**
+   * Whether the WAITING INDICATOR replaces the screen's content, which is narrower than "a read is in
+   * flight".
+   *
+   * ⚠ THE PLACEHOLDER REPLACES THE FIELDS ONLY WHEN THERE ARE NO FIELDS TO REPLACE, and the measured defect
+   * this closes is that it did not. A successful save RE-READS the profile, so `loading` went true again
+   * immediately afterwards - and because the indicator was the screen's first content branch, every save
+   * blanked the entire form: every label, every value the operator had just typed, the visibility selectors
+   * and both actions were replaced by "Loading profile…" until the confirming read landed. The same
+   * discipline the shared grid states for its own placeholder applies here: a read that arrives while
+   * content is on screen keeps it and reports progress through `aria-busy` instead.
+   */
+  protected readonly showLoadingPlaceholder: Signal<boolean> = computed(
+    () => this.loading() && !this.hasProperties(),
+  );
+
+  /**
+   * Whether the screen is working - a write in flight, or the read that confirms one. Bound to `aria-busy`
+   * on the form and used to withhold both actions, so the form an operator can still see is not one they can
+   * submit twice or edit against a state that is about to be replaced.
+   */
+  protected readonly busy: Signal<boolean> = computed(() => this.saving() || this.loading());
+
+  /**
+   * The sentence stating what the screen is doing, or `null` when it is at rest. Carried by the surrounding
+   * status region rather than by the indicator: the shared spinner renders its OWN live region when given a
+   * label, and nesting one live region inside another is how one action came to be announced twice.
+   */
+  protected readonly busyMessage: Signal<string | null> = computed(() => {
+    if (this.saving()) {
+      return SAVING_MESSAGE;
+    }
+
+    return this.loading() ? CONFIRMING_MESSAGE : null;
+  });
+
+  /**
    * The problem document to surface, or `null` when this screen has nothing to report. SCOPED TO THIS
    * SCREEN'S OWN COMMANDS. The store records one failure at a time across every command it offers, and it
    * tags each with the command that produced it.
@@ -561,7 +750,7 @@ export class UserProfileComponent {
 
   /** The sections to render, grouped and ordered. */
   protected readonly sections: Signal<readonly ProfileSection[]> = computed(() =>
-    toSections(this.profile()),
+    toSections(this.profile(), this.withheldIds()),
   );
 
   /** Whether there is anything at all to render. */
@@ -589,7 +778,7 @@ export class UserProfileComponent {
       return supplied;
     }
 
-    return formatProfileTitle(this.store.selectedUser(), this.resolvedUserId());
+    return formatProfileTitle(this.store.selectedUser(), this.resolvedUserId(), this.isSelf());
   });
 
   /** Whether the action row is rendered: view mode offers none. */
@@ -685,6 +874,8 @@ export class UserProfileComponent {
         // The operation is asserted as well as the identifier: a successful save re-reads the profile, and
         // that re-read has its own failure path which must not be mistaken for a failed save.
         if (settled.failure !== null && settled.operation === 'saveProfile') {
+          this.focusFirstServerRefusal();
+
           return;
         }
 
@@ -799,7 +990,123 @@ export class UserProfileComponent {
    * @returns The help text.
    */
   protected helpFor(value: UserProfileValue): string {
-    return LEGACY_PROFILE_WORDING[value.definition.propertyName]?.help ?? '';
+    const curated = LEGACY_PROFILE_WORDING[value.definition.propertyName]?.help ?? '';
+    const declared = declaredConstraintsSentence(value.definition);
+
+    if (curated.length === 0) {
+      return declared;
+    }
+
+    return declared.length === 0 ? curated : `${curated}. ${declared}`;
+  }
+
+  /**
+   * Whether this property's value was seeded from the tenant's declared default rather than chosen by the
+   * account - U14. Two accounts whose stored answer serialises identically as the empty string DID render
+   * differently, because {@link initialValueFor} distinguishes a stored blank from a row that was never
+   * written, and only the second is seeded. That distinction is correct and is kept; what was missing was
+   * any way for the operator to SEE which of the two they were looking at, so a value they never typed
+   * read as one they had.
+   *
+   * @param value The property.
+   * @returns `true` when the rendered value came from the declaration.
+   */
+  protected isSeededFromDefault(value: UserProfileValue): boolean {
+    const seeded = initialValueFor(value);
+
+    if (seeded.length === 0 || value.propertyValue.length > 0 || value.lastUpdatedDate !== null) {
+      return false;
+    }
+
+    const control = this.valueControl(value);
+
+    // Only while the control still holds the seeded value: once the operator edits it, the value is
+    // theirs and the remark would be false.
+    return control !== null && control.value === seeded;
+  }
+
+  /**
+   * The properties this viewer is not shown - U13. Withheld rather than absent: their stored values are
+   * still carried by every write this screen performs, which is what stops honouring the declaration from
+   * destroying data.
+   */
+  protected readonly withheldProperties: Signal<readonly UserProfileValue[]> = computed(() => {
+    const profile = this.profile();
+
+    if (profile === null || this.viewerAdministers()) {
+      return [];
+    }
+
+    return profile.properties.filter((value) => isWithheldFromOwner(value));
+  });
+
+  /** The identifiers of the withheld properties, for the section builder. */
+  private readonly withheldIds: Signal<ReadonlySet<number>> = computed(
+    () => new Set(this.withheldProperties().map((value) => value.definition.propertyDefinitionId)),
+  );
+
+  /**
+   * Whether the caller administers this tenant, which is the predicate legacy branched on.
+   * `Website/admin/Users/Profile.ascx.vb` L164-L168 is `For Each ... If IsAdmin Then profProperty.Visible
+   * = True`, with NO else arm - so an administrator saw every declared property and everyone else saw the
+   * declaration honoured.
+   */
+  protected readonly viewerAdministers: Signal<boolean> = this.auth.administersCurrentPortal;
+
+  /**
+   * The required properties still unmet, so they can be REACHED - U12. A mandatory property declared last
+   * sits far below the fold, and before any submit there was nothing at all pointing to it.
+   *
+   * ⚠ A METHOD RATHER THAN A `computed()`, DELIBERATELY. A reactive-form control is not a signal, so a
+   * computed reading `control.value` never invalidates and the list went on naming a requirement the
+   * operator had already met. {@link fieldError} is control-derived in the same way and for the same
+   * reason.
+   *
+   * @returns The unmet required properties, in rendered order.
+   */
+  protected unmetRequired(): readonly UserProfileValue[] {
+    const form = this.form();
+
+    return this.sections().flatMap((section) =>
+      section.values.filter((value) => {
+        if (!value.definition.required) {
+          return false;
+        }
+
+        const control = form.controls.values.controls[controlKey(value)];
+
+        return control === undefined || control.value.trim().length === 0;
+      }),
+    );
+  }
+
+  /**
+   * The label a reach entry carries. The curated labels end in a colon because the legacy resource files
+   * spelled them that way and {@link labelFor} preserves that verbatim, but a colon reads as a stray mark
+   * on a standalone link rather than as punctuation introducing a control.
+   *
+   * @param value The property.
+   * @returns The label without its trailing colon.
+   */
+  protected reachLabel(value: UserProfileValue): string {
+    return this.labelFor(value).replace(/:$/, '');
+  }
+
+  /**
+   * Moves the caller to one named control. The scroll is requested explicitly rather than left to the
+   * focus call, because a control below the fold must be BROUGHT INTO VIEW as well as focused.
+   *
+   * @param value The property to move to.
+   */
+  protected reach(value: UserProfileValue): void {
+    const element = this.document.getElementById(this.controlId(value));
+
+    if (element === null) {
+      return;
+    }
+
+    element.scrollIntoView({ block: 'center' });
+    element.focus();
   }
 
   /**
@@ -937,8 +1244,26 @@ export class UserProfileComponent {
     void this.router.navigateByUrl('/', { replaceUrl: true }).catch(() => false);
   }
 
-  /** Restores every control to the value the profile arrived carrying. */
+  /**
+   * Restores every control to the value the profile arrived carrying, ASKING FIRST when that would throw away
+   * unsaved entry.
+   *
+   * ⚠ THIS CONTROL USED TO DISCARD IN SILENCE, and it was the only way out of this screen that did. Leaving
+   * through the sidebar or the browser's Back button has always been refused by the shared gate until the
+   * operator confirms — the same gate, the same sentence — so Cancel was bypassing the application's own
+   * protection while sitting a few pixels away from the button that honours it. Measured: the button stayed on
+   * the same address, flipped the form from dirty to pristine and wiped the typed value, with no confirm, no
+   * dialog, no toast and no banner.
+   *
+   * The question is asked through the shared helper rather than a `confirm` written here, so there is exactly
+   * one sentence and one call site for it; a pristine form is not worth interrupting anyone over and is reset
+   * without a question.
+   */
   protected onReset(): void {
+    if (this.form().dirty && confirmDiscardUnsavedChanges() === false) {
+      return;
+    }
+
     this.form().reset();
   }
 
@@ -957,7 +1282,18 @@ export class UserProfileComponent {
       })),
     );
 
-    return { userId, properties };
+    // ⚠ A WITHHELD PROPERTY IS STILL CARRIED, VERBATIM. `UserService.UpdateProfileAsync` replaces the
+    // whole answer set and writes `Cleared(value)` for every stored value the submission omits, so
+    // leaving a property out DESTROYS it. Legacy had no equivalent hazard because it bound and saved one
+    // collection whose invisible members were simply never overwritten; carrying the stored value forward
+    // reproduces that outcome over a replace-all contract.
+    const carried = this.withheldProperties().map((value) => ({
+      propertyDefinitionId: value.definition.propertyDefinitionId,
+      propertyValue: value.propertyValue,
+      visibility: value.visibility,
+    }));
+
+    return { userId, properties: [...properties, ...carried] };
   }
 
   /**
@@ -980,6 +1316,14 @@ export class UserProfileComponent {
       return `${name} must be ${value.definition.length} characters or fewer`;
     }
 
+    // Worded to match the server's own refusal for the same rule — `Profile property "X" does not match the
+    // format it requires.` — so an operator who trips the rule in the browser and an operator who trips it on
+    // the server are told the same thing rather than being left to wonder whether they are two different
+    // problems.
+    if (control.hasError('tenantPattern')) {
+      return `${name} does not match the format it requires`;
+    }
+
     return `${name} is not valid`;
   }
 
@@ -990,6 +1334,40 @@ export class UserProfileComponent {
    * @param value The property.
    * @returns The messages, empty when the document names no error for it.
    */
+  /**
+   * Moves focus to the first control the SERVER has just complained about.
+   *
+   * ⚠ WHY THE SHARED DIRECTIVE DOES NOT ALREADY COVER THIS. `FocusFirstInvalidDirective` is attached to this
+   * form and does exactly the right thing — but it selects on `.ng-invalid`, which only a CLIENT-side validator
+   * can produce. A refusal that only the server can reach, such as a format expression too dangerous to run in
+   * the browser, leaves every control perfectly valid as far as Angular is concerned, so the directive
+   * correctly finds nothing and focus stays where it was. Measured on a rejected write, focus was on `BODY`.
+   *
+   * Sections are walked in render order so the control chosen is the first one an operator reading down the
+   * screen would reach, not merely the first the server happened to mention.
+   */
+  private focusFirstServerRefusal(): void {
+    for (const section of this.sections()) {
+      for (const value of section.values) {
+        if (this.serverMessagesFor(value).length === 0) {
+          continue;
+        }
+
+        // Scoped to this component's own element, so a matching identifier elsewhere in the document cannot
+        // steal the focus. `CSS.escape` because the identifier embeds a tenant-authored property name.
+        const target = (this.host.nativeElement as HTMLElement).querySelector<HTMLElement>(
+          `#${CSS.escape(this.controlId(value))}`,
+        );
+
+        if (target !== null) {
+          target.focus();
+        }
+
+        return;
+      }
+    }
+  }
+
   private serverMessagesFor(value: UserProfileValue): readonly string[] {
     const problem = this.problem();
 
@@ -1064,13 +1442,40 @@ function controlKey(value: UserProfileValue): string {
 /**
  * Formats the screen heading in the legacy title's shape.
  *
+ * ⚠ THE RECORD IDENTIFIER IS WITHHELD FROM THE ACCOUNT'S OWN OWNER, AND THIS SCREEN IS THE EXACT CASE THE
+ * LEGACY RULE WAS WRITTEN FOR. `ManageUsers.ascx.vb` chose its heading in three arms, and the middle one is
+ * `If IsUser And IsProfile Then trTitle.Visible = False` (L259-L260) — otherwise it reached
+ * `String.Format(UserTitle, User.Username, User.UserID.ToString)` (L262). The two flags come from
+ * `UserModuleBase.vb`: `IsUser` is `User.UserID = UserInfo.UserID` (L399-L407), the record being viewed IS
+ * the signed-in caller, and `IsProfile` (L350-L371) is `IsUser` AND the profile editor being the panel on
+ * screen. So `IsProfile` already implies `IsUser`, and the conjunction reduces to a single fact: THE PROFILE
+ * SCREEN, SEEN BY ITS OWN OWNER, RENDERED NO TITLE ROW AT ALL and therefore disclosed no database key.
+ *
+ * Hiding the heading outright is not reproduced, for the same reason the account form does not reproduce it:
+ * a routed screen with no `h1` leaves its main region without an accessible name and breaks the
+ * semantic-landmark requirement every other screen here satisfies. Omitting only the identifier achieves
+ * what the legacy rule protected — a member is never shown an internal identity value — while keeping the
+ * heading the screen needs. The divergence is recorded in `MIGRATION_NOTES.md` alongside the account form's.
+ *
+ * An administrator viewing somebody else's profile still sees the identifier, because for them it is the
+ * administrative detail that distinguishes two accounts sharing a display name.
+ *
  * @param user The account, or `null` while it is still being read.
  * @param userId The identifier resolved from the route, or `null`.
+ * @param viewedByOwner Whether the caller is the account being shown — the legacy `IsUser`.
  * @returns A non-blank heading.
  */
-function formatProfileTitle(user: UserDetail | null, userId: number | null): string {
+function formatProfileTitle(
+  user: UserDetail | null,
+  userId: number | null,
+  viewedByOwner: boolean,
+): string {
   if (user === null || userId === null || user.userId !== userId) {
     return 'Edit Profile';
+  }
+
+  if (viewedByOwner) {
+    return `Edit Profile - ${user.username}`;
   }
 
   return `Edit Profile - ${user.username} (Id: ${String(user.userId)})`;

@@ -3,10 +3,198 @@ import { APP_ROUTES } from '../../app.routes';
 import {
   RESERVED_PLATFORM_SEGMENTS,
   RESERVED_TOP_LEVEL_SEGMENTS,
+  adoptTenantPathBase,
   appBaseHref,
+  candidateTenantPathBase,
+  deploymentPathBase,
+  deploymentPathBaseFrom,
   detectTenantPathBase,
+  forgetTenantPathBase,
   tenantPathBase,
 } from './tenant-path';
+
+/**
+ * Specification for the mount point the application is served beneath.
+ *
+ * ⚠ THIS SUITE REPLACES ONE THAT ASSERTED THE OPPOSITE CONTRACT, and the replacement is the point. The
+ * previous module derived the mount point from the first segment of the ADDRESS, and these cases pinned
+ * that derivation - including, in so many words, that `/child` alone was claimed as a prefix. Runtime
+ * measurement proved the derivation broke the route table's `**` fallback for every single-segment address
+ * and poisoned every rendered `href`, so the contract itself was wrong and the cases that pinned it are
+ * replaced rather than adapted. The rule the suite now holds the module to is the inverse: NOTHING about
+ * the address may influence the answer.
+ */
+describe('the deployment mount point', () => {
+  /** Restores the address after a case that arranged one. */
+  const originalUrl = window.location.href;
+
+  /** The base element the harness inserts, so each case can remove exactly what it added. */
+  let inserted: HTMLBaseElement | null = null;
+
+  /** The document's own base element, whose `href` a case may borrow and must put back. */
+  const existing = document.querySelector('base');
+
+  /** The `href` that element arrived with, or `null` when the document declares no base element. */
+  const existingHref = existing?.getAttribute('href') ?? null;
+
+  /**
+   * Declares the mount point the way a DEPLOYMENT does - by the document's base element - so that the case
+   * exercises the real source rather than a substitute for it.
+   *
+   * @param href The `href` to declare, or `null` to leave the document with no base element at all.
+   */
+  function declareBaseHref(href: string | null): void {
+    if (existing !== null) {
+      if (href === null) {
+        existing.removeAttribute('href');
+      } else {
+        existing.setAttribute('href', href);
+      }
+
+      return;
+    }
+
+    if (href === null) {
+      return;
+    }
+
+    inserted = document.createElement('base');
+    inserted.setAttribute('href', href);
+    document.head.appendChild(inserted);
+  }
+
+  afterEach(() => {
+    history.replaceState({}, '', originalUrl);
+
+    if (inserted !== null) {
+      inserted.remove();
+      inserted = null;
+    }
+
+    if (existing !== null) {
+      if (existingHref === null) {
+        existing.removeAttribute('href');
+      } else {
+        existing.setAttribute('href', existingHref);
+      }
+    }
+  });
+
+  describe('deploymentPathBaseFrom', () => {
+    it('reports no prefix for a root mount, in every spelling of it', () => {
+      expect(deploymentPathBaseFrom('/')).toBe('');
+      expect(deploymentPathBaseFrom('')).toBe('');
+      expect(deploymentPathBaseFrom('   ')).toBe('');
+      expect(deploymentPathBaseFrom('//')).toBe('');
+      expect(deploymentPathBaseFrom('http://localhost:4200/')).toBe('');
+    });
+
+    it('reports the declared prefix, with or without its trailing slash', () => {
+      expect(deploymentPathBaseFrom('/child/')).toBe('/child');
+      expect(deploymentPathBaseFrom('/child')).toBe('/child');
+      expect(deploymentPathBaseFrom('child/')).toBe('/child');
+      expect(deploymentPathBaseFrom('/acme-legal/')).toBe('/acme-legal');
+      expect(deploymentPathBaseFrom('http://localhost:4200/child/')).toBe('/child');
+    });
+
+    it('preserves a multi-segment mount point, which a reverse proxy may legitimately declare', () => {
+      expect(deploymentPathBaseFrom('/apps/dnn-admin/')).toBe('/apps/dnn-admin');
+    });
+
+    it('preserves the case the deployment authored, because a stored alias may carry any', () => {
+      expect(deploymentPathBaseFrom('/Acme-Legal/')).toBe('/Acme-Legal');
+    });
+
+    it('normalises doubled separators rather than passing them through', () => {
+      // A doubled separator in a request path is a different URL to most servers, so the prefix that other
+      // URLs are built from must not carry one.
+      expect(deploymentPathBaseFrom('/child//')).toBe('/child');
+      expect(deploymentPathBaseFrom('/apps//dnn-admin/')).toBe('/apps/dnn-admin');
+    });
+
+    it('reports no local prefix for a PROTOCOL-RELATIVE base, which names another origin', () => {
+      // `//host/` is a URL whose authority is `host`, not a path beginning with two slashes. A base element
+      // pointing at another origin mounts nothing locally, so there is no prefix to prepend to a
+      // root-relative API path - and prepending the foreign host's name would compose an address this
+      // application must never request.
+      expect(deploymentPathBaseFrom('//child/')).toBe('');
+      expect(deploymentPathBaseFrom('//child//')).toBe('');
+    });
+
+    it('answers a root mount for a value no browser would accept, rather than throwing', () => {
+      // A malformed base must not stop the application from booting.
+      expect(deploymentPathBaseFrom('http://')).toBe('');
+    });
+  });
+
+  describe('deploymentPathBase and appBaseHref', () => {
+    it("read the document's declared base element", () => {
+      declareBaseHref('/child/');
+
+      expect(deploymentPathBase()).toBe('/child');
+      expect(appBaseHref()).toBe('/child/');
+    });
+
+    it("answers the root for a root deployment, and never the empty string as a base href", () => {
+      declareBaseHref('/');
+
+      expect(deploymentPathBase()).toBe('');
+      expect(appBaseHref())
+        .withContext("'/' rather than empty: the location strategy requires a non-empty base")
+        .toBe('/');
+    });
+
+    it('IGNORES THE ADDRESS ENTIRELY, which is the whole contract', () => {
+      declareBaseHref('/');
+
+      // Every one of these addresses was previously read as a mount point. The unknown single segment is
+      // the measured defect: claiming it left the router an empty URL, so the route table's `**` fallback
+      // was never consulted and a mistyped address resolved to the caller's landing screen.
+      for (const address of [
+        '/this-route-does-not-exist',
+        '/nope',
+        '/nope/deeper',
+        '/child',
+        '/child/portals',
+        '/acme-legal/users/1/profile',
+      ]) {
+        history.replaceState({}, '', address);
+
+        expect(deploymentPathBase()).withContext(`address ${address}`).toBe('');
+        expect(appBaseHref()).withContext(`address ${address}`).toBe('/');
+      }
+    });
+
+    it('treats a document with no declared base element as the root mount', () => {
+      // NOT as `document.baseURI`, which the platform resolves to the current address: that fallback would
+      // reinstate the very defect this module exists to end.
+      declareBaseHref(null);
+      history.replaceState({}, '', '/nope/deeper');
+
+      expect(deploymentPathBase()).toBe('');
+      expect(appBaseHref()).toBe('/');
+    });
+
+    it('leaves every route in the table reachable, whatever its first segment spells', () => {
+      // The previous module carried a reserved-segment list precisely because a new top-level route could
+      // otherwise be read as a tenant. Nothing is reserved now, because nothing is inferred, so this case
+      // asserts the property that list existed to protect rather than the list itself.
+      declareBaseHref('/');
+
+      const topLevelPaths = APP_ROUTES.map((route) => route.path ?? '').filter(
+        (path) => path.length > 0 && path !== '**',
+      );
+
+      expect(topLevelPaths.length).toBeGreaterThan(0);
+
+      for (const path of topLevelPaths) {
+        history.replaceState({}, '', `/${path}`);
+
+        expect(deploymentPathBase()).withContext(`route ${path}`).toBe('');
+      }
+    });
+  });
+});
 
 /** Specification for the tenant path prefix a child portal is addressed beneath. */
 describe('the tenant path prefix', () => {
@@ -17,8 +205,38 @@ describe('the tenant path prefix', () => {
    */
   const originalUrl = window.location.href;
 
+  /**
+   * The document's own base element, and the `href` it arrived with.
+   *
+   * ⚠ NEUTRALISED FOR EVERY CASE IN THIS SUITE, BECAUSE THE TWO PREFIXES COMPOSE. `appBaseHref` is the
+   * deployment's mount point followed by the confirmed tenant segment, so a runner whose page declared a
+   * mount point of its own would make every expectation below read `/runner-mount/child/` instead of
+   * `/child/`. These cases are about the TENANT half, so the deployment half is pinned at the root - which
+   * is also what the shipped container serves - and restored afterwards.
+   */
+  const existingBase = document.querySelector('base');
+
+  /** The `href` that element arrived with, or `null` when the document declares no base element. */
+  const existingBaseHref = existingBase?.getAttribute('href') ?? null;
+
+  beforeEach(() => {
+    existingBase?.setAttribute('href', '/');
+  });
+
   afterEach(() => {
     history.replaceState({}, '', originalUrl);
+
+    if (existingBase !== null) {
+      if (existingBaseHref === null) {
+        existingBase.removeAttribute('href');
+      } else {
+        existingBase.setAttribute('href', existingBaseHref);
+      }
+    }
+
+    // The recorded decision is MODULE state and outlives a TestBed, so a case that arranges one has to undo
+    // it or every case after it would read that case's answer.
+    forgetTenantPathBase();
   });
 
   describe('the reserved segment set', () => {
@@ -172,31 +390,139 @@ describe('the tenant path prefix', () => {
     });
   });
 
+  /**
+   * ⚠ THESE CASES USED TO ASSERT THAT `tenantPathBase` READ THE LIVE ADDRESS, AND THAT WAS THE DEFECT
+   * WRITTEN DOWN AS A REQUIREMENT. Reading the address means believing it, and a mistyped one-segment
+   * address is indistinguishable from a real child alias by inspection alone. The function now answers the
+   * prefix the SERVER confirmed, so each case states which answer is in hand before asking what the
+   * application does with it.
+   */
   describe('tenantPathBase and appBaseHref', () => {
-    it('read the live address, and agree with the pure derivation', () => {
+    afterEach(() => {
+      forgetTenantPathBase();
+    });
+
+    it('answers the confirmed prefix, and agrees with it rather than with the address', () => {
       history.replaceState({}, '', '/child/portals');
+      adoptTenantPathBase('/child');
 
       expect(tenantPathBase()).toBe('/child');
       expect(appBaseHref()).toBe('/child/');
     });
 
-    it('follow the address across a navigation within the same tenant', () => {
+    it('holds the confirmed answer across a navigation within the same tenant', () => {
+      adoptTenantPathBase('/child');
       history.replaceState({}, '', '/child/portals');
       expect(tenantPathBase()).toBe('/child');
 
-      // What the router does when a link is followed: the prefix is the first segment of every
-      // address it pushes, so the answer is stable for the life of the document.
+      // What the router does when a link is followed. The answer is now stable BECAUSE it is held rather
+      // than re-derived, so no address the router pushes can change it for the life of the document.
       history.replaceState({}, '', '/child/users/1/profile');
       expect(tenantPathBase()).toBe('/child');
     });
 
     it("answers the document's own base for a root deployment", () => {
       history.replaceState({}, '', '/portals');
+      adoptTenantPathBase('');
 
       expect(tenantPathBase()).toBe('');
       expect(appBaseHref())
         .withContext("'/' rather than empty: the location strategy requires a non-empty base")
         .toBe('/');
+    });
+
+    // A CASE PINNING "NO PREFIX UNTIL SOMETHING IS CONFIRMED" STOOD HERE, AND THE PRE-DECISION ANSWER IS NOW
+    // THE CANDIDATE INSTEAD. Both readings close the same defect - acting on an unconfirmed segment - and they
+    // differ only in what is answered during a window nothing observes: `main.ts` AWAITS the decision before
+    // the application is created, and the decision is recorded for every outcome including rejection and an
+    // unreachable API, so no route is resolved and no request is composed while the fallback is what answers.
+    // The candidate is the better answer for the two places the window is real: a specification that arranges
+    // no decision, and a deployment whose API could not be reached, where demoting a genuine child portal to
+    // the root would address every later request to the wrong tenant. What the defect actually needed - that a
+    // REJECTED candidate stays rejected even though the address goes on proposing it - is pinned by 'the
+    // recorded decision' below, which states it over the mistyped address that was measured.
+  });
+
+  // A SUITE FOR A SECOND PROBE STOOD HERE, AND THE PROBE IT SPECIFIED IS GONE RATHER THAN ITS CONTRACT.
+  // Two probes were written for the one question a client cannot answer for itself - is this first segment a
+  // stored alias? - and only one may run, or a document would issue two requests before first paint and the
+  // two could disagree about the same address. The surviving probe is `tenant-resolution.ts`, and
+  // `tenant-resolution.spec.ts` states every reply it can receive: the candidate confirmed, the candidate
+  // rejected, another prefix reported, a refusal, a transient status, a timeout and a transport failure -
+  // including the asymmetry this module's own probe did not have, that only a DEFINITE answer demotes a
+  // candidate. What remains specified here is what this module owns: the candidate, the recorded decision,
+  // and the base href the two compose into.
+
+  describe('the recorded decision', () => {
+    it('is what tenantPathBase answers once one exists, in place of the candidate', () => {
+      history.replaceState({}, '', '/child/portals');
+
+      // What resolution records for an address whose segment the deployment CONFIRMED.
+      adoptTenantPathBase('/child');
+
+      expect(tenantPathBase()).toBe('/child');
+      expect(appBaseHref()).toBe('/child/');
+    });
+
+    it('answers the root for a REJECTED candidate, even though the address still proposes one', () => {
+      // ⚠ THE CASE THE WHOLE ARRANGEMENT EXISTS FOR. A mistyped console route keeps its segment in the
+      // address bar - deliberately, so the mistake stays visible and the catch-all can render for it - so
+      // the address goes on proposing a candidate for the life of the document. Reading the address here
+      // would re-adopt the very segment the deployment had just refused, and every API URL composed
+      // afterwards would carry it.
+      history.replaceState({}, '', '/portls');
+
+      expect(candidateTenantPathBase())
+        .withContext('the address still proposes the mistyped segment')
+        .toBe('/portls');
+
+      adoptTenantPathBase('');
+
+      expect(tenantPathBase())
+        .withContext('the recorded rejection wins over the address')
+        .toBe('');
+      expect(appBaseHref())
+        .withContext('so the router resolves the full mistyped path against the root and matches **')
+        .toBe('/');
+    });
+
+    it('is forgotten again, and the answer returns to NO prefix rather than to the address', () => {
+      history.replaceState({}, '', '/child/portals');
+      adoptTenantPathBase('/child');
+      expect(tenantPathBase()).toBe('/child');
+
+      forgetTenantPathBase();
+
+      // ⚠ NOT BACK TO THE CANDIDATE, AND THE DIFFERENCE IS THE WHOLE POINT OF THE REWRITE. The unrecorded
+      // state is the one the defect exploited, and the address is exactly as convincing there as it was
+      // before anything asked the deployment. It also has to answer this way for the sibling contract to
+      // hold: the mount point IGNORES the address entirely, and a tenant fallback read from the address
+      // would put a mistyped segment straight back into `appBaseHref()` and into every composed URL.
+      //
+      // Keeping a candidate when the deployment could not be reached is still done - `tenant-resolution.ts`
+      // RECORDS the candidate for an inconclusive answer, deliberately, so an outage cannot strand a real
+      // child portal at the root. That is a decision this module is told, never one it infers.
+      expect(tenantPathBase())
+        .withContext('an unrecorded prefix is no prefix, so nothing is claimed on the address alone')
+        .toBe('');
+      expect(candidateTenantPathBase())
+        .withContext('the candidate is still derivable, and is still only a candidate')
+        .toBe('/child');
+    });
+  });
+
+  describe('candidateTenantPathBase', () => {
+    it('reads the live address and agrees with the pure derivation', () => {
+      history.replaceState({}, '', '/child/users/1/profile');
+
+      expect(candidateTenantPathBase()).toBe(detectTenantPathBase('/child/users/1/profile'));
+      expect(candidateTenantPathBase()).toBe('/child');
+    });
+
+    it('proposes nothing for the console\'s own routes', () => {
+      history.replaceState({}, '', '/roles');
+
+      expect(candidateTenantPathBase()).toBe('');
     });
   });
 });

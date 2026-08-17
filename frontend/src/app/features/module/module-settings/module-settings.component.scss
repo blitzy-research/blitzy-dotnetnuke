@@ -85,6 +85,15 @@
   }
 }
 
+// ⚠ #21 — A NESTED SECTION HEAD IS ONE STEP SMALLER THAN THE HEAD IT SITS UNDER. This screen nests regions
+// two deep - an `h2` disclosure with `h3` disclosures inside it - and the head treatment above applied the
+// same 15px to both, so depth was invisible: "Basic Settings" inside "Module Settings" looked like its
+// sibling rather than its child. Only the size steps; the weight and the disclosure affordance are shared,
+// because they say "this opens", which is true at either depth.
+h3 > .module-settings__toggle {
+  font-size: var(--font-size-md);
+}
+
 .module-settings__toggle--ruled {
   border-block-end: var(--border-width) var(--border-style) var(--color-text-muted);
   padding-block-end: var(--space-2);
@@ -118,6 +127,33 @@
   color: var(--color-text-muted);
 }
 
+// The administered-elsewhere note, shown instead of the form when the module's package is administrative.
+// Styled as a bordered advisory rather than as a failure: the boundary is by design, so the danger colour
+// would misreport it.
+.module-settings__administered {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background-color: var(--color-surface);
+}
+
+.module-settings__administered-message {
+  margin: 0;
+}
+
+.module-settings__administered-link {
+  align-self: flex-start;
+}
+
+.module-settings__administered-reference {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
 .module-settings__declared-permissions-label {
   font-weight: var(--font-weight-bold);
 }
@@ -126,6 +162,47 @@
   padding-inline: var(--space-1);
   background-color: var(--color-selected);
   color: var(--color-primary);
+}
+
+// The three mutually exclusive states of the declared-permission read share one region so that the
+// switch above never shifts as the read resolves.
+.module-settings__declared-permissions-pending,
+.module-settings__declared-permissions-unread {
+  margin-block: var(--space-1) 0;
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-tight);
+  color: var(--color-text-muted);
+}
+
+// ⚠ MUTED, NOT DANGER-COLOURED, AND THAT IS DELIBERATE. This read is advisory: its failure does not stop
+// the operator saving, and painting it in the colour this application reserves for genuine failure would
+// overstate it beside a form that is working perfectly well.
+.module-settings__declared-permissions-reason {
+  display: block;
+  color: var(--color-text-muted);
+}
+
+// The spinner sits inline with the sentence it belongs to, so the two read as one statement rather than as
+// an indicator that happens to have text beside it.
+.module-settings__declared-permissions-pending {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+// The support reference. Set in the monospace face for the same reason the credential panel is: a
+// correlation identifier is transcribed character by character into a support request, so no two glyphs in
+// it may be ambiguous.
+.module-settings__declared-permissions-reference {
+  display: block;
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.module-settings__declared-permissions-retry {
+  margin-block-start: var(--space-2);
 }
 
 .module-settings__choices {
@@ -288,4 +365,52 @@
   font-size: var(--font-size-sm);
   line-height: var(--line-height-base);
   overflow-wrap: anywhere;
+}
+
+// THE GRANT GRID. Presentation only - every rule that decides whether a cell is operable lives in the
+// component, because a cell that merely LOOKS locked is still operable.
+.module-settings__permission-grid-scroll {
+  // A grid of one row per portal role by up to four columns can exceed a narrow viewport, and the shell
+  // forbids horizontal overflow of the page itself - so the overflow is confined here.
+  overflow-x: auto;
+  max-inline-size: var(--size-full);
+  margin-block-start: var(--space-2);
+}
+
+.module-settings__permission-grid {
+  // `auto` rather than the global `100%`: the columns are a role name and a handful of checkboxes, and
+  // stretching them across a wide viewport puts a checkbox an inch from the row it belongs to.
+  inline-size: auto;
+  min-inline-size: max-content;
+}
+
+.module-settings__permission-grid td {
+  // Centred under the column header, which is what makes a matrix readable as a matrix.
+  text-align: center;
+  vertical-align: middle;
+}
+
+.module-settings__permission-grid input[type='checkbox'] {
+  // The pointer-target floor, on both axes. The global choice-control rule keeps these native and sets no
+  // size, and a native checkbox renders around 13px - short of the 24 that WCAG 2.2 SC 2.5.8 binds. The
+  // compact token is the grid variant: the full floor would make a four-column matrix taller than the
+  // screen it sits in.
+  min-inline-size: var(--target-size-compact);
+  min-block-size: var(--target-size-compact);
+}
+
+.module-settings__permission-grid-empty {
+  margin: var(--space-2) 0 0;
+  color: var(--color-text-muted);
+  line-height: var(--line-height-base);
+}
+
+.module-settings__permission-column-note,
+.module-settings__permission-row-note {
+  // Their own line, so the note reads as an annotation of the name above rather than as part of it.
+  display: block;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-normal);
+  font-style: italic;
 }

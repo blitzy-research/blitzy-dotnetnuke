@@ -160,7 +160,23 @@
   --field-label-inline-size-wide: 12.5rem;
   --field-label-inline-size-wider: 18.75rem;
 
+  // THE CONTROL MEASURE STEPS, the three widths the legacy portal's own layout tables gave a control cell.
+  // `lg` is the 325px cell of Website/admin/Portal/SiteSettings.ascx; `md` is the 144px cell; `sm` is the
+  // 96px cell a fee, period or frequency field sat in. They live here rather than as per-screen `calc()`
+  // chains so that two screens asking for "the medium step" cannot drift apart, and so the vocabulary is
+  // legible in one place.
   --control-inline-size-lg: 20.3125rem;
+  --control-inline-size-md: 9rem;
+  --control-inline-size-sm: 6rem;
+
+  // The measure a two-column field needs before its control track can hold the widest step: the label
+  // column, the column gap the shared field declares between them, and the step itself. A grid that places
+  // two-column fields sizes its columns from this, so it can never take a second column at the cost of
+  // starving the control - which is exactly what happened at 1024px, where two 377px columns left a 211px
+  // control track and clipped the administrator name worse than a 320px phone did.
+  --field-two-column-measure: calc(
+    var(--field-label-inline-size) + var(--space-4) + var(--control-inline-size-lg)
+  );
 
   // A glyph-sized inline measure: the element's own font size, so an indicator drawn beside text keeps a
   // reserved box that scales with the text rather than with the viewport. Used by the shared grid's sort
@@ -171,6 +187,21 @@
   // grid track intrinsically, which was a deliberate choice and remains one - the reasoning is on that
   // track in `_layout.scss` and it is not withdrawn here.
   --layout-rail-inline-size: 11.5625rem;
+
+  // ⚠ THE HEIGHT OF THE PINNED HEADER BAND, AND IT EXISTS TO KEEP A SCROLL TARGET OUT FROM UNDER IT. Once
+  // `.shell__header` became `position: sticky` at the side-by-side step, anything the browser scrolled to
+  // the top of the viewport landed BEHIND it, because Chrome does not subtract a sticky band when it
+  // scrolls an element into view. Measured: activating the skip link put `window.scrollY` at exactly 69 -
+  // the main region's own document offset - which left 69 pixels of that region under the header and
+  // concealed the page title and all three of its page actions completely, three of them focusable links.
+  //
+  // This value is only the STARTING POINT, deliberately. The band's height is intrinsic - it measures 69
+  // pixels at 768 and above but 125 at 640 and 177 at 375, where the account cluster wraps - so a number
+  // fixed here could drift the moment that cluster gains an entry or a longer display name. `shell.component.ts`
+  // therefore re-publishes this property from the header's MEASURED height and keeps it in step through a
+  // `ResizeObserver`; what is written here is the value that holds until the first measurement lands, so the
+  // very first paint is already correct rather than briefly wrong.
+  --layout-header-block-size: 4.3125rem;
 
   // THE PREFERRED MEASURE OF ONE CONTROL IN A LISTING'S FILTER ROW. Consumed as a flex BASIS and never as a
   // width or a minimum, which is the whole point of it.
@@ -228,13 +259,73 @@
   // The floor below which a data table scrolls horizontally instead of narrowing further. It exists because
   // a fixed table layout resolves a percentage track against its containing block, so on a narrow viewport
   // the tracks collapse toward nothing and adjacent headings were measured physically overlapping.
+  //
+  // ⚠ RAISED FROM 40rem, AND THE OLD FLOOR IS WHY THE COLUMN WORK COULD NOT LAND. These are administration
+  // grids of nine to thirteen columns: at 40rem the average track is 49px, so whatever weighting the columns
+  // declared, SOMETHING was always too narrow for its own content — the role name broke as "Administrato" /
+  // "rs", host names broke mid-value, and a timestamp could not be held on one line at any weighting that
+  // also left room for the columns beside it. At this floor the widest grid gives its name column 172px and
+  // every atomic value fits, which is what "keep common names and values readable" requires.
+  //
+  // The cost is paid in scrolling, deliberately and in the one place that can absorb it: the table overflows
+  // its own container, which is now a named, keyboard-focusable region with a visible focus ring, rather
+  // than pushing the page sideways. The document itself still never scrolls horizontally at any width.
+  --table-min-inline-size: 60rem;
 
-  --table-min-inline-size: 40rem;
+  // The track a COMMAND column takes: one interactive target plus the cell's own inline padding on each
+  // side. Declared as a token because three listings need the same answer and because the value is derived
+  // rather than chosen - it is `--target-size-min` plus twice `--space-1`.
+  //
+  // ⚠ IT REPLACES `min-content` ON EVERY COMMAND COLUMN, AND BOTH FAILURES IT ENDS WERE MEASURED. Under a
+  // fixed table layout `min-content` is not a length, so a browser falls back to the automatic share: on the
+  // portal listing that made an icon-only column as wide as a title column, and on the role listing the
+  // commands overpainted the name column by 30.70px at 320 and 16.22px at 1024. A length resolves in the
+  // fixed algorithm exactly as written, so the column is the size of the target it holds and no larger.
+  --table-command-column-inline-size: 3.25rem;
+
+  // ⚠ A LENGTH ON A COLUMN IS ONLY HONOURED WHEN SOME OTHER COLUMN CAN ABSORB THE SLACK, and that was
+  // measured rather than assumed. Under `table-layout: fixed`, percentage columns are resolved against the
+  // table width and whatever is LEFT OVER goes to the columns whose width is not a percentage — so a
+  // command column declared at 3.25rem beside percentages summing to 85% painted 89.875px, not 52px, and the
+  // three tokens here were doing nothing at all. Proven with a three-column probe: `52px`, `3.25rem` and
+  // `var(--table-command-column-inline-size)` all rendered 909.73px when the other columns declared 24%.
+  // Every listing therefore leaves exactly ONE column with no declared width, and that column absorbs the
+  // slack while these three resolve exactly as written.
+
+  // The track a column carrying a single TEXT command takes. The portal listing renders its two commands as
+  // words rather than glyphs — "Settings" and "Delete", from the legacy resource keys — so the icon track
+  // above cannot hold them: at 3.25rem the word plus the cell's inline padding overflowed its own cell and
+  // painted into the column beside it, which is the bleed the shared table rules exist to prevent.
+  --table-command-column-text-inline-size: 5rem;
+
+  // The track a column carrying SEVERAL commands takes. The module listing puts all four of its commands —
+  // Edit, Settings, Export, Delete — in ONE column, and each is a WORD rather than a glyph, so the icon track
+  // above cannot hold even one of them: measured there, the four stacked one per line in a 188px-tall flex
+  // box, which made every row of that listing 196px tall.
+  //
+  // ⚠ THE VALUE IS DERIVED FROM THE WIDEST PAIR RATHER THAN CHOSEN, and 7rem was measured too small. The
+  // commands are 44, 62.98, 53.58 and 53.58 wide, so the widest adjacent pair plus the shared gap needs
+  // 62.98 + 4 + 53.58 = 120.56 of content, and the cell contributes 4px of inline padding on each side. At
+  // 7rem the content box was 104px — still short of 120.56 — and all four commands went on stacking one per
+  // line. 9rem gives 136px of content, which fits the widest pair with room to spare and lays the four out
+  // two-by-two, taking the row from 196px to about 100px.
+  //
+  // Two per line rather than four is deliberate: four on one line needs 226px, a fifth of the whole table,
+  // and this is the least information-dense column on the screen.
+  --table-commands-column-inline-size: 9rem;
 
   // TRANSIENT-MESSAGE MEASURE
   // Declared here rather than left as a length in the notification stylesheet, and that is not a formality
   // - it was a real omission, caught by a token audit.
   --notification-max-inline-size: 28rem;
+
+  // The space the main region reserves at its foot while a transient message is on screen.
+  //
+  // ⚠ IT EXISTS BECAUSE THE MESSAGE SURFACE IS FIXED-POSITIONED AND WAS COVERING CONTENT. Anchored to the
+  // bottom corner and outside the flow, a message sat on top of the last row of a grid, so the record an
+  // operator had just acted on was the one they could no longer read. Reserved only while the queue is
+  // non-empty, so no screen carries dead space at rest.
+  --notification-reserved-block-size: 6rem;
 
   // LAYERING Widely spaced steps, so a new layer can be inserted between two of them without renumbering.
   // Nothing outside this scale may set a z-index.

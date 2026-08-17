@@ -23,6 +23,16 @@ export const appConfig: ApplicationConfig = {
     /** Zone-based change detection with event coalescing. */
     provideZoneChangeDetection({ eventCoalescing: true }),
 
+    /**
+     * The router's mount point, resolved from the document's own `base` element — the value the DEPLOYMENT
+     * authors — and never inferred from the address bar.
+     *
+     * ⚠ THE PROVIDER IS RETAINED RATHER THAN DROPPED, even though the framework would resolve the same
+     * element by itself, because this factory NORMALISES the value: one function reduces the attribute to a
+     * prefix, and both the router base and the API base in `core/config/api-endpoints.ts` are built from
+     * it, so the two can never disagree about where the application is mounted. `core/config/tenant-path.ts`
+     * records the routing defect that the previous address-sniffing factory caused.
+     */
     { provide: APP_BASE_HREF, useFactory: appBaseHref },
 
     /** The router. All four arguments are load-bearing; each is annotated in place. */

@@ -1,8 +1,11 @@
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
+using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Application.Dtos.Tab;
+using DnnMigration.Application.Validation;
 using FluentAssertions;
+using Microsoft.AspNetCore.Mvc;
 using Xunit;
 
 namespace DnnMigration.IntegrationTests.Api;
@@ -31,6 +34,12 @@ public sealed class TabApiTests
 
     /// <summary>A tenant identifier no seeded or created portal can hold.</summary>
     private const int UnknownPortalId = 987654;
+
+    /// <summary>The largest page the API will serve, taken from the validator rather than restated.</summary>
+    private const int MaximumPageSize = PagedRequestValidator<TabPagedRequest>.MaximumPageSize;
+
+    /// <summary>The page size a caller who names none receives, read off the shared request contract.</summary>
+    private static readonly int DefaultPageSize = new TabPagedRequest().PageSize;
 
     /// <summary>The "All Users" pseudo-role, whose grants reach every caller, authenticated or not.</summary>
     private const int AllUsersRoleId = -1;
@@ -63,7 +72,7 @@ public sealed class TabApiTests
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        List<TabListItemDto> tabs = await ReadListAsync(response);
+        List<TabListItemDto> tabs = await ReadEveryTabAsync(client, _fixture.Seed.PortalId);
 
         tabs.Should().HaveCountGreaterThanOrEqualTo(2);
 
@@ -120,7 +129,7 @@ public sealed class TabApiTests
 
             response.StatusCode.Should().Be(HttpStatusCode.OK);
 
-            List<TabListItemDto> tabs = await ReadListAsync(response);
+            List<TabListItemDto> tabs = await ReadEveryTabAsync(client, _fixture.Seed.PortalId);
 
             TabListItemDto? listed = tabs.SingleOrDefault(tab => tab.TabId == tabId);
 
@@ -140,6 +149,164 @@ public sealed class TabApiTests
                 "the shared tenant must be left without a soft-deleted page, so a failure to restore it is "
                 + "itself a result worth reporting");
         }
+    }
+
+    /// <summary>
+    /// A caller who supplies no paging arguments receives the FIRST page at the shared default size, not the
+    /// whole collection.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// ⚠ THIS IS THE ASSERTION THAT THE COLLECTION IS BOUNDED AT ALL. Before it was paged, this endpoint
+    /// served every page a tenant held in one response - three thousand pages measured at 764 KiB - and a
+    /// caller had no parameter with which to ask for less. The default is what an existing caller who was
+    /// never updated now receives, so the bound has to hold for a request carrying nothing.
+    /// </remarks>
+    [Fact]
+    public async Task ListTabs_WithoutPagingArguments_ReturnsTheFirstPageAtTheDefaultSize()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        await CreateTabAsync("LDefA" + Suffix());
+        await CreateTabAsync("LDefB" + Suffix());
+
+        using HttpResponseMessage response = await client.GetAsync(
+            TabsRouteWithoutPaging(_fixture.Seed.PortalId));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        PagedEnvelope<TabListItemDto> page = await ReadPageAsync(response);
+
+        page.PageIndex.Should().Be(0, "a caller who named no page meant the first one");
+        page.PageSize.Should().Be(DefaultPageSize, "the shared default applies here like everywhere else");
+        page.Items.Count.Should().BeLessThanOrEqualTo(
+            DefaultPageSize,
+            "the response is bounded by the page size rather than by the tenant's configuration");
+        page.TotalCount.Should().BeGreaterThanOrEqualTo(
+            page.Items.Count,
+            "the total describes the collection, so it can never be smaller than the page cut from it");
+    }
+
+    /// <summary>
+    /// Two consecutive pages neither repeat nor drop a row, and their concatenation is the navigation order.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The property a paged hierarchy must keep is that the page boundary is a cut through one sequence rather
+    /// than two independent reads: a child that appeared on neither page, or a parent that appeared on both,
+    /// would describe a tree the tenant does not have.
+    /// </remarks>
+    [Fact]
+    public async Task ListTabs_PagesTheCollectionWithoutRepeatingOrDroppingARow()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        List<TabListItemDto> everything = await ReadEveryTabAsync(client, _fixture.Seed.PortalId);
+        everything.Should().HaveCountGreaterThanOrEqualTo(3, "the seeded tenant carries a hierarchy");
+
+        using HttpResponseMessage firstPage = await client.GetAsync(
+            TabsRoute(_fixture.Seed.PortalId, pageIndex: 0, pageSize: 2));
+        using HttpResponseMessage secondPage = await client.GetAsync(
+            TabsRoute(_fixture.Seed.PortalId, pageIndex: 1, pageSize: 2));
+
+        firstPage.StatusCode.Should().Be(HttpStatusCode.OK);
+        secondPage.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        PagedEnvelope<TabListItemDto> first = await ReadPageAsync(firstPage);
+        PagedEnvelope<TabListItemDto> second = await ReadPageAsync(secondPage);
+
+        first.Items.Should().HaveCount(2);
+        first.TotalCount.Should().Be(
+            second.TotalCount,
+            "the total describes the collection and cannot depend on which page was asked for");
+
+        IEnumerable<int> straddling = first.Items.Concat(second.Items).Select(tab => tab.TabId);
+
+        straddling.Should().Equal(
+            everything.Take(first.Items.Count + second.Items.Count).Select(tab => tab.TabId),
+            "consecutive pages are one cut through the navigation order, not two independent reads");
+    }
+
+    /// <summary>A page beyond the end of the collection is empty and still reports the total.</summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    public async Task ListTabs_WithAPageBeyondTheEnd_ReturnsAnEmptyPageAndTheTotal()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        using HttpResponseMessage response = await client.GetAsync(
+            TabsRoute(_fixture.Seed.PortalId, pageIndex: 100_000, pageSize: MaximumPageSize));
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "asking past the end is an empty answer, not a failed request");
+
+        PagedEnvelope<TabListItemDto> page = await ReadPageAsync(response);
+
+        page.Items.Should().BeEmpty();
+        page.TotalCount.Should().BeGreaterThan(0, "the collection is not empty merely because this page is");
+    }
+
+    /// <summary>Every shared paging bound is enforced on this collection too.</summary>
+    /// <param name="queryString">The paging arguments under test.</param>
+    /// <param name="offendingField">The request property the refusal must name.</param>
+    /// <returns>A task representing the test.</returns>
+    [Theory]
+    [InlineData("pageIndex=-1&pageSize=10", nameof(TabPagedRequest.PageIndex))]
+    [InlineData("pageIndex=0&pageSize=0", nameof(TabPagedRequest.PageSize))]
+    [InlineData("pageIndex=0&pageSize=101", nameof(TabPagedRequest.PageSize))]
+    public async Task ListTabs_WithAnOutOfBoundsPage_ReturnsBadRequestNamingTheField(
+        string queryString,
+        string offendingField)
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        using HttpResponseMessage response = await client.GetAsync(new Uri(
+            $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/tabs?{queryString}",
+            UriKind.Relative));
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        ValidationProblemDetails? problem = await response.Content
+            .ReadFromJsonAsync<ValidationProblemDetails>(ApiTestFixture.Json);
+
+        problem.Should().NotBeNull();
+        problem!.Errors.Keys.Should().Contain(offendingField);
+    }
+
+    /// <summary>
+    /// An ordering and a filter are REFUSED rather than ignored, because this collection offers neither.
+    /// </summary>
+    /// <param name="queryString">The unsupported argument under test.</param>
+    /// <param name="offendingField">The request property the refusal must name.</param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// A silently discarded parameter is the failure mode this guards: a caller who sorted by page name and
+    /// received the navigation order would have no way to tell that the sort had not happened, and a page tree
+    /// re-ordered by name would still carry a parent identifier on every row while describing a tree that does
+    /// not exist.
+    /// </remarks>
+    [Theory]
+    [InlineData("pageIndex=0&pageSize=10&sortBy=tabName", nameof(TabPagedRequest.SortBy))]
+    [InlineData("pageIndex=0&pageSize=10&sortBy=tabId", nameof(TabPagedRequest.SortBy))]
+    [InlineData("pageIndex=0&pageSize=10&query=Home", nameof(TabPagedRequest.Query))]
+    public async Task ListTabs_WithAnOrderingOrAFilter_ReturnsBadRequestNamingTheField(
+        string queryString,
+        string offendingField)
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        using HttpResponseMessage response = await client.GetAsync(new Uri(
+            $"/api/v1/portals/{Route(_fixture.Seed.PortalId)}/tabs?{queryString}",
+            UriKind.Relative));
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        ValidationProblemDetails? problem = await response.Content
+            .ReadFromJsonAsync<ValidationProblemDetails>(ApiTestFixture.Json);
+
+        problem.Should().NotBeNull();
+        problem!.Errors.Keys.Should().Contain(offendingField);
     }
 
     /// <summary>The listing requires credentials.</summary>
@@ -210,7 +377,7 @@ public sealed class TabApiTests
             HttpStatusCode.OK,
             "an edit grant on one page is what the module placement capability is built on");
 
-        IReadOnlyList<TabListItemDto> rows = await ReadListAsync(response);
+        IReadOnlyList<TabListItemDto> rows = await ReadEveryTabAsync(member, _fixture.Seed.PortalId);
 
         rows.Select(row => row.TabId).Should().Contain(
             granted,
@@ -236,7 +403,7 @@ public sealed class TabApiTests
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        IReadOnlyList<TabListItemDto> rows = await ReadListAsync(response);
+        IReadOnlyList<TabListItemDto> rows = await ReadEveryTabAsync(administrator, _fixture.Seed.PortalId);
 
         rows.Select(row => row.TabId).Should().Contain(
             new[] { first, second },
@@ -270,7 +437,7 @@ public sealed class TabApiTests
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        List<TabListItemDto> tabs = await ReadListAsync(response);
+        List<TabListItemDto> tabs = await ReadEveryTabAsync(client, isolatedPortalId);
 
         // The route names the tenant, so a row appearing here is by construction one of that tenant's pages;
         // the list-item projection therefore carries no tenant identifier of its own.
@@ -1103,7 +1270,7 @@ public sealed class TabApiTests
         using HttpResponseMessage before = await client.GetAsync(TabsRoute(_fixture.Seed.PortalId));
         before.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        List<TabListItemDto> cached = await ReadListAsync(before);
+        List<TabListItemDto> cached = await ReadEveryTabAsync(client, _fixture.Seed.PortalId);
         cached.Should().Contain(tab => tab.TabName == original);
 
         string renamed = "IFresh" + Suffix();
@@ -1118,7 +1285,7 @@ public sealed class TabApiTests
         using HttpResponseMessage after = await client.GetAsync(TabsRoute(_fixture.Seed.PortalId));
         after.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        List<TabListItemDto> refreshed = await ReadListAsync(after);
+        List<TabListItemDto> refreshed = await ReadEveryTabAsync(client, _fixture.Seed.PortalId);
 
         refreshed.Should().Contain(tab => tab.TabName == renamed);
         refreshed.Should().NotContain(tab => tab.TabName == original);
@@ -1288,7 +1455,7 @@ public sealed class TabApiTests
             HttpStatusCode.OK,
             "minus one is the first tenant identifier this schema issues, not an absent value");
 
-        List<TabListItemDto> tabs = await ReadListAsync(response);
+        List<TabListItemDto> tabs = await ReadEveryTabAsync(client, -1);
         tabs.Should().NotBeEmpty();
     }
 
@@ -1831,18 +1998,22 @@ public sealed class TabApiTests
     }
 
     /// <summary>
-    /// The page listing is an unpaged collection: it carries no paging block and therefore no paging
-    /// sentinel.
+    /// The page listing answers a PAGED envelope whose every paging fact is a real number, so the legacy
+    /// unpaged sentinel remains unrepresentable.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// The absence of a total is what makes the legacy unpaged sentinel unrepresentable here. Where a count
-    /// did travel in the legacy code it travelled through a by-reference argument that carried <c>-1</c> to
-    /// mean "not counted", and a page-count member that inherited that convention would report minus one
-    /// items.
+    /// ⚠ THIS ASSERTION USED TO SAY THE OPPOSITE, AND THE THING IT WAS PROTECTING IS UNCHANGED. It read the
+    /// listing as an unpaged collection carrying no paging block at all, on the ground that a total which does
+    /// not exist cannot carry a sentinel. The collection is now paged - a tenant legitimately holds thousands
+    /// of pages and the unpaged form grew without bound - so a total DOES travel, and the property worth
+    /// pinning becomes the one that matters either way: where a count travelled in the legacy code it
+    /// travelled through a by-reference argument carrying <c>-1</c> for "not counted", so every paging fact
+    /// here is asserted to be a real, non-negative number and the representation is asserted to hold no
+    /// negative numeric sentinel anywhere.
     /// </remarks>
     [Fact]
-    public async Task ListTabs_AnswersAnUnpagedEnvelopeWithNoPagingSentinel()
+    public async Task ListTabs_AnswersAPagedEnvelopeWithNoPagingSentinel()
     {
         using HttpClient client = await _fixture.CreateHostClientAsync();
 
@@ -1852,22 +2023,26 @@ public sealed class TabApiTests
 
         string payload = await response.Content.ReadAsStringAsync();
         payload.Should().NotContain(
-            "\"totalCount\"",
-            "an unpaged collection declares no total, so it can hold no unpaged sentinel");
-        payload.Should().NotContain("\"pageIndex\"");
-        payload.Should().NotContain("\"pageSize\"");
-        payload.Should().NotContain(
             ":-1",
             "no negative numeric sentinel belongs anywhere in this representation");
 
         using System.Text.Json.JsonDocument document = System.Text.Json.JsonDocument.Parse(payload);
 
-        document.RootElement.GetProperty("data").ValueKind.Should().Be(
+        document.RootElement.GetProperty("items").ValueKind.Should().Be(
             System.Text.Json.JsonValueKind.Array,
-            "the collection travels under the success envelope's data member");
-        document.RootElement.GetProperty("meta").ValueKind.Should().Be(
-            System.Text.Json.JsonValueKind.Null,
-            "an unpaged collection carries no paging block");
+            "the page travels under the paged envelope's items member");
+
+        System.Text.Json.JsonElement meta = document.RootElement.GetProperty("meta");
+        meta.ValueKind.Should().Be(
+            System.Text.Json.JsonValueKind.Object,
+            "a paged collection carries its paging block");
+
+        foreach (string fact in new[] { "totalCount", "pageIndex", "pageSize", "totalPages" })
+        {
+            meta.GetProperty(fact).GetInt32().Should().BeGreaterThanOrEqualTo(
+                0,
+                FormattableString.Invariant($"'{fact}' is a count or an index, never the legacy absence sentinel"));
+        }
     }
 
     /// <summary>Two identical listings return the same pages in the same order.</summary>
@@ -1885,11 +2060,11 @@ public sealed class TabApiTests
 
         using HttpResponseMessage first = await client.GetAsync(TabsRoute(_fixture.Seed.PortalId));
         first.StatusCode.Should().Be(HttpStatusCode.OK);
-        List<TabListItemDto> firstPass = await ReadListAsync(first);
+        List<TabListItemDto> firstPass = await ReadEveryTabAsync(client, _fixture.Seed.PortalId);
 
         using HttpResponseMessage second = await client.GetAsync(TabsRoute(_fixture.Seed.PortalId));
         second.StatusCode.Should().Be(HttpStatusCode.OK);
-        List<TabListItemDto> secondPass = await ReadListAsync(second);
+        List<TabListItemDto> secondPass = await ReadEveryTabAsync(client, _fixture.Seed.PortalId);
 
         secondPass.Select(tab => tab.TabId).Should().Equal(
             firstPass.Select(tab => tab.TabId),
@@ -2294,16 +2469,49 @@ public sealed class TabApiTests
     /// <returns>An authenticated client holding no administrative role.</returns>
     private Task<HttpClient> MemberClientAsync() => _fixture.CreateUnprivilegedClientAsync();
 
-    /// <summary>Reads a page listing out of the collection envelope a response carries.</summary>
-    /// <param name="response">The response.</param>
-    /// <returns>The listing.</returns>
-    private static async Task<List<TabListItemDto>> ReadListAsync(HttpResponseMessage response)
+    /// <summary>Reads one page of the listing, paging facts included.</summary>
+    /// <param name="response">The response to read.</param>
+    /// <returns>The page.</returns>
+    private static async Task<PagedEnvelope<TabListItemDto>> ReadPageAsync(HttpResponseMessage response)
     {
-        CollectionEnvelope<TabListItemDto>? envelope = await response.Content
-            .ReadFromJsonAsync<CollectionEnvelope<TabListItemDto>>(ApiTestFixture.Json);
+        PagedEnvelope<TabListItemDto>? envelope = await response.Content
+            .ReadFromJsonAsync<PagedEnvelope<TabListItemDto>>(ApiTestFixture.Json);
 
         envelope.Should().NotBeNull();
-        return envelope!.Data.ToList();
+        return envelope!;
+    }
+
+    /// <summary>Reads EVERY page of a tenant's listing and returns the whole collection.</summary>
+    /// <param name="client">The caller.</param>
+    /// <param name="portalId">The tenant whose pages are read.</param>
+    /// <returns>Every row the caller may see, in navigation order across page boundaries.</returns>
+    /// <remarks>
+    /// ⚠ THE ASSERTIONS THAT USE THIS ARE ABOUT THE COLLECTION, NOT ABOUT ONE PAGE, and the collection now
+    /// arrives one page at a time. Walking it here keeps every one of those assertions a statement about the
+    /// tenant's whole page set - which is what they were before this endpoint was paged - however many pages
+    /// the suite's own page creation has grown the tenant to, and it exercises the page boundary while doing
+    /// so. The walk is bounded by the reported total rather than by a page count, so a tenant that gains a row
+    /// between two requests still terminates.
+    /// </remarks>
+    private static async Task<List<TabListItemDto>> ReadEveryTabAsync(HttpClient client, int portalId)
+    {
+        List<TabListItemDto> all = [];
+
+        for (int pageIndex = 0; ; pageIndex++)
+        {
+            using HttpResponseMessage response = await client.GetAsync(
+                TabsRoute(portalId, pageIndex, MaximumPageSize));
+
+            response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+            PagedEnvelope<TabListItemDto> page = await ReadPageAsync(response);
+            all.AddRange(page.Items);
+
+            if (page.Items.Count == 0 || all.Count >= page.TotalCount)
+            {
+                return all;
+            }
+        }
     }
 
     /// <summary>Reads a page representation from a response.</summary>
@@ -2318,10 +2526,24 @@ public sealed class TabApiTests
         return detail!;
     }
 
-    /// <summary>Builds the collection route for a tenant's pages.</summary>
+    /// <summary>Builds the collection route for a tenant's pages, asking for one page of them.</summary>
+    /// <param name="portalId">The tenant identifier.</param>
+    /// <param name="pageIndex">The zero-based page to ask for.</param>
+    /// <param name="pageSize">The number of rows to ask for, defaulting to the ceiling the API permits.</param>
+    /// <returns>A relative route.</returns>
+    /// <remarks>
+    /// The default page size is the API's own ceiling rather than a literal, so a change to the ceiling moves
+    /// these assertions with it instead of leaving them asking for a size the API refuses.
+    /// </remarks>
+    private static Uri TabsRoute(int portalId, int pageIndex = 0, int pageSize = MaximumPageSize) =>
+        new(
+            $"/api/v1/portals/{Route(portalId)}/tabs?pageIndex={Route(pageIndex)}&pageSize={Route(pageSize)}",
+            UriKind.Relative);
+
+    /// <summary>Builds the collection route with no paging arguments at all, to observe the defaults.</summary>
     /// <param name="portalId">The tenant identifier.</param>
     /// <returns>A relative route.</returns>
-    private static Uri TabsRoute(int portalId) =>
+    private static Uri TabsRouteWithoutPaging(int portalId) =>
         new($"/api/v1/portals/{Route(portalId)}/tabs", UriKind.Relative);
 
     /// <summary>Builds the item route for one page.</summary>

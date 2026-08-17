@@ -33,6 +33,12 @@ public sealed class PermissionApiTests
     /// <summary>An identifier no seeded catalogue row can hold.</summary>
     private const int UnknownPermissionId = 987654;
 
+    /// <summary>
+    /// A module-definition identifier no seeded or suite-created definition bears, used to prove that a
+    /// custom catalogue key is scoped to the definition it names.
+    /// </summary>
+    private const int UnreachableModuleDefinitionId = 987654;
+
     private readonly ApiTestFixture _fixture;
 
     /// <summary>Initialises a new instance of the <see cref="PermissionApiTests"/> class.</summary>
@@ -285,7 +291,295 @@ public sealed class PermissionApiTests
         return portal!;
     }
 
-    /// <summary>Inserts one module owned by the supplied portal.</summary>
+    /// <summary>
+    /// A catalogue row whose key is not one of the four the upgrade chain seeds is read back through the
+    /// API with its key intact.
+    /// </summary>
+    /// <param name="storedKey">A key spelling the free-text column admits and the enumeration does not.</param>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// The row is planted by direct statement because no API path creates catalogue definitions, which is
+    /// also how a real installation acquires one: DotNetNuke's <c>AddPermission</c> procedure takes
+    /// <c>@PermissionKey varchar(50)</c> (<c>04.06.00.SqlDataProvider</c> line 407) and a third-party module
+    /// calls it at install time to register its own keys. The column is <c>varchar(50) NOT NULL</c> with no
+    /// check constraint, so every spelling below is legal stored data.
+    /// </para>
+    /// <para>
+    /// This read used to answer <c>500</c> unconditionally - for a host account as readily as for anyone
+    /// else - because the entity typed the key as the closed enumeration and the provider's converter threw
+    /// from inside the materialiser. The assertion is on the key travelling VERBATIM rather than merely on
+    /// the status, because folding an unrecognised spelling onto a sentinel member would satisfy the status
+    /// while reporting a value the row does not hold.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData("CUSTOM")]
+    [InlineData("MANAGE_SUBSCRIPTIONS")]
+    [InlineData("AAAAAAAAAABBBBBBBBBBCCCCCCCCCCDDDDDDDDDDEEEEEEEEEE")]
+    public async Task GetPermission_WhenTheKeyIsOutsideTheSeededSpellings_ReturnsOkWithTheKeyVerbatim(
+        string storedKey)
+    {
+        string permissionCode = "QA_MODULE_" + Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture)[..8];
+        int permissionId = await InsertCataloguePermissionAsync(
+            permissionCode,
+            _fixture.Seed.ModuleDefinitionId,
+            storedKey);
+
+        try
+        {
+            using HttpClient client = await _fixture.CreateHostClientAsync();
+
+            using HttpResponseMessage response = await client.GetAsync(new Uri(
+                "/api/v1/permissions/" + permissionId.ToString(CultureInfo.InvariantCulture),
+                UriKind.Relative));
+
+            response.StatusCode.Should().Be(
+                HttpStatusCode.OK,
+                "the schema admits this key, so the read must answer it rather than fault");
+
+            PermissionDto? definition = await response.Content.ReadEnvelopeAsync<PermissionDto>();
+
+            definition.Should().NotBeNull();
+            definition!.PermissionKey.Should().Be(
+                storedKey,
+                "the stored spelling is the answer; nothing re-cases it and nothing substitutes a member");
+            definition.PermissionCode.Should().Be(permissionCode);
+            definition.ModuleDefId.Should().Be(_fixture.Seed.ModuleDefinitionId);
+        }
+        finally
+        {
+            await DeleteCataloguePermissionAsync(permissionId);
+        }
+    }
+
+    /// <summary>
+    /// Registering a key outside the seeded spellings against a module's own definition leaves that
+    /// module's authorisation verdict for a NON-HOST caller exactly as it was.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// This is the arm of the defect that mattered most and hid best. Permission evaluation short-circuits
+    /// for a host account before the catalogue is ever read, so a host saw nothing wrong; every ordinary
+    /// portal caller received <c>500</c> from the authorisation path itself, with no grant row required -
+    /// registering the key against the module's OWN <c>ModuleDefID</c> was enough, and registering it against
+    /// any other definition was not. Both halves of that scoping are asserted here.
+    /// </para>
+    /// <para>
+    /// The verdict is captured BEFORE the row is planted and compared with the verdict after, rather than
+    /// asserted against a predicted status. That way the test cannot pass by accident if the gate on this
+    /// route changes, and it fails on any difference the extra catalogue row makes - a fault, a refusal or a
+    /// newly granted read alike.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ModuleAuthorization_ForANonHostCaller_IsUnaffectedByACustomCatalogueKey()
+    {
+        // Built ON the seeded definition rather than on one of its own, because that is what makes a row
+        // registered against that definition part of THIS module's catalogue read - the reachability rule the
+        // defect's scoping turned on.
+        int moduleId = await InsertModuleOnSeededDefinitionAsync();
+        string permissionCode = "QA_MODULE_" + Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture)[..8];
+        int ownDefinitionRow = 0;
+        int otherDefinitionRow = 0;
+
+        try
+        {
+            using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
+            Uri moduleAddress = new(
+                "/api/v1/modules/" + moduleId.ToString(CultureInfo.InvariantCulture),
+                UriKind.Relative);
+
+            HttpStatusCode before;
+            using (HttpResponseMessage baseline = await administrator.GetAsync(moduleAddress))
+            {
+                before = baseline.StatusCode;
+            }
+
+            before.Should().NotBe(
+                HttpStatusCode.InternalServerError,
+                "the baseline must be a real verdict for the comparison below to mean anything");
+
+            // Registered against a DIFFERENT definition first: proven at runtime to leave the module read
+            // alone even while the defect was live, so it establishes that the row itself is not what breaks
+            // anything.
+            otherDefinitionRow = await InsertCataloguePermissionAsync(
+                permissionCode + "_OTHER",
+                UnreachableModuleDefinitionId,
+                "CUSTOM");
+
+            using (HttpResponseMessage foreignDefinition = await administrator.GetAsync(moduleAddress))
+            {
+                foreignDefinition.StatusCode.Should().Be(before);
+            }
+
+            // And now against the module's own definition, which is the combination that faulted.
+            ownDefinitionRow = await InsertCataloguePermissionAsync(
+                permissionCode,
+                _fixture.Seed.ModuleDefinitionId,
+                "CUSTOM");
+
+            using HttpResponseMessage afterCustomKey = await administrator.GetAsync(moduleAddress);
+
+            afterCustomKey.StatusCode.Should().NotBe(
+                HttpStatusCode.InternalServerError,
+                "authorisation must reach a verdict, never an unhandled fault");
+            afterCustomKey.StatusCode.Should().Be(
+                before,
+                "a catalogue entry this solution does not name confers nothing and denies nothing");
+        }
+        finally
+        {
+            if (ownDefinitionRow != 0)
+            {
+                await DeleteCataloguePermissionAsync(ownDefinitionRow);
+            }
+
+            if (otherDefinitionRow != 0)
+            {
+                await DeleteCataloguePermissionAsync(otherDefinitionRow);
+            }
+
+            await DeleteModuleAsync(moduleId);
+        }
+    }
+
+    /// <summary>
+    /// A GRANT pointing at a custom catalogue key still lets the signed-in caller read its own identity.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The last arm of the defect. <c>GET /auth/me</c> projects the caller's effective permission keys, which
+    /// resolves each grant the caller reaches back to its catalogue row - so a grant naming a custom key was
+    /// enough to fault the identity endpoint for a portal administrator while leaving a host account
+    /// untouched. The custom key is expected to appear in the projection, because the caller genuinely holds
+    /// it: a grant is a grant whether or not this solution has a name for what it grants.
+    /// </remarks>
+    [Fact]
+    public async Task GetCurrentUser_ForANonHostCaller_ToleratesAGrantOnACustomCatalogueKey()
+    {
+        const string storedKey = "CUSTOM";
+
+        // On the seeded definition, so the grant below is IN SCOPE for the module it is recorded against -
+        // a grant whose catalogue entry belongs to another definition is discarded before its key is read,
+        // which would make this test pass without exercising anything.
+        int moduleId = await InsertModuleOnSeededDefinitionAsync();
+        string permissionCode = "QA_MODULE_" + Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture)[..8];
+        int permissionId = await InsertCataloguePermissionAsync(
+            permissionCode,
+            _fixture.Seed.ModuleDefinitionId,
+            storedKey);
+
+        try
+        {
+            await _fixture.Database.ExecuteAsync(
+                """
+                INSERT INTO [dbo].[ModulePermission] ([ModuleID], [PermissionID], [RoleID], [AllowAccess])
+                VALUES (@moduleId, @permissionId, @roleId, 1);
+                """,
+                new Dictionary<string, object?>
+                {
+                    ["moduleId"] = moduleId,
+                    ["permissionId"] = permissionId,
+                    ["roleId"] = _fixture.Seed.AdministratorRoleId,
+                });
+
+            using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
+
+            using HttpResponseMessage response = await administrator.GetAsync(
+                new Uri("/api/v1/auth/me", UriKind.Relative));
+
+            response.StatusCode.Should().Be(
+                HttpStatusCode.OK,
+                "resolving the caller's own authority must not fault on a key the schema permits");
+
+            string body = await response.Content.ReadAsStringAsync();
+
+            body.Should().Contain(
+                storedKey,
+                "the caller does hold the grant, so the key it confers belongs in the projection verbatim");
+        }
+        finally
+        {
+            await _fixture.Database.ExecuteAsync(
+                "DELETE FROM [dbo].[ModulePermission] WHERE [PermissionID] = @permissionId",
+                new Dictionary<string, object?> { ["permissionId"] = permissionId });
+            await DeleteCataloguePermissionAsync(permissionId);
+            await DeleteModuleAsync(moduleId);
+        }
+    }
+
+    /// <summary>Plants one catalogue definition by direct statement.</summary>
+    /// <param name="permissionCode">The scope code the row belongs to.</param>
+    /// <param name="moduleDefinitionId">The definition the row declares.</param>
+    /// <param name="permissionKey">The key exactly as it should be stored.</param>
+    /// <returns>The generated identifier of the planted row.</returns>
+    private Task<int> InsertCataloguePermissionAsync(
+        string permissionCode,
+        int moduleDefinitionId,
+        string permissionKey) =>
+        _fixture.Database.ScalarAsync<int>(
+            """
+            INSERT INTO [dbo].[Permission] ([PermissionCode], [ModuleDefID], [PermissionKey], [PermissionName])
+            VALUES (@permissionCode, @moduleDefinitionId, @permissionKey, @permissionName);
+            SELECT CAST(SCOPE_IDENTITY() AS int);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["permissionCode"] = permissionCode,
+                ["moduleDefinitionId"] = moduleDefinitionId,
+                ["permissionKey"] = permissionKey,
+                ["permissionName"] = "QA custom permission",
+            });
+
+    /// <summary>Removes one planted catalogue definition.</summary>
+    /// <param name="permissionId">The row to remove.</param>
+    /// <returns>A task that completes when the row is gone.</returns>
+    private Task<int> DeleteCataloguePermissionAsync(int permissionId) =>
+        _fixture.Database.ExecuteAsync(
+            "DELETE FROM [dbo].[Permission] WHERE [PermissionID] = @permissionId",
+            new Dictionary<string, object?> { ["permissionId"] = permissionId });
+
+    /// <summary>Inserts one module into the seeded tenant, built on the SEEDED module definition.</summary>
+    /// <returns>The module identifier.</returns>
+    /// <remarks>
+    /// Deliberately reuses <c>Seed.ModuleDefinitionId</c> instead of creating a definition of its own, which
+    /// the sibling helper below does. A catalogue entry is only in a module's read set when it carries the
+    /// product-wide module-definition scope code or names that module's OWN definition, so a module on a
+    /// private definition cannot be used to exercise a catalogue entry registered against the seeded one.
+    /// </remarks>
+    private Task<int> InsertModuleOnSeededDefinitionAsync() =>
+        _fixture.Database.ScalarAsync<int>(
+            """
+            INSERT INTO [dbo].[Modules]
+                ([ModuleDefID], [PortalID], [ModuleTitle], [AllTabs], [IsDeleted], [InheritViewPermissions])
+            VALUES (@moduleDefinitionId, @portalId, N'Custom permission key probe', 0, 0, 0);
+            SELECT CAST(SCOPE_IDENTITY() AS int);
+            """,
+            new Dictionary<string, object?>
+            {
+                ["moduleDefinitionId"] = _fixture.Seed.ModuleDefinitionId,
+                ["portalId"] = _fixture.Seed.PortalId,
+            });
+
+    /// <summary>Removes one planted module and its grants, leaving its definition in place.</summary>
+    /// <param name="moduleId">The module to remove.</param>
+    /// <returns>A task that completes when both row sets are gone.</returns>
+    /// <remarks>
+    /// The definition is deliberately NOT deleted. A module planted by
+    /// <see cref="InsertModuleOnSeededDefinitionAsync"/> shares the suite-wide seeded definition, and
+    /// removing that would take every other test in the collection down with it.
+    /// </remarks>
+    private Task<int> DeleteModuleAsync(int moduleId) =>
+        _fixture.Database.ExecuteAsync(
+            """
+            DELETE FROM [dbo].[ModulePermission] WHERE [ModuleID] = @moduleId;
+            DELETE FROM [dbo].[Modules] WHERE [ModuleID] = @moduleId;
+            """,
+            new Dictionary<string, object?> { ["moduleId"] = moduleId });
+
+    /// <summary>Inserts one module owned by the supplied portal, with a definition of its own.</summary>
     /// <param name="portalId">The owning portal.</param>
     /// <returns>The module identifier.</returns>
     private async Task<int> InsertModuleAsync(int portalId)

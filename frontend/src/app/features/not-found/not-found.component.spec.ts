@@ -90,4 +90,26 @@ describe('NotFoundComponent', () => {
     expect(fixture.nativeElement.textContent).toContain(OTHER_MESSAGE);
     expect(fixture.nativeElement.textContent).not.toContain(ROUTE_MESSAGE);
   });
+  // THE RECOVERY LINK IS ALSO A POINTER TARGET - QA-18. It is the only control on the only screen a lost
+  // operator reaches, and it was a bare inline anchor at the shared 17px line height.
+  it('gives the recovery link the full target minimum without changing how it reads', () => {
+    const link = query<HTMLAnchorElement>('a');
+
+    expect(link).not.toBeNull();
+
+    const bounds = (link as HTMLAnchorElement).getBoundingClientRect();
+
+    expect(bounds.height).toBeGreaterThanOrEqual(44);
+
+    // BLOCK-LEVEL, AND NOT BECAUSE THIS COMPONENT ASKED FOR IT: the slot the link is projected into is a
+    // flex container, so the anchor is a flex item and its display is blockified. That is what makes
+    // `align-content` able to centre the caption, and it is why the stylesheet declares no `display` at all.
+    expect(getComputedStyle(link as HTMLAnchorElement).display).toBe('block');
+  });
+
+  it('keeps the recovery caption legible inside the enlarged box', () => {
+    const link = query<HTMLAnchorElement>('a');
+
+    expect(textOf(link)).toBe(EXPECTED_RECOVERY_LABEL);
+  });
 });

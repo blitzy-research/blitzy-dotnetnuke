@@ -4,44 +4,23 @@
   sentence, and a native bubble would preempt that sentence with the browser's own wording.
 -->
 <form class="module-form" novalidate [formGroup]="form" (ngSubmit)="submit()">
-  <!-- The heading and the action bar. -->
+  <!--
+    The heading. ⚠ THE COMMANDS USED TO LIVE IN HERE AND NOW DO NOT. Measured across the four screens that
+    create or amend a record, this was the only one that put its saving command in the page header, and the only
+    one that made it a borderless link-like affordance rather than a button - so the same row of commands read
+    as a different species in a different place from its three siblings. They now sit at the foot of the form,
+    where the legacy command panel sat and where the other three screens put theirs.
+  -->
   <app-page-header [title]="heading()" [subtitle]="subheading()">
     <!--
-      SAVE. `cmdUpdate` declares no `causesvalidation` attribute, so it defaulted to True and validated
-      the page.
+      THE ONE WAY OUT, and it only appears when there is nothing else to do here. Placed in the header
+      slot every screen already uses for its sibling actions, so a reader who arrives at four different
+      dead addresses finds the way back in one place. It is a real route rather than a sentence telling
+      the reader to navigate: the previous wording said "Return to the module list" and offered nothing
+      to press.
     -->
-    @if (addressUnreadable() === false && moduleMissing() === false && readRefused() === false) {
-      <button
-        class="page-action module-form__action module-form__action--primary"
-        type="submit"
-        [disabled]="busy()"
-          [attr.aria-busy]="busy() ? 'true' : null"
-      >
-        {{ saveLabel }}
-      </button>
-    }
-
-    <!--
-      ABANDON. `cmdCancel` carries `causesvalidation="False"`, and `type="button"` is what reproduces
-      that exactly: the click cannot submit the form, so no validator runs, nothing is marked touched,
-      and an invalid form does not disable it.
-    -->
-    <button class="page-action module-form__action" type="button" (click)="cancel()">
-      {{ cancelLabel }}
-    </button>
-
-    <!--
-      REMOVE. `cmdDelete` also carries `causesvalidation="False"`, so this is a `type="button"` for the
-      same reason, and it is likewise never disabled by an invalid form.
-    -->
-    @if (canDelete()) {
-      <button
-        class="page-action module-form__action module-form__action--danger"
-        type="button"
-        (click)="requestRemoval()"
-      >
-        {{ deleteLabel }}
-      </button>
+    @if (nothingToShow()) {
+      <a class="page-action" routerLink="/modules">{{ recoveryLabel }}</a>
     }
   </app-page-header>
 
@@ -53,8 +32,11 @@
   <app-error-banner [problem]="problem()" />
 
   @if (addressUnreadable()) {
-    <!-- The address carries something that is not a module identifier. -->
-    <p class="module-form__notice">{{ unreadableAddressMessage }}</p>
+    <!--
+      The address carries something that is not a module identifier. THE BANNER ABOVE IS THE
+      PRESENTATION, and this branch renders nothing beneath it so the state is one statement rather than
+      two - the same treatment a refused read gets, and now the same treatment a missing record gets.
+    -->
   } @else if (readRefused()) {
     <!--
       THE READ WAS REFUSED, OR FAILED. The banner above IS the presentation, and this branch exists to
@@ -64,9 +46,8 @@
     <!--
       A readable identifier that resolved to nothing: a stale bookmark, or a module already removed. A
       legitimate state, reported as such rather than as a fault, and distinguished from "still reading"
-      by the component before it is ever true here.
+      by the component before it is ever true here. Stated by the banner, recovered through the header.
     -->
-    <p class="module-form__notice">{{ notFoundMessage }}</p>
   } @else if (isEditMode() && loading()) {
     <!-- Reading the addressed module. -->
     <app-loading-spinner size="medium" label="Loading module…" />
@@ -433,13 +414,46 @@
               [attr.aria-busy]="tabsLoading()"
             >
               <option [ngValue]="null">Not Specified</option>
-              @for (tab of tabs(); track tab.tabId) {
-                <option [ngValue]="tab.tabId">{{ tab.tabName }}</option>
+              @for (page of pageOptions(); track page.value) {
+                <option [ngValue]="page.value">{{ page.label }}</option>
               }
             </select>
           </app-form-field>
         </fieldset>
       </fieldset>
+    </div>
+  }
+
+  <!--
+    THE ACTION BAR, at the foot of the form. The three commands keep their legacy wording and their legacy
+    validation semantics exactly: save validates the page, and abandon and remove do not - which is what
+    `type="button"` reproduces, since a click that cannot submit runs no validator, marks nothing touched, and
+    is not disabled by an invalid form.
+  -->
+  <!--
+    ⚠ THE WHOLE BAR IS WITHHELD WHEN THERE IS NOTHING TO ACT ON, not just the submit. Measured at runtime:
+    on a module that does not exist the submit was correctly withheld but Cancel survived, so the screen
+    still rendered a form wrapper carrying one affordance for a record that is not there. The one thing a
+    reader can do in that state is leave, and the header's recovery link is what offers it.
+  -->
+  @if (nothingToShow() === false && readRefused() === false) {
+    <div class="module-form__actions">
+      <button
+        class="form-action--primary"
+        type="submit"
+        [disabled]="busy()"
+        [attr.aria-busy]="busy() ? 'true' : null"
+      >
+        {{ saveLabel() }}
+      </button>
+
+      <button type="button" (click)="cancel()">{{ cancelLabel }}</button>
+
+      @if (canDelete()) {
+        <button class="module-form__action--danger" type="button" (click)="requestRemoval()">
+          {{ deleteLabel }}
+        </button>
+      }
     </div>
   }
 </form>

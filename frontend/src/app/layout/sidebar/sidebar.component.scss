@@ -47,6 +47,22 @@
 // re-expands it is never the thing that disappears.
 .app-sidebar--collapsed {
   gap: 0;
+
+  // ⚠ AND IT GIVES THE TRACK BACK, WHICH IT PREVIOUSLY DID NOT. Measured: collapsing reclaimed exactly
+  // ZERO pixels, because the rule above declares `gap: 0` and nothing else while the definite
+  // `--layout-rail-inline-size` a few rules up stays in force at every width at or above the threshold. The
+  // shell's own column is `auto`, so it faithfully sized itself to a 185-pixel rail that had nothing left in
+  // it - at 768 that is an empty column taking 24% of the viewport and starving `main` to 568 pixels, which
+  // is what forced the listing table to scroll on the very width where the operator had just made room.
+  //
+  // `max-content` rather than a second definite width: what the collapsed rail actually needs is its
+  // disclosure control, and that control's own floor keeps it a legitimate pointer target - so the honest
+  // width is the one its remaining content asks for rather than a number chosen here. The selector matches
+  // the rule above in specificity and follows it in source order, which is what lets it win without a
+  // compound selector or an importance flag.
+  @include mx.respond-above('md') {
+    inline-size: max-content;
+  }
 }
 
 .app-sidebar__toggle {
@@ -93,7 +109,21 @@
 // records and for the same reason: _reset.scss would otherwise underline every chrome destination
 // permanently, which the legacy chrome demonstrably did not do.
 .app-sidebar__link {
-  display: block;
+  // THE POINTER-TARGET FLOOR, AND THIS RAIL WAS THE ONE PLACE IN THE APPLICATION STILL WITHOUT IT. Measured
+  // across all nine destinations: eight rendered 152 by 29, fifteen pixels short of the floor the vocabulary
+  // declares and applies everywhere else - `_forms.scss` puts it on every button on both axes, `_tables.scss`
+  // puts it on every command inside a cell, and both alphabet strips clear it because they are buttons. The
+  // ninth destination measured 152 by 50 and cleared the floor only because its label happens to wrap to two
+  // lines, which is an accident of its wording rather than a rule holding.
+  //
+  // `flex` replaces `block` so the floor has something to centre against: a taller box would otherwise leave
+  // a one-line label sitting at the top of it. The text is a single anonymous flex item, so the wrapping
+  // behaviour the rule below depends on is unchanged, and the two-line destination keeps its intrinsic 50 -
+  // this is a floor, not a fixed height.
+  display: flex;
+  align-items: center;
+  min-block-size: var(--target-size-min);
+
   padding-block: var(--space-1);
   padding-inline: var(--space-2);
   border-radius: var(--radius-sm);

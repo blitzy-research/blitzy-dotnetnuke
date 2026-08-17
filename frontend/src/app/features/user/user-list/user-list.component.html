@@ -3,7 +3,7 @@
   nulls `title` on its own host precisely so the value cannot leak out as the global HTML attribute;
   written as a static attribute it would become a browser tooltip and never reach the input at all.
 -->
-<app-page-header [title]="pageTitle">
+<app-page-header [title]="pageTitle" [subtitle]="pageSubtitle">
   @if (administersPortal()) {
     <a class="page-action user-list__page-action" [routerLink]="addUserLink">{{ addUserLabel }}</a>
 
@@ -28,7 +28,7 @@
   <p class="user-list__policy-notice">{{ policyDegradedNotice }}</p>
 }
 
-<app-error-banner [problem]="readFailure()" [fallbackMessage]="readFailureSummary()" />
+<app-error-banner [problem]="readFailure()" />
 
 @if (hasReadFailure()) {
   <div class="user-list__failure">
@@ -75,7 +75,21 @@
   </app-form-field>
 </div>
 
-<div class="user-list__letters" role="group" [attr.aria-label]="filterStripLabel">
+  <!--
+    ⚠ ONE TAB STOP, NOT TWENTY-SEVEN, AND `role="toolbar"` IS WHAT MAKES THAT LEGIBLE RATHER THAN SURPRISING.
+    Measured before this change: every one of the twenty-seven entries sat in the sequential tab order - on the
+    account listing they were positions 7 to 33 of 82 stops, a third of the screen's whole keyboard traversal
+    for one filter - and a real ArrowRight press with an entry focused left focus exactly where it was, on this
+    strip and on its sibling. The shared roving-focus directive gives exactly one entry `tabindex="0"` and takes
+    it from the rest; the role is what tells a reader the arrow keys apply here at all, which a plain group
+    could not.
+  -->
+<div
+  class="user-list__letters"
+  role="toolbar"
+  appRovingFocus
+  [attr.aria-label]="filterStripLabel"
+>
   <!--
     Each letter carries an accessible name that says what pressing it does, because "A" alone tells a
     reader moving between twenty-seven controls nothing — and the name CONTAINS the visible character,
@@ -100,7 +114,7 @@
   listing — no entry on the strip is what is in force.
 -->
 @if (filterDisclosure(); as disclosure) {
-  <p class="user-list__filter-disclosure">{{ disclosure }}</p>
+  <p class="user-list__filter-disclosure" role="status" aria-live="polite">{{ disclosure }}</p>
 }
 
 <!--
@@ -109,7 +123,13 @@
   addition at zero visual cost and no `summary` attribute is emitted.
 -->
 <!-- MIGRATION: the legacy showed no message at all here, so this is a net addition. -->
-@if (noQueryIssued()) {
+<!--
+  ⚠ GATED ON THE LISTING QUESTION HAVING BEEN ANSWERED, not merely on no search being in force. Arriving
+  here clears the criteria, so `noQueryIssued` is momentarily true on EVERY arrival - and the opening read is
+  only decided once the tenant's membership policy has been read, so ungated this notice was announced for a
+  whole round trip before the accounts it denies appeared underneath it.
+-->
+@if (noQueryIssued() && listSettled()) {
   <p class="user-list__notice" role="status" aria-live="polite">{{ noQueryNotice }}</p>
 }
 
@@ -121,13 +141,33 @@
 <app-data-table
   [columns]="columns()"
   [rows]="rows()"
+  [totalCount]="totalCount()"
+  [rowOffset]="pageIndex() * pageSize()"
   [rowKey]="userRowKey"
-  [loading]="loading()"
+  [loading]="listWaiting()"
+  [loadingLabel]="loadingLabel"
+  [failed]="listFailed()"
+  [emptyMessage]="emptyMessage()"
   [sortBy]="sortBy()"
   [sortDir]="sortDir()"
   (sortChange)="onSortChange($event)"
 >
   <span dataTableCaption>{{ pageTitle }}</span>
+
+  <!--
+    ⚠ THE ZERO-RESULT SURFACE'S WAY FORWARD, and it was empty. This screen opens with no query issued at all,
+    so the FIRST thing a reader sees is an empty table - and the affordances that could fill it were the letter
+    strip above it and nothing inside it. The action offered is the one that matches the reason the table is
+    empty: list every account when nothing has been asked for or a narrowing found nothing, and add an account
+    either way.
+  -->
+  <div dataTableEmptyAction class="user-list__empty-actions">
+    <button type="button" class="user-list__filter-action" (click)="onFilterSelected(allFilterLabel)">
+      {{ showAllAccountsLabel }}
+    </button>
+
+    <a class="user-list__filter-action" [routerLink]="addUserLink">{{ addUserLabel }}</a>
+  </div>
 </app-data-table>
 
 <!--
@@ -148,7 +188,7 @@
 <!-- THE REMOVAL CONFIRMATION. -->
 @if (pendingRemoval() !== null) {
   <app-confirm-dialog
-    [message]="deleteConfirmMessage"
+    [message]="deleteConfirmMessage()"
     [confirmLabel]="deleteCommandLabel"
     [danger]="true"
     (confirm)="onRemovalConfirmed()"
@@ -284,7 +324,24 @@
 
 <!-- THE AUTHORISATION FLAG — `users.ascx` L74-L79. -->
 <ng-template #approvedCell let-row>
-  {{ row.isApproved | yesNo }}
+  <!--
+    ⚠ QA-19 — AN UNAUTHORISED ACCOUNT IS NAMED AS A STATE, AND THIS IS A CONSISTENCY CORRECTION. The three
+    listings beside this one each carry a deliberate non-colour vocabulary for a value whose state matters
+    more than its text — an expired portal term, an expired module term, a free role — muted and slanted,
+    with the underlying value still announced. This column distinguished an account that can be used from
+    one that cannot by the one-character difference between `Yes` and `No`, in identical colour, weight and
+    slant, and it was the last of the four carrying no treatment at all.
+
+    THE VISIBLE WORD IS UNCHANGED. `users.ascx` L74-L79 bound the legacy `Authorized` column through a
+    yes/no formatter, and that wording is preserved verbatim through the same shared pipe. What is added is
+    the state treatment around the negative word and the sentence beside it.
+  -->
+  @if (row.isApproved === false) {
+    <span class="user-list__row-state" data-atomic-value>{{ row.isApproved | yesNo }}</span>
+    <span class="user-list__row-mark-description">{{ unauthorisedDescription }}</span>
+  } @else {
+    {{ row.isApproved | yesNo }}
+  }
   <!--
     ⚠ U-M1 — THE LOCK-OUT QUALIFIER. The approval word above answers a different question from lock-out,
     and both are true facts, but an operator reads this column to decide whether an account can be used
@@ -301,10 +358,56 @@
   one string; an absent value has to emit a painted mark AND a hidden explanation of it, which is two
   elements.
 -->
+<!--
+  THE THREE NAME CELLS. One template shape, three columns, because the three columns have exactly the same
+  two problems: a value may be absent, and a value may carry whitespace that HTML collapses.
+
+  Order matters. Absence is reported first and padding second, so a cell never carries two annotations at
+  once - `isNamePadded` returns false for an absent value precisely so this stays true.
+-->
+<ng-template #firstNameCell let-row>
+  @if (isNameAbsent(row.firstName)) {
+    <!-- The shared absent-value rendering, so a row cannot report absence two different ways. -->
+    <app-absent-value />
+  } @else {
+    {{ nameText(row.firstName) }}
+    @if (isNamePadded(row.firstName)) {
+      <span class="user-list__padded-value" aria-hidden="true">{{ paddedValueMark }}</span>
+      <span class="user-list__row-mark-description">{{ paddedValueDescription }}</span>
+    }
+  }
+</ng-template>
+
+<ng-template #lastNameCell let-row>
+  @if (isNameAbsent(row.lastName)) {
+    <!-- The shared absent-value rendering, so a row cannot report absence two different ways. -->
+    <app-absent-value />
+  } @else {
+    {{ nameText(row.lastName) }}
+    @if (isNamePadded(row.lastName)) {
+      <span class="user-list__padded-value" aria-hidden="true">{{ paddedValueMark }}</span>
+      <span class="user-list__row-mark-description">{{ paddedValueDescription }}</span>
+    }
+  }
+</ng-template>
+
+<ng-template #displayNameCell let-row>
+  @if (isNameAbsent(row.displayName)) {
+    <!-- The shared absent-value rendering, so a row cannot report absence two different ways. -->
+    <app-absent-value />
+  } @else {
+    {{ nameText(row.displayName) }}
+    @if (isNamePadded(row.displayName)) {
+      <span class="user-list__padded-value" aria-hidden="true">{{ paddedValueMark }}</span>
+      <span class="user-list__row-mark-description">{{ paddedValueDescription }}</span>
+    }
+  }
+</ng-template>
+
 <ng-template #addressCell let-row>
   @if (isAddressAbsent(row)) {
-    <span class="user-list__absent-value" aria-hidden="true">{{ absentProfileValueMark }}</span>
-    <span class="user-list__row-mark-description">{{ absentProfileValueDescription }}</span>
+    <!-- The shared absent-value rendering: the same mark, the same colour and the same words as every listing. -->
+    <app-absent-value />
   } @else {
     {{ row.address }}
   }
@@ -317,9 +420,8 @@
 -->
 <ng-template #telephoneCell let-row>
   @if (isTelephoneAbsent(row)) {
-    <span class="user-list__absent-value" aria-hidden="true">{{ absentProfileValueMark }}</span>
-    <span class="user-list__row-mark-description">{{ absentProfileValueDescription }}</span>
+    <app-absent-value />
   } @else {
-    {{ row.telephone }}
+    <span data-atomic-value>{{ row.telephone }}</span>
   }
 </ng-template>

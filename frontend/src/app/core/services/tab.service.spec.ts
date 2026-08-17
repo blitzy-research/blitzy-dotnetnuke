@@ -27,6 +27,36 @@ function envelope<TPayload>(data: TPayload): SuccessEnvelope<TPayload> {
   return { data, meta: null };
 }
 
+/** The paged envelope, restated locally for the same reason the success envelope is. */
+interface PagedEnvelope<TRow> {
+  readonly items: readonly TRow[];
+  readonly meta: {
+    readonly totalCount: number;
+    readonly pageIndex: number;
+    readonly pageSize: number;
+    readonly totalPages: number;
+  };
+}
+
+/** The page size the whole-collection read asks for, matching the transport's own constant. */
+const WHOLE_COLLECTION_PAGE_SIZE = 100;
+
+/**
+ * Wraps rows in the paged envelope as the server writes it, declaring a total that the rows in hand complete
+ * - which is what tells the transport it has read the last page and must stop.
+ */
+function page<TRow>(items: readonly TRow[], totalCount: number = items.length): PagedEnvelope<TRow> {
+  return {
+    items,
+    meta: {
+      totalCount,
+      pageIndex: 0,
+      pageSize: WHOLE_COLLECTION_PAGE_SIZE,
+      totalPages: totalCount === 0 ? 0 : Math.ceil(totalCount / WHOLE_COLLECTION_PAGE_SIZE),
+    },
+  };
+}
+
 /**
  * One page-list row, carrying all fourteen members the list projection declares. Every member is spelled
  * from the wire contract rather than from the legacy source, and two of those spellings would have failed
@@ -231,12 +261,14 @@ describe('TabService', () => {
 
       const pending = firstValueFrom(service.getByPortal(3));
 
-      const request = httpMock.expectOne('/api/v1/portals/3/tabs');
+      const request = httpMock.expectOne(
+        (candidate) => candidate.url === '/api/v1/portals/3/tabs',
+      );
       expect(request.request.method).toBe('GET');
 
-      request.flush(envelope(rows));
+      request.flush(page(rows));
 
-      // The emitted value is the payload from INSIDE the envelope, not the envelope itself.
+      // The emitted value is the rows from INSIDE the page envelope, not the envelope itself.
       expect(await pending).toEqual(rows);
     });
 
@@ -250,7 +282,9 @@ describe('TabService', () => {
       ];
 
       const pending = firstValueFrom(service.getByPortal(3));
-      httpMock.expectOne('/api/v1/portals/3/tabs').flush(envelope(rows));
+      httpMock
+        .expectOne((candidate) => candidate.url === '/api/v1/portals/3/tabs')
+        .flush(page(rows));
 
       const emitted = await pending;
 
@@ -260,25 +294,65 @@ describe('TabService', () => {
         .toEqual([2, 0]);
     });
 
-    it('sends no query string at all, because the page list is deliberately unpaged', async () => {
+    it('asks for a BOUNDED page, and asks for nothing the endpoint refuses', async () => {
+      // ⚠ THIS ASSERTION USED TO SAY THE OPPOSITE. It required the request to carry no query string at all,
+      // because the endpoint was unpaged - and unpaged is exactly the defect that was fixed: a tenant
+      // legitimately holds thousands of pages, and the response grew with every one of them. So a page is
+      // requested now. What has not changed is that no ORDERING and no FILTER is sent: the endpoint refuses
+      // both with 400, because a page tree has one meaningful order and no filterable column of its own.
       const pending = firstValueFrom(service.getByPortal(3));
 
-      const request = httpMock.expectOne('/api/v1/portals/3/tabs');
+      const request = httpMock.expectOne(
+        (candidate) => candidate.url === '/api/v1/portals/3/tabs',
+      );
 
-      expect(request.request.params.keys().length)
-        .withContext('unpaged: no page, pageSize, sort or sortDirection')
-        .toBe(0);
-      expect(request.request.urlWithParams)
-        .withContext('the request URL carries no appended query string')
-        .toBe('/api/v1/portals/3/tabs');
+      expect(request.request.params.keys().sort())
+        .withContext('the page and its size, and nothing else')
+        .toEqual(['pageIndex', 'pageSize']);
+      expect(request.request.params.get('pageIndex')).toBe('0');
+      expect(request.request.params.get('pageSize')).toBe(String(WHOLE_COLLECTION_PAGE_SIZE));
+      expect(request.request.urlWithParams).toBe(
+        `/api/v1/portals/3/tabs?pageIndex=0&pageSize=${WHOLE_COLLECTION_PAGE_SIZE}`,
+      );
 
-      request.flush(envelope([listRow()]));
+      request.flush(page([listRow()]));
       await pending;
+    });
+
+    it('reads EVERY page, so a collection larger than one page still arrives whole', async () => {
+      // The transport walks the pages the endpoint now serves. A consumer that renders the tenant's pages as
+      // a chooser still receives all of them; what changed is that no single response is unbounded.
+      const first: readonly TabListItem[] = Array.from({ length: WHOLE_COLLECTION_PAGE_SIZE }, (_, index) =>
+        listRow({ tabId: index, tabName: `Page ${index}` }),
+      );
+      const second: readonly TabListItem[] = [listRow({ tabId: 100, tabName: 'Last' })];
+      const total: number = first.length + second.length;
+
+      const pending = firstValueFrom(service.getByPortal(3));
+
+      const firstRequest = httpMock.expectOne(
+        (candidate) =>
+          candidate.url === '/api/v1/portals/3/tabs' && candidate.params.get('pageIndex') === '0',
+      );
+      firstRequest.flush({ items: first, meta: { totalCount: total, pageIndex: 0, pageSize: WHOLE_COLLECTION_PAGE_SIZE, totalPages: 2 } });
+
+      const secondRequest = httpMock.expectOne(
+        (candidate) =>
+          candidate.url === '/api/v1/portals/3/tabs' && candidate.params.get('pageIndex') === '1',
+      );
+      secondRequest.flush({ items: second, meta: { totalCount: total, pageIndex: 1, pageSize: WHOLE_COLLECTION_PAGE_SIZE, totalPages: 2 } });
+
+      const emitted = await pending;
+
+      expect(emitted.length).toBe(total);
+      expect(emitted.map((row) => row.tabId))
+        .withContext('the page boundary is a cut through one sequence, so order survives it')
+        .toEqual([...first, ...second].map((row) => row.tabId));
     });
 
     it('emits an empty collection unchanged when the portal has no pages', async () => {
       const pending = firstValueFrom(service.getByPortal(3));
-      httpMock.expectOne('/api/v1/portals/3/tabs').flush(envelope([]));
+      httpMock.expectOne((candidate) => candidate.url === '/api/v1/portals/3/tabs').flush(page([]));
 
       // An empty list is a successful answer, not a failure and not an absent value. It must arrive as an
       // empty array rather than as null or undefined, so that a caller can distinguish "this tenant has no
@@ -290,10 +364,12 @@ describe('TabService', () => {
       // Zero is the SECOND identity value on the tenant table, which is declared `IDENTITY (-1, 1)`.
       const pending = firstValueFrom(service.getByPortal(0));
 
-      const request = httpMock.expectOne('/api/v1/portals/0/tabs');
+      const request = httpMock.expectOne(
+        (candidate) => candidate.url === '/api/v1/portals/0/tabs',
+      );
       expect(request.request.method).toBe('GET');
 
-      request.flush(envelope([listRow()]));
+      request.flush(page([listRow()]));
       await pending;
     });
 
@@ -303,13 +379,15 @@ describe('TabService', () => {
       // is simultaneously the legacy missing-integer marker.
       const pending = firstValueFrom(service.getByPortal(-1));
 
-      const request = httpMock.expectOne('/api/v1/portals/-1/tabs');
+      const request = httpMock.expectOne(
+        (candidate) => candidate.url === '/api/v1/portals/-1/tabs',
+      );
       expect(request.request.method).toBe('GET');
       expect(request.request.url)
         .withContext('minus one is transmitted, never elided and never re-encoded')
         .toBe('/api/v1/portals/-1/tabs');
 
-      request.flush(envelope([listRow()]));
+      request.flush(page([listRow()]));
       await pending;
     });
   });
@@ -523,7 +601,7 @@ describe('TabService', () => {
       const pending = firstValueFrom(service.getByPortal(3));
 
       httpMock
-        .expectOne('/api/v1/portals/3/tabs')
+        .expectOne((candidate) => candidate.url === '/api/v1/portals/3/tabs')
         .flush(problemDocument(404, 'Not Found', 'tab.portal_not_found'), {
           status: 404,
           statusText: 'Not Found',
@@ -621,7 +699,9 @@ describe('TabService', () => {
       // POST), page DELETE (no DELETE verb), partial update (no PATCH), reorder, move, copy, export,
       // import, and recycle-bin restore or purge.
       const list = firstValueFrom(service.getByPortal(3));
-      httpMock.expectOne('/api/v1/portals/3/tabs').flush(envelope([listRow()]));
+      httpMock
+        .expectOne((candidate) => candidate.url === '/api/v1/portals/3/tabs')
+        .flush(page([listRow()]));
       expect((await list).length).toBe(1);
 
       const read = firstValueFrom(service.getById(7));
@@ -675,7 +755,9 @@ describe('TabService', () => {
         error: (failure: unknown) => failures.push(failure),
       });
 
-      httpMock.expectOne(url).flush(body);
+      // Matched on the PATH rather than on the whole address, because the portal-scoped listing now carries
+      // paging arguments and the shape of the body is what these assertions are about.
+      httpMock.expectOne((candidate) => candidate.url === url).flush(body);
 
       expect(values).toEqual([]);
       expect(failures.length).toBe(1);
@@ -694,8 +776,8 @@ describe('TabService', () => {
       expectViolationAt(
         service.getByPortal(4),
         '/api/v1/portals/4/tabs',
-        envelope([malformed]),
-        'response.data[0].level',
+        page([malformed]),
+        'response.items[0].level',
       );
     });
 
@@ -703,8 +785,8 @@ describe('TabService', () => {
       expectViolationAt(
         service.getByPortal(4),
         '/api/v1/portals/4/tabs',
-        envelope([{ ...listRow(), tabOrder: '1' }]),
-        'response.data[0].tabOrder',
+        page([{ ...listRow(), tabOrder: '1' }]),
+        'response.items[0].tabOrder',
       );
     });
 
@@ -712,8 +794,8 @@ describe('TabService', () => {
       expectViolationAt(
         service.getByPortal(4),
         '/api/v1/portals/4/tabs',
-        envelope(listRow()),
-        'response.data',
+        { items: listRow(), meta: { totalCount: 1, pageIndex: 0, pageSize: 100, totalPages: 1 } },
+        'response.items',
       );
     });
 
@@ -722,7 +804,7 @@ describe('TabService', () => {
 
       service.getByPortal(4).subscribe({ next: (rows: unknown) => values.push(rows) });
 
-      httpMock.expectOne('/api/v1/portals/4/tabs').flush(envelope([]));
+      httpMock.expectOne((candidate) => candidate.url === '/api/v1/portals/4/tabs').flush(page([]));
 
       expect(values).toEqual([[]]);
     });

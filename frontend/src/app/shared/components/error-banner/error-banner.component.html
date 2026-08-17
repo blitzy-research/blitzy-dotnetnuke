@@ -64,9 +64,10 @@
         <!--
           The server's own identifier for this request, and the ONLY diagnostic shown. It is quotable in
           a support report and means nothing to anyone without the server's logs, which is exactly why
-          it is safe to show where a stack trace was not.
+          it is safe to show where a stack trace was not - and equally why the line SAYS WHAT IT IS FOR
+          rather than labelling it `Reference:` and leaving the reader to guess.
         -->
-        <p class="error-banner__trace">Reference: {{ supportReference() }}</p>
+        <p class="error-banner__trace">{{ referenceLead }} {{ supportReference() }}.</p>
       }
     </div>
   }

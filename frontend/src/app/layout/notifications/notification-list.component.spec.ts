@@ -397,7 +397,7 @@ describe('NotificationListComponent', () => {
     });
 
     it('retires a warning that ASKS to be retired, because severity is the fallback and not the answer', () => {
-      notifications.notify('warning', 'You do not have access to this content.', null, false, true);
+      notifications.notify('warning', 'You do not have permission to view this content.', null, false, true);
       fixture.detectChanges();
 
       expect(items().length).withContext('shown first, then retired') .toBe(1);
@@ -528,6 +528,41 @@ describe('NotificationListComponent', () => {
       // The entry survives in the service: a timer outliving the surface would remove a message
       // after a route change, which is a removal nobody asked for.
       expect(notifications.notifications().length).toBe(1);
+    });
+  });
+  // THE DISMISSAL IS A 44px TARGET - QA-18. It used to be sized from a SPACING step, `--space-6`, which is
+  // 24px: the AA floor met and not exceeded, on a transient control that disappears on its own and therefore
+  // gives an operator one attempt at it. A missed dismissal re-triggers the toast's own hover-hold, so the
+  // cost of a mis-tap here is a notification that will not go away.
+  describe('dismissal target size', () => {
+    it('meets the full target minimum in both axes', () => {
+      notifications.success('Portal saved.');
+      fixture.detectChanges();
+
+      const [item] = items();
+      const dismissal = dismissalOf(item);
+
+      expect(dismissal).not.toBeNull();
+
+      const bounds = (dismissal as HTMLButtonElement).getBoundingClientRect();
+
+      expect(bounds.width).toBeGreaterThanOrEqual(44);
+      expect(bounds.height).toBeGreaterThanOrEqual(44);
+    });
+
+    it('keeps the glyph centred, so the box grows around it rather than the glyph growing', () => {
+      notifications.success('Portal saved.');
+      fixture.detectChanges();
+
+      const dismissal = dismissalOf(items()[0]);
+      const computed = getComputedStyle(dismissal as HTMLButtonElement);
+
+      // BLOCKIFIED, AND MEASURED RATHER THAN ASSUMED: the row this sits in is a flex container, so the
+      // dismissal is a flex item and the stylesheet's `inline-flex` computes to `flex`. The centring the
+      // rule asks for is unaffected, which is the point of the assertion.
+      expect(computed.display).toBe('flex');
+      expect(computed.alignItems).toBe('center');
+      expect(computed.justifyContent).toBe('center');
     });
   });
 });

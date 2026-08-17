@@ -2760,6 +2760,96 @@ public sealed class PortalApiTests
     /// and a delete each answer <c>204 No Content</c>, and the collection reflects each step.
     /// </summary>
     /// <returns>A task representing the test.</returns>
+    /// <summary>
+    /// A submitted host name is stored in lower case, on creation and on replacement alike.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Lower case is the legacy rule, not a preference.</b> Every path in
+    /// <c>Library/Components/Portal/PortalAliasController.vb</c> that touched an alias applied
+    /// <c>.ToLower</c> - <c>AddPortalAlias</c> at L31, <c>UpdatePortalAliasInfo</c> at L97, and both read
+    /// paths at L52 and L76 - so a DotNetNuke installation never held a mixed-case alias. This service
+    /// trimmed and nothing more, so <c>WWW.Example.Test</c> was stored as written.
+    /// </para>
+    /// <para>
+    /// <b>Why it matters more than casing usually does.</b> An alias is the ONLY thing that resolves an
+    /// incoming request to a tenant, so two spellings of one host name is a tenant-resolution difference.
+    /// </para>
+    /// <para>
+    /// Asserted on the RESPONSE and again on the STORED row, because a service that lower-cased only its
+    /// return value would satisfy the first on its own.
+    /// </para>
+    /// </remarks>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task PortalAliases_StoreTheHostNameInLowerCase()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        (PortalDetailDto created, CreatePortalRequest createRequest) =
+            await CreatePortalWithRequestAsync(host);
+
+        using HttpClient client = await CreatedTenantClientAsync(created, createRequest);
+
+        var aliasesRoute = new Uri(
+            $"/api/v1/portals/{Route(created.PortalId)}/aliases",
+            UriKind.Relative);
+
+        string suffix = Suffix();
+        string submitted = "MiXeD-" + suffix + ".LOCAL";
+        string expected = submitted.ToLowerInvariant();
+
+        using HttpResponseMessage createdAlias = await client.PostAsJsonAsync(
+            aliasesRoute,
+            new CreatePortalAliasRequest { HttpAlias = submitted },
+            ApiTestFixture.Json);
+
+        createdAlias.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        PortalAliasDto? alias = await createdAlias.Content.ReadEnvelopeAsync<PortalAliasDto>();
+
+        alias.Should().NotBeNull();
+        alias!.HttpAlias.Should().Be(expected);
+
+        int storedAsSubmitted = await _fixture.Database.ScalarAsync<int>(
+            "select count(*) from dbo.PortalAlias where HTTPAlias = @alias collate Latin1_General_CS_AS",
+            new Dictionary<string, object?> { ["alias"] = submitted });
+
+        storedAsSubmitted.Should().Be(0, "the submitted casing must not survive into the column");
+
+        int storedCanonically = await _fixture.Database.ScalarAsync<int>(
+            "select count(*) from dbo.PortalAlias where HTTPAlias = @alias collate Latin1_General_CS_AS",
+            new Dictionary<string, object?> { ["alias"] = expected });
+
+        storedCanonically.Should().Be(1, "the canonical casing is what is stored");
+
+        // And the replacement path applies the same rule.
+        var aliasRoute = new Uri(
+            $"/api/v1/portals/{Route(created.PortalId)}/aliases/{Route(alias.PortalAliasId)}",
+            UriKind.Relative);
+
+        string replacement = "ReNaMeD-" + suffix + ".Local";
+
+        using HttpResponseMessage updated = await client.PutAsJsonAsync(
+            aliasRoute,
+            new UpdatePortalAliasRequest { HttpAlias = replacement },
+            ApiTestFixture.Json);
+
+        // 200 with the stored row, which is what this endpoint answers a replacement with.
+        updated.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        PortalAliasDto? replaced = await updated.Content.ReadEnvelopeAsync<PortalAliasDto>();
+
+        replaced.Should().NotBeNull();
+        replaced!.HttpAlias.Should().Be(replacement.ToLowerInvariant());
+
+        int replacedCanonically = await _fixture.Database.ScalarAsync<int>(
+            "select count(*) from dbo.PortalAlias where HTTPAlias = @alias collate Latin1_General_CS_AS",
+            new Dictionary<string, object?> { ["alias"] = replacement.ToLowerInvariant() });
+
+        replacedCanonically.Should().Be(1, "a replacement is canonicalised exactly as a creation is");
+    }
+
     [Fact]
     public async Task PortalAliases_SupportCreateUpdateAndDelete()
     {

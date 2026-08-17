@@ -16,6 +16,15 @@ main {
   // accessibility note above.
   @include mx.focus-ring;
 
+  // ⚠ #29 — THE RING IS DRAWN INSIDE THE REGION, and that is the whole fix. An outline sits OUTSIDE the box
+  // it rings, offset further still by `--focus-ring-offset`; this region fills the width of the viewport and
+  // runs the full height of the document, so every edge of its ring was painted outside the visible area and
+  // activating the skip link appeared to do nothing. A negative offset of the ring's own width pulls all four
+  // edges inside the region, where the top edge lands directly under the header a reader is looking at.
+  &:focus-visible {
+    outline-offset: calc(-1 * var(--focus-ring-width));
+  }
+
   min-inline-size: 0;
   overflow-wrap: break-word;
 }

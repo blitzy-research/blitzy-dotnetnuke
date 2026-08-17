@@ -1,6 +1,7 @@
 import { environment } from '../../../environments/environment';
 
 import { API_ENDPOINTS, AUTH_ENDPOINTS, apiUrl, isApiRequest } from './api-endpoints';
+import { adoptTenantPathBase, forgetTenantPathBase } from './tenant-path';
 
 /**
  * The exact production API base, spelled out here rather than read from the module under test. ⚠ THE
@@ -109,19 +110,56 @@ describe('a child portal addressed beneath a path segment', () => {
   // stores exactly that - and the API reproduces it: `TenantPathBaseMiddleware` resolves the tenant from
   // the host AND the path before routing runs, then moves the segment into the request's path base so
   // `/child/api/v1/portals` routes to the same action as `/api/v1/portals` while resolving the CHILD.
+  //
+  // ⚠ THE TENANT IS ARRANGED BY THE SERVER'S CONFIRMATION, NOT BY THE ADDRESS ALONE, and this suite used to
+  // arrange it the other way round. `core/config/tenant-path.ts` records why that changed: inferring the
+  // prefix from the first path segment made the route table's `**` fallback unreachable for every unknown
+  // single-segment address. These cases therefore arrange the address AND the confirmation, which is what a
+  // document served for a genuine child portal actually has in hand.
 
   const originalUrl = window.location.href;
 
+  /**
+   * The document's own base element, pinned at the root for these cases and restored afterwards.
+   *
+   * ⚠ THE TWO PREFIXES COMPOSE, so the deployment half is held at the root while the TENANT half is under
+   * test. `configuredApiBase` is the mount point followed by the confirmed tenant segment, and a runner page
+   * declaring a mount point of its own would make every expectation below read `/runner-mount/child/api/v1`.
+   * The suite below this one tests the deployment half on its own terms.
+   */
+  const baseElement = document.querySelector('base');
+
+  /** The `href` that element arrived with, or `null` when the document declares no base element. */
+  const originalBaseHref = baseElement?.getAttribute('href') ?? null;
+
   beforeEach(() => {
+    baseElement?.setAttribute('href', '/');
+
     // The platform's own history API, so the module under test reads a genuinely different
     // address rather than a substitute for one.
     history.replaceState({}, '', '/child/portals');
+
+    // ⚠ THE PREFIX IS NOW ADOPTED EXPLICITLY, AND THE ADDRESS ALONE IS NO LONGER ENOUGH. These cases used
+    // to arrange a tenant purely by changing the address, which is precisely the inference that was found
+    // to be unsafe: a typo has the same shape as a real child alias, so the application now believes only
+    // what the server confirmed. Arranging the address AND the confirmation states the same scenario -
+    // a document served for a genuine child portal - without asserting an inference that no longer happens.
+    adoptTenantPathBase('/child');
   });
 
   afterEach(() => {
-    // Mandatory: the address outlives a single case, and a leaked prefix would silently change
-    // every URL asserted by every suite that runs after this one.
+    // Mandatory: all three outlive a single case, and any of them leaking would silently change every URL
+    // asserted by every suite that runs after this one.
     history.replaceState({}, '', originalUrl);
+    forgetTenantPathBase();
+
+    if (baseElement !== null) {
+      if (originalBaseHref === null) {
+        baseElement.removeAttribute('href');
+      } else {
+        baseElement.setAttribute('href', originalBaseHref);
+      }
+    }
   });
 
   it('composes every generated address beneath the tenant prefix', () => {
@@ -164,5 +202,81 @@ describe('a child portal addressed beneath a path segment', () => {
   it('still requires a segment boundary after the version beneath the prefix', () => {
     expect(isApiRequest('/child/api/v10/users')).toBeFalse();
     expect(isApiRequest('/child/api/v1-preview/users')).toBeFalse();
+  });
+});
+
+describe('a bundle mounted beneath a path segment', () => {
+  // ⚠ THE MOUNT POINT IS DECLARED BY THE DOCUMENT'S BASE ELEMENT, NOT BY THE ADDRESS, and this suite used
+  // to arrange it the other way round. `core/config/tenant-path.ts` records why that changed: inferring a
+  // prefix from the first path segment made the route table's `**` fallback unreachable for every unknown
+  // single-segment address. These cases therefore arrange a deployment mounted at `/child/` the way a real
+  // one is arranged - by serving an `index.html` whose base element says so - and the address is left
+  // deliberately at whatever the runner is on, to prove it no longer contributes.
+
+  /** Restores the address after the case that arranges one. */
+  const originalUrl = window.location.href;
+
+  /** The document's own base element, whose `href` these cases borrow and must put back. */
+  const baseElement = document.querySelector('base');
+
+  /** The `href` that element arrived with, or `null` when the document declares no base element. */
+  const originalBaseHref = baseElement?.getAttribute('href') ?? null;
+
+  /** The base element this suite inserted, when the document declared none of its own. */
+  let insertedBaseElement: HTMLBaseElement | null = null;
+
+  beforeEach(() => {
+    if (baseElement !== null) {
+      baseElement.setAttribute('href', '/child/');
+
+      return;
+    }
+
+    insertedBaseElement = document.createElement('base');
+    insertedBaseElement.setAttribute('href', '/child/');
+    document.head.appendChild(insertedBaseElement);
+  });
+
+  afterEach(() => {
+    // Mandatory: the mount point outlives a single case, and a leaked prefix would silently change every
+    // URL asserted by every suite that runs after this one.
+    history.replaceState({}, '', originalUrl);
+
+    if (insertedBaseElement !== null) {
+      insertedBaseElement.remove();
+      insertedBaseElement = null;
+    }
+
+    if (baseElement !== null) {
+      if (originalBaseHref === null) {
+        baseElement.removeAttribute('href');
+      } else {
+        baseElement.setAttribute('href', originalBaseHref);
+      }
+    }
+  });
+
+  it('composes every generated address beneath the declared mount point', () => {
+    expect(apiUrl('portals')).toBe('/child/api/v1/portals');
+    expect(API_ENDPOINTS.portals.collection()).toBe('/child/api/v1/portals');
+    expect(API_ENDPOINTS.users.byId(0)).toBe('/child/api/v1/users/0');
+  });
+
+  it('classifies a mounted API path as this API, so the bearer token is still attached', () => {
+    expect(isApiRequest('/child/api/v1/portals')).toBeTrue();
+    expect(isApiRequest(API_ENDPOINTS.users.collection())).toBeTrue();
+  });
+
+  it('IGNORES THE ADDRESS ENTIRELY, which is the whole contract of the mount point', () => {
+    // Every one of these addresses was once read as a mount point. The unknown single segment is the
+    // measured defect: claiming it left the router an empty URL, so the route table's `**` fallback was
+    // never consulted and a mistyped address resolved to the caller's landing screen.
+    for (const address of ['/this-route-does-not-exist', '/nope/deeper', '/acme-legal/users/1/profile']) {
+      history.replaceState({}, '', address);
+
+      expect(apiUrl('portals'))
+        .withContext(`address ${address}`)
+        .toBe('/child/api/v1/portals');
+    }
   });
 });

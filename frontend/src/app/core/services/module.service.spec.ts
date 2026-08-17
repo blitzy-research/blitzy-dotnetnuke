@@ -42,6 +42,7 @@ const LIST_ROW: ModuleListItem = {
   moduleName: 'Announcements',
   description: '',
   version: '01.00.00',
+  isAdmin: false,
   moduleOrder: 1,
   allTabs: false,
   visibility: ModuleVisibility.Maximized,
@@ -74,12 +75,16 @@ const DETAIL: ModuleDetail = {
   moduleOrder: 1,
   cacheTime: 0,
   iconFile: '',
+  alignment: null,
+  color: null,
+  border: null,
   visibility: ModuleVisibility.Maximized,
   displayTitle: true,
   friendlyName: 'Announcements',
   moduleName: 'Announcements',
   description: '',
   version: '01.00.00',
+  isAdmin: false,
 };
 
 const DEFINITION: ModuleDefinition = {
@@ -133,6 +138,9 @@ const UPDATE_REQUEST: UpdateModuleRequest = {
   moduleOrder: 0,
   cacheTime: 0,
   iconFile: null,
+  alignment: null,
+  color: null,
+  border: null,
   visibility: ModuleVisibility.None,
   displayTitle: false,
   setAsDefaultSettings: false,
@@ -754,16 +762,25 @@ describe('ModuleService', () => {
         }),
       );
 
-      // Matched on the PATH ONLY through the predicate overload, so the assertion is not
-      // coupled to the order the parameters happen to be serialised in.
+      // ⚠ THE BODY-BOUND ADDRESS, BECAUSE THIS CALL CARRIES A TERM A PERSON TYPED. A query string is
+      // written into the reverse proxy's access log and into the API's own request log, so a search term
+      // must not travel in one; the account listing had already settled this the same way. The term-free
+      // read keeps the GET, which the specification below asserts.
       const call = httpMock.expectOne(
-        (candidate) => candidate.method === 'GET' && candidate.url === '/api/v1/modules',
+        (candidate) => candidate.method === 'POST' && candidate.url === '/api/v1/modules/search',
       );
-      expect(call.request.params.get('pageIndex')).toBe('0');
-      expect(call.request.params.get('pageSize')).toBe('10');
-      expect(call.request.params.get('sortBy')).toBe('moduleTitle');
-      expect(call.request.params.get('sortDir')).toBe('Ascending');
-      expect(call.request.params.get('query')).toBe('news');
+
+      expect(call.request.params.keys().length)
+        .withContext('nothing at all travels in the query string once a term is present')
+        .toBe(0);
+
+      const body = call.request.body as Record<string, unknown>;
+
+      expect(body['pageIndex']).toBe(0);
+      expect(body['pageSize']).toBe(10);
+      expect(body['sortBy']).toBe('moduleTitle');
+      expect(body['sortDir']).toBe('Ascending');
+      expect(body['query']).toBe('news');
 
       call.flush(page([LIST_ROW]));
       expect(recorded.values.length).toBe(1);
@@ -861,12 +878,18 @@ describe('ModuleService', () => {
       );
 
       const call = httpMock.expectOne(
-        (candidate) => candidate.method === 'GET' && candidate.url === '/api/v1/modules',
+        (candidate) => candidate.method === 'POST' && candidate.url === '/api/v1/modules/search',
       );
-      const sentQuery = call.request.params.get('query');
+      const sentQuery = (call.request.body as Record<string, unknown>)['query'] as string | undefined;
       expect(sentQuery).toBe('announce');
-      expect(sentQuery === null ? false : sentQuery.includes(WILDCARD)).toBeFalse();
+      expect(sentQuery === undefined ? false : sentQuery.includes(WILDCARD)).toBeFalse();
+
+      // The whole point of the body-bound address: the term appears NOWHERE in the address, so nothing can
+      // record it by recording the request line.
       expect(call.request.urlWithParams.includes(WILDCARD)).toBeFalse();
+      expect(call.request.urlWithParams.includes('announce'))
+        .withContext('the term is not in the address at all')
+        .toBeFalse();
 
       call.flush(page([LIST_ROW]));
       expect(recorded.values.length).toBe(1);
@@ -1220,6 +1243,9 @@ describe('ModuleService', () => {
         moduleOrder: 2,
         cacheTime: 120,
         iconFile: null,
+        alignment: null,
+        color: null,
+        border: null,
         visibility: ModuleVisibility.Minimized,
         displayTitle: true,
       };
@@ -1747,30 +1773,39 @@ describe('ModuleService', () => {
     });
   });
 
-  describe('the closed surface - twelve transport methods, and nothing else', () => {
-    /** The complete public surface, declared here as the independent statement of it. */
+  describe('the closed surface - fourteen transport methods, and nothing else', () => {
+    /**
+     * The complete public surface, declared here as the independent statement of it.
+     *
+     * ⚠ TWO MEMBERS WERE ADDED, AND WHAT THEY RESTORE IS A WHOLE CAPABILITY. The module grant grid the
+     * legacy settings screen carried - `<dnn:modulepermissionsgrid>` at `modulesettings.ascx:L42`,
+     * persisted at `ModuleSettings.ascx.vb:L378-L379` - had no transport at all, so a portal administrator
+     * could read the declared permission keys and grant none of them.
+     */
     const DECLARED_METHODS: readonly string[] = [
       'createModule',
       'deleteModule',
       'exportModule',
       'getModule',
       'getModuleDefinition',
+      'getModulePermissions',
       'getModuleSettings',
       'importModule',
       'listDesktopModuleDefinitions',
       'listModuleDefinitions',
       'listModules',
+      'replaceModulePermissions',
       'updateModule',
       'updateModuleSettings',
     ];
 
-    it('exposes exactly the twelve declared transport methods', () => {
+    it('exposes exactly the fourteen declared transport methods', () => {
       const surface = Object.getOwnPropertyNames(ModuleService.prototype)
         .filter((name) => name !== 'constructor')
         .sort();
 
       expect(surface).toEqual([...DECLARED_METHODS].sort());
-      expect(surface.length).toBe(12);
+      expect(surface.length).toBe(14);
       // The injected client is an INSTANCE field and so is deliberately absent from the
       // prototype; asserting that keeps this count meaningful rather than incidental.
       expect(surface.includes('http')).toBeFalse();
@@ -1797,7 +1832,12 @@ describe('ModuleService', () => {
         'restore',
         'purge',
         'recycle',
-        'permission',
+
+        // ⚠ `permission` WAS ON THIS LIST AND HAS BEEN REMOVED. It asserted that this transport serves no
+        // permission operation, which was true and was the reported defect: the module grant grid the legacy
+        // screen carried was absent, so Minimal Change Clause item 4 - every workflow reachable from the
+        // legacy admin pages is supported - was not met. The grid is reached through the MODULE resource
+        // rather than through `permissions`, so §0.5.1.4's read-only permission catalogue is untouched.
         'reorder',
         'move',
         'copy',
@@ -1928,11 +1968,35 @@ describe('ModuleService', () => {
       );
     });
 
-    it('refuses a visibility code outside the published table', () => {
+    it('ADMITS a visibility code outside the published table, keeping the integer as stored', () => {
+      // ⚠ THIS EXPECTATION WAS INVERTED, AND THE INVERSION WAS THE MOST DAMAGING DEFECT IN THIS APPLICATION.
+      // It used to require the whole record to be REFUSED for a code outside the published three. Because a
+      // record is decoded inside its page, refusing one record refused the page: measured against a single
+      // row holding `TabModules.Visibility = 9`, a successful HTTP 200 carrying every module rendered as an
+      // empty site announcing "No records found.", with no console output and no response above 399.
+      // `dbo.TabModules.Visibility` is `int` with NO check constraint, so a code this console publishes no
+      // wording for is legitimate stored data on any installation whose own modules registered one. It is
+      // kept exactly as stored and MARKED in the listing.
+      let received: { readonly visibility: number } | undefined;
+
+      service.getModule(0).subscribe((detail) => {
+        received = detail;
+      });
+
+      httpMock
+        .expectOne('/api/v1/modules/0')
+        .flush({ data: { ...DETAIL, visibility: 7 }, meta: null });
+
+      expect(received?.visibility).withContext('kept, not coerced and not refused').toBe(7);
+    });
+
+    it('still refuses a visibility that is not an integer at all', () => {
+      // Tolerance is bounded: the SET is open, the TYPE is not. A string where a code belongs really is a
+      // response this client cannot read.
       expectViolationAt(
         service.getModule(0),
         '/api/v1/modules/0',
-        { data: { ...DETAIL, visibility: 7 }, meta: null },
+        { data: { ...DETAIL, visibility: 'Maximized' }, meta: null },
         'response.data.visibility',
       );
     });

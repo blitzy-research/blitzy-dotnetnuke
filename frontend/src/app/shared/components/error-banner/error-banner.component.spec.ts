@@ -1045,7 +1045,7 @@ describe('ErrorBannerComponent', () => {
       expect(component.supportReference())
         .toBe('a3f1c7d2-5b64-4e08-9c11-6d2f0e7b48aa');
       expect(requireText(host, TRACE))
-        .toBe('Reference: a3f1c7d2-5b64-4e08-9c11-6d2f0e7b48aa');
+        .toBe('If you report this, quote reference a3f1c7d2-5b64-4e08-9c11-6d2f0e7b48aa.');
       expect(requireText(host, TRACE))
         .withContext('the trace identifier is not the quoted reference when both are present')
         .not.toContain('0af7651916cd43dd8448eb211c80319c');
@@ -1055,7 +1055,8 @@ describe('ErrorBannerComponent', () => {
       bind(TRACE_REFERENCE_ONLY);
 
       expect(requireText(host, TRACE)).toBe(
-        'Reference: 00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01',
+        'If you report this, quote reference '
+          + '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01.',
       );
       expect(component.hasSupportReference()).toBeTrue();
     });

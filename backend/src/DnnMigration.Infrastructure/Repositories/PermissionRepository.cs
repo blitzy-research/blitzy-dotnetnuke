@@ -170,9 +170,16 @@ internal sealed class PermissionRepository : IPermissionRepository
     {
         ArgumentNullException.ThrowIfNull(permissionCode);
 
+        // The key travels as an enumeration member because the caller is asking about one of the four keys
+        // THIS SOLUTION names, but the column it is compared against is free text (see
+        // PermissionConfiguration), so the member's own spelling is resolved once here and the predicate
+        // becomes a plain string equality the provider translates directly. Case is left to the column's
+        // collation, which is how the legacy procedure this replaces compared it.
+        string wantedKey = permissionKey.ToString();
+
         return await _dbContext.Permissions
             .AsNoTracking()
-            .Where(entry => entry.PermissionCode == permissionCode && entry.PermissionKey == permissionKey)
+            .Where(entry => entry.PermissionCode == permissionCode && entry.PermissionKey == wantedKey)
             .OrderBy(entry => entry.PermissionId)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);

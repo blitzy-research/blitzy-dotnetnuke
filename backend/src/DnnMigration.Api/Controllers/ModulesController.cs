@@ -31,15 +31,26 @@ public sealed class ModulesController : ControllerBase
 
     private readonly IModuleService _modules;
     private readonly IPortalContextHolder _portalContext;
+    private readonly IPermissionService _permissions;
 
     /// <summary>Initialises a new instance of the <see cref="ModulesController"/> class.</summary>
     /// <param name="modules">The module service.</param>
     /// <param name="portalContext">The tenant resolved from the request host.</param>
-    /// <exception cref="ArgumentNullException">Either dependency is <see langword="null"/>.</exception>
-    public ModulesController(IModuleService modules, IPortalContextHolder portalContext)
+    /// <param name="permissions">
+    /// The permission service, which owns a module's grant grid. The grid is reached through THIS resource
+    /// rather than through the permission resource because the grants belong to the module - the legacy
+    /// screen edited and saved them as part of the module (<c>ModuleSettings.ascx.vb:L378-L379</c>) - and
+    /// because the permission resource is a read-only catalogue by design.
+    /// </param>
+    /// <exception cref="ArgumentNullException">Any dependency is <see langword="null"/>.</exception>
+    public ModulesController(
+        IModuleService modules,
+        IPortalContextHolder portalContext,
+        IPermissionService permissions)
     {
         _modules = modules ?? throw new ArgumentNullException(nameof(modules));
         _portalContext = portalContext ?? throw new ArgumentNullException(nameof(portalContext));
+        _permissions = permissions ?? throw new ArgumentNullException(nameof(permissions));
     }
 
     /// <summary>Returns the tenant resolved for the current request, or <see langword="null"/>.</summary>
@@ -75,6 +86,44 @@ public sealed class ModulesController : ControllerBase
 
         Result<PagedResult<ModuleListItemDto>> outcome = await _modules
             .ListModulesAsync(portalId, request, tabId, includeDeleted, cancellationToken)
+            .ConfigureAwait(false);
+
+        return this.CompletePage(outcome);
+    }
+
+    /// <summary>Lists a portal's modules, taking every filter from the request body.</summary>
+    /// <param name="request">Paging, sorting and filtering arguments, bound from the body.</param>
+    /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
+    /// <returns>A page of modules.</returns>
+    /// <remarks>
+    /// ⚠ THIS EXISTS FOR A PRIVACY REASON, NOT AN ERGONOMIC ONE, AND IS THE ADDRESS THE APPLICATION USES.
+    /// The sibling <c>GET</c> bound the free-text term from the query string, so every term a person typed
+    /// was written into the request line that the reverse proxy's access log and this application's own
+    /// request log both record. A page index is not content the caller chose; a search term is. The account
+    /// listing had already settled this the same way, and the two listings disagreeing was the defect.
+    /// The <c>GET</c> is retained for a term-free read, and it delegates to the identical service call, so
+    /// the two transports cannot answer differently.
+    /// </remarks>
+    [HttpPost("search")]
+    [Authorize(Policy = PolicyNames.PortalAdministrator)]
+    [ProducesResponseType(typeof(PagedResponse<ModuleListItemDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<PagedResponse<ModuleListItemDto>>> SearchAsync(
+        [FromBody] ModuleSearchRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
+        Result<PagedResult<ModuleListItemDto>> outcome = await _modules
+            .ListModulesAsync(portalId, request, request.TabId, request.IncludeDeleted, cancellationToken)
             .ConfigureAwait(false);
 
         return this.CompletePage(outcome);
@@ -274,6 +323,87 @@ public sealed class ModulesController : ControllerBase
                 settings.ModuleSettings,
                 settings.TabModuleSettings,
                 cancellationToken)
+            .ConfigureAwait(false);
+
+        return this.Complete(outcome);
+    }
+
+    /// <summary>Retrieves a module's permission grid.</summary>
+    /// <param name="moduleId">The module identifier.</param>
+    /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
+    /// <returns>
+    /// The grid - its columns, its role and account rows, and the state of every cell - or <c>404 Not
+    /// Found</c> when the module does not exist in this portal.
+    /// </returns>
+    /// <remarks>
+    /// MIGRATION: restores the read half of the capability the first port omitted. <c>modulesettings.ascx</c>
+    /// declared <c>&lt;dnn:modulepermissionsgrid id="dgPermissions"&gt;</c> at L42 and the code-behind
+    /// populated it at L89 and L122-L123; without this endpoint the ported screen could show the four
+    /// declared permission keys but no roles and no cells, so a portal administrator could not grant or
+    /// withdraw module access at all.
+    /// </remarks>
+    [HttpGet("{moduleId:int}/permissions")]
+    [Authorize(Policy = PolicyNames.ModuleEdit)]
+    [ProducesResponseType(typeof(ApiResponse<ModulePermissionsDto>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ApiResponse<ModulePermissionsDto>>> GetPermissionsAsync(
+        int moduleId,
+        CancellationToken cancellationToken)
+    {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
+        Result<ModulePermissionsDto> outcome = await _permissions
+            .GetModulePermissionsAsync(portalId, moduleId, cancellationToken)
+            .ConfigureAwait(false);
+
+        return this.Complete(outcome);
+    }
+
+    /// <summary>Replaces a module's permission grid.</summary>
+    /// <param name="moduleId">The module identifier.</param>
+    /// <param name="request">
+    /// The complete set of grants the module should hold afterwards, and the state of its view-inheritance
+    /// switch.
+    /// </param>
+    /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
+    /// <returns><c>204 No Content</c> when the grants have been stored.</returns>
+    /// <remarks>
+    /// ⚠ A REPLACE, NOT A MERGE, and the inheritance switch is written in the SAME commit as the grants -
+    /// both because the legacy screen saved them together at <c>ModuleSettings.ascx.vb:L378-L379</c>, and
+    /// because a module whose stored rights contradict its stored inheritance is a state no screen can
+    /// correct.
+    /// </remarks>
+    [HttpPut("{moduleId:int}/permissions")]
+    [Authorize(Policy = PolicyNames.ModuleEdit)]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    public async Task<ActionResult> ReplacePermissionsAsync(
+        int moduleId,
+        [FromBody] ReplaceModulePermissionsRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (ResolvePortalId() is not { } portalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
+        if (request is null)
+        {
+            ModelState.AddModelError(string.Empty, "A request body is required and was not supplied.");
+
+            return ValidationProblem(ModelState);
+        }
+
+        Result outcome = await _permissions
+            .ReplaceModulePermissionsAsync(portalId, moduleId, request, cancellationToken)
             .ConfigureAwait(false);
 
         return this.Complete(outcome);

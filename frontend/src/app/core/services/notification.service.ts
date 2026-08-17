@@ -1,6 +1,8 @@
 import { HttpContext, HttpContextToken } from '@angular/common/http';
 import { Injectable, signal, type Signal } from '@angular/core';
 
+import { SUPPORT_REFERENCE_LEAD } from '../utils/form-errors.util';
+
 /**
  * Closed severity vocabulary for a queued notification. `'warning'` is a first-class member rather than a
  * synonym for `'error'`, because an authorisation denial is presented as a warning rather than as a
@@ -89,11 +91,13 @@ function boundMessage(message: string): string {
 const MAX_REFERENCE_LENGTH = 128;
 
 /**
- * Introduces the support reference within a composed message. The wording matches the label
- * `error.interceptor.ts` used when it composed the suffix itself, so no rendered message changes as a
- * result of moving the composition here.
+ * Introduces the support reference within a composed message, sharing ONE lead with the banner so a
+ * reference reads the same however it reaches the reader. ⚠ THE WORDING CHANGED, DELIBERATELY. It was
+ * the bare label `Reference:`, which names the value without saying what it is for; measured across the
+ * application the bare label appeared on six user-facing errors, and an opaque identifier a reader is
+ * given no instruction about is noise rather than help.
  */
-const REFERENCE_LABEL = 'Reference:';
+const REFERENCE_LABEL = SUPPORT_REFERENCE_LEAD;
 
 /**
  * Retains at most `limit` UTF-16 code units of `text`, without splitting a surrogate pair.
@@ -191,7 +195,7 @@ export class NotificationService {
     }
 
     const quoted = boundReference(reference);
-    const composed = quoted === null ? bounded : `${bounded} ${REFERENCE_LABEL} ${quoted}`;
+    const composed = quoted === null ? bounded : `${bounded} ${REFERENCE_LABEL} ${quoted}.`;
 
     const entry: AppNotification = {
       id: this.nextId++,

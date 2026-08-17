@@ -448,7 +448,7 @@ public class PortalServiceApplicationTests
                     {
                         PermissionId = key == PermissionKey.VIEW ? 3 : 4,
                         PermissionCode = code,
-                        PermissionKey = key,
+                        PermissionKey = key.ToString(),
                         PermissionName = key == PermissionKey.VIEW ? "View Tab" : "Edit Tab",
                     },
                 });

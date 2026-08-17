@@ -145,7 +145,13 @@ controllers carry `[Route("api/v{version:apiVersion}/…")]`, giving `/api/v1/po
 `/api/v1/modules`, `/api/v1/users`, `/api/v1/roles`, `/api/v1/permissions`, `/api/v1/tabs`,
 `/api/v1/auth`, and the lookup surfaces `/api/v1/module-definitions`,
 `/api/v1/profile-definitions` and `/api/v1/role-groups`. The segment is **mandatory** —
-`AssumeDefaultVersionWhenUnspecified` is false, so `/api/portals` matches no route.
+`AssumeDefaultVersionWhenUnspecified` is false, so `/api/portals` matches no route. Which
+status that unmatched path is answered with depends on the credential, because the fallback
+authorisation policy is evaluated before an unmatched path becomes a not-found: measured,
+`GET /api/portals` carrying a valid bearer token is answered `404`
+`urn:dnnmigration:error:resource.not_found`, and the same request carrying none is answered
+`401` `urn:dnnmigration:error:auth.unauthenticated`. Both are RFC 7807 documents, and neither
+reveals whether the path exists.
 
 Two surfaces sit deliberately **outside** the version space, because neither is a resource a
 client versions against: the three health views `/health`, `/health/live` and
@@ -412,10 +418,7 @@ unless a deployment sets `Swagger:Enabled` to true, and when it is on there it i
 
 If port 8080 is already taken — by the container topology, for instance — bypass the profile.
 Bypassing it discards the profile's environment as well as its URL, so the command has to
-supply everything itself; without `ASPNETCORE_ENVIRONMENT` the host starts in **Production**,
-where `appsettings.Production.json` turns HTTPS redirection on. Measured: the three health
-views still answer `200`, and every other path — including `/swagger` — is answered `308` to
-`https://…`, which this plain-HTTP listener cannot satisfy.
+supply everything itself. Name `Development` explicitly and that is the whole of it:
 
 ```bash
 cd backend
@@ -426,9 +429,42 @@ Jwt__Secret="$(openssl rand -base64 48)" \
   --no-launch-profile --urls http://127.0.0.1:5080
 ```
 
-To run that same command in `Production` deliberately, either serve HTTPS or set
-`Https__RedirectEnabled=false` for the run — which is exactly what the plain-HTTP container
-topology does, visibly, in [`docker/docker-compose.yml`](./docker/docker-compose.yml).
+**Leave `ASPNETCORE_ENVIRONMENT` out and that same command runs in `Production` — which needs two
+further keys before it serves anything at all.** `Production` is not `Development` under another
+name, and the first of the two is the one that catches people, because its absence means nothing
+answers rather than something answering oddly:
+
+| What `Production` changes | What the run must supply | What happens if it does not |
+| --- | --- | --- |
+| The shipped refresh-token store is process-local, and a `Production` host **refuses to start** on a store that is not replica-safe until the deployment states that it runs a single instance | `RefreshTokenStore__AcknowledgeSingleInstance=true` — or `RefreshTokenStore__Provider=SqlServer` with a session catalogue of its own, which satisfies the invariant on its own merits | The host aborts during start-up with an `InvalidOperationException` naming the key, and **binds no port at all**, so nothing answers — not even `/health`. What the acknowledgement means, and why it is refused as a default, is in [Operating the topology](#operating-the-topology) |
+| `appsettings.Production.json` turns HTTPS redirection on | `Https__RedirectEnabled=false`, or a listener that genuinely serves HTTPS | Only the three anonymous health views answer `200`; every other path — including `/swagger` — is answered `308` to `https://…`, which this plain-HTTP listener cannot satisfy |
+
+A deliberate plain-HTTP `Production` run on this host is therefore:
+
+```bash
+cd backend
+ConnectionStrings__Default='Server=sqlserver.example.com,1433;Database=DotNetNuke;User Id=REPLACE_ME;Password=REPLACE_ME;Encrypt=True' \
+Jwt__Secret="$(openssl rand -base64 48)" \
+RefreshTokenStore__AcknowledgeSingleInstance=true \
+Https__RedirectEnabled=false \
+  dotnet run --project src/DnnMigration.Api --configuration Release \
+  --no-launch-profile --urls http://127.0.0.1:5080
+```
+
+Measured with the acknowledgement supplied and redirection deliberately left **on**: `/health`,
+`/health/live` and `/health/ready` answer `200`, while `/swagger`, `/api/v1/portals` and
+`POST /api/v1/auth/login` are each answered `308` to `https://127.0.0.1/…`. Dropping
+`Https__RedirectEnabled=false` into the run, as the block above does, is what makes the rest of
+the surface answer over plain HTTP — which is exactly what the container topology does, visibly,
+in [`docker/docker-compose.yml`](./docker/docker-compose.yml), and that file supplies the
+acknowledgement alongside it for the same reason.
+
+One consequence of a refusal is worth knowing before you meet it: it is an **abort**, not a
+graceful exit, so on a host whose `kernel.core_pattern` names a file rather than a pipe the
+aborted process leaves a `core` or `core.<pid>` dump in the project directory — measured here at
+133,844,992 bytes for one refused start. [`.gitignore`](./.gitignore) excludes those paths, so a
+dump can never reach a commit, but nothing deletes one for you: remove it, or run with
+`ulimit -c 0` while you are deliberately exercising a refusal.
 
 Three **anonymous** health views answer three different questions:
 
@@ -596,8 +632,17 @@ Four constraints make that topology work, and each of them fails silently if bro
   the `api` service over the Compose network, so the browser addresses the API through the
   same origin that served the application.
 - **The service name `api` is a contract, not a label.** `docker/nginx.conf` resolves it
-  through the Compose network's embedded DNS. Rename the service and every SPA request is
-  answered `502` while both containers still report themselves healthy.
+  through the Compose network's embedded DNS. Rename the service and every `/api/` request is
+  answered **`503`** — never `502` — with the RFC 7807 body
+  `urn:dnnmigration:error:gateway.api_unreachable` and `Retry-After: 5`, while both containers
+  still report themselves healthy. A raw `502` is deliberately never observable here:
+  [`docker/api-proxy.conf`](./docker/api-proxy.conf) maps `error_page 502 503 504 =
+  @api_unavailable`, so an unresolvable upstream is answered by that named location and the client
+  always receives a problem document its interceptor can read. The SPA document, its hashed assets
+  and `/nginx-health` keep answering `200` throughout, which is what makes the mistake quiet —
+  neither health check ever touches the API's DNS name. It also makes this failure share a status
+  with the transient one a redeploy causes, so [§12](#12-troubleshooting) keys the two rows on how
+  long it lasts rather than on the status.
 
 The API image additionally installs ICU and sets `DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false`,
 because the mandated Alpine runtime base enables invariant globalisation and the SQL Server
@@ -668,7 +713,7 @@ browsers never matched, a certificate that matched no server name, and an API th
 
   | Snippet | What it owns | Included by |
   | --- | --- | --- |
-  | [`docker/api-proxy.conf`](./docker/api-proxy.conf) | the API location — a regex matching `/api/` **and one optional tenant segment before it**, so a child portal addressed at `host/child` reaches the API too — per-request upstream resolution, the raw request target, the 6,356,992-byte import allowance, the six forwarded headers, and the `@api_unavailable` RFC 7807 answer | both servers |
+  | [`docker/api-proxy.conf`](./docker/api-proxy.conf) | the API location — a regex matching `/api/` **and one optional tenant segment before it**, so a child portal addressed at `host/child` reaches the API too — per-request upstream resolution, the raw request target, the 6,356,992-byte import allowance, seven forwarded headers — the preserved example's six plus the canonicalised `X-Correlation-Id` — and the `@api_unavailable` RFC 7807 answer | both servers |
   | [`docker/spa-static.conf`](./docker/spa-static.conf) | the immutable hashed-asset policy and the SPA deep-link fallback | both servers |
   | [`docker/security-headers.conf`](./docker/security-headers.conf) | the nine response headers, including the content security policy and TLS-only HSTS | both servers, and every location that sets a `Cache-Control` of its own |
 - **Addressing a child portal beneath a path segment works end to end, and needs the alias
@@ -687,14 +732,32 @@ browsers never matched, a certificate that matched no server name, and an API th
 
   Three hops each have to carry the segment, and each fails silently on its own:
 
-  1. **The browser** puts it back onto every request. One built bundle is served to every
-     tenant and the configured API base is the relative `/api/v1`, so the prefix cannot be a
-     build-time value; it is derived at run time from the address the document was served at,
-     by [`frontend/src/app/core/config/tenant-path.ts`](./frontend/src/app/core/config/tenant-path.ts),
+  1. **The browser** puts it back onto every request — but only after the deployment confirms
+     the segment. One built bundle is served to every tenant and the configured API base is the
+     relative `/api/v1`, so the prefix cannot be a build-time value; it is derived at run time
+     from the address the document was served at, by
+     [`frontend/src/app/core/config/tenant-path.ts`](./frontend/src/app/core/config/tenant-path.ts),
      and composed in the one place that builds URLs. The same value is supplied as the
      router's `APP_BASE_HREF`, so in-application links keep the prefix. The document's own
      `<base href="/">` stays at the root, because the hashed assets are served from the
      server root for every tenant.
+
+     **The segment is a CANDIDATE until the deployment confirms it, and that check is what
+     keeps a typo out of the tenant path.** A mistyped console route has exactly the same shape
+     as a child portal's segment, and only the alias rows tell them apart — so before the
+     application starts,
+     [`frontend/src/app/core/config/tenant-resolution.ts`](./frontend/src/app/core/config/tenant-resolution.ts)
+     asks `GET {segment}/api/v1/tenant-address`, the one anonymous read in the API, which
+     reports the path prefix the request itself resolved beneath. A confirmation adopts the
+     segment; a refusal leaves the base at `/`, so the address reaches the route table as typed
+     and the `**` route renders the not-found view for it. Only a *definite* answer demotes a
+     candidate: a `5xx`, a `408`, a `429`, a transport failure or a four-second timeout keeps
+     it, because an unreachable API says nothing about the address and must not make a real
+     child portal look like a missing one. An address that proposes no candidate — the bare
+     host and every one of the console's own screens — is decided without a request at all, so
+     first paint is unchanged for them. In development the API is configured at an absolute
+     address and no probe is possible, so the candidate stands unasked; path-prefixed tenancy
+     is a same-origin, proxied-topology capability.
   2. **The proxy** forwards it. [`docker/api-proxy.conf`](./docker/api-proxy.conf) matches
      `^(?:/[^/]+)?/api/` and passes the caller's own request target through unchanged — the
      segment is *not* stripped, because the API needs it to identify the tenant.
@@ -808,9 +871,16 @@ browsers never matched, a certificate that matched no server name, and an API th
   endpoints answer `503` with `Retry-After` while `/health` and `/health/live` stay `200` and
   `/health/ready` reports `503`. The API is not restarted by the outage and recovers on its
   own when the database returns.
-- **`/health` is not reachable through `:4200`.** Only `/api/` is proxied. Probe the health
-  views on the API's own port, which is what the container health check and the end-to-end
-  gate do.
+- **`/health` is not reachable through `:4200`, and asking for it there returns `404`.** Only
+  `/api/` is proxied, so the API's three health views are not addresses on the front end's
+  origin. [`docker/spa-static.conf`](./docker/spa-static.conf) refuses `/health`, `/health/ready`
+  and `/health/live` with a bare `404` rather than letting the SPA fallback answer them with the
+  application document — which it did, with `200 text/html`, so a probe pointed here by mistake
+  reported the deployment healthy unconditionally and would have kept doing so with the API
+  container stopped. **Probe `/health`, `/health/live` and `/health/ready` on the API's own port
+  `:8080`** — the addresses the image's `HEALTHCHECK`, the Compose health check and Gate 7 all
+  use — and probe **`/nginx-health` on `:4200`**, which is this container's own probe and the
+  only health address the front-end origin answers.
 - **Deployment values arrive as environment variables**, which means anyone able to reach the
   Docker socket can read them from a running container with `docker inspect`. That is
   inherent to the Compose file the plan preserves; for a hardened deployment
@@ -915,22 +985,28 @@ Three mechanical differences, and nothing else:
   Compose v1 is end-of-life and absent from current Docker distributions; the literal v1
   spelling exits 127 without starting anything. No product change can address this.
 
-**Result matrix.** All seven gates were executed from this repository on **13 August 2026** on
+**Result matrix.** All seven gates were executed from this repository on **17 August 2026** on
 Linux (Ubuntu 25.10 container) with .NET SDK 8.0.423 (runtimes Microsoft.AspNetCore.App and
 Microsoft.NETCore.App 8.0.29), Node v20.20.2, npm 10.8.2, Angular CLI 19.2.27 driving Angular
 19.2.25 and TypeScript 5.7.3, Google Chrome 151.0.7922.71 (reported by Karma as Chrome Headless
 151.0.0.0), Docker Engine 29.7.0 with Compose v5.3.1, and SQL Server 2022 CU26 (16.0.4265.3) for
 the integration suites. Each row names the command that produced its evidence.
 
-| Gate | Command run | Status (13 Aug 2026) | Measured evidence |
+**Every row below comes from that one run of the whole set, and this is the only run the matrix
+reports.** Earlier partial runs are deliberately not carried alongside it: a matrix assembled from
+several dates invites the reader to compare rows that were never measured against the same tree,
+and the counts move whenever test cases are added — which they have been, repeatedly, as reviews
+closed gaps in the test net. One tree, one toolchain, one sitting, seven rows.
+
+| Gate | Command run | Status (17 Aug 2026) | Measured evidence |
 | --- | --- | --- | --- |
 | 1 | Gate 1 above | **PASS** | Restore reported 0 `NU` diagnostics; `Build succeeded. 0 Warning(s) 0 Error(s)` across all six projects, emitting `DnnMigration.Api.dll` — the exact assembly name the image `ENTRYPOINT` requires |
-| 2 | Gate 2 above | **PASS** | `DnnMigration.UnitTests` 3094 passed / 0 failed / 0 skipped in 11.27 s; `DnnMigration.IntegrationTests` 1933 passed / 0 failed / 0 skipped in 4.52 min; **5 027 tests total**, both assemblies reporting `Test Run Successful` |
-| 3 | Gate 3 above | **PASS** | `npm ci` printed `added 989 packages, and audited 990 packages in 9s` and left `package-lock.json` byte-identical. The two figures name different sets and neither is the lockfile's own count: **989 is what was installed** on this platform — the lockfile's **1,123** `node_modules` entries less the **134** optional packages pinned to another OS or CPU, every one of the 134 marked `optional`; **990 is what was audited**, that same set plus the workspace root. Production build emitted `dist/dnn-migration/browser`; initial payload **461.71 kB raw / 122.90 kB transfer** |
-| 4 | Gate 4 above | **PASS** | `TOTAL: 5922 SUCCESS` — 5 922 specs, zero failures; coverage written to `frontend/coverage/dnn-migration` — statements **95.21 %** (11 081/11 638), branches **85.74 %** (3 584/4 180), functions **97.71 %** (2 528/2 587), lines **95.18 %** (10 809/11 356) |
-| 5 | Gate 5 above | **PASS** | `Failed: 0, Passed: 1933, Skipped: 0` on `DnnMigration.IntegrationTests.dll`; the unit-test assembly reports `No test matches the given testcase filter` and the run still exits 0, which is what proves every integration test carries the trait |
-| 6 | Gate 6 above | **PASS** | Exit 0; both images tagged — `dnnmigration-api:latest` (196 MB) and `dnnmigration-frontend:latest` (63.5 MB) |
-| 7 | Gate 7 above | **PASS** | `up -d` transitioned the api service `Started` → `Waiting` → `Healthy`, which released `dnnmigration-frontend` through its `condition: service_healthy` gate; `curl -f http://localhost:8080/health` → 200 with the health document and `curl -f http://localhost:4200` → 200 (4 428 bytes, the served `index.html` byte for byte), both services `Up (healthy)`; `down` removed both containers and the network, every step exit 0 |
+| 2 | Gate 2 above | **PASS** | `DnnMigration.UnitTests` 3 142 passed / 0 failed / 0 skipped in 10.9 s; `DnnMigration.IntegrationTests` 2 009 passed / 0 failed / 0 skipped in 6 m 0 s; **5 151 tests total**, both assemblies reporting `Test Run Successful` |
+| 3 | Gate 3 above | **PASS** | `npm ci` printed `added 989 packages, and audited 990 packages in 19s` and left `package-lock.json` byte-identical. The two figures name different sets and neither is the lockfile's own count: **989 is what was installed** on this platform — the lockfile's **1,123** `node_modules` entries less the **134** optional packages pinned to another OS or CPU, every one of the 134 marked `optional`; **990 is what was audited**, that same set plus the workspace root. Production build emitted `dist/dnn-migration/browser`; initial payload **476.44 kB raw / 126.20 kB transfer** |
+| 4 | Gate 4 above | **PASS** | `TOTAL: 6510 SUCCESS` — 6 510 specs, zero failures; coverage written to `frontend/coverage/dnn-migration` — statements **95.29 %** (12 537/13 156), branches **85.89 %** (4 232/4 927), functions **97.47 %** (2 823/2 896), lines **95.28 %** (12 241/12 847) |
+| 5 | Gate 5 above | **PASS** | `Failed: 0, Passed: 2009, Skipped: 0` on `DnnMigration.IntegrationTests.dll` in 7 m 4 s; the unit-test assembly reports `No test matches the given testcase filter` and the run still exits 0, which is what proves every integration test carries the trait |
+| 6 | Gate 6 above | **PASS** | Exit 0; both images tagged — `dnnmigration-api:latest` (196 MB) and `dnnmigration-frontend:latest` (63.6 MB) |
+| 7 | Gate 7 above | **PASS** | `up -d` transitioned the api service `Started` → `Waiting` → `Healthy`, which released `dnnmigration-frontend` through its `condition: service_healthy` gate; on the API origin `/health`, `/health/live` and `/health/ready` each answered **200** anonymously with the health document, and `curl -f http://localhost:4200` → 200 (4 428 bytes, the served `index.html` byte for byte) while the SPA origin answered **404** to all three API health paths and **200** to its own `/nginx-health`; both services `Up (healthy)`; `down` removed both containers and the network, every step exit 0 |
 
 Gate 7 ran as a single uninterrupted `up -d` → probe → `down` cycle from a fully torn-down
 host. That is worth stating because the Compose file fixes `container_name`: if an instance of
@@ -962,10 +1038,15 @@ predicting it:
 - **Gate 4 cannot start without [`frontend/karma.conf.js`](./frontend/karma.conf.js)** and its
   `ChromeHeadlessNoSandbox` launcher. The literal command names `ChromeHeadless`, which
   *overrides* the configured browser list, so that name is declared as a flagged launcher too.
-- **Gates 2 and 5 need a reachable SQL Server.** The suite provisions its own throwaway
-  database by either of the routes in
+- **Gates 2 and 5 need a reachable SQL Server, and want the machine to themselves.** The suite
+  provisions its own throwaway database by either of the routes in
   [§4](#the-database-the-integration-suite-runs-against) — a container runtime, or
   `DNN_TEST_SQLSERVER` pointed at an existing server. It fails closed rather than degrading.
+  Run them **on their own**: taking gate 5 concurrently with `npm ci` and a production build
+  starved the server and produced a `Microsoft.Data.SqlClient` *Execution Timeout Expired*
+  (`Win32Exception: Unknown error 258`) while a suite was provisioning its catalogue, and the run
+  took 13 m 27 s against the usual 7 m. The same command, run alone, passed unchanged — so a
+  timeout in that phase is a contention symptom to re-run serially, not a defect to chase.
 - **Gate 7 depends on three things no build step checks:** the **anonymous** `/health`, the
   **`wget`-based** container probe, and the **relative** production `apiBaseUrl`. All three
   are pinned in [§6](#6-containers).
@@ -1407,9 +1488,11 @@ the migration's own normative sections are treated as binding:
 | Health check returns 401 | `/health` is not anonymous | Restore the `.AllowAnonymous()` call on the `MapHealthChecks` registration in `Api/Extensions/ApplicationBuilderExtensions.cs`; Compose's `service_healthy` condition depends on it |
 | The frontend container never starts | The API health check never passes | Fix `/health`, and confirm the probe uses `wget --spider` rather than `curl` — the Alpine runtime image has no `curl` |
 | The frontend image build fails at a `COPY` step | `docker/nginx.conf` missing, or excluded from the build context | Ensure the file exists and that the root [`.dockerignore`](./.dockerignore) does not exclude `docker/`. Build from the repository root, not from `docker/` |
-| SPA requests answered 502 while both containers are healthy | The `api` service was renamed | `docker/nginx.conf` resolves the hostname `api`; keep the service name |
-| SPA requests answered 503 with `Retry-After` just after a redeploy | The proxy's short-lived DNS entry has not yet aged out | Wait a few seconds. Nothing needs restarting |
+| **Every** `/api/` request the SPA makes answered 503 `application/problem+json` `urn:dnnmigration:error:gateway.api_unreachable`, and it does **not** clear — while both containers report themselves healthy and the SPA document itself still serves | The proxy cannot resolve the name `api` at all: the service was renamed, or it is not on this Compose network. The front end's own probe is `/nginx-health` and never touches the API, so it stays healthy | Keep the service name `api` — [`docker/nginx.conf`](./docker/nginx.conf) and [`docker/api-proxy.conf`](./docker/api-proxy.conf) resolve that hostname through the Compose network's embedded DNS. Distinguish this row from the next one by **duration**, not by status: `502`, `503` and `504` are all mapped onto this one answer, so the status alone cannot tell them apart |
+| The same 503 `urn:dnnmigration:error:gateway.api_unreachable` just after `up -d --force-recreate api`, clearing within seconds | The proxy's short-lived DNS entry (`valid=10s`) has not yet aged out, so it is still dialling the API's previous address | Wait a few seconds. Nothing needs restarting. If it has not cleared after roughly ten seconds it is the row above, not this one |
 | `dotnet run` fails to bind port 8080 | The container topology already holds it | Run with `--no-launch-profile --urls http://127.0.0.1:5080` |
+| `dotnet run` aborts during start-up with an `InvalidOperationException` naming `RefreshTokenStore:AcknowledgeSingleInstance`, and no port is bound | Bypassing the launch profile without `ASPNETCORE_ENVIRONMENT` selects `Production`, and a `Production` host refuses to run on the process-local refresh-token store until the deployment states that it runs one instance | Add `RefreshTokenStore__AcknowledgeSingleInstance=true` — or `RefreshTokenStore__Provider=SqlServer` with its own catalogue — and add `Https__RedirectEnabled=false` unless the run serves HTTPS. Both keys, and why, are in [§4](#4-backend) |
+| A `core` or `core.<pid>` file of a few hundred megabytes appears beside a project directory | A refused start is an abort, and this host's `kernel.core_pattern` names a file, so the kernel writes the dump into the aborted process's working directory | Delete it. [`.gitignore`](./.gitignore) excludes those paths so one can never be committed, and `ulimit -c 0` stops it being written while you exercise the refusal paths deliberately |
 | Sign-in returns 400 with an error on `portalId` | The host and port used are not a row in `PortalAlias` | Seed the alias, or address a portal explicitly |
 | A child portal's address serves the SPA but every call resolves the parent | The tenant segment is being dropped somewhere between the browser and the API | All three hops must carry it: the browser composes it (`frontend/src/app/core/config/tenant-path.ts`), the proxy matches it (`docker/api-proxy.conf`), and the API rebases it (`Api/Middleware/TenantPathBaseMiddleware.cs`). See [addressing a child portal](#addressing-a-child-portal-beneath-a-path-segment) |
 | A child portal's address answers 404 for every API call, or 403 `portal.tenant_unresolved` | No alias row matches `host/segment`, or the child portal designates no administrator account, administrator role or registered-user role | Add the alias row exactly as `host[:port]/segment`, and create the child through `POST /api/v1/portals` rather than by hand — resolution refuses a portal with those designations unset |

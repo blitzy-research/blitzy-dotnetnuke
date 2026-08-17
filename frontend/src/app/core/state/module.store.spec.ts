@@ -26,6 +26,60 @@ import type { ApiResponse, PagedResult } from '../models/paged-result.model';
 import type { ProblemDetails, ValidationProblemDetails } from '../models/problem-details.model';
 import type { TabListItem } from '../models/tab.model';
 
+import { HttpParams } from '@angular/common/http';
+
+import type { HttpRequest } from '@angular/common/http';
+
+/**
+ * The filters a request carried, presented as ONE parameter bag whichever transport carried them. ⚠ A
+ * LISTING READ THAT CARRIES A TERM A PERSON TYPED SENDS ITS FILTERS IN THE BODY, because a query string is
+ * written into the reverse proxy's access log and into the API's own request log; a term-free read keeps
+ * them in the query string. Specifications below are about WHAT was sent, not about WHERE, so they read
+ * through here and stay true across both transports.
+ *
+ * @param request The request to read, or the raw request it wraps.
+ * @returns Every filter it carried, as query-parameter-shaped strings.
+ */
+function sentFilters(request: TestRequest | HttpRequest<unknown>): HttpParams {
+  const raw: HttpRequest<unknown> = 'request' in request ? request.request : request;
+  const body = raw.body as Record<string, unknown> | null | undefined;
+
+  if (body === null || body === undefined) {
+    return raw.params;
+  }
+
+  let carried: HttpParams = new HttpParams();
+
+  for (const [name, value] of Object.entries(body)) {
+    if (value !== null && value !== undefined) {
+      carried = carried.set(name, String(value));
+    }
+  }
+
+  return carried;
+}
+
+
+/** The term-free listing address. */
+const MODULES_LIST_URL = '/api/v1/modules';
+
+/**
+ * The body-bound search address. ⚠ A SEPARATE ADDRESS ON PURPOSE: a listing read that carries a term a
+ * person typed goes here, so the term never appears in a logged request line.
+ */
+const MODULES_LIST_SEARCH_URL = '/api/v1/modules/search';
+
+/**
+ * Whether a request is a listing read, on EITHER transport.
+ *
+ * @param candidate The request to test.
+ * @returns True for the term-free read and for the body-bound search alike.
+ */
+function isListingRead(candidate: HttpRequest<unknown>): boolean {
+  return candidate.url === MODULES_LIST_URL || candidate.url === MODULES_LIST_SEARCH_URL;
+}
+
+
 // LITERALS COMPOSED AT RUNTIME
 // Two families of token must be PROVED ABSENT from the traffic this slice generates, and writing either as
 // a source literal would make the absence unprovable by inspection: a reviewer grepping this tree for the
@@ -68,6 +122,7 @@ function listRow(overrides: Partial<ModuleListItem> = {}): ModuleListItem {
     moduleName: 'Announcements',
     description: '',
     version: '01.00.00',
+    isAdmin: false,
     moduleOrder: 1,
     allTabs: false,
     visibility: ModuleVisibility.Maximized,
@@ -103,12 +158,16 @@ function detail(overrides: Partial<ModuleDetail> = {}): ModuleDetail {
     moduleOrder: 1,
     cacheTime: 0,
     iconFile: '',
+    alignment: null,
+    color: null,
+    border: null,
     visibility: ModuleVisibility.Maximized,
     displayTitle: false,
     friendlyName: 'Announcements',
     moduleName: 'Announcements',
     description: '',
     version: '01.00.00',
+    isAdmin: false,
     ...overrides,
   };
 }
@@ -192,6 +251,9 @@ function updateRequest(overrides: Partial<UpdateModuleRequest> = {}): UpdateModu
     moduleOrder: 0,
     cacheTime: 0,
     iconFile: null,
+    alignment: null,
+    color: null,
+    border: null,
     visibility: ModuleVisibility.None,
     displayTitle: false,
     setAsDefaultSettings: false,
@@ -296,6 +358,42 @@ function distinctRows(count: number, startingAt = 1): readonly ModuleListItem[] 
 /** Wraps a payload in the single-item envelope every non-paged read answers with. */
 function envelope<T>(data: T): ApiResponse<T> {
   return { data, meta: null };
+}
+
+/** The page size the whole-hierarchy reader asks for. Mirrors `WHOLE_COLLECTION_PAGE_SIZE` in `TabService`. */
+const TAB_PAGE_SIZE = 100;
+
+/**
+ * The PAGED wire envelope the portal-scoped page listing answers with. MIGRATION: the hierarchy used to
+ * arrive in one unbounded response - a tenant with three thousand pages sent 764 KiB - and is now read a
+ * bounded page at a time, so its body carries populated metadata where the single-payload envelope carried
+ * none. The store's own surface is unchanged: it still holds no tab paging coordinate of any kind.
+ *
+ * @param rows The rows of this page.
+ * @param totalCount The total across every page. Defaults to a single complete page.
+ * @returns The body to flush.
+ */
+function tabPage<T>(
+  rows: readonly T[],
+  totalCount: number = rows.length,
+): {
+  readonly items: readonly T[];
+  readonly meta: {
+    readonly totalCount: number;
+    readonly pageIndex: number;
+    readonly pageSize: number;
+    readonly totalPages: number;
+  };
+} {
+  return {
+    items: rows,
+    meta: {
+      totalCount,
+      pageIndex: 0,
+      pageSize: TAB_PAGE_SIZE,
+      totalPages: totalCount === 0 ? 0 : Math.ceil(totalCount / TAB_PAGE_SIZE),
+    },
+  };
 }
 
 /** A problem document carrying the server's own failure code. */
@@ -415,7 +513,7 @@ describe('ModuleStore', () => {
   /** Reads a portal's pages and answers with the rows given, so the hierarchy can be inspected. */
   function loadTabsWith(portalId: number, rows: readonly TabListItem[]): void {
     store.loadTabs(portalId);
-    expectRequest('GET', `/api/v1/portals/${portalId}/tabs`).flush(envelope(rows));
+    expectRequest('GET', `/api/v1/portals/${portalId}/tabs`).flush(tabPage(rows));
   }
 
   /** Asserts that no reversal endpoint was addressed. */
@@ -450,7 +548,7 @@ describe('ModuleStore', () => {
 
       // No placement selector was named, so the read addresses the MODULE rather than one of its
       // placements, and the two are materially different requests.
-      expect(call.request.params.has('tabModuleId')).toBeFalse();
+      expect(sentFilters(call).has('tabModuleId')).toBeFalse();
 
       call.flush(envelope(detail({ moduleId: 0 })));
 
@@ -521,7 +619,7 @@ describe('ModuleStore', () => {
       store.loadModule(0, 7);
 
       const call = expectRequest('GET', '/api/v1/modules/0');
-      expect(call.request.params.get('tabModuleId')).toBe('7');
+      expect(sentFilters(call).get('tabModuleId')).toBe('7');
 
       call.flush(envelope(detail({ moduleId: 0, tabModuleId: 7 })));
       expect(store.module()?.tabModuleId).toBe(7);
@@ -667,7 +765,7 @@ describe('ModuleStore', () => {
       // First the removal, at the literal path for module ZERO. A truthiness-guarded identifier would
       // produce no request at all, and this expectation is what fails when that happens.
       const removal = expectRequest('DELETE', '/api/v1/modules/0');
-      expect(removal.request.params.has('tabModuleId')).toBeFalse();
+      expect(sentFilters(removal).has('tabModuleId')).toBeFalse();
       removal.flush(null, { status: 204, statusText: 'No Content' });
 
       // Then the mandatory re-read. A store that optimistically spliced the row out and issued nothing
@@ -690,7 +788,7 @@ describe('ModuleStore', () => {
       });
 
       const reread = expectRequest('GET', '/api/v1/modules');
-      expect(reread.request.params.get('includeDeleted')).toBe('true');
+      expect(sentFilters(reread).get('includeDeleted')).toBe('true');
       reread.flush(pagedBody([listRow({ moduleId: 0, tabModuleId: 1, isDeleted: true })]));
 
       // Retained and MARKED - not silently discarded. An optimistic splice would have hidden a row the
@@ -708,7 +806,7 @@ describe('ModuleStore', () => {
 
       store.deleteModule(1, 2);
       const removal = expectRequest('DELETE', '/api/v1/modules/1');
-      expect(removal.request.params.get('tabModuleId')).toBe('2');
+      expect(sentFilters(removal).get('tabModuleId')).toBe('2');
       removal.flush(null, { status: 204, statusText: 'No Content' });
 
       expectRequest('GET', '/api/v1/modules').flush(pagedBody([listRow({ moduleId: 0, tabModuleId: 1 })]));
@@ -856,6 +954,9 @@ describe('ModuleStore', () => {
 
       expect(call.request.url).toBe('/api/v1/modules/import');
       expect(call.request.url).not.toMatch(/\/modules\/-?\d+\/import$/);
+
+      // The REAL query string, not the folded view: this asserts that the address carries nothing, and this
+      // request legitimately carries a body.
       expect(call.request.params.keys().length).toBe(0);
 
       call.flush(null, { status: 204, statusText: 'No Content' });
@@ -1204,7 +1305,7 @@ describe('ModuleStore', () => {
       const rows: TabListItem[] = [tabRow({ tabId: 0, parentId: -1 })];
 
       store.loadTabs(0);
-      expectRequest('GET', '/api/v1/portals/0/tabs').flush(envelope(rows));
+      expectRequest('GET', '/api/v1/portals/0/tabs').flush(tabPage(rows));
 
       rows.push(tabRow({ tabId: 1, tabName: 'Added later', parentId: 0 }));
 
@@ -1244,7 +1345,7 @@ describe('ModuleStore', () => {
     /** Every outstanding module-listing request, so concurrency can be counted rather than assumed. */
     function outstandingListings(): readonly TestRequest[] {
       return httpMock.match(
-        (candidate) => candidate.method === 'GET' && candidate.url === '/api/v1/modules',
+        (candidate) => isListingRead(candidate),
       );
     }
 
@@ -1253,8 +1354,8 @@ describe('ModuleStore', () => {
 
       const only = expectRequest('GET', '/api/v1/modules');
 
-      expect(only.request.params.get('pageIndex')).toBe('0');
-      expect(only.request.params.get('pageSize'))
+      expect(sentFilters(only).get('pageIndex')).toBe('0');
+      expect(sentFilters(only).get('pageSize'))
         .withContext('the widest page the paging validator accepts')
         .toBe(String(MAX_PAGE_SIZE));
 
@@ -1284,7 +1385,7 @@ describe('ModuleStore', () => {
 
       const second = expectRequest('GET', '/api/v1/modules');
 
-      expect(second.request.params.get('pageIndex'))
+      expect(sentFilters(second).get('pageIndex'))
         .withContext('the walk continues past the first window')
         .toBe('1');
       second.flush(
@@ -1359,7 +1460,7 @@ describe('ModuleStore', () => {
         maximumInFlight = Math.max(maximumInFlight, outstanding.length);
         issued += outstanding.length;
         outstanding.forEach((request) => {
-          const pageIndex = Number(request.request.params.get('pageIndex') ?? '0');
+          const pageIndex = Number(sentFilters(request).get('pageIndex') ?? '0');
 
           // One row per page against an unreachable total, which is what keeps the walk going: the
           // walk continues on the TOTAL rather than on a full page.
@@ -1410,14 +1511,18 @@ describe('ModuleStore', () => {
       store.loadTabs(0);
       const call = expectRequest('GET', '/api/v1/portals/0/tabs');
 
-      expect(call.request.params.keys().length).toBe(0);
-      expect(call.request.params.has('pageIndex')).toBeFalse();
-      expect(call.request.params.has('pageSize')).toBeFalse();
+      // MIGRATION: THE HIERARCHY READ NOW CARRIES ITS OWN PAGE COORDINATE, AND STILL NOTHING ELSE. What
+      // this case exists to prove is unchanged - the LISTING's coordinate, sort and filter never leak into
+      // the hierarchy read - so the two paging arguments the bounded endpoint requires are asserted by name
+      // and every listing coordinate is asserted absent.
+      expect([...call.request.params.keys()].sort()).toEqual(['pageIndex', 'pageSize']);
+      expect(call.request.params.get('pageIndex')).toBe('0');
+      expect(call.request.params.get('pageSize')).toBe(String(TAB_PAGE_SIZE));
       expect(call.request.params.has('sortBy')).toBeFalse();
       expect(call.request.params.has('sortDir')).toBeFalse();
       expect(call.request.params.has('query')).toBeFalse();
 
-      call.flush(envelope([tabRow({ tabId: 0, parentId: -1 })]));
+      call.flush(tabPage([tabRow({ tabId: 0, parentId: -1 })]));
       expect(store.tabs().length).toBe(1);
     });
 
@@ -1425,7 +1530,7 @@ describe('ModuleStore', () => {
       store.loadDefinitions();
       const call = expectRequest('GET', '/api/v1/module-definitions');
 
-      expect(call.request.params.keys().length).toBe(0);
+      expect(sentFilters(call).keys().length).toBe(0);
 
       call.flush(envelope([definition({ moduleDefId: 4 }), definition({ moduleDefId: 5 })]));
 
@@ -1437,7 +1542,7 @@ describe('ModuleStore', () => {
       store.loadDesktopDefinitions(2);
       const call = expectRequest('GET', '/api/v1/module-definitions/desktop-modules/2');
 
-      expect(call.request.params.keys().length).toBe(0);
+      expect(sentFilters(call).keys().length).toBe(0);
 
       call.flush(envelope([definition({ desktopModuleId: 2 })]));
 
@@ -1451,7 +1556,7 @@ describe('ModuleStore', () => {
       store.loadDefinition(4);
       const call = expectRequest('GET', '/api/v1/module-definitions/4');
 
-      expect(call.request.params.keys().length).toBe(0);
+      expect(sentFilters(call).keys().length).toBe(0);
 
       call.flush(envelope(definition({ moduleDefId: 4, defaultCacheTime: 900 })));
 
@@ -1462,7 +1567,7 @@ describe('ModuleStore', () => {
       expect(store.definition()).toBeNull();
     });
 
-    it('keeps NO page index, page size or total for any of the three unpaged collections', () => {
+    it('keeps NO page index, page size or total for any of the three lookup collections', () => {
       loadTabsWith(0, [tabRow({ tabId: 0, parentId: -1 })]);
 
       store.loadDefinitions();
@@ -1503,8 +1608,8 @@ describe('ModuleStore', () => {
       store.loadModules();
       const call = expectRequest('GET', '/api/v1/modules');
 
-      expect(call.request.params.get('pageIndex')).toBe('0');
-      expect(call.request.params.get('pageSize')).toBe('10');
+      expect(sentFilters(call).get('pageIndex')).toBe('0');
+      expect(sentFilters(call).get('pageSize')).toBe('10');
       expect(store.listLoading()).toBeTrue();
 
       call.flush(pagedBody([listRow()], 0, 10));
@@ -1521,7 +1626,7 @@ describe('ModuleStore', () => {
 
       store.loadModules();
       const call = expectRequest('GET', '/api/v1/modules');
-      expect(call.request.params.get('pageIndex')).toBe('1');
+      expect(sentFilters(call).get('pageIndex')).toBe('1');
       call.flush(pagedBody([], 1, 10));
 
       expect(store.meta().pageIndex).toBe(1);
@@ -1538,8 +1643,8 @@ describe('ModuleStore', () => {
 
       store.loadModules();
       const call = expectRequest('GET', '/api/v1/modules');
-      expect(call.request.params.get('pageIndex')).toBe('0');
-      expect(call.request.params.get('pageSize')).toBe('25');
+      expect(sentFilters(call).get('pageIndex')).toBe('0');
+      expect(sentFilters(call).get('pageSize')).toBe('25');
       call.flush(pagedBody([], 0, 25));
     });
 
@@ -1554,8 +1659,8 @@ describe('ModuleStore', () => {
 
       // The direction token is one of the server enumeration's own member names, and the query-string
       // binder accepts nothing else - an abbreviated or lower-cased spelling is answered with a refusal.
-      expect(call.request.params.get('sortBy')).toBe('moduleTitle');
-      expect(call.request.params.get('sortDir')).toBe('Descending');
+      expect(sentFilters(call).get('sortBy')).toBe('moduleTitle');
+      expect(sentFilters(call).get('sortDir')).toBe('Descending');
       call.flush(pagedBody([]));
     });
 
@@ -1568,8 +1673,8 @@ describe('ModuleStore', () => {
 
       // A null argument means "let the server choose", so the member is not transmitted at all - which is
       // a different request from transmitting an empty ordering.
-      expect(call.request.params.has('sortBy')).toBeFalse();
-      expect(call.request.params.has('sortDir')).toBeFalse();
+      expect(sentFilters(call).has('sortBy')).toBeFalse();
+      expect(sentFilters(call).has('sortDir')).toBeFalse();
       call.flush(pagedBody([]));
     });
 
@@ -1577,10 +1682,13 @@ describe('ModuleStore', () => {
       store.setQuery('news');
 
       store.loadModules();
-      const call = expectRequest('GET', '/api/v1/modules');
 
-      expect(call.request.params.get('query')).toBe('news');
-      expect(call.request.params.get('query')).not.toContain(WILDCARD);
+      // The body-bound address, because a term is present. What matters to this specification is the TEXT,
+      // which `sentFilters` reads from wherever it travelled.
+      const call = httpMock.expectOne((candidate) => isListingRead(candidate));
+
+      expect(sentFilters(call).get('query')).toBe('news');
+      expect(sentFilters(call).get('query')).not.toContain(WILDCARD);
       call.flush(pagedBody([]));
     });
 
@@ -1590,8 +1698,8 @@ describe('ModuleStore', () => {
       store.loadModules();
       const call = expectRequest('GET', '/api/v1/modules');
 
-      expect(call.request.params.has('query')).toBeTrue();
-      expect(call.request.params.get('query')).toBe('');
+      expect(sentFilters(call).has('query')).toBeTrue();
+      expect(sentFilters(call).get('query')).toBe('');
       call.flush(pagedBody([]));
     });
 
@@ -1599,14 +1707,14 @@ describe('ModuleStore', () => {
       store.setTabFilter(0);
       store.loadModules();
       const restricted = expectRequest('GET', '/api/v1/modules');
-      expect(restricted.request.params.has('tabId')).toBeTrue();
-      expect(restricted.request.params.get('tabId')).toBe('0');
+      expect(sentFilters(restricted).has('tabId')).toBeTrue();
+      expect(sentFilters(restricted).get('tabId')).toBe('0');
       restricted.flush(pagedBody([listRow({ tabId: 0 })]));
 
       store.setTabFilter(undefined);
       store.loadModules();
       const unrestricted = expectRequest('GET', '/api/v1/modules');
-      expect(unrestricted.request.params.has('tabId')).toBeFalse();
+      expect(sentFilters(unrestricted).has('tabId')).toBeFalse();
       unrestricted.flush(pagedBody([listRow()]));
     });
 
@@ -1615,8 +1723,8 @@ describe('ModuleStore', () => {
       store.loadModules();
       const call = expectRequest('GET', '/api/v1/modules');
 
-      expect(call.request.params.has('includeDeleted')).toBeTrue();
-      expect(call.request.params.get('includeDeleted')).toBe('false');
+      expect(sentFilters(call).has('includeDeleted')).toBeTrue();
+      expect(sentFilters(call).get('includeDeleted')).toBe('false');
       call.flush(pagedBody([]));
     });
 
@@ -1636,10 +1744,10 @@ describe('ModuleStore', () => {
       store.loadPortalScope(-1, 0);
 
       const pages = expectRequest('GET', '/api/v1/portals/-1/tabs');
-      pages.flush(envelope([tabRow({ tabId: 0, parentId: -1 })]));
+      pages.flush(tabPage([tabRow({ tabId: 0, parentId: -1 })]));
 
       const listing = expectRequest('GET', '/api/v1/modules');
-      expect(listing.request.params.get('tabId')).toBe('0');
+      expect(sentFilters(listing).get('tabId')).toBe('0');
       listing.flush(pagedBody([listRow({ tabId: 0 })]));
 
       expect(store.tabPortalId()).toBe(-1);
@@ -1650,10 +1758,10 @@ describe('ModuleStore', () => {
     it('scopes to a portal without a page restriction when none is named', () => {
       store.loadPortalScope(0);
 
-      expectRequest('GET', '/api/v1/portals/0/tabs').flush(envelope([tabRow({ tabId: 0, parentId: -1 })]));
+      expectRequest('GET', '/api/v1/portals/0/tabs').flush(tabPage([tabRow({ tabId: 0, parentId: -1 })]));
 
       const listing = expectRequest('GET', '/api/v1/modules');
-      expect(listing.request.params.has('tabId')).toBeFalse();
+      expect(sentFilters(listing).has('tabId')).toBeFalse();
       listing.flush(pagedBody([listRow()]));
 
       expect(store.selectedTabId()).toBeUndefined();
@@ -1713,6 +1821,34 @@ describe('ModuleStore', () => {
       expect(ModuleVisibility.Maximized).toBe(0);
       expect(ModuleVisibility.Minimized).toBe(1);
       expect(ModuleVisibility.None).toBe(2);
+    });
+
+    // ⚠ THE REGRESSION GUARD FOR THE WORST DEFECT THIS APPLICATION HELD. One row carrying a code outside the
+    // published three used to make the decoder refuse the row, the refusal propagated out of the page, the
+    // store kept the PREVIOUS page's rows and pager text, the recorded failure carried no problem document
+    // so the banner rendered nothing, and the console logged nothing. A successful HTTP 200 carrying every
+    // module presented itself as an empty site, or as stale data, with no signal anywhere.
+    it('renders a page containing an UNPUBLISHED code instead of discarding the page', () => {
+      loadListWith([
+        listRow({ moduleId: 0, tabModuleId: 1, visibility: ModuleVisibility.Maximized }),
+        listRow({ moduleId: 2, tabModuleId: 3, visibility: 9 }),
+        listRow({ moduleId: 5, tabModuleId: 6, visibility: ModuleVisibility.Minimized }),
+      ]);
+
+      expect(store.modules()).withContext('every row survives').toHaveSize(3);
+      expect(store.modules().map((row) => row.visibility)).toEqual([0, 9, 2 - 1]);
+      expect(store.failure()).withContext('and nothing failed').toBeNull();
+      expect(store.listFailed()).toBeFalse();
+    });
+
+    it('keeps an unpublished code on a detail read too', () => {
+      store.loadModule(2, 3);
+      expectRequest('GET', '/api/v1/modules/2').flush(
+        envelope(detail({ moduleId: 2, tabModuleId: 3, visibility: 9 })),
+      );
+
+      expect(store.module()?.visibility).toBe(9);
+      expect(store.failure()).toBeNull();
     });
   });
 
@@ -1784,6 +1920,9 @@ describe('ModuleStore', () => {
         header: '',
         footer: '',
         iconFile: '',
+        alignment: null,
+        color: null,
+        border: null,
         description: '',
         moduleTitle: '',
         allTabs: false,
@@ -1853,7 +1992,7 @@ describe('ModuleStore', () => {
 
       store.loadSettings(0, 1);
       const read = expectRequest('GET', '/api/v1/modules/0/settings');
-      expect(read.request.params.get('tabModuleId')).toBe('1');
+      expect(sentFilters(read).get('tabModuleId')).toBe('1');
       read.flush(envelope(bag));
 
       expect(store.settings()).toEqual(bag);
@@ -1885,7 +2024,7 @@ describe('ModuleStore', () => {
       // blurred by a default. The placement member is nullable on the contract for the same reason.
       store.loadSettings(0);
       const call = expectRequest('GET', '/api/v1/modules/0/settings');
-      expect(call.request.params.has('tabModuleId')).toBeFalse();
+      expect(sentFilters(call).has('tabModuleId')).toBeFalse();
       call.flush(envelope(settingsBag({ tabModuleId: null })));
 
       expect(store.settings()?.tabModuleId).toBeNull();
@@ -1951,7 +2090,7 @@ describe('ModuleStore', () => {
 
       expect(
         httpMock.match(
-          (candidate) => candidate.method === 'GET' && candidate.url === '/api/v1/modules',
+          (candidate) => isListingRead(candidate),
         ),
       )
         .withContext('a create asks for no listing read; the listing reads itself on entry')
@@ -2467,15 +2606,14 @@ describe('ModuleStore', () => {
     function expectChoicePage(pageIndex: number): TestRequest {
       const call = httpMock.expectOne(
         (candidate) =>
-          candidate.method === 'GET' &&
-          candidate.url === '/api/v1/modules' &&
-          candidate.params.get('pageIndex') === String(pageIndex),
+          isListingRead(candidate) &&
+          sentFilters(candidate).get('pageIndex') === String(pageIndex),
         `the picker's page ${pageIndex}`,
       );
 
       // The widest page the validator admits, every time. Narrowing a later request would multiply the
       // round trips for no benefit; widening one would be refused at field level by the server.
-      expect(call.request.params.get('pageSize')).toBe(String(MAX_PAGE_SIZE));
+      expect(sentFilters(call).get('pageSize')).toBe(String(MAX_PAGE_SIZE));
 
       return call;
     }
@@ -2489,7 +2627,7 @@ describe('ModuleStore', () => {
       // have been made more expensive by the walk: a tenant whose modules fit on one page still costs
       // exactly one round trip.
       httpMock.expectNone(
-        (candidate) => candidate.method === 'GET' && candidate.url === '/api/v1/modules',
+        (candidate) => isListingRead(candidate),
       );
 
       expect(store.choices().length).toBe(3);
@@ -2535,7 +2673,7 @@ describe('ModuleStore', () => {
       expectChoicePage(0).flush(walkPage(distinctRows(MAX_PAGE_SIZE, 1), MAX_PAGE_SIZE));
 
       httpMock.expectNone(
-        (candidate) => candidate.method === 'GET' && candidate.url === '/api/v1/modules',
+        (candidate) => isListingRead(candidate),
       );
 
       expect(store.choices().length).toBe(MAX_PAGE_SIZE);
@@ -2560,7 +2698,7 @@ describe('ModuleStore', () => {
 
       // Nothing further is asked: everything the server claimed has been gathered.
       httpMock.expectNone(
-        (candidate) => candidate.method === 'GET' && candidate.url === '/api/v1/modules',
+        (candidate) => isListingRead(candidate),
       );
     });
 
@@ -2576,7 +2714,7 @@ describe('ModuleStore', () => {
 
       const first = expectChoicePage(0);
 
-      expect(first.request.params.keys().sort()).toEqual(['pageIndex', 'pageSize']);
+      expect(sentFilters(first).keys().sort()).toEqual(['pageIndex', 'pageSize']);
 
       first.flush(walkPage(distinctRows(MAX_PAGE_SIZE, 1), MAX_PAGE_SIZE + 1));
 
@@ -2584,7 +2722,7 @@ describe('ModuleStore', () => {
 
       // Asserted on the SECOND page too: a walk that assembled its first request correctly and then
       // widened later ones would leak the listing's state on every page but the first.
-      expect(second.request.params.keys().sort()).toEqual(['pageIndex', 'pageSize']);
+      expect(sentFilters(second).keys().sort()).toEqual(['pageIndex', 'pageSize']);
 
       second.flush(walkPage(distinctRows(1, MAX_PAGE_SIZE + 1), MAX_PAGE_SIZE + 1, 1));
 
@@ -2604,7 +2742,7 @@ describe('ModuleStore', () => {
       });
 
       httpMock.expectNone(
-        (candidate) => candidate.method === 'GET' && candidate.url === '/api/v1/modules',
+        (candidate) => isListingRead(candidate),
       );
 
       expect(store.choices().length).toBe(0);
@@ -2789,7 +2927,7 @@ describe('ModuleStore', () => {
 
       expect(first.cancelled).toBeTrue();
 
-      second.flush(envelope([tabRow({ tabId: 11, tabName: 'Second portal page' })]));
+      second.flush(tabPage([tabRow({ tabId: 11, tabName: 'Second portal page' })]));
 
       expect(store.tabPortalId()).toBe(4);
       expect(store.tabs().length).toBe(1);
@@ -2919,7 +3057,7 @@ describe('ModuleStore', () => {
       }
 
       listing.flush(pagedBody([listRow({ moduleId: 1 })], 0, 10));
-      hierarchy.flush(envelope([tabRow({ tabId: 11 })]));
+      hierarchy.flush(tabPage([tabRow({ tabId: 11 })]));
       module.flush(envelope(detail({ moduleId: 1 })));
       settings.flush(envelope(settingsBag()));
       catalogue.flush(envelope([definition({ moduleDefId: 4 })]));
@@ -2959,7 +3097,7 @@ describe('ModuleStore', () => {
 
       expect(
         httpMock.match(
-          (candidate) => candidate.method === 'GET' && candidate.url === '/api/v1/modules',
+          (candidate) => isListingRead(candidate),
         ),
       )
         .withContext('a create asks for no listing read; the listing reads itself on entry')
@@ -3020,7 +3158,7 @@ describe('ModuleStore', () => {
       store.loadChoices();
 
       const both = httpMock.match(
-        (candidate) => candidate.method === 'GET' && candidate.url === '/api/v1/modules',
+        (candidate) => isListingRead(candidate),
       );
 
       expect(grid.cancelled).toBeFalse();
@@ -3087,7 +3225,7 @@ describe('ModuleStore', () => {
       store.loadChoices();
 
       const choices = httpMock.match(
-        (candidate) => candidate.method === 'GET' && candidate.url === '/api/v1/modules',
+        (candidate) => isListingRead(candidate),
       );
 
       store.cancelChoices();
@@ -3169,4 +3307,241 @@ describe('ModuleStore', () => {
       expect(store.failure()?.code).toBe('module.not_portable');
     });
   });
+
+  // A RESPONSE THIS CLIENT CANNOT READ IS ITS OWN CLASS OF FAILURE
+  // Not a refusal, not a fault and NOT a request that never arrived - the three the wording used to
+  // collapse it into. It has no transport status and no body, which is exactly why it used to record no
+  // problem document at all.
+  describe('a response the client cannot read', () => {
+    /** Answers the listing with a body whose shape is wrong in a way no code table can tolerate. */
+    function answerWithDrift(): void {
+      store.loadModules();
+      expectRequest('GET', '/api/v1/modules').flush({
+        items: [{ ...listRow(), tabModuleId: 'one' }],
+        meta: { totalCount: 1, pageIndex: 0, pageSize: 10, totalPages: 1 },
+      });
+    }
+
+    it('records a well-formed document instead of nothing, so the banner has something to render', () => {
+      answerWithDrift();
+
+      const failure = store.failure();
+
+      expect(failure?.operation).toBe('listModules');
+      expect(failure?.problem).withContext('never null again').not.toBeNull();
+      expect(failure?.problem?.title).toBe('Unexpected response');
+      expect((failure?.problem?.detail ?? '').length).toBeGreaterThan(0);
+    });
+
+    it('does NOT word itself as an unreachable server, because the server answered', () => {
+      answerWithDrift();
+
+      expect(store.failure()?.problem?.detail)
+        .withContext('the connectivity sentence must keep meaning connectivity')
+        .not.toContain('could not be reached');
+      expect(store.failure()?.problem?.status)
+        .withContext('and no transport status describes this')
+        .toBeUndefined();
+    });
+
+    it('discards the page rather than leaving the previous one on screen', () => {
+      loadListWith([listRow({ moduleId: 0, tabModuleId: 1 })], 0, 10);
+
+      expect(store.modules()).toHaveSize(1);
+
+      answerWithDrift();
+
+      expect(store.modules()).withContext('no stale rows survive a failed read').toHaveSize(0);
+      expect(store.meta().totalCount).withContext('and no stale total either').toBe(0);
+      expect(store.listFailed())
+        .withContext('so a consumer can tell an empty listing from an unread one')
+        .toBeTrue();
+    });
+
+    it('marks a failed CHOICE read, so an empty picker is never read as "there are none"', () => {
+      store.loadChoices();
+      expectRequest('GET', '/api/v1/modules').flush({
+        items: [{ ...listRow(), tabModuleId: 'one' }],
+        meta: { totalCount: 1, pageIndex: 0, pageSize: 200, totalPages: 1 },
+      });
+
+      expect(store.choices()).toHaveSize(0);
+      expect(store.choicesFailed()).toBeTrue();
+      expect(store.listFailed())
+        .withContext('and the two slices are reported separately')
+        .toBeFalse();
+    });
+  });
+  // ---------------------------------------------------------------------------------------------------
+  // THE SETTLED LATCH — "NOT ASKED YET" IS NOT "ASKED AND EMPTY"
+  // ---------------------------------------------------------------------------------------------------
+
+  // ⚠ THE MEASURED DEFECT THESE PROVE CLOSED. An un-asked listing and a listing that matched nothing are
+  // both an empty page with no request in flight, so a grid reading only the rows and the in-flight flag
+  // painted "Nothing to Display" over a listing nobody had read yet.
+  describe('the settled latch', () => {
+    it('is DOWN on a fresh store and nothing is in flight, which is what made the two states identical', () => {
+      expect(store.listSettled()).toBeFalse();
+      expect(store.modules()).toEqual([]);
+      expect(store.listLoading()).toBeFalse();
+    });
+
+    it('stays DOWN while the first read is outstanding and rises when it answers', () => {
+      store.loadModules();
+      const call = expectRequest('GET', '/api/v1/modules');
+
+      expect(store.listSettled()).toBeFalse();
+
+      call.flush(pagedBody([listRow()], 0, 10));
+
+      expect(store.listSettled()).toBeTrue();
+    });
+
+    it('rises on a FAILED read too, so a waiting indicator cannot stand over a reportable failure', () => {
+      store.loadModules();
+      expectRequest('GET', '/api/v1/modules').flush(
+        { title: 'Server Error', status: 500 },
+        { status: 500, statusText: 'Internal Server Error' },
+      );
+
+      expect(store.listSettled()).toBeTrue();
+      expect(store.failure()).not.toBeNull();
+    });
+
+    it('goes back DOWN on reset, because the page it spoke for is discarded with the session', () => {
+      loadListWith([listRow()]);
+      expect(store.listSettled()).toBeTrue();
+
+      store.reset();
+
+      expect(store.listSettled()).toBeFalse();
+      expect(store.modules()).toEqual([]);
+    });
+  });
+
+  // -----------------------------------------------------------------------------------------------------
+  // THE GRANT GRID
+  // -----------------------------------------------------------------------------------------------------
+  // The slice behind the module permission grid the first port of the settings screen did not have.
+  describe('the grant grid', () => {
+    /** The grid address for module 0 - zero being a real module, since the column is IDENTITY (0, 1). */
+    const GRID_URL = '/api/v1/modules/0/permissions';
+
+    /**
+     * A minimal grid payload.
+     *
+     * @param moduleId Which module the grid describes.
+     * @returns The payload body.
+     */
+    function gridBody(moduleId: number): ApiResponse<unknown> {
+      return {
+        data: {
+          moduleId,
+          inheritViewPermissions: false,
+          inheritedPermissionKey: 'VIEW',
+          definitions: [{ permissionId: 1, permissionKey: 'VIEW', permissionName: 'View Module' }],
+          roles: [
+            {
+              roleId: 2,
+              roleName: 'Subscribers',
+              isAdministrator: false,
+              isPseudoRole: false,
+              cells: [
+                { permissionId: 1, permissionKey: 'VIEW', allowAccess: true, editable: true },
+              ],
+            },
+          ],
+          users: [],
+        },
+        meta: null,
+      } as unknown as ApiResponse<unknown>;
+    }
+
+    it('holds the grid a successful read answered with', () => {
+      store.loadPermissions(0);
+
+      expect(store.permissionsLoading()).toBeTrue();
+
+      expectRequest('GET', GRID_URL).flush(gridBody(0));
+
+      expect(store.permissionsLoading()).toBeFalse();
+      expect(store.permissionGrid()?.moduleId).toBe(0);
+      expect(store.permissionGrid()?.roles[0]?.roleName).toBe('Subscribers');
+      expect(store.permissionsFailure()).toBeNull();
+    });
+
+    it('clears the previous module grid as a new read begins', () => {
+      store.loadPermissions(0);
+      expectRequest('GET', GRID_URL).flush(gridBody(0));
+
+      expect(store.permissionGrid()).not.toBeNull();
+
+      store.loadPermissions(1);
+
+      // A grid left standing would be rendered as the NEW module's grants, and every identifier in it is
+      // one the screen's REPLACE would then withdraw.
+      expect(store.permissionGrid()).toBeNull();
+
+      expectRequest('GET', '/api/v1/modules/1/permissions').flush(gridBody(1));
+
+      expect(store.permissionGrid()?.moduleId).toBe(1);
+    });
+
+    it('keeps a failed READ out of the shared failure slot', () => {
+      store.loadPermissions(0);
+      expectRequest('GET', GRID_URL).flush(
+        { type: 'about:blank', title: 'Server Error', status: 500, detail: 'Unavailable.' },
+        { status: 500, statusText: 'Internal Server Error' },
+      );
+
+      // ⚠ THE WHOLE POINT OF THE DEDICATED SLOT. The grid is advisory to the screen that shows it, and the
+      // shared slot is what a submission's conclusion inspects to decide whether a WRITE was refused - so a
+      // failed read landing there would make the next successful save report itself as failed.
+      expect(store.permissionsFailure()?.problem.status).toBe(500);
+      expect(store.permissionsFailure()?.operation).toBe('loadPermissions');
+      expect(store.failure()).withContext('the page banner is left alone').toBeNull();
+      expect(store.permissionsLoading()).toBeFalse();
+    });
+
+    it('re-reads the grid after a successful replacement, because the write answers 204', () => {
+      store.savePermissions(0, { inheritViewPermissions: false, grants: [] });
+
+      expect(store.permissionsSaving()).toBeTrue();
+
+      expectRequest('PUT', GRID_URL).flush(null, { status: 204, statusText: 'No Content' });
+
+      expect(store.permissionsSaving()).toBeFalse();
+
+      // The server withholds view grants while inheritance is on, so what it stored is knowably not always
+      // what was submitted.
+      expectRequest('GET', GRID_URL).flush(gridBody(0));
+
+      expect(store.permissionGrid()?.moduleId).toBe(0);
+    });
+
+    it('records a refused WRITE in the shared slot, because an operator must be told', () => {
+      store.savePermissions(0, { inheritViewPermissions: false, grants: [] });
+      expectRequest('PUT', GRID_URL).flush(
+        { type: 'about:blank', title: 'Forbidden', status: 403, detail: 'Not permitted.' },
+        { status: 403, statusText: 'Forbidden' },
+      );
+
+      expect(store.permissionsSaving()).toBeFalse();
+      expect(store.failure()?.operation).toBe('savePermissions');
+      expect(store.failure()?.problem.status).toBe(403);
+    });
+
+    it('discards the grid on reset, because it names roles and accounts of the tenant being left', () => {
+      store.loadPermissions(0);
+      expectRequest('GET', GRID_URL).flush(gridBody(0));
+
+      store.reset();
+
+      expect(store.permissionGrid()).toBeNull();
+      expect(store.permissionsFailure()).toBeNull();
+      expect(store.permissionsLoading()).toBeFalse();
+      expect(store.permissionsSaving()).toBeFalse();
+    });
+  });
+
 });

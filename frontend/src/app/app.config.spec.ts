@@ -557,7 +557,9 @@ describe('appConfig', () => {
         .toBe('error');
       expect(queued[0].message)
         .withContext("the server's own sentence, with the reference appended as its own clause")
-        .toBe(`${SERVER_ERROR_DETAIL} Reference: ${SERVER_CORRELATION_ID}`);
+        .toBe(
+          `${SERVER_ERROR_DETAIL} If you report this, quote reference ${SERVER_CORRELATION_ID}.`,
+        );
       expect(queued[0].reference)
         .withContext('the correlation identifier is the value to quote, never the trace id')
         .toBe(SERVER_CORRELATION_ID);

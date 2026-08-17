@@ -7,6 +7,7 @@ import { Router, provideRouter } from '@angular/router';
 import { BannerAdvertisingMode, UserRegistrationMode } from '../../../core/models/portal.model';
 import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 import { NotificationService } from '../../../core/services/notification.service';
+import { ListReturnStore } from '../../../core/state/list-return.store';
 import { PortalStore } from '../../../core/state/portal.store';
 import { PortalFormComponent } from './portal-form.component';
 
@@ -110,14 +111,19 @@ const CREATE_ERROR_MESSAGE =
 
 /**
  * The sentence shown when the server refuses a change to a host-administered term. Net-new wording for a
- * measured refusal.
+ * measured refusal, opening on the one denial stem every app-authored refusal shares, so a reader who is
+ * told no anywhere in the application is told no the same way.
  */
 const HOST_FIELD_REFUSED_MESSAGE =
-  'Only a host account may change this portal\u2019s host-administered terms, so the save ' +
-  'was refused. Nothing was changed.';
+  'You do not have permission to change this portal\u2019s host-administered terms, which only a ' +
+  'host account may change. Nothing was changed.';
 
 /** The sentence shown when the record being edited has gone. */
-const PORTAL_NOT_FOUND_MESSAGE = 'That portal no longer exists, so nothing could be loaded.';
+/**
+ * ⚠ THE SHARED SHAPE, NOT THIS SCREEN'S OWN SENTENCE. Each of the four detail screens worded a missing
+ * record differently; one builder now words all three of the app-authored ones.
+ */
+const PORTAL_NOT_FOUND_MESSAGE = 'The portal could not be found. It may have been removed.';
 
 /** `CONFLICT_MESSAGE['portal.alias_duplicate']`, measured from the legacy alias screen. */
 const DUPLICATE_ALIAS_MESSAGE =
@@ -1692,13 +1698,24 @@ describe('PortalFormComponent', () => {
       answerListingReread();
 
       expect(notifications()).toEqual([{ severity: 'success', message: CREATE_SUCCEEDED_MESSAGE }]);
-      expect(navigateSpy).toHaveBeenCalledOnceWith([PORTAL_LIST_ROUTE], { replaceUrl: true });
+      expect(navigateSpy).toHaveBeenCalledOnceWith([PORTAL_LIST_ROUTE], {
+        queryParams: {},
+        replaceUrl: true,
+      });
     });
 
-    it('holds no unsaved entry while a creation is in flight', () => {
-      // ⚠ THIS CASE EXISTS FOR AN OPERATOR-PRECEDENCE DEFECT, WHICH IS WHY IT ASKS THE TRACKER RATHER THAN
-      // THE FORM. This screen holds two forms, and its unsaved-entry probe is meant to read `(either is
-      // dirty) AND (no save is in flight)`.
+    it('STILL holds unsaved entry while a creation is in flight, so leaving cannot lose it', () => {
+      // ⚠ THIS CASE USED TO ASSERT THE OPPOSITE, AND THAT IS THE DEFECT IT NOW PROVES CLOSED. It required
+      // the tracker to report CLEAN for as long as the write was in flight, on the reasoning that "work on
+      // its way to the server is not unsaved work". It is: the request is bound to this component's lifetime,
+      // so navigating away destroys the component, `takeUntilDestroyed` cancels the request, and the write
+      // never reaches the database. Reporting clean is what made that departure silent - an operator lost the
+      // creation and was told nothing. A screen holding an unfinished write is the LEAST safe moment to
+      // leave.
+      //
+      // The exclusion existed to stop this screen's OWN post-save navigation being challenged, and the case
+      // directly above proves that is covered by a better mechanism: the success path navigates with
+      // `replaceUrl: true` imperatively, which `unsavedChangesGuard` admits explicitly.
       createMode();
 
       fillMinimalCreation('contoso.example.test');
@@ -1709,8 +1726,8 @@ describe('PortalFormComponent', () => {
       const call = expectRequest('POST', PORTALS_URL, 'the creation');
 
       expect(TestBed.inject(UnsavedChangesTracker).isDirty())
-        .withContext('work on its way to the server is not unsaved work')
-        .toBeFalse();
+        .withContext('a cancellable write in flight is unsaved work, and is protected as such')
+        .toBeTrue();
 
       call.flush(envelope(portalDetail(1, { portalName: 'Contoso' })), {
         status: 201,
@@ -1718,6 +1735,10 @@ describe('PortalFormComponent', () => {
       });
       fixture.detectChanges();
       answerListingReread();
+
+      expect(TestBed.inject(UnsavedChangesTracker).isDirty())
+        .withContext('and the protection is released once the write has landed and the form is settled')
+        .toBeFalse();
     });
 
     it('settles the form and keeps its confirmation once the creation succeeds', () => {
@@ -1812,7 +1833,10 @@ describe('PortalFormComponent', () => {
       answerListingReread();
 
       expect(notifications()).toEqual([{ severity: 'success', message: UPDATE_SUCCEEDED_MESSAGE }]);
-      expect(navigateSpy).toHaveBeenCalledOnceWith([PORTAL_LIST_ROUTE], { replaceUrl: true });
+      expect(navigateSpy).toHaveBeenCalledOnceWith([PORTAL_LIST_ROUTE], {
+        queryParams: {},
+        replaceUrl: true,
+      });
     });
 
     it('addresses the record by the identifier it arrived with, sentinels included', () => {
@@ -1846,7 +1870,10 @@ describe('PortalFormComponent', () => {
       answerListingReread();
 
       expect(notifications()).toEqual([{ severity: 'success', message: CREATE_SUCCEEDED_MESSAGE }]);
-      expect(navigateSpy).toHaveBeenCalledOnceWith([PORTAL_LIST_ROUTE], { replaceUrl: true });
+      expect(navigateSpy).toHaveBeenCalledOnceWith([PORTAL_LIST_ROUTE], {
+        queryParams: {},
+        replaceUrl: true,
+      });
     });
 
     it('treats a created portal identified by zero as the success it is', () => {
@@ -1863,7 +1890,10 @@ describe('PortalFormComponent', () => {
       answerListingReread();
 
       expect(notifications()).toEqual([{ severity: 'success', message: CREATE_SUCCEEDED_MESSAGE }]);
-      expect(navigateSpy).toHaveBeenCalledOnceWith([PORTAL_LIST_ROUTE], { replaceUrl: true });
+      expect(navigateSpy).toHaveBeenCalledOnceWith([PORTAL_LIST_ROUTE], {
+        queryParams: {},
+        replaceUrl: true,
+      });
     });
 
     it('reports a duplicate alias in the measured wording and keeps the entry', () => {
@@ -1984,7 +2014,7 @@ describe('PortalFormComponent', () => {
       expect(navigateSpy).not.toHaveBeenCalled();
     });
 
-    it('reports a record that has gone in this screen own words', () => {
+    it('states a record that has gone once, in the shared wording, and offers the one way out', () => {
       editMode('404');
 
       expectRequest('GET', portalUrl(404), 'the detail read').flush(
@@ -1993,11 +2023,31 @@ describe('PortalFormComponent', () => {
       );
       fixture.detectChanges();
 
-      expect(notifications()).toEqual([{ severity: 'warning', message: PORTAL_NOT_FOUND_MESSAGE }]);
+      // ⚠ ONE STATEMENT, AND IT IS THE BANNER'S. This screen used to state it twice - in the banner from
+      // the server's own document, and again in a toast carrying a support reference for an occurrence
+      // nobody can look up. A record that is not there is a legitimate state rather than a fault, so no
+      // notification is raised and no reference is quoted.
+      expect((query('.error-banner')?.textContent ?? '')).toContain(PORTAL_NOT_FOUND_MESSAGE);
+      expect((query('.error-banner')?.textContent ?? '')).not.toContain('No such portal.');
+      expect(query('.error-banner__trace')).toBeNull();
+      expect(notifications()).toEqual([]);
 
       // Nothing to edit is offered, and nothing is thrown: the screen simply says so.
       expect(query('#portal-form-title')).toBeNull();
       expect(query('app-loading-spinner')).withContext('not left waiting forever').toBeNull();
+
+      // ⚠ AND THE TWO SIBLING ACTIONS ARE WITHHELD. Both address the portal by its identifier, so on a
+      // portal that has gone they were two links that could only fail; the slot they vacated carries the
+      // one recovery action instead.
+      const headerActions = Array.from(
+        (fixture.nativeElement as HTMLElement).querySelectorAll<HTMLAnchorElement>(
+          'app-page-header a.page-action',
+        ),
+      );
+
+      expect(headerActions.length).toBe(1);
+      expect(headerActions[0]?.textContent?.trim()).toBe('Back to Portals');
+      expect(headerActions[0]?.getAttribute('href')).toBe('/portals');
     });
 
     it('reports a server fault in the measured wording, and never repeats what the server said', () => {
@@ -2547,12 +2597,54 @@ describe('PortalFormComponent', () => {
 
       press(CANCEL_LABEL);
 
-      expect(navigateSpy).toHaveBeenCalledOnceWith([PORTAL_LIST_ROUTE]);
+      expect(navigateSpy).toHaveBeenCalledOnceWith([PORTAL_LIST_ROUTE], { queryParams: {} });
 
       // Abandoning is not a submission: no request is issued, which the end-of-test verification enforces,
       // and nothing is marked as being at fault.
       expect(fieldMessages()).withContext('no complaints raised on the way out').toEqual([]);
       expect(notifications()).toEqual([]);
+    });
+
+    // ⚠ THE PLACE THE OPERATOR CAME FROM, WHICH USED TO BE THROWN AWAY. Every departure from this screen was
+    // a bare `navigate([PORTAL_LIST_ROUTE])` carrying no query parameters, so an operator who had filtered
+    // and paged to reach a record was returned to page one of an unfiltered listing - and after a SAVE that
+    // is worse than an inconvenience, because the row that was just written is not on the page they land on.
+    // The two specs above assert the empty-bag case (no listing visited); these assert a real coordinate.
+    it('carries the listing\u2019s own place back when abandoning', () => {
+      TestBed.inject(ListReturnStore).remember(PORTAL_LIST_ROUTE, {
+        currentpage: '4',
+        filter: 'Q',
+        sortby: 'portalName',
+        sortdir: 'desc',
+      });
+
+      createMode();
+      press(CANCEL_LABEL);
+
+      expect(navigateSpy).toHaveBeenCalledOnceWith([PORTAL_LIST_ROUTE], {
+        queryParams: { currentpage: '4', filter: 'Q', sortby: 'portalName', sortdir: 'desc' },
+      });
+    });
+
+    it('carries the listing\u2019s own place back after a successful save', () => {
+      TestBed.inject(ListReturnStore).remember(PORTAL_LIST_ROUTE, { currentpage: '3', filter: 'D' });
+
+      createMode();
+      fillMinimalCreation('contoso.example.test');
+      press(CREATE_SUBMIT_LABEL);
+
+      expectRequest('POST', PORTALS_URL, 'the creation').flush(envelope(portalDetail(1)), {
+        status: 201,
+        statusText: 'Created',
+      });
+      fixture.detectChanges();
+      answerListingReread();
+
+      expect(navigateSpy).toHaveBeenCalledOnceWith([PORTAL_LIST_ROUTE], {
+        queryParams: { currentpage: '3', filter: 'D' },
+        // Replaced rather than pushed, so Back cannot return to a form for a record already written.
+        replaceUrl: true,
+      });
     });
 
     it('leaves an edit for the listing when abandoned, sending nothing', () => {
@@ -2561,7 +2653,7 @@ describe('PortalFormComponent', () => {
       type('portal-form-title', 'Renamed');
       press(CANCEL_LABEL);
 
-      expect(navigateSpy).toHaveBeenCalledOnceWith([PORTAL_LIST_ROUTE]);
+      expect(navigateSpy).toHaveBeenCalledOnceWith([PORTAL_LIST_ROUTE], { queryParams: {} });
       expect(fieldMessages()).toEqual([]);
     });
 

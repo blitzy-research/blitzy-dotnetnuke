@@ -54,6 +54,11 @@ public sealed class ValidatorRegistrationTests
 
                     typeof(ModuleExportRequest),
                     typeof(ModuleImportRequest),
+
+                    // The module grant grid's write. Bound by PUT /modules/{moduleId}/permissions, whose
+                    // body carries the module's complete grant set together with the view-inheritance
+                    // switch, because the legacy screen saved the two in one operation.
+                    typeof(ReplaceModulePermissionsRequest),
                     typeof(CreatePortalRequest),
                     typeof(UpdatePortalRequest),
 
@@ -86,6 +91,14 @@ public sealed class ValidatorRegistrationTests
 
                     // The role-membership paging request.
                     typeof(RoleUserPagedRequest),
+
+                    // The two collections that became paged when their unbounded responses were bounded:
+                    // one tenant's page listing and one account's member-service catalogue. Each binds its
+                    // OWN request shape rather than the shared one, because each accepts the two paging
+                    // arguments and refuses an ordering and a filter - which is a bound of its own and
+                    // therefore a validator of its own.
+                    typeof(TabPagedRequest),
+                    typeof(MemberServicePagedRequest),
 
                     typeof(ModuleSettingsDto),
 

@@ -60,7 +60,12 @@ const EDIT_TITLE = 'Edit Security Roles';
 const UNREADABLE_ADDRESS_MESSAGE =
   'This address does not name a role that can be read. Return to the role list and try again.';
 
+// The primary action's caption, ONE COMMAND whose wording follows the mode. `EditRoles.ascx` declared a
+// single `cmdUpdate` for both, so "Update" is the documented legacy wording for EDIT and there is no legacy
+// wording for create at all - and applying "Update" to a role that does not exist yet is what left the four
+// create screens reading as three vocabularies.
 const SUBMIT_LABEL = 'Update';
+const CREATE_SUBMIT_LABEL = 'Create Role';
 const CANCEL_LABEL = 'Cancel';
 const DELETE_LABEL = 'Delete';
 const MANAGE_USERS_LABEL = 'Manage Users in this Role';
@@ -113,7 +118,12 @@ function lengthMessage(limit: number): string {
 const ROLE_CREATED_MESSAGE = 'The role was created.';
 const ROLE_UPDATED_MESSAGE = 'The role was updated.';
 const ROLE_DELETED_MESSAGE = 'The role was deleted.';
-const ROLE_NOT_FOUND_MESSAGE = 'That role could not be found.';
+/**
+ * ⚠ THE SHARED SHAPE, NOT THIS SCREEN'S OWN SENTENCE. Each of the four detail screens worded a missing
+ * record differently; one builder now words all three of the app-authored ones, and the account screen keeps
+ * its legacy `NoUser.Text` wording as the documented exception.
+ */
+const ROLE_NOT_FOUND_MESSAGE = 'The role could not be found. It may have been removed.';
 const SAVE_FAILED_MESSAGE = 'The role could not be saved.';
 const DELETE_FAILED_MESSAGE = 'The role could not be deleted.';
 
@@ -305,7 +315,7 @@ const TRACE_ID = '00-3e7a4f2b9c934dd6bb18eb211c80319c-44bd6b7169203331-01';
 const CORRELATION_ID = 'c58d1a76-9e42-4b03-8f61-2a7c5d0e3b94';
 
 /** How the banner presents whichever identifier it found. */
-const REFERENCE_PREFIX = 'Reference:';
+const REFERENCE_PREFIX = 'If you report this, quote reference';
 
 /** Options for a refusal document, so a case can withhold exactly the members it means to. */
 interface ProblemOptions {
@@ -612,9 +622,21 @@ describe('RoleFormComponent', () => {
     return commands().map((command) => textOf(command));
   }
 
-  /** One command by its caption, or nothing when it is not offered. */
+  /**
+   * One command by its caption, or nothing when it is not offered.
+   *
+   * The primary action answers to EITHER of its two captions, because it is one command whose wording
+   * follows the mode: a caller asking to press the submit means the submit, not a particular word. Every
+   * other command is matched on its caption exactly, and the wording itself is asserted in AREA 11.
+   */
   function command(label: string): HTMLButtonElement | undefined {
-    return commands().find((candidate) => textOf(candidate) === label);
+    const byCaption = commands().find((candidate) => textOf(candidate) === label);
+
+    if (byCaption !== undefined || (label !== SUBMIT_LABEL && label !== CREATE_SUBMIT_LABEL)) {
+      return byCaption;
+    }
+
+    return commands().find((candidate) => candidate.classList.contains('form-action--primary'));
   }
 
   /** Presses one command, throwing when it is not offered. */
@@ -814,6 +836,19 @@ describe('RoleFormComponent', () => {
     const queue: readonly Announcement[] = announcements();
 
     return queue.length === 0 ? undefined : queue[queue.length - 1];
+  }
+
+  /** Everything the shared banner is currently saying, whitespace collapsed. */
+  function bannerText(): string {
+    return (host().querySelector('.error-banner')?.textContent ?? '').replace(/\s+/g, ' ').trim();
+  }
+
+  /**
+   * The one recovery action a detail screen offers once its record cannot be shown, or `null`. Resolved
+   * through the header slot, which is where every detail screen puts it.
+   */
+  function recoveryLink(): HTMLAnchorElement | null {
+    return host().querySelector<HTMLAnchorElement>('app-page-header a.page-action');
   }
 
   function bannerMessage(): string | null {
@@ -1573,7 +1608,10 @@ describe('RoleFormComponent', () => {
       submittedCreate();
 
       expect(announcements()).toContain({ severity: 'success', message: ROLE_CREATED_MESSAGE });
-      expect(navigateSpy).toHaveBeenCalledWith([ROLE_LIST_ROUTE], { replaceUrl: true });
+      expect(navigateSpy).toHaveBeenCalledWith([ROLE_LIST_ROUTE], {
+        queryParams: {},
+        replaceUrl: true,
+      });
     });
 
     it('still announces a creation that settles AFTER the operator has left the screen', () => {
@@ -1642,7 +1680,10 @@ describe('RoleFormComponent', () => {
       submittedUpdate(7);
 
       expect(announcements()).toContain({ severity: 'success', message: ROLE_UPDATED_MESSAGE });
-      expect(navigateSpy).toHaveBeenCalledWith([ROLE_LIST_ROUTE], { replaceUrl: true });
+      expect(navigateSpy).toHaveBeenCalledWith([ROLE_LIST_ROUTE], {
+        queryParams: {},
+        replaceUrl: true,
+      });
     });
 
     it('leaves the form settled at the instant it navigates, so the guard cannot question a saved role', () => {
@@ -1669,7 +1710,10 @@ describe('RoleFormComponent', () => {
       press(SUBMIT_LABEL);
       submittedUpdate(7);
 
-      expect(navigateSpy).toHaveBeenCalledWith([ROLE_LIST_ROUTE], { replaceUrl: true });
+      expect(navigateSpy).toHaveBeenCalledWith([ROLE_LIST_ROUTE], {
+        queryParams: {},
+        replaceUrl: true,
+      });
       expect(dirtyAtNavigation)
         .withContext('the guard must see a settled form on the navigation the save itself triggered')
         .toBeFalse();
@@ -2097,7 +2141,10 @@ describe('RoleFormComponent', () => {
       call.flush(envelope(role(0)));
       expectNoListingReread();
 
-      expect(navigateSpy).toHaveBeenCalledWith([ROLE_LIST_ROUTE], { replaceUrl: true });
+      expect(navigateSpy).toHaveBeenCalledWith([ROLE_LIST_ROUTE], {
+        queryParams: {},
+        replaceUrl: true,
+      });
     });
 
     it('creates with a POST to the collection, carrying no identifier in the address', () => {
@@ -2134,10 +2181,17 @@ describe('RoleFormComponent', () => {
         .withContext('above all no submit: pressing it would have created a role')
         .toBeNull();
 
-      // The state is STATED rather than merely left blank, so the address is diagnosable.
-      expect(textOf(queryOrFail<Element>(host(), '.role-form__notice'))).toBe(
-        UNREADABLE_ADDRESS_MESSAGE,
-      );
+      // The state is STATED rather than merely left blank, so the address is diagnosable - and it is stated
+      // by the SHARED BANNER, which is the application's one assertive owner for a refusal. It used to be a
+      // paragraph of this screen's own: a live region created together with its first message, which is
+      // announced inconsistently, where the banner's region is already in the document.
+      expect(bannerText()).toContain(UNREADABLE_ADDRESS_MESSAGE);
+      expect(host().querySelector('.role-form__notice'))
+        .withContext('one statement, not two')
+        .toBeNull();
+
+      // And the one way out, in the header slot every detail screen uses for it.
+      expect(recoveryLink()?.getAttribute('href')).toBe('/roles');
 
       httpMock.expectNone(
         (candidate) => candidate.url.startsWith(`${ROLES_URL}/`),
@@ -2200,7 +2254,14 @@ describe('RoleFormComponent', () => {
       fixture.detectChanges();
     });
 
-    it('takes a person back to the listing when the role has gone', () => {
+    it('states a role that has gone where it was asked for, and offers the one way out', () => {
+      // ⚠ MIGRATION - THE LEGACY BOUNCE IS GONE, DELIBERATELY, AND THIS SPEC ASSERTED IT. `:L170-L172`
+      // treated an unreadable role as an attempt to reach an item outside the module and redirected to the
+      // Security Roles page; this screen reproduced that with a surviving toast and a replaced history
+      // entry. It was the only one of the four detail screens that moved the reader, it needed an explicit
+      // exemption from the shell's navigation sweep for its own explanation to survive the navigation it
+      // caused, and it discarded the address the reader had followed. All four screens now state a missing
+      // record in place, in one shared wording, through the one assertive region, with one working way out.
       fixture = TestBed.createComponent(RoleFormComponent);
       fixture.componentRef.setInput('roleId', '404');
       fixture.detectChanges();
@@ -2213,17 +2274,24 @@ describe('RoleFormComponent', () => {
       });
       fixture.detectChanges();
 
-      expect(lastAnnouncement()).toEqual({ severity: 'warning', message: ROLE_NOT_FOUND_MESSAGE });
-      expect(navigateSpy).toHaveBeenCalledWith([ROLE_LIST_ROUTE], { replaceUrl: true });
+      expect(bannerText()).toContain(ROLE_NOT_FOUND_MESSAGE);
+      expect(navigateSpy).not.toHaveBeenCalled();
+      expect(lastAnnouncement()).toBeUndefined();
 
-      // ⚠ AND IT SURVIVES THE ARRIVAL IT CAUSED. The shell retires notifications on a completed navigation,
-      // so raising this one in the same task as the navigation was not enough: measured in a real browser,
-      // the destination's live region stayed empty and 226 consecutive frames after the listing painted
-      // were pixel-identical, so the operator was moved back to the list with no explanation at all.
-      expect(messagesSurvivingNavigation())
-        .withContext('the explanation must be readable at the destination')
-        .toContain(ROLE_NOT_FOUND_MESSAGE);
+      // No form, and no support reference: a record that is not there is a legitimate state rather than an
+      // occurrence anyone can look up.
+      expect(host().querySelectorAll('form').length).toBe(0);
+      expect(host().querySelector('.error-banner__trace')).toBeNull();
+      expect(recoveryLink()?.textContent?.trim()).toBe('Back to Security Roles');
     });
+
+    // ⚠ THE CASE THAT PINNED A SUPPORT REFERENCE ON THIS REFUSAL WAS REMOVED, AND ITS PREMISE IS WHY. It
+    // existed because the refusal was only ever shown as a toast: the screen it belonged to was destroyed by
+    // the navigation back to the listing, taking its error banner and the banner's reference line with it, so
+    // the toast was the only place the reference could appear. That navigation is gone - a role that is not
+    // there is now stated in place - so the screen survives, no toast is raised at all, and the case above
+    // pins the replacement: no announcement, no reference, and one working way out. A record that is not
+    // there is a legitimate state rather than an occurrence anyone can look up.
 
     it('offers the ungrouped choice FIRST, captioned "< Global Roles >" with its brackets', () => {
       createMode([roleGroup(4, { roleGroupName: 'Paid Services' }), roleGroup(5, { roleGroupName: 'Staff' })]);
@@ -2610,10 +2678,33 @@ describe('RoleFormComponent', () => {
   // ===================================================================================================
 
   describe('AREA 11 — the commands and their wording', () => {
-    it('offers EXACTLY Update and Cancel when creating', () => {
+    it('offers EXACTLY a create command and Cancel when creating', () => {
       createMode();
 
-      expect(commandLabels()).toEqual([SUBMIT_LABEL, CANCEL_LABEL]);
+      expect(commandLabels()).toEqual([CREATE_SUBMIT_LABEL, CANCEL_LABEL]);
+    });
+
+    // ⚠ #22 — ONE ACTION, ONE WORD PER MODE. The four create screens offered three different words for this
+    // action, because two of them named their subject and two said "Update" over a form for something that
+    // did not exist yet. Both captions are asserted here so neither can drift back.
+    it('names what it will create on the creation form, and says Update on the edit form', () => {
+      createMode();
+
+      const created = command(CREATE_SUBMIT_LABEL);
+
+      expect(created).withContext('the creation form offers a primary action').not.toBeUndefined();
+      expect(created === undefined ? '' : textOf(created))
+        .withContext('and it names its subject')
+        .toBe('Create Role');
+
+      editMode(role(7));
+
+      const updated = command(SUBMIT_LABEL);
+
+      expect(updated).withContext('the edit form offers a primary action').not.toBeUndefined();
+      expect(updated === undefined ? '' : textOf(updated))
+        .withContext('and it keeps the legacy wording, where the legacy screen applied it')
+        .toBe('Update');
     });
 
     it('offers no delete and no membership command when creating', () => {
@@ -2685,7 +2776,7 @@ describe('RoleFormComponent', () => {
       // Left invalid: the role name is empty and demanded.
       press(CANCEL_LABEL);
 
-      expect(navigateSpy).toHaveBeenCalledWith([ROLE_LIST_ROUTE]);
+      expect(navigateSpy).toHaveBeenCalledWith([ROLE_LIST_ROUTE], { queryParams: {} });
       expect(allMessages())
         .withContext('nothing is marked, so nothing is announced')
         .toEqual([]);
@@ -2725,7 +2816,10 @@ describe('RoleFormComponent', () => {
       expectNoListingReread();
 
       expect(announcements()).toContain({ severity: 'success', message: ROLE_DELETED_MESSAGE });
-      expect(navigateSpy).toHaveBeenCalledWith([ROLE_LIST_ROUTE], { replaceUrl: true });
+      expect(navigateSpy).toHaveBeenCalledWith([ROLE_LIST_ROUTE], {
+        queryParams: {},
+        replaceUrl: true,
+      });
     });
 
     it('sends nothing when the confirmation is dismissed', () => {
@@ -2809,10 +2903,58 @@ describe('RoleFormComponent', () => {
       return queryOrFail<HTMLDetailsElement>(host(), 'details.role-form__section--advanced');
     }
 
+    /**
+     * The slot one control sits in, narrowed without a cast.
+     *
+     * @param control The control whose slot is wanted.
+     * @returns The slot element.
+     */
+    function slotOf(control: HTMLElement): HTMLElement {
+      const slot: HTMLElement | null = control.parentElement;
+
+      if (slot === null) {
+        throw new Error('Expected the control to sit in a slot, but it had no parent.');
+      }
+
+      return slot;
+    }
+
     /** Its toggle. */
     function advancedSummary(): HTMLElement {
       return queryOrFail<HTMLElement>(advancedSection(), 'summary');
     }
+
+    // ⚠ WHAT WAS MEASURED. The invitation-code control was capped at 96px - a 78px content box - while the
+    // stored value `GOLDPASS2026X` measured 124.79px, so six characters were clipped away with no ellipsis and
+    // no title to recover them. The server REQUIRES at least twelve characters, so the control was too narrow
+    // for every legal value it could ever hold, not merely for a long one.
+    it('sizes the invitation code for a legal value rather than for a money amount', () => {
+      editMode(role(7, { rsvpCode: 'GOLDPASS2026X' }));
+
+      const control = input(CONTROL_ID.rsvpCode);
+      const slot = control.parentElement;
+
+      expect(slot).withContext('the control sits in a slot').not.toBeNull();
+      expect(slot?.classList)
+        .withContext('NOT the narrow slot, which is sized for a fee and a period count')
+        .not.toContain('role-form__control--narrow');
+      expect(slot?.classList)
+        .withContext('the ordinary control slot every other text field on this screen uses')
+        .toContain('role-form__control');
+
+      // The narrow measure is what caused the defect, so the slot must not resolve to it. Compared against the
+      // fee control beside it, which legitimately IS narrow: the two must no longer be the same measure.
+      const codeCap = getComputedStyle(slotOf(control)).maxInlineSize;
+      const feeCap = getComputedStyle(slotOf(input(CONTROL_ID.serviceFee))).maxInlineSize;
+
+      expect(codeCap).withContext('a measure is declared').not.toBe('none');
+      expect(codeCap)
+        .withContext('and it is no longer the narrow measure the fee keeps')
+        .not.toBe(feeCap);
+      expect(parseFloat(codeCap))
+        .withContext('the code slot is the wider of the two')
+        .toBeGreaterThan(parseFloat(feeCap));
+    });
 
     it('renders the advanced section COLLAPSED on first view', () => {
       createMode();
@@ -3209,11 +3351,17 @@ describe('RoleFormComponent', () => {
     }
 
     describe('the values the legacy bind withholds are STATED rather than hidden', () => {
-      /** The sentence the advanced section prints above the paid-membership boxes, or ''. */
+      /**
+       * The sentence the advanced section prints above the paid-membership boxes, or ''.
+       *
+       * Located by the phrase every arm of the notice shares. It used to be located by the prefix
+       * `'This role has no'`, which is exactly the assertion-of-absence the finding calls factually wrong,
+       * so the helper would have gone on reporting '' after the wording was corrected.
+       */
       function withheldNotice(): string {
         const notices: readonly string[] = textsOf('p.role-form__notice');
 
-        return notices.find((sentence) => sentence.startsWith('This role has no')) ?? '';
+        return notices.find((sentence) => sentence.includes('stay empty')) ?? '';
       }
 
       it('states every withheld value, in the wording the role listing uses', () => {
@@ -3221,9 +3369,11 @@ describe('RoleFormComponent', () => {
         openAdvanced();
 
         expect(withheldNotice()).toBe(
-          'This role has no paid-membership terms, so the boxes below are left empty. ' +
-            'The values held for it are Service Fee 0.00, Billing Period 0, Trial Fee 0.00 and ' +
-            'Trial Period 0.',
+          'The paid-membership boxes below stay empty. The legacy editor filled the billing boxes only '
+            + 'for a role with a service fee to charge, and the trial boxes only for a trial frequency it '
+            + 'recognised, and this role meets neither condition. The values stored for it are Service Fee '
+            + '0.00, Billing Period 0, Trial Fee 0.00 and Trial Period 0, and saving this form replaces '
+            + 'them.',
         );
         // And the boxes themselves are untouched, which is the half of this the legacy owns.
         expect(input(CONTROL_ID.serviceFee).value).toBe('');
@@ -3279,10 +3429,80 @@ describe('RoleFormComponent', () => {
         openAdvanced();
 
         expect(withheldNotice()).toBe(
-          'This role has no trial, so the trial boxes below are left empty. ' +
-            'The values held for it are Trial Fee 0.00 and Trial Period 0.',
+          'The trial boxes below stay empty. The legacy editor filled them only for a trial frequency it '
+            + 'recognises, and this role stores none it can name. The values stored for it are Trial Fee '
+            + '0.00 and Trial Period 0, and saving this form replaces them.',
         );
         expect(input(CONTROL_ID.serviceFee).value).toBe('25.00');
+      });
+
+      it('never denies a trial in the same breath as reporting the trial values it holds', () => {
+        // THE DISCRIMINATING CASE for the wording half of this finding. A role storing real trial values
+        // whose trial FREQUENCY the console cannot name fails the legacy bind gate, so the boxes stay
+        // empty - and the sentence explaining that used to open by asserting the role "has no trial"
+        // before listing Trial Fee 5.00 and Trial Period 2. One sentence, two contradictory clauses.
+        // PRICED deliberately, so that ONLY the trial group is withheld and this case pins the trial arm of
+        // the lead rather than the both-groups arm. Without that the case passes under the old wording too.
+        editMode(
+          role(7, {
+            serviceFee: 25,
+            billingPeriod: 1,
+            billingFrequency: 'M',
+            trialFee: 5,
+            trialPeriod: 2,
+            trialFrequency: 'X' as never,
+          }),
+        );
+        openAdvanced();
+
+        const notice: string = withheldNotice();
+
+        expect(notice).withContext('the values are still reported').toContain('Trial Fee 5.00');
+        expect(notice).toContain('Trial Period 2');
+        expect(notice).withContext('but no absence is asserted').not.toContain('has no trial');
+        expect(notice).not.toContain('This role has no');
+      });
+
+      it('names a stored frequency code it cannot set, and states what saving records instead', () => {
+        // `coerceFrequency` maps any code outside the six onto 'N', and the outgoing write initialises the
+        // frequency to 'N' as well, so this stored 'Q' is REPLACED by saving. The notice previously stated
+        // only a frequency it could name, so the one value whose loss was certain went unmentioned.
+        editMode(role(7, { serviceFee: 0, billingPeriod: 3, billingFrequency: 'Q' as never }));
+        openAdvanced();
+
+        const notice: string = withheldNotice();
+
+        expect(notice).toContain('Billing Frequency Q');
+        expect(notice).toContain('is not among the frequencies this console can set');
+        expect(notice).toContain('saving records None in its place');
+      });
+
+      it('names BOTH unnameable codes, in the plural, when each group stores one', () => {
+        editMode(
+          role(7, {
+            serviceFee: 0,
+            billingFrequency: 'Q' as never,
+            trialFee: 5,
+            trialFrequency: 'X' as never,
+          }),
+        );
+        openAdvanced();
+
+        const notice: string = withheldNotice();
+
+        expect(notice).toContain('Billing Frequency Q');
+        expect(notice).toContain('Trial Frequency X');
+        expect(notice).toContain('are not among the frequencies this console can set');
+        expect(notice).toContain('saving records None in their place');
+      });
+
+      it('says nothing about a replacement when the stored code is one it CAN set', () => {
+        // The narrowing guard: a nameable code loses nothing, because the select can carry it back, so no
+        // replacement sentence is owed and inventing one would alarm without cause.
+        editMode(role(7, { serviceFee: 0, billingPeriod: 3, billingFrequency: 'M' }));
+        openAdvanced();
+
+        expect(withheldNotice()).not.toContain('is not among the frequencies this console can set');
       });
 
       it('withholds the sentence on the creation form, where there is no record to describe', () => {
@@ -3480,7 +3700,21 @@ describe('RoleFormComponent', () => {
 
     describe('a refused submit reaches the control that caused it', () => {
       it('opens the advanced section and focuses the offending field', () => {
-        editMode(role(7));
+        // ⚠ THE FIXTURE WITHHOLDS NOTHING, DELIBERATELY AND EXPLICITLY. The default `role()` stores a
+        // service fee of nought, which is itself a withheld value, and the section now opens ITSELF
+        // whenever there is a withheld-values warning to read. Leaving the default here would have started
+        // the section OPEN and quietly stopped this case exercising the reveal it exists to prove. Every
+        // paid value is therefore absent, which is the one state that produces no notice.
+        editMode(
+          role(7, {
+            serviceFee: null,
+            billingPeriod: null,
+            billingFrequency: null,
+            trialFee: null,
+            trialPeriod: null,
+            trialFrequency: null,
+          }),
+        );
 
         const section: HTMLDetailsElement = queryOrFail<HTMLDetailsElement>(
           host(),
@@ -3501,6 +3735,155 @@ describe('RoleFormComponent', () => {
 
         expect(section.open).toBeTrue();
         expect(document.activeElement).toBe(input(CONTROL_ID.billingPeriod));
+      });
+    });
+
+    /**
+     * R4, SECOND ROUND — THE CORRECTIONS RUNTIME TESTING FORCED. The first attempt tied the
+     * unnameable-code disclosure to the withheld-boxes condition, and browser measurement showed that to be
+     * the wrong hinge entirely: the rewrite happens because the SELECT cannot represent the code, which is
+     * true whether or not the fee boxes were populated. Two roles proved it — one priced at 249.50 storing
+     * `'Q'` received no notice whatsoever, and one storing both `'Z'` and `'X'` disclosed only the `'X'`.
+     */
+    describe('disclosing a stored frequency code the console cannot set', () => {
+      /** The notice the advanced section prints above the paid-membership boxes, or '' when silent. */
+      function notice(): string {
+        return (
+          queryAll<HTMLParagraphElement>('details.role-form__section--advanced p.role-form__notice')[0]
+            ?.textContent ?? ''
+        ).trim();
+      }
+
+      /**
+       * THE CASE THAT WAS SILENT. A priced role fills its billing boxes, so it withholds nothing and the
+       * notice used to be suppressed outright — while its stored `'Q'` was destroyed on save regardless.
+       */
+      it('speaks for a PRICED role whose billing code cannot be represented', () => {
+        // ⚠ EVERY TRIAL VALUE IS ABSENT, AND THAT IS WHAT MAKES THIS CASE BITE. The fixture default stores a
+        // trial fee of nought, which formats to "0.00" and is itself a withheld term - so the notice would
+        // have been rendered by the withheld list alone and this case would have passed without ever
+        // reaching the code under test. Absent trial values withhold NOTHING, which is exactly the state of
+        // the role measured in the browser: priced at 249.50, storing 'Q', and warned about nowhere.
+        editMode(
+          role(7, {
+            serviceFee: 249.5,
+            billingPeriod: 1,
+            billingFrequency: 'Q',
+            trialFee: null,
+            trialPeriod: null,
+            trialFrequency: null,
+          }),
+        );
+
+        expect(notice()).withContext('a notice is rendered at all').not.toBe('');
+        expect(notice()).toContain('Billing Frequency Q');
+        expect(notice())
+          .withContext('and it names the value that replaces it')
+          .toContain(`saving records ${NO_FREQUENCY_LABEL} in its place`);
+      });
+
+      /** BOTH codes are doomed, so both must be named. Only the trial one used to be. */
+      it('names EVERY unrepresentable code, not merely the one in a withheld group', () => {
+        editMode(
+          role(7, {
+            serviceFee: 5,
+            billingPeriod: 2,
+            billingFrequency: 'Z',
+            trialFrequency: 'X',
+          }),
+        );
+
+        expect(notice()).toContain('Billing Frequency Z');
+        expect(notice()).toContain('Trial Frequency X');
+        expect(notice())
+          .withContext('and reads as a plural, since two codes are named')
+          .toContain('The stored codes');
+      });
+
+      /**
+       * ⚠ THE NARROWING CASE. A recognised code loses nothing when the write records it back, so it must
+       * NOT be reported as rewritten. An implementation that reported every frequency would satisfy both
+       * cases above and cry wolf on every priced role in the portal.
+       */
+      it('says nothing about a code the console CAN set', () => {
+        editMode(
+          role(7, {
+            serviceFee: 19.99,
+            billingPeriod: 1,
+            billingFrequency: 'M',
+            trialFrequency: 'D',
+            trialPeriod: 14,
+            trialFee: 0,
+          }),
+        );
+
+        expect(notice()).not.toContain('not among the frequencies');
+        expect(notice()).not.toContain('The stored code');
+      });
+
+      /**
+       * R4's FIRST defect, on the one branch a browser round found still carrying it: the billing-only lead
+       * asserted "and this role has none" while the sentence after it listed the record's own stored values.
+       */
+      it('never asserts an absence, on any lead', () => {
+        // ⚠ ONE ROLE PER LEAD, AND THE THIRD IS THE ONE THAT MATTERS. The billing-only lead is the branch
+        // that still carried the absence assertion, and it is reached ONLY by a role that is unpriced (so
+        // its billing boxes are withheld) whose trial frequency IS recognised (so its trial boxes are not).
+        // Without that third shape this case exercised the both-groups and trial leads twice over and could
+        // not have failed.
+        for (const subject of [
+          // both groups withheld
+          role(7, { serviceFee: 0, billingPeriod: 0, billingFrequency: 'N' }),
+          // trial only
+          role(7, { serviceFee: 5, billingPeriod: 1, billingFrequency: 'M', trialFee: 2 }),
+          // BILLING ONLY
+          role(7, {
+            serviceFee: 0,
+            billingPeriod: 2,
+            billingFrequency: 'M',
+            trialFrequency: 'D',
+            trialPeriod: 7,
+            trialFee: 3,
+          }),
+        ]) {
+          editMode(subject);
+
+          expect(notice().toLowerCase())
+            .withContext('no lead asserts what the record does not hold')
+            .not.toContain('has no');
+        }
+      });
+
+      /**
+       * ⚠ THE WARNING MUST BE ON SCREEN BEFORE THE COMMAND THAT ACTS ON IT. Update sits OUTSIDE this
+       * disclosure and is operable without expanding it, so a collapsed section let the destructive save run
+       * with the warning never once visible. Measured in the browser: the section renders collapsed by
+       * default and Update is fully reachable.
+       */
+      it('reveals itself, rather than hiding inside a collapsed disclosure', () => {
+        editMode(role(7, { serviceFee: 249.5, billingPeriod: 1, billingFrequency: 'Q' }));
+
+        const section: HTMLDetailsElement = queryOrFail<HTMLDetailsElement>(
+          host(),
+          'details.role-form__section--advanced',
+        );
+
+        expect(notice()).not.toBe('');
+        expect(section.open).withContext('the section holding the warning is open').toBeTrue();
+        expect(command('Update'))
+          .withContext('and the command the warning is about is offered')
+          .toBeDefined();
+      });
+
+      /** And it is announced, since it arrives only after the record lands. */
+      it('announces the warning through a polite live region', () => {
+        editMode(role(7, { serviceFee: 249.5, billingPeriod: 1, billingFrequency: 'Q' }));
+
+        const element = queryAll<HTMLParagraphElement>(
+          'details.role-form__section--advanced p.role-form__notice',
+        )[0];
+
+        expect(element?.getAttribute('aria-live')).toBe('polite');
       });
     });
 
@@ -3844,6 +4227,156 @@ describe('RoleFormComponent', () => {
         press('Update');
 
         expect(busy()).toBeNull();
+      });
+    });
+
+    /**
+     * R1 — ENTER IN A VALUE BOX MUST COMMIT NOTHING (Issue 14).
+     *
+     * ⚠ THESE SPECS ASSERT `defaultPrevented`, NOT THE ABSENCE OF A REQUEST, AND THE DISTINCTION IS THE
+     * WHOLE REASON THEY HAVE TEETH. Implicit submission is a DEFAULT ACTION of a real key press, and a
+     * default action is something only a trusted event performs: `dispatchEvent` of a synthetic
+     * `KeyboardEvent` never submits a form in any browser. A spec that pressed a synthetic Enter and then
+     * asserted `httpMock.expectNone(...)` would therefore pass identically with and without the fix — it
+     * would be measuring the test harness, not the behaviour.
+     *
+     * What the fix actually does is cancel that default action, and `defaultPrevented` is the observable
+     * that reports it: false when nothing cancelled the keystroke, true when something did. That is exactly
+     * the state the browser consults before submitting, so asserting it models the mechanism rather than
+     * approximating it.
+     *
+     * The legacy authority is `Website/admin/Security/editroles.ascx` L179-L188, where all four commands are
+     * `asp:LinkButton` — anchors calling `__doPostBack`, not submit controls — alongside eight
+     * `asp:TextBox` controls. Under HTML's implicit-submission rule, a form with no submit button and more
+     * than one blocking field does nothing on Enter. The port shipped a real `button[type="submit"]`, so the
+     * keystroke ran the save that `EditRoles.ascx.vb:L212-L231` deliberately preserves — the one that
+     * overwrites six stored paid-membership values the form never renders.
+     */
+    describe('implicit submission', () => {
+      /** Dispatches one cancelable keystroke and reports whether anything cancelled it. */
+      function keystroke(
+        target: Element,
+        key = 'Enter',
+        init: KeyboardEventInit = {},
+      ): boolean {
+        const event = new KeyboardEvent('keydown', {
+          key,
+          bubbles: true,
+          cancelable: true,
+          ...init,
+        });
+
+        target.dispatchEvent(event);
+        fixture.detectChanges();
+
+        return event.defaultPrevented;
+      }
+
+      it('cancels Enter in the monetary box the finding names', () => {
+        editMode(pricedRole(7));
+
+        expect(keystroke(input(CONTROL_ID.serviceFee)))
+          .withContext('Enter in Service Fee must not ask this form to submit')
+          .toBeTrue();
+      });
+
+      it('cancels Enter in every other value box on the form', () => {
+        editMode(pricedRole(7));
+
+        for (const controlId of [
+          CONTROL_ID.serviceFee,
+          CONTROL_ID.trialFee,
+          CONTROL_ID.trialPeriod,
+          CONTROL_ID.billingPeriod,
+          CONTROL_ID.rsvpCode,
+        ]) {
+          expect(keystroke(input(controlId)))
+            .withContext(`Enter in ${controlId} must not ask this form to submit`)
+            .toBeTrue();
+        }
+      });
+
+      /**
+       * ⚠ THE ROLE NAME BOX IS COVERED IN CREATE MODE, BECAUSE THAT IS THE ONLY MODE IN WHICH IT IS A
+       * BOX. On edit the same id belongs to an `<output>` — the read-only treatment this console preserves
+       * deliberately, since `editroles.ascx:L28-L33` renders the name as a label once a role exists. An
+       * `<output>` is not a field that blocks implicit submission and cannot be typed into, so there is no
+       * keystroke there to cancel; asserting against it would have been a spec that passed whatever the
+       * implementation did.
+       */
+      it('cancels Enter in the role name box on the create form', () => {
+        createMode();
+
+        expect(keystroke(input(CONTROL_ID.roleName)))
+          .withContext('Enter in Role Name must not ask this form to submit')
+          .toBeTrue();
+      });
+
+      /**
+       * ⚠ THE COMMANDS MUST STAY KEYBOARD-OPERABLE. Cancelling Enter on a button would turn the fix into
+       * a regression: the browser translates Enter on a focused button into a click, and that is the ONLY
+       * way a keyboard user reaches Update or Cancel. Suppressing it would leave the form unsubmittable
+       * without a pointer.
+       */
+      it('leaves Enter on a command entirely alone', () => {
+        editMode(pricedRole(7));
+
+        for (const label of commandLabels()) {
+          const control: HTMLButtonElement | undefined = command(label);
+
+          expect(control).withContext(`the ${label} command is rendered`).toBeDefined();
+          expect(keystroke(control as HTMLButtonElement))
+            .withContext(`Enter must still activate ${label}`)
+            .toBeFalse();
+        }
+      });
+
+      /**
+       * ⚠ ENTER IN A TEXTAREA INSERTS A NEWLINE AND NEVER SUBMITS, so there is nothing to prevent and
+       * preventing it would stop an operator typing a second line of description.
+       */
+      it('leaves Enter in the description textarea alone', () => {
+        editMode(pricedRole(7));
+
+        expect(keystroke(textArea()))
+          .withContext('Enter must still insert a newline in a multi-line field')
+          .toBeFalse();
+      });
+
+      /** Only Enter is touched; every other keystroke reaches the field untouched. */
+      it('leaves other keystrokes in a value box alone', () => {
+        editMode(pricedRole(7));
+
+        for (const key of ['a', '5', 'Tab', 'Escape', ' ']) {
+          expect(keystroke(input(CONTROL_ID.serviceFee), key))
+            .withContext(`${key} must not be cancelled`)
+            .toBeFalse();
+        }
+      });
+
+      /**
+       * ⚠ AN INPUT METHOD ENDS A COMPOSITION SESSION WITH ENTER. Swallowing that keystroke would stop an
+       * operator committing the characters they are in the middle of typing, so the guard stands down for
+       * it. This is why `isComposing` is consulted rather than assumed false.
+       */
+      it('stands down for the Enter that ends a composition session', () => {
+        editMode(pricedRole(7));
+
+        expect(keystroke(input(CONTROL_ID.serviceFee), 'Enter', { isComposing: true }))
+          .withContext('an IME must be able to commit its composition')
+          .toBeFalse();
+      });
+
+      /**
+       * THE PAIRED HALF: the explicit command must still save. A fix that suppressed the keystroke by
+       * disabling submission altogether would satisfy every case above and break the screen.
+       */
+      it('still saves when the Update command is pressed explicitly', () => {
+        editMode(pricedRole(7));
+        keystroke(input(CONTROL_ID.serviceFee));
+        press('Update');
+
+        expect(submittedUpdate(7)).withContext('the explicit command is unaffected').toBeTruthy();
       });
     });
   });

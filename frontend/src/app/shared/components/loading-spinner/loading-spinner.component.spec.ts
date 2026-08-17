@@ -375,6 +375,30 @@ describe('LoadingSpinnerComponent', () => {
       expect(renderedTextOf(indicator)).toBe('');
     });
 
+    // ⚠ THE ANIMATION MUST NAME FRAMES THAT ACTUALLY RESOLVE, and this spec exists because for a while it
+    // did not. The rule carried a component-LOCAL `animation-name: loading-spinner-rotate`, and Angular's
+    // emulated encapsulation rewrites a component's `@keyframes` DEFINITION to a scoped name while leaving
+    // an `animation-name` REFERENCE inside an `@media` block untouched - so the reference matched nothing
+    // and every spinner in the application rendered as a motionless circle. Measured in a real browser:
+    // computed `animation-iteration-count: infinite` with `getAnimations().length === 0` and
+    // `transform: none`. The frames therefore live in the GLOBAL stylesheet, where nothing is scoped.
+    it('animates the indicator with globally-defined frames, so the name resolves', () => {
+      const indicator = requireElement(hostOf(render()), INDICATOR_SELECTOR);
+      const animationName: string = getComputedStyle(indicator).animationName;
+
+      expect(animationName)
+        .withContext('a component-scoped keyframes name would not resolve from an @media block')
+        .toBe('dnn-indeterminate-spin');
+      expect(animationName)
+        .withContext('the unresolvable local name must not come back')
+        .not.toBe('loading-spinner-rotate');
+
+      // The definitive check: the browser reports a real animation object only when the name resolves.
+      expect(indicator.getAnimations().length)
+        .withContext('a declared animation that names nothing produces no animation at all')
+        .toBeGreaterThan(0);
+    });
+
     it('hides nothing else from assistive technology', () => {
       // Scoped so that the glyph is the ONLY element removed from the
       // accessibility tree, and nothing is being quietly hidden alongside it.

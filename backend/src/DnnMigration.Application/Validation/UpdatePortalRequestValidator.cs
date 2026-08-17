@@ -116,6 +116,33 @@ public abstract class PortalSettingsUpdateRequestValidator<TRequest> : AbstractV
     private const int HomeDirectoryMaximumLength = 100;
 
     /// <summary>
+    /// Lowest portal time-zone offset, in minutes, that any legacy zone used.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>MEASURED FROM THE LEGACY ZONE LIST RATHER THAN CHOSEN.</b>
+    /// <c>Website/App_GlobalResources/TimeZones.xml</c> is the file the legacy <c>cboTimeZone</c> selector
+    /// was filled from, and its entries run from <c>key="-720"</c> (UTC -12:00) to <c>key="780"</c>
+    /// (UTC +13:00). Because the selector was a CLOSED list, legality lived in the list and no validator was
+    /// needed; replacing it with a free-text box moved legality to the validator, and until now no validator
+    /// existed - so <c>99999</c> was accepted and stored, and a portal's whole notion of local time derives
+    /// from this column.
+    /// </para>
+    /// <para>
+    /// The client bounds the same range so an operator is told before a round trip, but this is the bound
+    /// that actually holds: any other caller reaches the same rule here.
+    /// </para>
+    /// </remarks>
+    private const int TimeZoneOffsetMinimum = -720;
+
+    /// <summary>Highest portal time-zone offset, in minutes. See <see cref="TimeZoneOffsetMinimum"/>.</summary>
+    private const int TimeZoneOffsetMaximum = 780;
+
+    /// <summary>What a caller is told when the offset names no real zone.</summary>
+    private const string TimeZoneOffsetOutOfRangeMessage =
+        "The time-zone offset must be between -720 and 780 minutes, which is UTC -12:00 to UTC +13:00.";
+
+    /// <summary>
     /// Total number of digits permitted in <see cref="UpdatePortalRequest.HostFee"/>, matching the terminal
     /// <c>money</c> column exactly.
     /// </summary>
@@ -243,6 +270,14 @@ public abstract class PortalSettingsUpdateRequestValidator<TRequest> : AbstractV
 
         RuleFor(request => request.HomeDirectory)
             .MaximumLength(HomeDirectoryMaximumLength);
+
+        // The one rule on the offset, and it exists because the legacy CLOSED SELECTOR became a free-text
+        // box. See TimeZoneOffsetMinimum for where the two bounds are measured from. Guarded by When so that
+        // a request omitting the member entirely is not refused for it.
+        RuleFor(request => request.TimeZoneOffset)
+            .InclusiveBetween(TimeZoneOffsetMinimum, TimeZoneOffsetMaximum)
+                .WithMessage(TimeZoneOffsetOutOfRangeMessage)
+            .When(request => request.TimeZoneOffset.HasValue);
 
         // The expiry date carries a REPRESENTABILITY bound and no business rule.
         RuleFor(request => request.ExpiryDate)

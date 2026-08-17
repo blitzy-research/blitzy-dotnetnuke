@@ -143,6 +143,211 @@ describe('DataTableComponent', () => {
     return fixture.nativeElement as Element;
   }
 
+  // ---------------------------------------------------------------------------
+  // THE ROW SET THE TABLE DESCRIBES, THE ORDER IT ANNOUNCES, AND THE REGION IT SCROLLS
+  // ---------------------------------------------------------------------------
+
+  describe('the row set it describes to assistive technology', () => {
+    function tableElement(): Element {
+      return requireElement(host(), 'table.data-table');
+    }
+
+    function rowIndices(): readonly (string | null)[] {
+      return bodyRows().map((row) => row.getAttribute('aria-rowindex'));
+    }
+
+    it('reports the match-set size, not the page, when a total is stated', () => {
+      // ⚠ THE MEASURED DEFECT: on the second page of a seventeen-record listing this reported eight while
+      // the pager beside it reported seventeen, so a screen reader was told the size of the window instead
+      // of the size of the set - which is the one thing `aria-rowcount` exists to prevent.
+      set('totalCount', 34);
+
+      expect(tableElement().getAttribute('aria-rowcount'))
+        .withContext('the match set plus the heading row')
+        .toBe('35');
+    });
+
+    it('numbers rows from their position in the match set, not from the top of the page', () => {
+      // The second page of a two-row page size: the first row rendered is the eleventh record, so it is row
+      // twelve once the heading row is counted. Before this it announced as row two on every page.
+      set('totalCount', 34);
+      set('rowOffset', 10);
+
+      expect(rowIndices()).toEqual(['12', '13']);
+    });
+
+    it('keeps describing its own body when the consumer states no total', () => {
+      // The narrowing case that keeps the change honest: a listing that does not page is not a window onto
+      // anything, so its page IS the set and the previous behaviour is the correct behaviour.
+      set('totalCount', null);
+
+      expect(tableElement().getAttribute('aria-rowcount')).toBe('3');
+      expect(rowIndices()).toEqual(['2', '3']);
+    });
+
+    it('describes only the message row while a message stands in for the records', () => {
+      // Announcing a set size beside "no records found" would offer a total with nothing to index into.
+      set('totalCount', 34);
+      set('rows', []);
+
+      expect(tableElement().getAttribute('aria-rowcount')).toBe('2');
+    });
+
+    it('treats an unusable offset as the first page rather than raising', () => {
+      // The only way one can arrive is a page coordinate that has not resolved, and a first page is the
+      // truthful reading of "not yet known".
+      set('totalCount', 34);
+      set('rowOffset', -5);
+
+      expect(rowIndices()).withContext('negative').toEqual(['2', '3']);
+
+      set('rowOffset', Number.NaN);
+
+      expect(rowIndices()).withContext('not a number').toEqual(['2', '3']);
+    });
+  });
+
+  describe('the order it announces', () => {
+    function announcementText(): string {
+      return (host().querySelector('.data-table__result-status')?.textContent ?? '').trim();
+    }
+
+    it('announces the active order alongside the count', () => {
+      set('sortBy', 'name');
+      set('sortDir', 'Ascending');
+
+      expect(announcementText()).toBe('2 records. Sorted by Name, ascending.');
+    });
+
+    it('changes the announcement when only the direction changes', () => {
+      // ⚠ THIS IS THE DISCRIMINATING CASE, AND IT IS THE DEFECT ITSELF. Sorting moves rows without changing
+      // how many there are, so before the order was folded in, this region's text was byte-identical before
+      // and after a sort - and an unchanged live region announces NOTHING. Measured with an observer over
+      // every live region on the page across two sort toggles: the only region that changed was this one,
+      // and it changed to the same text it already held.
+      set('sortBy', 'name');
+      set('sortDir', 'Ascending');
+
+      const ascending = announcementText();
+
+      set('sortDir', 'Descending');
+
+      const descending = announcementText();
+
+      expect(descending).not.toBe(ascending);
+      expect(descending).toBe('2 records. Sorted by Name, descending.');
+    });
+
+    it('changes the announcement when only the ordered column changes', () => {
+      set('sortBy', 'name');
+
+      const byName = announcementText();
+
+      set('sortBy', 'count');
+
+      expect(announcementText()).not.toBe(byName);
+      expect(announcementText()).toBe('2 records. Sorted by Count, ascending.');
+    });
+
+    it('says nothing about order when the rows are in no stated order', () => {
+      expect(announcementText()).toBe('2 records.');
+    });
+
+    it('says nothing about order when the ordered column is not one this table offers', () => {
+      // A consumer may hold a sort name this column set does not publish - a saved query, or a name the
+      // wire accepts and the screen does not show. Naming it would describe something a person cannot see.
+      set('sortBy', 'somethingElse');
+
+      expect(announcementText()).toBe('2 records.');
+
+      // And a column that exists but is not sortable is the same case.
+      set('sortBy', 'active');
+
+      expect(announcementText()).toBe('2 records.');
+    });
+  });
+
+  describe('the scrolling region', () => {
+    /** The scrolling container, narrowed by a runtime check rather than by an assertion. */
+    function container(): HTMLElement {
+      const found: Element = requireElement(host(), '.data-table__container');
+
+      if (found instanceof HTMLElement) {
+        return found;
+      }
+
+      throw new Error('Expected the data-table container to be an HTML element.');
+    }
+
+    /**
+     * Forces the container's measured widths and lets the component's own measurement frame run.
+     *
+     * ⚠ THE WIDTHS ARE STUBBED RATHER THAN PRODUCED BY LAYOUT, and deliberately so: whether a real table
+     * clips depends on the harness's viewport, which a specification must not depend on. What is under test
+     * is the DECISION the component makes from a measurement, so the measurement is supplied and the
+     * decision is observed.
+     */
+    async function settleWithHiddenWidth(hidden: number): Promise<void> {
+      const element = container();
+
+      Object.defineProperty(element, 'clientWidth', { configurable: true, value: 300 });
+      Object.defineProperty(element, 'scrollWidth', { configurable: true, value: 300 + hidden });
+
+      // Any `rows` write schedules the component's measurement frame, which is the same frame the row
+      // window is measured on.
+      set('rows', [...ROWS]);
+
+      await new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => resolve());
+      });
+
+      fixture.detectChanges();
+    }
+
+    it('is not focusable and not a region while nothing is clipped', async () => {
+      // ⚠ THE REGRESSION THIS GUARDS. Measured at 1280 the container's scroll width and client width were
+      // both 1046 - nothing hidden - so a permanent focus stop would add an unusable stop to every listing
+      // at every width in order to serve the narrow ones.
+      await settleWithHiddenWidth(0);
+
+      expect(container().getAttribute('tabindex')).toBeNull();
+      expect(container().getAttribute('role')).toBeNull();
+      expect(container().getAttribute('aria-labelledby')).toBeNull();
+    });
+
+    it('is not focusable for a sub-pixel difference either', async () => {
+      // A fixed table layout resolving fractional track widths leaves sub-pixel differences on widths where
+      // nothing is actually clipped.
+      await settleWithHiddenWidth(1);
+
+      expect(container().getAttribute('tabindex')).toBeNull();
+    });
+
+    it('becomes a focusable named region once content is clipped', async () => {
+      // Measured at 375 on the account listing: 648 against 326, hiding 322 pixels and four whole columns,
+      // with no `tabindex`, no `role` and no accessible name - so a keyboard user could not scroll it at
+      // all, although arrow keys worked once focus was forced into it.
+      await settleWithHiddenWidth(322);
+
+      expect(container().getAttribute('tabindex')).withContext('reachable by Tab').toBe('0');
+      expect(container().getAttribute('role')).toBe('region');
+
+      const named = container().getAttribute('aria-labelledby');
+      const caption: Element = requireElement(host(), 'caption.data-table__caption');
+
+      expect(named).withContext('named by its own caption').toBe(caption.id);
+      expect(caption.id.length).withContext('and that caption really carries an id').toBeGreaterThan(0);
+    });
+
+    it('actually accepts focus once it is a region', async () => {
+      await settleWithHiddenWidth(322);
+
+      container().focus();
+
+      expect(document.activeElement).toBe(container());
+    });
+  });
+
   describe('the component takes no data dependency of any kind', () => {
     it('performs no HTTP requests while rendering, sorting or selecting', () => {
       // Exercise every interactive path the component has, so the claim covers the whole
@@ -707,6 +912,79 @@ describe('DataTableComponent', () => {
       expect(headers()[0].getAttribute('aria-sort')).toBe('ascending');
     });
 
+    // ⚠ #32 — THE INDICATOR REPORTS THE ROWS ON SCREEN, NOT THE REQUEST. A screen moves its own query state the
+    // instant a heading is pressed, before the read it triggers has returned anything, so the arrow and
+    // `aria-sort` used to move immediately and STAY there when the read failed - the table asserting an order
+    // its contents did not have, in the one situation where a reader most needs to trust it.
+    it('holds its reported order until the rows that answer a new sort arrive', () => {
+      set('rows', ROWS);
+      set('sortBy', 'name');
+      set('sortDir', 'Ascending');
+
+      expect(headers()[0].getAttribute('aria-sort'))
+        .withContext('the settled state: rows in place, name ascending')
+        .toBe('ascending');
+
+      // The press. A screen marks itself busy and moves its query state in the SAME change pass.
+      fixture.componentRef.setInput('loading', true);
+      fixture.componentRef.setInput('sortBy', 'count');
+      fixture.detectChanges();
+
+      expect(headers()[0].getAttribute('aria-sort'))
+        .withContext('the old column keeps the claim while the answer is outstanding')
+        .toBe('ascending');
+      expect(headers()[1].getAttribute('aria-sort'))
+        .withContext('and the requested column does not claim an order it has not delivered')
+        .toBe('none');
+
+      // The read FAILS: the screen stops waiting and re-binds nothing, because nothing arrived.
+      fixture.componentRef.setInput('loading', false);
+      fixture.detectChanges();
+
+      expect(headers()[0].getAttribute('aria-sort'))
+        .withContext('a failed read leaves the indicator exactly where the rows are')
+        .toBe('ascending');
+      expect(headers()[1].getAttribute('aria-sort')).toBe('none');
+
+      // The retry SUCCEEDS: rows arrive, and arriving rows are what commits a sort.
+      set('rows', [...ROWS].reverse());
+
+      expect(headers()[1].getAttribute('aria-sort'))
+        .withContext('the new order is reported once it is the order on screen')
+        .toBe('ascending');
+      expect(headers()[0].getAttribute('aria-sort')).toBe('none');
+    });
+
+    // ⚠ #26 — SORTING WAS THE ONE INTERACTION THAT ANNOUNCED NOTHING. Paging and filtering change the numbers
+    // in the row-count status, so its live region re-reads them; sorting changes only the ORDER, so the text it
+    // produced was identical to the text already there and a live region whose contents do not change is
+    // silent. The ordering is named in the same status, so the count and the order are announced together.
+    it('names the ordering in its live status, so a sort is announced at all', () => {
+      set('rows', ROWS);
+
+      const status = (): string =>
+        (
+          fixture.debugElement.query(By.css('.data-table__result-status'))?.nativeElement as HTMLElement
+        ).textContent?.trim() ?? '';
+
+      expect(status())
+        .withContext('an unsorted listing reports its count and claims no order')
+        .toBe('2 records.');
+
+      set('sortBy', 'name');
+      set('sortDir', 'Descending');
+
+      expect(status())
+        .withContext('the column is named by its own visible heading, and the direction in words')
+        .toBe('2 records. Sorted by Name, descending.');
+
+      set('sortDir', 'Ascending');
+
+      expect(status())
+        .withContext('flipping the direction changes the text, which is what makes it re-announce')
+        .toBe('2 records. Sorted by Name, ascending.');
+    });
+
     it('never reorders the array it was given', () => {
       const original = [...ROWS];
       set('sortBy', 'name');
@@ -1095,6 +1373,113 @@ describe('DataTableComponent', () => {
     });
   });
 
+  // A FAILED READ IS NOT AN EMPTY PAGE
+  // Zero rows has two causes that are indistinguishable from inside this component - nothing matched, or
+  // nothing is known - and it used to present both as "Nothing to Display / No records found." Measured
+  // consequences of that conflation, all on real screens: a swallowed HTTP 500 rendered pixel-identically
+  // to a legitimately empty permission list; a Forbidden banner sat above "No records found." on a portal's
+  // host names, asserting the portal has none when none had been retrieved; a 403 on an account's own
+  // profile read as "This site declares no profile properties"; and the polite region announced "No records
+  // found." while thirty roles existed.
+  describe('a failed read, told apart from an empty page', () => {
+    /** The polite live region's current sentence. */
+    function announcement(): string {
+      return (host().querySelector('.data-table__result-status')?.textContent ?? '').trim();
+    }
+
+    // ⚠ THE SINGLE-ANNOUNCEMENT CONTRACT. This region used to report only the CURRENT PAGE while the pager
+    // announced the dataset total from a live region of its own, so one action produced two polite
+    // announcements with a blank between them. The pager's region is now visible-only, which makes this the
+    // one announcer - so it has to carry both facts.
+    it('states the dataset total alongside the page count when a total is supplied', () => {
+      set('rows', ROWS);
+      set('totalCount', 34);
+
+      expect(announcement()).toBe(`Showing ${ROWS.length} of 34 records.`);
+    });
+
+    it('states the plain count when the whole match set is on the page', () => {
+      set('rows', ROWS);
+      set('totalCount', ROWS.length);
+
+      expect(announcement()).toBe(`${ROWS.length} records.`);
+    });
+
+    it('states the plain count for a listing that does not page at all', () => {
+      set('rows', ROWS);
+
+      // No total supplied: the table must speak only of the rows it was handed rather than inventing one.
+      expect(announcement()).toBe(`${ROWS.length} records.`);
+    });
+
+    it('treats a sentinel total as absent rather than rendering it', () => {
+      set('rows', ROWS);
+      set('totalCount', -1);
+
+      expect(announcement())
+        .withContext('the legacy absent-integer marker must never reach a sentence')
+        .toBe(`${ROWS.length} records.`);
+    });
+
+    it('withholds the empty state, because nobody may claim there is nothing', () => {
+      set('rows', []);
+      set('failed', true);
+
+      expect(fixture.debugElement.query(By.css('app-empty-state')))
+        .withContext('the panel that asserts "Nothing to Display" is not rendered')
+        .toBeNull();
+      expect(textOf(host().querySelector('.data-table__unread'))).toContain(
+        'could not be read',
+      );
+    });
+
+    it('announces that the records could not be read, and never that none were found', () => {
+      set('rows', []);
+      set('failed', true);
+
+      expect(announcement()).toBe('The records could not be read.');
+      expect(announcement()).not.toContain('No records found.');
+    });
+
+    it('keeps readable rows on screen and says they may be out of date', () => {
+      // A failure that arrives while rows are shown must not withdraw information the reader already had,
+      // exactly as a read in flight does not.
+      set('failed', true);
+
+      expect(bodyRows().length).withContext('the rows survive').toBe(ROWS.length);
+      expect(host().querySelector('.data-table__unread'))
+        .withContext('and no placeholder replaces them')
+        .toBeNull();
+      expect(announcement()).toContain('out of date');
+    });
+
+    it('prefers waiting over failed, so a re-read is not reported as a failure', () => {
+      set('rows', []);
+      set('failed', true);
+      set('loading', true);
+
+      expect(fixture.debugElement.query(By.css('app-loading-spinner'))).not.toBeNull();
+      expect(host().querySelector('.data-table__unread')).toBeNull();
+      expect(announcement()).withContext('and nothing is announced mid-read').toBe('');
+    });
+
+    it('returns to the empty state once the failure is cleared', () => {
+      set('rows', []);
+      set('failed', true);
+      set('failed', false);
+
+      expect(fixture.debugElement.query(By.css('app-empty-state'))).not.toBeNull();
+      expect(announcement()).toBe('No records found.');
+    });
+
+    it('treats an absent binding as not failed, so no consumer has to pass one', () => {
+      set('rows', []);
+      set('failed', null);
+
+      expect(fixture.debugElement.query(By.css('app-empty-state'))).not.toBeNull();
+    });
+  });
+
   describe('selection', () => {
     it('emits the row that was activated', () => {
       bodyRows()[1].click();
@@ -1459,7 +1844,336 @@ describe('DataTableComponent', () => {
       expect(definition.onPush).toBeTrue();
     });
   });
+
+  // ===================================================================================================
+  // THE SCROLLING REGION — QA-10
+  // ===================================================================================================
+
+  describe('the scrolling region declares itself', () => {
+    /** The container that scrolls, addressed through the contract attribute rather than the class. */
+    function scrollHost(): HTMLElement {
+      return requireElement(host(), '[data-table-scroll]') as HTMLElement;
+    }
+
+    /**
+     * Forces the container to report an overflow and lets the component re-measure.
+     *
+     * The measurement is a real geometric one, so a spec cannot simply set a flag: the element's own
+     * `scrollWidth` and `clientWidth` are read. Both are overridden here rather than sized with CSS,
+     * because a headless layout at an arbitrary width is not a stable thing to assert against.
+     *
+     * @param overflowing Whether the container should report content wider than its box.
+     */
+    function reportOverflow(overflowing: boolean): void {
+      const container = scrollHost();
+
+      Object.defineProperty(container, 'clientWidth', { value: 400, configurable: true });
+      Object.defineProperty(container, 'scrollWidth', {
+        value: overflowing ? 900 : 400,
+        configurable: true,
+      });
+
+      // The same entry point the resize observer uses, so the spec exercises the production path.
+      (fixture.componentInstance as unknown as { measureScrollable(): void }).measureScrollable();
+      fixture.detectChanges();
+    }
+
+    it('emits the contract attribute the shared table stylesheet publishes', () => {
+      // ⚠ THE ATTRIBUTE IS UNCONDITIONAL AND THE ROLE IS NOT, WHICH IS THE WHOLE DESIGN. `_tables.scss`
+      // declares a `[data-table-scroll]` block carrying the focus ring, and NO template in the application
+      // emitted the attribute, so every line of it was dead CSS. It is emitted always so the styling always
+      // applies; the landmark, the name and the tab stop are emitted only when there is something to scroll.
+      expect(scrollHost().hasAttribute('data-table-scroll')).toBeTrue();
+    });
+
+    it('contributes no landmark and no tab stop while the table fits', () => {
+      reportOverflow(false);
+
+      const container = scrollHost();
+
+      expect(container.hasAttribute('role')).withContext('no region to announce').toBeFalse();
+      expect(container.hasAttribute('tabindex'))
+        .withContext('and no tab stop, because there is nothing to scroll')
+        .toBeFalse();
+      expect(container.hasAttribute('aria-labelledby')).toBeFalse();
+    });
+
+    it('becomes a named, keyboard-reachable region once it overflows', () => {
+      reportOverflow(true);
+
+      const container = scrollHost();
+
+      expect(container.getAttribute('role')).toBe('region');
+      expect(container.getAttribute('tabindex'))
+        .withContext('reachable by keyboard, not by pointer alone')
+        .toBe('0');
+
+      // The NAME is the table's own caption, resolved through the identifier rather than duplicated as a
+      // string — so the region is named "Portals" on the portal listing without the shared component
+      // knowing anything about portals.
+      const caption = requireElement(host(), 'caption.data-table__caption');
+      const labelledBy: string = container.getAttribute('aria-labelledby') ?? '';
+
+      expect(labelledBy.length).withContext('the region names itself').toBeGreaterThan(0);
+      expect(caption.id).toBe(labelledBy);
+    });
+
+    it('withdraws the region when the overflow goes away', () => {
+      reportOverflow(true);
+      reportOverflow(false);
+
+      expect(scrollHost().hasAttribute('role')).toBeFalse();
+      expect(scrollHost().hasAttribute('tabindex')).toBeFalse();
+    });
+
+    it('mints a caption identifier unique to each instance', () => {
+      // Two tables on one screen — the role listing renders one and its group editor another — must not
+      // point their regions at the same caption, which is what a constant identifier would do.
+      const second = TestBed.createComponent<DataTableComponent<Row>>(DataTableComponent);
+      second.componentRef.setInput('columns', baseColumns());
+      second.componentRef.setInput('rows', ROWS);
+      second.detectChanges();
+
+      const first = requireElement(host(), 'caption.data-table__caption').id;
+      const other = requireElement(
+        second.nativeElement as Element,
+        'caption.data-table__caption',
+      ).id;
+
+      expect(first).not.toBe(other);
+      second.destroy();
+    });
+  });
+
+  // ===================================================================================================
+  // ATOMIC VALUES — QA-16
+  // ===================================================================================================
+
+  describe('an atomic column keeps its values whole', () => {
+    /** The column set with the numeric column declared atomic. */
+    function withAtomicCount(): void {
+      set('columns', [
+        { key: 'name', label: 'Name', field: 'name', sortable: true },
+        { key: 'count', label: 'Count', field: 'count', sortable: true, atomic: true },
+        { key: 'active', label: 'Active', field: 'active' },
+        { key: 'note', label: 'Note', field: 'note' },
+      ] satisfies readonly DataTableColumn<Row>[]);
+    }
+
+    it('publishes the state on the body cell, so the stylesheet can hold the value on one line', () => {
+      // ⚠ WHY AN ATTRIBUTE RATHER THAN A CLASS. The rule it drives is in the SHARED table stylesheet, which
+      // has no access to a component's encapsulated class names; an attribute contract crosses that boundary
+      // and is the same mechanism `data-table-scroll` uses.
+      withAtomicCount();
+
+      const cells = Array.from(bodyRows()[0].querySelectorAll('td,th'));
+
+      expect(cells[1]?.getAttribute('data-atomic')).toBe('true');
+      expect(cells[0]?.hasAttribute('data-atomic'))
+        .withContext('a column that did not ask for it carries nothing')
+        .toBeFalse();
+    });
+
+    it('publishes it on the heading too, so a heading cannot break where its values cannot', () => {
+      withAtomicCount();
+
+      expect(headers()[1].getAttribute('data-atomic')).toBe('true');
+      expect(headers()[0].hasAttribute('data-atomic')).toBeFalse();
+    });
+
+    it('emits nothing at all for an ordinary column, on every row', () => {
+      // The default must be absence rather than `data-atomic="false"`: a false attribute on every cell of
+      // every row of every table is pure weight, and the rule tests for presence.
+      expect(host().querySelectorAll('[data-atomic]')).toHaveSize(0);
+    });
+  });
+
+  // ===================================================================================================
+  // THE ZERO-RESULT SURFACE — QA-28
+  // ===================================================================================================
+
+  describe('the empty surface carries the screen own wording and its own way forward', () => {
+    it('passes a supplied message through to the shared empty state', () => {
+      set('rows', []);
+      set('emptyMessage', 'No accounts match the current filter.');
+
+      expect(textOf(host().querySelector('app-empty-state'))).toContain(
+        'No accounts match the current filter.',
+      );
+    });
+
+    it('falls back to the shared default when a screen supplies nothing', () => {
+      // Trimmed to empty is the same as absent, so a screen binding an unresolved signal does not blank the
+      // sentence entirely.
+      set('rows', []);
+      set('emptyMessage', '   ');
+
+      expect(fixture.componentInstance.emptyMessage).toBe('');
+      expect(textOf(host().querySelector('app-empty-state')).length).toBeGreaterThan(0);
+    });
+
+    it('marks every sort control unavailable over an empty table', () => {
+      // ⚠ SORTING NOTHING IS A REQUEST WITH NO ANSWER, AND IT USED TO BE OFFERED. Measured: the headings of an
+      // empty grid were fully operable, so pressing one issued a re-read for an ordering of the empty set the
+      // reader was already looking at — and announced a sort state for a table with no rows in it. The native
+      // property is deliberately NOT used, for the reason the loading case documents: it destroys focus.
+      set('rows', []);
+
+      for (const header of headers()) {
+        const control = header.querySelector('button');
+        if (control === null) {
+          continue;
+        }
+
+        expect(control.getAttribute('aria-disabled')).toBe('true');
+        expect(control.disabled).withContext('focus must survive').toBeFalse();
+      }
+    });
+
+    it('emits no sort and no request when a heading is pressed over an empty table', () => {
+      set('rows', []);
+
+      (headers()[0].querySelector('button') as HTMLButtonElement | null)?.click();
+      fixture.detectChanges();
+
+      expect(sorts).withContext('nothing to order, so nothing is asked for').toEqual([]);
+    });
+
+    it('restores the sort controls the moment rows arrive', () => {
+      set('rows', []);
+      set('rows', ROWS);
+
+      expect(headers()[0].querySelector('button')?.hasAttribute('aria-disabled')).toBeFalse();
+    });
+  });
+
+  // ⚠ MAJOR (Issue 22) — an empty listing was unreadable on a phone.
+  describe('the message row on a viewport narrower than the table', () => {
+    function container(): HTMLElement {
+      const found: Element = requireElement(host(), '.data-table__container');
+
+      if (found instanceof HTMLElement) {
+        return found;
+      }
+
+      throw new Error('the scroll container is not an HTMLElement');
+    }
+
+    function messageViewport(): HTMLElement | null {
+      const found = host().querySelector('.data-table__message-viewport');
+
+      return found instanceof HTMLElement ? found : null;
+    }
+
+    /**
+     * Renders with a stated amount of the table hidden, then settles the component's measurement frame.
+     *
+     * The two width properties are stubbed because a fixture cannot be given a 320-pixel viewport: what is
+     * under test is the DECISION the component makes from a measurement, so the measurement is supplied and the
+     * decision is observed.
+     *
+     * @param hidden How many pixels of the table are outside the scrollport.
+     */
+    async function settleWithHiddenWidth(hidden: number): Promise<void> {
+      const element = container();
+
+      Object.defineProperty(element, 'clientWidth', { configurable: true, value: 300 });
+      Object.defineProperty(element, 'scrollWidth', { configurable: true, value: 300 + hidden });
+
+      set('rows', []);
+
+      await new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => resolve());
+      });
+
+      fixture.detectChanges();
+    }
+
+    /** The container's own inline padding, which the wrapper's width has to exclude. */
+    function inlinePadding(): number {
+      const resolved: CSSStyleDeclaration = getComputedStyle(container());
+
+      return Number.parseFloat(resolved.paddingLeft) + Number.parseFloat(resolved.paddingRight);
+    }
+
+    it('pins the message to the scrollport when the table is wider than it', async () => {
+      await settleWithHiddenWidth(340);
+
+      const viewport = messageViewport();
+
+      if (viewport === null) {
+        throw new Error('the message wrapper did not render');
+      }
+
+      const resolved: CSSStyleDeclaration = getComputedStyle(viewport);
+
+      // ⚠ STICKY IS THE WHOLE MECHANISM. Measured at 320 and 375 before the fix, the stand-in panel was laid
+      // out 608 pixels wide inside a scrollport of 271 and 326 - because the table is deliberately floored at
+      // `--table-min-inline-size` so that columns SCROLL rather than crush - and because the panel centres its
+      // own contents the heading began beyond the right edge and rendered as "Nothin" and "No". Pinning the
+      // wrapper to the scrollport keeps the sentence on screen at any scroll position without touching that
+      // floor, so nothing about how rows of data lay out changes.
+      expect(resolved.position).toBe('sticky');
+      expect(Number.parseFloat(resolved.insetInlineStart)).toBe(0);
+    });
+
+    it('gives the message exactly the visible width, excluding the container padding', async () => {
+      await settleWithHiddenWidth(340);
+
+      const viewport = messageViewport();
+
+      if (viewport === null) {
+        throw new Error('the message wrapper did not render');
+      }
+
+      // Self-validating rather than hardcoded: the expectation is derived from the container's own padding, so
+      // the specification cannot drift from the token if the padding is ever retuned.
+      const padding: number = inlinePadding();
+
+      expect(padding).withContext('the container carries inline padding').toBeGreaterThan(0);
+
+      // ⚠ THE SUBTRACTION IS THE DISCRIMINATING PART, and a browser measurement is what put it here.
+      // `clientWidth` INCLUDES the container's padding while the wrapper begins after it, so handing over the
+      // raw value overhung the visible padding box by exactly 4 pixels at each edge. Asserting only "a width is
+      // applied" would pass under that.
+      expect(viewport.style.inlineSize).toBe(`${300 - padding}px`);
+    });
+
+    it('imposes no width at all when the table already fits', async () => {
+      // The narrowing, and the reason the width is conditional. At 1280 the scrollport and the table are the
+      // same width; imposing one there would pin a box to a scrollport that never scrolls and would freeze the
+      // panel at a width the cell could otherwise fill. Measured on the live page at 1280 the wrapper's `style`
+      // attribute is null, and that is what this asserts.
+      await settleWithHiddenWidth(0);
+
+      const viewport = messageViewport();
+
+      if (viewport === null) {
+        throw new Error('the message wrapper did not render');
+      }
+
+      expect(viewport.style.inlineSize).toBe('');
+    });
+
+    it('wraps all three message states, not just the empty one', async () => {
+      // One wrapper serves the loading spinner, the failed-read sentence and the empty state. A fix applied to
+      // only the empty state would leave the other two unreadable in exactly the same way.
+      await settleWithHiddenWidth(340);
+      expect(messageViewport()).withContext('the empty state is wrapped').not.toBeNull();
+      expect(host().querySelector('.data-table__message-viewport app-empty-state')).not.toBeNull();
+
+      set('loading', true);
+      await new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => resolve());
+      });
+      fixture.detectChanges();
+      expect(messageViewport()).withContext('the loading state is wrapped').not.toBeNull();
+      expect(host().querySelector('.data-table__message-viewport app-loading-spinner')).not.toBeNull();
+      set('loading', false);
+    });
+  });
 });
+
 
 // THE NON-SELECTING GRID — SIX OF THE SEVEN CONSUMERS
 // * A TAB STOP PER ROW that did nothing when activated. On a page of twenty accounts, reaching the first
@@ -2126,6 +2840,168 @@ describe('DataTableComponent projection', () => {
 
       expect(host.selectedRows).toEqual([ROWS[0]]);
       expect(event.defaultPrevented).toBeTrue();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // PASSING OVER A RUN OF ROW COMMANDS
+  // ---------------------------------------------------------------------------
+
+  describe('passing over a run of row commands', () => {
+    /** Lets the component's measurement frame run, then repaints from what it settled. */
+    async function settle(): Promise<void> {
+      fixture.detectChanges();
+
+      await new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => resolve());
+      });
+
+      fixture.detectChanges();
+    }
+
+    /** Gives the host a command column and as many rows as asked for. */
+    function withCommandRows(count: number): void {
+      const host = fixture.componentInstance;
+
+      host.columns = [
+        {
+          key: 'commands',
+          label: 'Commands',
+          kind: 'actions',
+          headerHidden: true,
+          cellTemplate: requireTemplate(host.commandsTemplate),
+        },
+      ];
+      host.rows = Array.from({ length: count }, (_unused, index) => ({
+        id: index,
+        name: `Row ${index}`,
+        count: index,
+        active: true,
+        note: null,
+      }));
+    }
+
+    function skipAffordance(): Element | null {
+      return (fixture.nativeElement as HTMLElement).querySelector('.data-table__skip');
+    }
+
+    function landingPoint(): HTMLElement | null {
+      const found = (fixture.nativeElement as HTMLElement).querySelector('.data-table__skip-target');
+
+      return found instanceof HTMLElement ? found : null;
+    }
+
+    /**
+     * Every stop the Tab key would land on inside the body.
+     *
+     * ⚠ THE ROW ITSELF COUNTS, and getting that wrong is what made the first version of this helper
+     * disagree with the component. A grid whose consumer listens for row selection puts `tabindex="0"` on
+     * every row so a row can be activated from the keyboard - so a twenty-row read-only listing still costs
+     * twenty presses to walk, and a skip affordance is worth exactly as much there as it is over a run of
+     * commands. The selector therefore matches the component's own.
+     */
+    function stopsInBody(): number {
+      const body = (fixture.nativeElement as HTMLElement).querySelector('tbody.data-table__body');
+
+      return body === null
+        ? 0
+        : body.querySelectorAll(
+            'a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])',
+          ).length;
+    }
+
+    it('offers nothing while the run is short enough to walk', async () => {
+      // ⚠ THE COST THIS GUARDS. The affordance is itself a tab stop, so offering it over a two-row table
+      // would charge a keyboard user a press to save one - and on a listing whose rows carry no controls at
+      // all it would charge a press to save nothing.
+      withCommandRows(2);
+      await settle();
+
+      expect(stopsInBody()).withContext('a short run, by measurement').toBeLessThan(7);
+      expect(skipAffordance()).toBeNull();
+      expect(landingPoint()).toBeNull();
+    });
+
+    it('counts the rows themselves, not only the commands inside them', async () => {
+      // ⚠ THIS SPEC EXISTS BECAUSE ITS FIRST VERSION ASSERTED THE OPPOSITE AND WAS WRONG. It claimed a
+      // twenty-row body with a plain text column carried "no controls" and should offer nothing - and it
+      // failed, because a grid whose consumer listens for row selection puts `tabindex="0"` on every row so a
+      // row can be activated from the keyboard. Twenty such rows are twenty presses to walk whether or not any
+      // command sits inside them, so the affordance is worth exactly as much there. The component was right
+      // and the specification was wrong; this is the invariant that actually holds.
+      const host = fixture.componentInstance;
+
+      host.columns = [{ key: 'name', label: 'Name', field: 'name' }];
+      host.rows = Array.from({ length: 20 }, (_unused, index) => ({
+        id: index,
+        name: `Row ${index}`,
+        count: index,
+        active: true,
+        note: null,
+      }));
+      await settle();
+
+      const rows = (fixture.nativeElement as HTMLElement).querySelectorAll(
+        'tbody.data-table__body tr[tabindex="0"]',
+      ).length;
+
+      expect(rows).withContext('every row is its own stop').toBe(20);
+      expect((fixture.nativeElement as HTMLElement).querySelectorAll('tbody button').length)
+        .withContext('and not one command among them')
+        .toBe(0);
+      expect(skipAffordance()).withContext('twenty presses is still worth passing over').not.toBeNull();
+    });
+
+    it('offers a way past once the run is long enough to dominate the traversal', async () => {
+      // Measured on the account listing: THIRTY consecutive row-command stops out of eighty-two on the page,
+      // uninterrupted because a row's own username is plain text rather than a link, and the first stop after
+      // them was the pager. The page's only skip affordance bypasses the header and sidebar and none of that.
+      withCommandRows(8);
+      await settle();
+
+      expect(stopsInBody()).withContext('a long run, by measurement').toBeGreaterThan(6);
+
+      const affordance = skipAffordance();
+
+      expect(affordance).not.toBeNull();
+      expect((affordance?.textContent ?? '').trim()).toBe('Skip past the record commands');
+    });
+
+    it('moves focus to a landing point that follows the whole table', async () => {
+      withCommandRows(8);
+      await settle();
+
+      const affordance = skipAffordance();
+
+      if (!(affordance instanceof HTMLElement)) {
+        throw new Error('Expected the skip affordance to be rendered.');
+      }
+
+      affordance.click();
+      fixture.detectChanges();
+
+      const target = landingPoint();
+      const table = (fixture.nativeElement as HTMLElement).querySelector('table.data-table');
+
+      expect(target).not.toBeNull();
+      expect(document.activeElement).withContext('focus arrived at the landing point').toBe(target);
+
+      // The point of the affordance is that the landing point is BEYOND the rows, not merely elsewhere.
+      expect(table?.compareDocumentPosition(target as Node) ?? 0)
+        .withContext('the landing point follows the table in the document')
+        .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    });
+
+    it('keeps the landing point out of the tab order and gives it something to say', async () => {
+      // A landing point in the tab order would add the stop back that the affordance removes, and an empty
+      // one would drop a reader somewhere silent.
+      withCommandRows(8);
+      await settle();
+
+      const target = landingPoint();
+
+      expect(target?.getAttribute('tabindex')).toBe('-1');
+      expect((target?.textContent ?? '').trim()).toBe('End of table');
     });
   });
 });

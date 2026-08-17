@@ -1,4 +1,5 @@
 using DnnMigration.Domain.Abstractions.Repositories;
+using DnnMigration.Domain.Common;
 using DnnMigration.Domain.Entities;
 using DnnMigration.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
@@ -68,7 +69,7 @@ internal sealed class PortalAliasRepository : IPortalAliasRepository
     }
 
     /// <inheritdoc />
-    public async Task<IReadOnlyList<PortalAlias>> GetAllByHttpAliasAsync(
+    public async Task<IReadOnlyList<TenantResolution>> ResolveTenantsByHttpAliasAsync(
         IReadOnlyList<string> httpAliasCandidates,
         CancellationToken cancellationToken = default)
     {
@@ -86,16 +87,45 @@ internal sealed class PortalAliasRepository : IPortalAliasRepository
         {
             // Nothing can match, so the store is not read at all - which the contract requires rather
             // than merely permits.
-            return Array.Empty<PortalAlias>();
+            return Array.Empty<TenantResolution>();
         }
 
+        IQueryable<PortalAlias> matching = _dbContext.PortalAliases.AsNoTracking();
+
+        // ONE CANDIDATE IS NOT A SET, AND ASKING IT AS ONE COSTS THE INDEX. The provider renders a
+        // parameterised collection membership test as a table-valued function over a JSON parameter, whose
+        // cardinality it cannot estimate; the resulting plan is free to scan every alias in the
+        // installation, so the cost of resolving one host name grows with the total number of configured
+        // host names. A plain equality is parameterised, is estimable, and seeks UNIQUE IX_PortalAlias
+        // (HTTPAlias) - and it is the only shape the tenant resolver ever needs, because the address chain
+        // it builds carries at most one candidate by construction.
+        matching = wanted.Count == 1
+            ? matching.Where(alias => alias.HttpAlias == wanted[0])
+            : matching.Where(alias => alias.HttpAlias != null && wanted.Contains(alias.HttpAlias));
+
         // EVERY match is returned, and that is the point.
-        return await _dbContext.PortalAliases
-            .AsNoTracking()
-            .Where(alias => wanted.Any(candidate => candidate == alias.HttpAlias))
-            .Include(alias => alias.Portal)
-                .ThenInclude(portal => portal.Roles)
+        //
+        // The two role NAMES are correlated reads on Roles' primary key rather than a traversal of the
+        // portal's role collection. That is the whole difference between one result row and one result row
+        // per role of the tenant; see the contract's remarks and TenantResolution's own.
+        return await matching
             .OrderBy(alias => alias.PortalAliasId)
+            .Select(alias => new TenantResolution(
+                alias.PortalAliasId,
+                alias.HttpAlias,
+                alias.PortalId,
+                alias.Portal.PortalName,
+                alias.Portal.AdministratorId,
+                alias.Portal.AdministratorRoleId,
+                _dbContext.Roles
+                    .Where(role => role.RoleId == alias.Portal.AdministratorRoleId)
+                    .Select(role => role.RoleName)
+                    .FirstOrDefault(),
+                alias.Portal.RegisteredRoleId,
+                _dbContext.Roles
+                    .Where(role => role.RoleId == alias.Portal.RegisteredRoleId)
+                    .Select(role => role.RoleName)
+                    .FirstOrDefault()))
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
     }

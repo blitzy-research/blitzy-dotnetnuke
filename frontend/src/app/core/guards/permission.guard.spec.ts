@@ -19,7 +19,7 @@ import { AuthStore } from '../state/auth.store';
 import { permissionGuard } from './permission.guard';
 
 /** The refusal wording, spelled again rather than imported. */
-const ACCESS_REFUSED_MESSAGE = 'You do not have access to this content.';
+const ACCESS_REFUSED_MESSAGE = 'You do not have permission to view this content.';
 
 /** The sign-in route the gate redirects an unauthenticated caller to. */
 const SIGN_IN_PATH = '/login';
@@ -195,6 +195,12 @@ interface AuthStoreDouble {
    * the API's derived `isPortalAdministrator`, and consults no role name on the way.
    */
   readonly administersCurrentPortal: WritableSignal<boolean>;
+  /**
+   * The portal the caller's own session names. ⚠ NULLABLE AND DEFAULTED TO `null`, matching the real
+   * store, which projects it from the fetched identity and therefore has nothing to report until that
+   * identity arrives.
+   */
+  readonly portalId: WritableSignal<number | null>;
 }
 
 /**
@@ -211,6 +217,7 @@ function authStoreDouble(): AuthStoreDouble {
     currentUser: signal<Identity | null>(null),
     isSuperUser: signal(false),
     administersCurrentPortal: signal(false),
+    portalId: signal<number | null>(null),
   };
 }
 
@@ -347,6 +354,7 @@ describe('permissionGuard', () => {
             currentUser: store.currentUser,
             isSuperUser: store.isSuperUser,
             administersCurrentPortal: store.administersCurrentPortal,
+            portalId: store.portalId,
             ...storeOffLimits,
           },
         },
@@ -388,6 +396,10 @@ describe('permissionGuard', () => {
     // an IDENTITY and the projection follows from it, exactly as it does in the application. Note what is
     // absent: the role list contributes nothing.
     store.administersCurrentPortal.set(resolved.isSuperUser || resolved.isPortalAdministrator);
+
+    // Projected from the identity for the same reason: the real store reads it off the fetched account, so
+    // a fixture cannot describe a session signed in to one portal while claiming another.
+    store.portalId.set(resolved.portalId);
   }
 
   /** Puts the store into the state of a resolved host account. */
@@ -504,7 +516,9 @@ describe('permissionGuard', () => {
     const args: readonly unknown[] = notify.calls.mostRecent().args;
 
     expect(args[0]).withContext('a refusal is a warning, never a fault').toBe('warning');
-    expect(args[1]).withContext('the measured legacy sentence, unaltered').toBe(ACCESS_REFUSED_MESSAGE);
+    expect(args[1])
+      .withContext('the shared app-authored denial stem, so a refusal reads as one wherever it is met')
+      .toBe(ACCESS_REFUSED_MESSAGE);
     expect(args[2])
       .withContext('no support reference: nothing failed, so there is nothing to look up')
       .toBeNull();
@@ -1553,6 +1567,89 @@ describe('permissionGuard', () => {
         makeRoute({ permission: 'TabEdit' }, { tabId: '9' }),
         'the record-level question belongs to the API',
       );
+    });
+  });
+
+  describe('the portal a tenant-administration address NAMES', () => {
+    // ⚠ THESE PIN A DEFECT MEASURED AGAINST THE RUNNING API, NOT A HYPOTHETICAL. The policy previously
+    // resolved NO scope, so the gate asked only "does this caller administer some portal" and admitted a
+    // tenant administrator to another tenant's screens. Measured live as `setup_admin`, an administrator of
+    // portal -1 and not a host: `/portals/-1` and `/portals/-1/aliases` answer 200, while `/portals/2`,
+    // `/portals/2/aliases` and `/portals/0` all answer 403 auth.not_permitted.
+    // `PortalAdministrationEvaluator` is explicit about it - it reads the same route key and then requires
+    // `ReadTokenPortalId(user) == portalId` - so the screens rendered host-only content over five refused
+    // reads, claimed fields "were not saved" on a load that never submitted anything, and asserted the
+    // portal had no aliases that were never retrieved.
+
+    /**
+     * A tenant-administration address naming one portal.
+     *
+     * @param portalId The portal the address names.
+     * @returns The snapshot to decide.
+     */
+    function addressNaming(portalId: string): ActivatedRouteSnapshot {
+      return makeRoute({ permission: 'PortalAdministrator' }, { portalId });
+    }
+
+    it('refuses a tenant administrator the settings of a portal that is not theirs', () => {
+      signInAs({ isPortalAdministrator: true, portalId: 0 });
+
+      expectRefused(addressNaming('2'), 'the API answers 403 auth.not_permitted for another tenant');
+    });
+
+    it('refuses the aliases of a portal that is not theirs on the same ground', () => {
+      signInAs({ isPortalAdministrator: true, portalId: 0 });
+
+      expectRefused(addressNaming('2'), 'the aliases of another tenant are refused too');
+    });
+
+    it('admits a tenant administrator to their OWN portal', () => {
+      signInAs({ isPortalAdministrator: true, portalId: 0 });
+
+      expectAdmitted(addressNaming('0'), 'their own tenant answers 200');
+    });
+
+    it('admits a host account to ANY portal, as the server does', () => {
+      signInAsHostAccount();
+
+      expectAdmitted(addressNaming('2'), 'a host account is not bound to one tenant');
+    });
+
+    it('treats -1 as a REAL portal rather than an absent one', () => {
+      // `Portals.PortalID` is seeded `IDENTITY(-1,1)`, so the first portal is -1 and the second 0. The
+      // legacy sentinel vocabulary read -1 as "nothing", and a gate inheriting that reading would either
+      // admit everyone to portal -1 or refuse its own administrator.
+      signInAs({ isPortalAdministrator: true, portalId: -1 });
+
+      expectAdmitted(addressNaming('-1'), 'the administrator of portal -1 administers portal -1');
+      expectRefused(addressNaming('0'), 'and still not portal 0');
+    });
+
+    it('leaves a tenant-administration address that names NO portal exactly as it was', () => {
+      // ⚠ THE REGRESSION GUARD FOR THIS VERY FIX. Declaring the portal a MANDATORY scope was tried first
+      // and refused every account, module, role and settings screen outright, because those addresses
+      // carry this policy without naming a portal - they act on the caller's own tenant implicitly. The
+      // existing suite caught it at once. The binding is therefore applied only when an address names one.
+      signInAs({ isPortalAdministrator: true, portalId: 0 });
+
+      expectAdmitted(
+        makeRoute({ permission: 'PortalAdministrator' }),
+        'an unscoped tenant-administration address must stay admitted',
+      );
+    });
+
+    it('claims nothing when the address names a portal that is not an integer', () => {
+      // A malformed address is not an unauthorised one. Answering it with a permission refusal would send
+      // the caller to ask for rights that would not help; the API answers that case properly.
+      signInAs({ isPortalAdministrator: true, portalId: 0 });
+
+      expectAdmitted(addressNaming('abc'), 'a malformed identifier is the server\'s to answer');
+    });
+
+    it('refuses an ordinary member either way, own portal or not', () => {
+      signInAs({ portalId: 0 });
+
+      expectRefused(addressNaming('0'), 'administering nothing is refused even on the caller\'s own portal');
     });
   });
 });

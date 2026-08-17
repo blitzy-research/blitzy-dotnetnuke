@@ -173,10 +173,32 @@
   font-size: var(--font-size-sm);
 }
 
-// ⚠ `nowrap` IS SAFE HERE ONLY BECAUSE BOTH QUALIFIERS ARE SINGLE WORDS, and that is why both are.
+// ⚠ `nowrap` IS SAFE HERE ONLY BECAUSE ALL THREE QUALIFIERS ARE SINGLE WORDS, and that is why all three are.
 .role-assignment__lifecycle {
   margin-inline-start: var(--space-1);
+  white-space: nowrap;
+}
+
+// R6: ONE TREATMENT PER STATE. A single shared class gave a membership that has not started yet the same
+// danger colour as one that has lapsed, so the two adverse-looking rows were indistinguishable and the colour
+// carried no information. Each state now reads differently AND states its own word, so nothing here depends
+// on colour being perceived.
+//
+// A LAPSED term is the adverse state, and keeps the treatment it had.
+.role-assignment__lifecycle--expired {
   color: var(--color-danger);
   font-weight: var(--font-weight-bold);
-  white-space: nowrap;
+}
+
+// A term that has not begun is SCHEDULED rather than wrong, so it takes the brand colour: prominent enough
+// to be noticed, and plainly not an error.
+.role-assignment__lifecycle--pending {
+  color: var(--color-primary);
+  font-weight: var(--font-weight-bold);
+}
+
+// A term IN FORCE is the ordinary case and reads quietly, so stating it on every such row informs without
+// competing with the two states that need attention.
+.role-assignment__lifecycle--current {
+  color: var(--color-text-muted);
 }

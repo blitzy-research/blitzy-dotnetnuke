@@ -136,6 +136,65 @@ public sealed class UpdatePortalSettingsRequestValidatorTests
         _validator.Validate(request).IsValid.Should().BeTrue();
     }
 
+    /// <summary>
+    /// Both ends of the legacy zone range are accepted, and one minute past either end is refused.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The bounds are measured, not chosen.</b> <c>Website/App_GlobalResources/TimeZones.xml</c> is the
+    /// file the legacy <c>cboTimeZone</c> selector was filled from, and its entries run from
+    /// <c>key="-720"</c> to <c>key="780"</c>.
+    /// </para>
+    /// <para>
+    /// <b>Why this rule had to exist at all.</b> The legacy control was a CLOSED selector, so legality lived
+    /// in the list and no validator was needed. Replacing it with a free-text box moved legality to the
+    /// validator, and none was written - so <c>99999</c> was accepted and stored, and a portal's whole
+    /// notion of local time is derived from this column.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData(-720, true)]
+    [InlineData(780, true)]
+    [InlineData(-480, true)]
+    [InlineData(0, true)]
+    [InlineData(-721, false)]
+    [InlineData(781, false)]
+    [InlineData(99999, false)]
+    [InlineData(-99999, false)]
+    public void TimeZoneOffset_HoldsTheRangeTheLegacyZoneListOffered(int minutes, bool accepted)
+    {
+        UpdatePortalSettingsRequest request = Valid();
+        request.TimeZoneOffset = minutes;
+
+        ValidationResult result = _validator.Validate(request);
+
+        result.IsValid.Should().Be(accepted);
+
+        if (!accepted)
+        {
+            result.Errors.Should().ContainSingle()
+                .Which.PropertyName.Should().Be(nameof(UpdatePortalSettingsRequest.TimeZoneOffset));
+
+            // BOTH bounds in one sentence, so satisfying the one that was crossed cannot reveal the other
+            // for the first time afterwards.
+            result.Errors[0].ErrorMessage.Should().Contain("-720");
+            result.Errors[0].ErrorMessage.Should().Contain("780");
+        }
+    }
+
+    /// <summary>
+    /// An omitted offset is not refused for a range it never stated. The member is nullable and a portal is
+    /// permitted to keep no explicit offset.
+    /// </summary>
+    [Fact]
+    public void TimeZoneOffset_WhenOmitted_IsNotRefused()
+    {
+        UpdatePortalSettingsRequest request = Valid();
+        request.TimeZoneOffset = null;
+
+        _validator.Validate(request).IsValid.Should().BeTrue();
+    }
+
     private static UpdatePortalSettingsRequest Valid() => new()
     {
         PortalName = "Portal",

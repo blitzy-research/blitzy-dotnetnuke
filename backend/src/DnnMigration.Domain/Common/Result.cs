@@ -21,12 +21,50 @@ public sealed record ResultReason
     /// white-space characters.
     /// </exception>
     public ResultReason(string code, string message)
+        : this(code, message, null)
+    {
+    }
+
+    /// <summary>
+    /// Initialises a new <see cref="ResultReason"/> that additionally attributes its explanation to the
+    /// individual fields that caused it.
+    /// </summary>
+    /// <param name="code">Stable, machine-readable discriminator identifying which expected outcome occurred.</param>
+    /// <param name="message">
+    /// Human-readable explanation of the outcome as a whole. When <paramref name="fieldErrors"/> names more
+    /// than one field this is the explanation of the FIRST of them, so that a caller reading only the
+    /// summary still receives an authored sentence rather than a count.
+    /// </param>
+    /// <param name="fieldErrors">
+    /// One entry per field the caller must correct, each carrying that field's own messages;
+    /// <see langword="null"/> when the failure is not attributable to particular fields.
+    /// </param>
+    /// <exception cref="ArgumentNullException">
+    /// Thrown when <paramref name="code"/> or <paramref name="message"/> is <see langword="null"/>.
+    /// </exception>
+    /// <exception cref="ArgumentException">
+    /// Thrown when <paramref name="code"/> or <paramref name="message"/> is empty or consists only of
+    /// white-space characters.
+    /// </exception>
+    /// <remarks>
+    /// <b>WHY A FAILURE NEEDS TO KNOW WHICH FIELDS IT IS ABOUT.</b> A failed outcome used to carry only a
+    /// code and one sentence, so the API boundary could only ever publish a flat problem document — and a
+    /// client had nowhere to attach the refusal. Measured on the profile screen: a rejected write produced a
+    /// banner and nothing else, so not one control was marked invalid and focus never moved to the field at
+    /// fault. Naming the fields here is what lets the boundary publish RFC 7807's <c>errors</c> member, which
+    /// is the contract the profile action has always ADVERTISED through its declared response type.
+    /// </remarks>
+    public ResultReason(
+        string code,
+        string message,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? fieldErrors)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(code);
         ArgumentException.ThrowIfNullOrWhiteSpace(message);
 
         Code = code;
         Message = message;
+        FieldErrors = fieldErrors;
     }
 
     /// <summary>Gets the stable, machine-readable discriminator for this outcome.</summary>
@@ -34,6 +72,17 @@ public sealed record ResultReason
 
     /// <summary>Gets the human-readable explanation of this outcome.</summary>
     public string Message { get; }
+
+    /// <summary>
+    /// Gets the per-field messages this outcome is attributable to, or <see langword="null"/> when it is not
+    /// attributable to particular fields.
+    /// </summary>
+    /// <value>
+    /// One entry per field the caller must correct. <see langword="null"/> — not an empty dictionary — is the
+    /// representation of "not about any particular field", so the API boundary can tell the two apart and
+    /// publish a flat problem document for the latter.
+    /// </value>
+    public IReadOnlyDictionary<string, IReadOnlyList<string>>? FieldErrors { get; }
 
     /// <summary>Returns this reason formatted as <c>Code: Message</c>.</summary>
     /// <returns>A diagnostic representation of this reason.</returns>

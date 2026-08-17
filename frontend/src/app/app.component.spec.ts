@@ -644,4 +644,97 @@ describe('AppComponent', () => {
       expect(navigate).not.toHaveBeenCalled();
     });
   });
+  // ---------------------------------------------------------------------------------------------------
+  // THE DOCUMENT'S OWN TYPOGRAPHY
+  //
+  // These read the GLOBAL stylesheet through the CSSOM rather than a rendered box, because that is where
+  // the rules live and because a computed size cannot distinguish "declared at this step" from "inherited
+  // and happens to match".
+  // ---------------------------------------------------------------------------------------------------
+
+  describe('the document typography the global stylesheet declares', () => {
+    /** The declared value of one property on the first rule whose selector text matches exactly. */
+    function declaredValueFor(selectorText: string, property: string): string | null {
+      for (const sheet of Array.from(document.styleSheets)) {
+        let rules: CSSRuleList;
+
+        try {
+          rules = sheet.cssRules;
+        } catch {
+          continue;
+        }
+
+        for (const rule of Array.from(rules)) {
+          if (!(rule instanceof CSSStyleRule)) {
+            continue;
+          }
+
+          if (rule.selectorText.replace(/\s+/g, ' ').trim() !== selectorText) {
+            continue;
+          }
+
+          const declared = rule.style.getPropertyValue(property).trim();
+
+          if (declared.length > 0) {
+            return declared;
+          }
+        }
+      }
+
+      return null;
+    }
+
+    /** A token's value in pixels, resolved from the document root. */
+    function tokenAsPixels(token: string): number {
+      const probe = document.createElement('div');
+
+      probe.style.fontSize = `var(${token})`;
+      document.body.appendChild(probe);
+
+      const measured = Number.parseFloat(getComputedStyle(probe).fontSize);
+
+      probe.remove();
+
+      return measured;
+    }
+
+    it('gives the ROOT element the base font family, so nothing computes a browser default', () => {
+      // ⚠ MEASURED DEFECT: `html` declared no `font-family` at all while `body` did, so the root element
+      // computed the browser's own serif default. Anything positioned outside `body`'s subtree - and
+      // anything inheriting from the root before the body rule applies - was drawn in the wrong face.
+      expect(declaredValueFor('html', 'font-family')).toBe('var(--font-family-base)');
+      expect(getComputedStyle(document.documentElement).fontFamily)
+        .withContext('the root resolves to the token, not to a browser default')
+        .toContain('Tahoma');
+    });
+
+    it('spends ONE size token per heading level, strictly decreasing from h1 to h6', () => {
+      // ⚠ MEASURED DEFECT: `h1, h2` shared one token and `h3, h4` shared another, so the not-found title
+      // and the empty-state title rendered identically at 24px and a reader could not tell one level from
+      // the next. Six levels, six steps.
+      const declared = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'].map((level) => {
+        const value = declaredValueFor(level, 'font-size');
+
+        expect(value).withContext(`${level} declares its own size`).not.toBeNull();
+
+        return String(value);
+      });
+
+      expect(new Set(declared).size).withContext('six levels, six distinct tokens').toBe(6);
+
+      const sizes = declared.map((value) => {
+        const token = /var\((--[a-z0-9-]+)\)/.exec(value)?.[1];
+
+        expect(token).withContext(`${value} resolves through a token`).toBeDefined();
+
+        return tokenAsPixels(String(token));
+      });
+
+      for (let index = 1; index < sizes.length; index += 1) {
+        expect(sizes[index])
+          .withContext(`h${index + 1} is smaller than h${index}`)
+          .toBeLessThan(Number(sizes[index - 1]));
+      }
+    });
+  });
 });

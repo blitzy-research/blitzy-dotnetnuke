@@ -439,26 +439,49 @@ public class PermissionEvaluatorTests
                 $"{grantType.Name} must name exactly one subject, always - and the identifier table is seeded at zero, so absence is not representable here and does not need to be");
     }
 
-    /// <summary>
-    /// The catalogue entry carries its key as the closed enumeration and its scope as text, not the
-    /// reverse.
-    /// </summary>
+    /// <summary>The catalogue entry carries BOTH its key and its scope as text.</summary>
     /// <remarks>
     /// The legacy catalogue class declared all four of its string members as text, and the terminal schema
-    /// stores them as narrow character columns.
+    /// stores them as narrow character columns with no check constraint on any of them. Typing the key as
+    /// the closed enumeration was tried and is a defect rather than a hardening: DotNetNuke's own
+    /// <c>AddPermission</c> procedure accepts <c>@PermissionKey varchar(50)</c> so a third-party module can
+    /// register its own keys at install time, and an enum-typed property makes every such row unreadable -
+    /// it threw from inside the materialiser, which no result type can intercept, so the catalogue read and
+    /// the module authorisation path both answered an unhandled fault. This assertion is what stops that
+    /// mapping from coming back.
     /// </remarks>
     [Fact]
-    public void CatalogueModel_CarriesTheKeyAsTheClosedEnumerationAndTheScopeAsText()
+    public void CatalogueModel_CarriesBothTheKeyAndTheScopeAsText()
     {
         typeof(Permission).GetProperty(nameof(Permission.PermissionKey)).Should().NotBeNull()
             .And.Subject.As<PropertyInfo>().PropertyType.Should().Be(
-                typeof(PermissionKey),
-                "the key is a closed set and must not be reachable as free text");
+                typeof(string),
+                "the key column is free text, so every value a real installation can hold must materialise");
 
         typeof(Permission).GetProperty(nameof(Permission.PermissionCode)).Should().NotBeNull()
             .And.Subject.As<PropertyInfo>().PropertyType.Should().Be(
                 typeof(string),
                 "the scope code is open text, which is how an excluded subsystem's code stays merely unmatched");
+    }
+
+    /// <summary>
+    /// The four keys the upgrade chain seeds remain a closed enumeration, because that set is what this
+    /// solution's own policies are written against.
+    /// </summary>
+    /// <remarks>
+    /// The two facts are complementary rather than contradictory: the enumeration bounds the keys the target
+    /// can ASK ABOUT, and the free-text column bounds nothing at all. A member's identifier is the stored
+    /// spelling, which is what lets one be compared against the other without a lookup table.
+    /// </remarks>
+    [Fact]
+    public void CatalogueKeys_ThisSolutionNamesAreStillAClosedEnumerationSpelledAsStored()
+    {
+        Enum.GetNames<PermissionKey>().Should().Equal("VIEW", "EDIT", "READ", "WRITE");
+
+        nameof(PermissionKey.VIEW).Should().Be("VIEW");
+        nameof(PermissionKey.EDIT).Should().Be("EDIT");
+        nameof(PermissionKey.READ).Should().Be("READ");
+        nameof(PermissionKey.WRITE).Should().Be("WRITE");
     }
 
     /// <summary>Inherited view is a TRI-STATE, and the third state is a row the flag was never written on.</summary>

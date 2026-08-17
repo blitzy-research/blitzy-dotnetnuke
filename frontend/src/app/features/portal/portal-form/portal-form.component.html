@@ -6,16 +6,25 @@
   -->
   <!-- ⚠ THE HEADER NOW CARRIES TWO THINGS IT DID NOT: an identity and a way out sideways. -->
   <app-page-header [title]="heading()" [subtitle]="portalName()">
-    @if (settingsLink(); as settings) {
-      <a class="page-action portal-form__sibling" [routerLink]="settings">{{
-        settingsLinkLabel
-      }}</a>
-    }
+    @if (nothingToShow()) {
+      <!--
+        THE ONE WAY OUT, in the slot the two sibling actions vacated. ⚠ WITHHOLDING THEM IS HALF THE
+        POINT: both address the portal by its identifier, so on a portal that has gone they were two
+        links that could only fail, and a reader following one arrived at a second dead screen.
+      -->
+      <a class="page-action portal-form__sibling" routerLink="/portals">{{ recoveryLabel }}</a>
+    } @else {
+      @if (settingsLink(); as settings) {
+        <a class="page-action portal-form__sibling" [routerLink]="settings">{{
+          settingsLinkLabel
+        }}</a>
+      }
 
-    @if (aliasesLink(); as aliases) {
-      <a class="page-action portal-form__sibling" [routerLink]="aliases">{{
-        aliasesLinkLabel
-      }}</a>
+      @if (aliasesLink(); as aliases) {
+        <a class="page-action portal-form__sibling" [routerLink]="aliases">{{
+          aliasesLinkLabel
+        }}</a>
+      }
     }
   </app-page-header>
 
@@ -23,8 +32,11 @@
   <app-error-banner [problem]="problem()" />
 
   @if (addressUnreadable()) {
-    <!-- The address carries something that is not a portal identifier. -->
-    <p class="portal-form__notice">{{ unreadableAddressMessage }}</p>
+    <!--
+      The address carries something that is not a portal identifier. Stated by the banner above - the
+      application's one assertive owner for a refusal - and recovered through the header, so the state is
+      one statement rather than two.
+    -->
   } @else if (isEditMode()) {
     <!--
       EDIT MODE RENDERS THREE CONTROLS, AND THE COUNT IS DELIBERATE. The update contract declares no
@@ -45,6 +57,7 @@
               for="portal-form-title"
               help="Give your site a title."
               [error]="editMessageFor('title')"
+              [limit]="limits.title"
             >
               <input
                 id="portal-form-title"
@@ -62,6 +75,7 @@
               for="portal-form-description"
               help="Enter a description for your site."
               [error]="editMessageFor('description')"
+              [limit]="limits.description"
             >
               <textarea
                 id="portal-form-description"
@@ -82,6 +96,7 @@
               for="portal-form-keywords"
               help="Enter some keywords separated by a comma.  These are added to the Html page as MetaData and help Search Engines index your site."
               [error]="editMessageFor('keywords')"
+              [limit]="limits.keywords"
             >
               <textarea
                 id="portal-form-keywords"
@@ -95,19 +110,31 @@
         </fieldset>
       }
 
-      <div class="portal-form__actions">
-        <button type="submit" [disabled]="!canSubmit()" [attr.aria-busy]="saving()">
-          {{ submitLabel() }}
-        </button>
+      <!--
+        ⚠ WITHHELD ENTIRELY WHEN THE PORTAL IS NOT THERE. Measured at runtime: the bar rendered anyway, with
+        a DISABLED "Update" and an enabled "Cancel", on a screen whose record does not exist - a dead
+        affordance beside a disabled one. The header's recovery link is the one thing to do in that state.
+      -->
+      @if (nothingToShow() === false) {
+        <div class="portal-form__actions">
+          <button
+            class="form-action--primary"
+            type="submit"
+            [disabled]="!canSubmit()"
+            [attr.aria-busy]="saving()"
+          >
+            {{ submitLabel() }}
+          </button>
 
-        <button type="button" [disabled]="saving()" (click)="onCancel()">
-          {{ cancelLabel }}
-        </button>
+          <button type="button" [disabled]="saving()" (click)="onCancel()">
+            {{ cancelLabel }}
+          </button>
 
-        @if (saving()) {
-          <app-loading-spinner size="small" label="Saving…" />
-        }
-      </div>
+          @if (saving()) {
+            <app-loading-spinner size="small" label="Saving…" />
+          }
+        </div>
+      }
     </form>
   } @else {
     <form class="portal-form__form" [formGroup]="createForm" (ngSubmit)="onSubmit()">
@@ -151,6 +178,7 @@
             [required]="true"
             help="Enter the Alias for this Portal"
             [error]="createMessageFor('alias')"
+            [limit]="limits.alias"
           >
             <input
               id="portal-form-alias"
@@ -169,6 +197,7 @@
             for="portal-form-title"
             help="Give your site a title."
             [error]="createMessageFor('title')"
+            [limit]="limits.title"
           >
             <input
               id="portal-form-title"
@@ -186,6 +215,7 @@
             for="portal-form-description"
             help="Enter a description for your site."
             [error]="createMessageFor('description')"
+            [limit]="limits.description"
           >
             <textarea
               id="portal-form-description"
@@ -202,6 +232,7 @@
             for="portal-form-keywords"
             help="Enter some keywords separated by a comma.  These are added to the Html page as MetaData and help Search Engines index your site."
             [error]="createMessageFor('keywords')"
+            [limit]="limits.keywords"
           >
             <textarea
               id="portal-form-keywords"
@@ -229,6 +260,7 @@
             [required]="true"
             help="Enter your first name."
             [error]="createMessageFor('firstName')"
+            [limit]="limits.firstName"
           >
             <input
               id="portal-form-first-name"
@@ -247,6 +279,7 @@
             [required]="true"
             help="Enter your last name."
             [error]="createMessageFor('lastName')"
+            [limit]="limits.lastName"
           >
             <input
               id="portal-form-last-name"
@@ -265,6 +298,7 @@
             [required]="true"
             help="Enter a username for the Administrator Account for this site."
             [error]="createMessageFor('username')"
+            [limit]="limits.username"
           >
             <input
               id="portal-form-username"
@@ -287,6 +321,7 @@
             [required]="true"
             help="Enter a password for the Administrator Account for this site."
             [error]="createMessageFor('password')"
+            [limit]="limits.password"
           >
             <input
               id="portal-form-password"
@@ -309,6 +344,7 @@
             [required]="true"
             help="Repeat your password to confirm it was typed correctly."
             [error]="createMessageFor('confirm')"
+            [limit]="limits.confirm"
           >
             <input
               id="portal-form-confirm"
@@ -327,6 +363,7 @@
             [required]="true"
             help="Enter an email address for the Administrator Account for this site."
             [error]="createMessageFor('email')"
+            [limit]="limits.email"
           >
             <input
               id="portal-form-email"
@@ -343,7 +380,12 @@
 
       <!-- The action row. -->
       <div class="portal-form__actions">
-        <button type="submit" [disabled]="!canSubmit()" [attr.aria-busy]="saving()">
+        <button
+          class="form-action--primary"
+          type="submit"
+          [disabled]="!canSubmit()"
+          [attr.aria-busy]="saving()"
+        >
           {{ submitLabel() }}
         </button>
 

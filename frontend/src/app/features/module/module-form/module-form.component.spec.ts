@@ -73,7 +73,17 @@ const CORRELATION_ID = '2b8c1f04-6d3e-4a7b-9c15-8e0d2f6a4b93';
 // THE WORDING THIS SCREEN PUBLISHES
 
 const CREATE_HEADING = 'Add Module';
-const EDIT_HEADING = 'Module Settings';
+
+/**
+ * ⚠ `ControlTitle_module.Text`, NOT `ModuleSettings.Text`. The page heading and the form's first section
+ * legend both used to read "Module Settings", one directly above the other, so the screen stated its own
+ * name twice and the section head carried no information. Both wordings are legacy-verbatim; which level
+ * shows which is what changed, and `module-settings` carries the same correction.
+ */
+const EDIT_HEADING = 'Module';
+
+/** `ModuleSettings.Text` - the wording the form's FIRST SECTION legend carries. */
+const FIRST_SECTION_LEGEND = 'Module Settings';
 const FORM_INVALID_MESSAGE = 'Correct the highlighted fields and try again.';
 const PAGE_REQUIRED_MESSAGE = 'Choose a page before saving.';
 const DEFINITION_REQUIRED_MESSAGE = 'Choose a module before saving.';
@@ -179,6 +189,29 @@ function envelope<T>(data: T): Envelope<T> {
   return { data, meta: null };
 }
 
+/** The page size the whole-hierarchy reader asks for. Mirrors `WHOLE_COLLECTION_PAGE_SIZE` in `TabService`. */
+const TAB_PAGE_SIZE = 100;
+
+/**
+ * The PAGED wire envelope the portal-scoped page listing answers with. MIGRATION: the hierarchy used to
+ * arrive in one unbounded response and is now read a bounded page at a time, so its body carries populated
+ * metadata where the single-payload envelope carried none.
+ *
+ * @param rows The rows of this page.
+ * @returns The body to flush.
+ */
+function tabPage<T>(rows: readonly T[]): object {
+  return {
+    items: rows,
+    meta: {
+      totalCount: rows.length,
+      pageIndex: 0,
+      pageSize: TAB_PAGE_SIZE,
+      totalPages: rows.length === 0 ? 0 : Math.ceil(rows.length / TAB_PAGE_SIZE),
+    },
+  };
+}
+
 /** Wraps rows in the shared paged envelope. */
 function pagedBody(items: readonly ModuleListItem[]): {
   readonly data: readonly ModuleListItem[];
@@ -214,12 +247,16 @@ function detail(overrides: Partial<ModuleDetail> = {}): ModuleDetail {
     moduleOrder: 3,
     cacheTime: 1200,
     iconFile: '',
+    alignment: null,
+    color: null,
+    border: null,
     visibility: ModuleVisibility.Minimized,
     displayTitle: true,
     friendlyName: 'Announcements',
     moduleName: 'DNN_Announcements',
     description: '',
     version: '01.00.00',
+    isAdmin: false,
     ...overrides,
   };
 }
@@ -275,6 +312,7 @@ function listRow(overrides: Partial<ModuleListItem> = {}): ModuleListItem {
     moduleName: 'DNN_Announcements',
     description: '',
     version: '01.00.00',
+    isAdmin: false,
     moduleOrder: 3,
     allTabs: false,
     visibility: ModuleVisibility.Minimized,
@@ -371,7 +409,9 @@ describe('ModuleFormComponent', () => {
 
     // No routes are declared, so a genuine navigation would fail to match. The component chains a
     // rejection handler onto the promise, so the spy must resolve one.
-    navigateSpy = spyOn(TestBed.inject(Router), 'navigateByUrl').and.resolveTo(true);
+    // ⚠ `navigate`, NOT `navigateByUrl`, AND THE CHANGE IS THE POINT. Only the array overload accepts
+    // `queryParams`, and this screen has to carry the listing's page, ordering and search back with it.
+    navigateSpy = spyOn(TestBed.inject(Router), 'navigate').and.resolveTo(true);
   });
 
   afterEach(() => {
@@ -425,7 +465,7 @@ describe('ModuleFormComponent', () => {
 
   /** Answers the portal page list the loaded module's portal triggers. */
   function answerTabs(rows: readonly TabListItem[] = [tabRow(), tabRow({ tabId: 1, tabName: 'About' })]): void {
-    expectRequest('GET', TABS_URL, 'the portal page list').flush(envelope(rows));
+    expectRequest('GET', TABS_URL, 'the portal page list').flush(tabPage(rows));
     fixture.detectChanges();
   }
 
@@ -453,6 +493,20 @@ describe('ModuleFormComponent', () => {
   }
 
   /** Every rendered element for a selector. */
+  /** Everything the shared banner is currently saying, trimmed. */
+  function bannerText(): string {
+    return (query('.error-banner')?.textContent ?? '').replace(/\s+/g, ' ').trim();
+  }
+
+  /**
+   * The one recovery action a detail screen offers once its record cannot be shown, or `null` when the
+   * screen is not in that state. Resolved through the header slot, which is where every detail screen puts
+   * it, so a screen that offered it somewhere else would fail rather than pass by accident.
+   */
+  function recoveryLink(): HTMLAnchorElement | null {
+    return query<HTMLAnchorElement>('app-page-header a.page-action');
+  }
+
   function queryAll<T extends HTMLElement>(selector: string): readonly T[] {
     return Array.from((fixture.nativeElement as HTMLElement).querySelectorAll<T>(selector));
   }
@@ -498,7 +552,16 @@ describe('ModuleFormComponent', () => {
     fixture.detectChanges();
   }
 
-  /** The three page-level commands, resolved by their class rather than by position. */
+  /**
+   * The three commands, resolved by their class rather than by position.
+   *
+   * ⚠ THEY MOVED, AND SO DID ONE OF THEIR CLASS NAMES. The bar used to sit in the page header and its saving
+   * command carried the borderless page-action affordance with a component-local `--primary` modifier; it now
+   * sits at the FOOT of the form, as an ordinary button carrying the shared primary treatment, because this was
+   * the only one of the four record editors that put its commands anywhere else or made them a different
+   * species. The abandon command is still found by its label, and the destructive one still by its own
+   * modifier.
+   */
   function commandByClass(className: string): HTMLButtonElement {
     const button = query<HTMLButtonElement>(`.${className}`);
 
@@ -507,9 +570,30 @@ describe('ModuleFormComponent', () => {
     return button as HTMLButtonElement;
   }
 
+  /**
+   * Specification for where this screen's commands live and what species they are.
+   *
+   * ⚠ WHAT WAS MEASURED ACROSS THE FOUR RECORD EDITORS: three different placements and three different labels,
+   * with this screen the outlier on both counts - its commands sat in the page header rather than at the foot of
+   * the form, and its saving command was a borderless link-like affordance rather than the button its three
+   * siblings used. The wording is untouched; the placement and the species are not.
+   */
+  function assertActionBarPlacement(): void {
+    const header = query('app-page-header');
+    const bar = query('.module-form__actions');
+
+    expect(bar).withContext('the commands sit in a bar of their own').not.toBeNull();
+    expect(header?.querySelectorAll('button'))
+      .withContext('and no longer in the page header')
+      .toHaveSize(0);
+    expect(bar?.querySelector('.page-action'))
+      .withContext('and none of them is the borderless page-action species')
+      .toBeNull();
+  }
+
   /** Presses the primary command, which submits the form natively. */
   function save(): void {
-    commandByClass('module-form__action--primary').click();
+    commandByClass('form-action--primary').click();
     fixture.detectChanges();
   }
 
@@ -576,7 +660,7 @@ describe('ModuleFormComponent', () => {
 
   /** Presses the abandon command, found by its label rather than by its position. */
   function cancelEdit(): void {
-    const abandon = queryAll<HTMLButtonElement>('.module-form__action').find(
+    const abandon = queryAll<HTMLButtonElement>('.module-form__actions button').find(
       (button) => (button.textContent ?? '').trim() === 'Cancel',
     );
 
@@ -679,7 +763,7 @@ describe('ModuleFormComponent', () => {
       // ⚠ THE PAGE LIST WAITS FOR THE MODULE, and cannot do otherwise: the page picker's options are
       // portal-scoped, the tenant is resolved by the server from the request rather than named by the
       // client, and nothing in this screen's dependencies can answer which portal the caller is in.
-      expectRequest('GET', TABS_URL).flush(envelope([tabRow()]));
+      expectRequest('GET', TABS_URL).flush(tabPage([tabRow()]));
       fixture.detectChanges();
 
       httpMock.expectNone(() => true);
@@ -709,6 +793,12 @@ describe('ModuleFormComponent', () => {
       // LEVEL TWO — the screen resolved to EDIT mode, not create mode. The heading is the observable
       // difference, and it is the resource value rather than the net-new create wording.
       expect((query('h1')?.textContent ?? '').trim()).toBe(EDIT_HEADING);
+
+      // ⚠ AND IT MUST NOT REPEAT THE FIRST SECTION LEGEND, which is why the heading changed.
+      expect(EDIT_HEADING).not.toBe(FIRST_SECTION_LEGEND);
+      expect((query('.module-form__group-title h2')?.textContent ?? '').trim())
+        .withContext('the legacy section wording stays where the legacy put it')
+        .toBe(FIRST_SECTION_LEGEND);
       expect((query('h1')?.textContent ?? '').trim()).not.toBe(CREATE_HEADING);
 
       // LEVEL THREE — the affordances are the edit-mode set: the definition is fixed rather than
@@ -740,7 +830,7 @@ describe('ModuleFormComponent', () => {
         .toBe('/api/v1/portals/-1/tabs');
       expect(pages.request.method).toBe('GET');
 
-      pages.flush(envelope([tabRow()]));
+      pages.flush(tabPage([tabRow()]));
       fixture.detectChanges();
 
       // And the options actually arrive, so the picker is usable rather than merely requested.
@@ -880,10 +970,15 @@ describe('ModuleFormComponent', () => {
 
       httpMock.expectNone((candidate) => candidate.url.startsWith('/api/v1/modules/'));
 
-      expect((query('.module-form__notice')?.textContent ?? '').trim()).toContain(
-        UNREADABLE_ADDRESS_OPENING,
-      );
+      // ⚠ THE STATEMENT MOVED INTO THE SHARED BANNER, and that is the point of the change. It was a plain
+      // paragraph inside a branch - a live region created together with its first message, which is
+      // announced inconsistently - while the banner's region is already in the document.
+      expect(bannerText()).toContain(UNREADABLE_ADDRESS_OPENING);
+      expect(query('.module-form__notice')).withContext('one statement, not two').toBeNull();
       expect(query('#module-form-title')).withContext('no form is offered').toBeNull();
+
+      // And the one way out, in the header slot every detail screen uses for it.
+      expect(recoveryLink()?.getAttribute('href')).toBe('/modules');
     });
 
     it('refuses a submission and says why', () => {
@@ -906,9 +1001,7 @@ describe('ModuleFormComponent', () => {
       answerDefinitions();
 
       httpMock.expectNone((candidate) => candidate.url.startsWith('/api/v1/modules/'));
-      expect((query('.module-form__notice')?.textContent ?? '').trim()).toContain(
-        UNREADABLE_ADDRESS_OPENING,
-      );
+      expect(bannerText()).toContain(UNREADABLE_ADDRESS_OPENING);
     });
   });
 
@@ -925,11 +1018,19 @@ describe('ModuleFormComponent', () => {
       );
       fixture.detectChanges();
 
-      expect((query('.module-form__notice')?.textContent ?? '').trim()).toBe(NOT_FOUND_MESSAGE);
+      // ⚠ ONE STATEMENT, IN THE SHARED BANNER, IN THE SHARED WORDING. The banner used to render the
+      // SERVER's 404 detail while a paragraph of this screen's own rendered this sentence, so the same
+      // outcome was stated twice and each of the four detail screens worded it differently. The document
+      // handed to the banner is now synthesised from the shared builder, and it deliberately carries no
+      // support reference: a record that is not there is a legitimate state, not an occurrence to report.
+      expect(bannerText()).toContain(NOT_FOUND_MESSAGE);
+      expect(bannerText()).not.toContain('The requested resource does not exist.');
+      expect(query('.module-form__notice')).toBeNull();
+      expect(query('.error-banner__trace')).withContext('nothing to report to support').toBeNull();
       expect(query('#module-form-title')).toBeNull();
 
-      // The banner renders the document as well, because a refusal was recorded.
-      expect(query('.error-banner')).not.toBeNull();
+      // The one way out.
+      expect(recoveryLink()?.textContent?.trim()).toBe('Back to Modules');
     });
   });
 
@@ -953,10 +1054,10 @@ describe('ModuleFormComponent', () => {
       expect(banner?.textContent ?? '').toContain('You are not permitted to view this module.');
 
       // The two statements that must NOT accompany it.
-      expect(query('.module-form__notice'))
+      expect(fixture.nativeElement.textContent as string)
         .withContext('a refusal is not an absence, so the not-found sentence is withheld')
-        .toBeNull();
-      expect(fixture.nativeElement.textContent as string).not.toContain(NOT_FOUND_MESSAGE);
+        .not.toContain(NOT_FOUND_MESSAGE);
+      expect(recoveryLink()).withContext('the record may exist; this is not a way out').toBeNull();
     });
 
     it('offers no save, because a save could only ever be refused as well', () => {
@@ -969,7 +1070,7 @@ describe('ModuleFormComponent', () => {
       );
       fixture.detectChanges();
 
-      expect(query('.module-form__action--primary')).toBeNull();
+      expect(query('.form-action--primary')).toBeNull();
       expect(query('#module-form-title'))
         .withContext('no form is seeded from a module that was never read')
         .toBeNull();
@@ -982,7 +1083,7 @@ describe('ModuleFormComponent', () => {
     it('keeps the form when it is a SAVE that is refused rather than the read', () => {
       arriveInEditMode();
 
-      commandByClass('module-form__action--primary').click();
+      commandByClass('form-action--primary').click();
       fixture.detectChanges();
 
       const write = httpMock.expectOne(
@@ -997,7 +1098,7 @@ describe('ModuleFormComponent', () => {
 
       expect(query('.error-banner')).not.toBeNull();
       expect(query('#module-form-title')).withContext('the edits are still on screen').not.toBeNull();
-      expect(query('.module-form__action--primary')).not.toBeNull();
+      expect(query('.form-action--primary')).not.toBeNull();
     });
   });
 
@@ -1014,7 +1115,11 @@ describe('ModuleFormComponent', () => {
 
       expect(fieldMessages()).toContain(CACHE_TIME_INVALID_MESSAGE);
 
-      expect(notifySpy).toHaveBeenCalledWith('warning', FORM_INVALID_MESSAGE);
+      // ⚠ THE ONE VALIDATION-SUMMARY CONTRACT: NO PAGE-LEVEL SUMMARY IS RAISED. Sixteen of the eighteen
+      // forms already answered a client-blocked submit with touched controls and focus on the first invalid
+      // field; this screen additionally raised a summary toast, so one piece of news had two owners and the
+      // toast self-dismissed while the fields stayed wrong.
+      expect(notifySpy).not.toHaveBeenCalledWith('warning', FORM_INVALID_MESSAGE);
       httpMock.expectNone(() => true);
     });
 
@@ -1071,7 +1176,11 @@ describe('ModuleFormComponent', () => {
       // message.
       expect(messagesBeside('module-form-tab')).toContain(PAGE_REQUIRED_MESSAGE);
       expect(requiredControl('module-form-tab').getAttribute('aria-invalid')).toBe('true');
-      expect(notifySpy).toHaveBeenCalledWith('warning', FORM_INVALID_MESSAGE);
+      // ⚠ THE ONE VALIDATION-SUMMARY CONTRACT: NO PAGE-LEVEL SUMMARY IS RAISED. Sixteen of the eighteen
+      // forms already answered a client-blocked submit with touched controls and focus on the first invalid
+      // field; this screen additionally raised a summary toast, so one piece of news had two owners and the
+      // toast self-dismissed while the fields stayed wrong.
+      expect(notifySpy).not.toHaveBeenCalledWith('warning', FORM_INVALID_MESSAGE);
       httpMock.expectNone(() => true);
     });
 
@@ -1084,7 +1193,7 @@ describe('ModuleFormComponent', () => {
       answerDefinitions();
 
       store.loadTabs(-1);
-      expectRequest('GET', TABS_URL).flush(envelope([tabRow()]));
+      expectRequest('GET', TABS_URL).flush(tabPage([tabRow()]));
       fixture.detectChanges();
 
       choose('module-form-tab', 'Home');
@@ -1092,7 +1201,11 @@ describe('ModuleFormComponent', () => {
 
       expect(messagesBeside('module-form-module-def')).toContain(DEFINITION_REQUIRED_MESSAGE);
       expect(requiredControl('module-form-module-def').getAttribute('aria-invalid')).toBe('true');
-      expect(notifySpy).toHaveBeenCalledWith('warning', FORM_INVALID_MESSAGE);
+      // ⚠ THE ONE VALIDATION-SUMMARY CONTRACT: NO PAGE-LEVEL SUMMARY IS RAISED. Sixteen of the eighteen
+      // forms already answered a client-blocked submit with touched controls and focus on the first invalid
+      // field; this screen additionally raised a summary toast, so one piece of news had two owners and the
+      // toast self-dismissed while the fields stayed wrong.
+      expect(notifySpy).not.toHaveBeenCalledWith('warning', FORM_INVALID_MESSAGE);
       httpMock.expectNone(() => true);
     });
 
@@ -1105,7 +1218,7 @@ describe('ModuleFormComponent', () => {
       const store = TestBed.inject(ModuleStore);
 
       store.loadTabs(-1);
-      expectRequest('GET', TABS_URL).flush(envelope([tabRow()]));
+      expectRequest('GET', TABS_URL).flush(tabPage([tabRow()]));
       fixture.detectChanges();
 
       save();
@@ -1119,7 +1232,10 @@ describe('ModuleFormComponent', () => {
         .allArgs()
         .filter((args) => String(args[1]) === FORM_INVALID_MESSAGE);
 
-      expect(summaries.length).withContext('one summary, not one per broken rule').toBe(1);
+      // ⚠ NOT ONE SUMMARY PER BROKEN RULE, AND NOT ONE SUMMARY EITHER. Under the one validation-summary
+      // contract the fields state their own rules and the focused field is the statement; a page-level
+      // restatement was a second owner for the same news.
+      expect(summaries.length).withContext('no page-level summary at all').toBe(0);
       httpMock.expectNone(() => true);
     });
 
@@ -1130,7 +1246,7 @@ describe('ModuleFormComponent', () => {
       const store = TestBed.inject(ModuleStore);
 
       store.loadTabs(-1);
-      expectRequest('GET', TABS_URL).flush(envelope([tabRow()]));
+      expectRequest('GET', TABS_URL).flush(tabPage([tabRow()]));
       fixture.detectChanges();
 
       save();
@@ -1324,7 +1440,7 @@ describe('ModuleFormComponent', () => {
 
       expect(messagesBeside('module-form-start-date')).toEqual([]);
       expect(messagesBeside('module-form-end-date')).toEqual([]);
-      expect(commandByClass('module-form__action--primary').disabled)
+      expect(commandByClass('form-action--primary').disabled)
         .withContext('the pair is accepted, so saving is still offered')
         .toBeFalse();
 
@@ -1385,7 +1501,7 @@ describe('ModuleFormComponent', () => {
       answerDefinitions();
 
       store.loadTabs(-1);
-      expectRequest('GET', TABS_URL).flush(envelope([tabRow(), tabRow({ tabId: 1, tabName: 'About' })]));
+      expectRequest('GET', TABS_URL).flush(tabPage([tabRow(), tabRow({ tabId: 1, tabName: 'About' })]));
       fixture.detectChanges();
 
       choose('module-form-module-def', 'Announcements');
@@ -1412,6 +1528,10 @@ describe('ModuleFormComponent', () => {
         moduleOrder: -1,
         cacheTime: 90,
         iconFile: null,
+
+        // The three container-appearance columns are deliberately NOT on the creation contract. A placement
+        // that does not exist yet has no stored appearance to preserve, and the legacy creation path set none
+        // either - they are administered afterwards, on the settings screen that owns them.
         visibility: ModuleVisibility.Maximized,
         displayTitle: true,
       });
@@ -1425,7 +1545,7 @@ describe('ModuleFormComponent', () => {
       fixture.detectChanges();
 
       expect(notifySpy).toHaveBeenCalledWith('success', CREATED_MESSAGE, null, true);
-      expect(navigateSpy).toHaveBeenCalledOnceWith(MODULE_LIST_PATH, { replaceUrl: true });
+      expect(navigateSpy).toHaveBeenCalledOnceWith([MODULE_LIST_PATH], { queryParams: {}, replaceUrl: true });
     });
 
     it('accepts the 201 the endpoint answers with, and reports the placement', () => {
@@ -1435,7 +1555,7 @@ describe('ModuleFormComponent', () => {
       answerDefinitions();
 
       store.loadTabs(-1);
-      expectRequest('GET', TABS_URL).flush(envelope([tabRow()]));
+      expectRequest('GET', TABS_URL).flush(tabPage([tabRow()]));
       fixture.detectChanges();
 
       choose('module-form-module-def', 'Announcements');
@@ -1461,7 +1581,7 @@ describe('ModuleFormComponent', () => {
       fixture.detectChanges();
 
       expect(notifySpy).toHaveBeenCalledWith('success', CREATED_MESSAGE, null, true);
-      expect(navigateSpy).toHaveBeenCalledOnceWith(MODULE_LIST_PATH, { replaceUrl: true });
+      expect(navigateSpy).toHaveBeenCalledOnceWith([MODULE_LIST_PATH], { queryParams: {}, replaceUrl: true });
     });
 
     it('treats PAGE ZERO as a page, because the page identity seeds at zero', () => {
@@ -1474,7 +1594,7 @@ describe('ModuleFormComponent', () => {
       answerDefinitions();
 
       store.loadTabs(-1);
-      expectRequest('GET', TABS_URL).flush(envelope([tabRow(), tabRow({ tabId: 1, tabName: 'About' })]));
+      expectRequest('GET', TABS_URL).flush(tabPage([tabRow(), tabRow({ tabId: 1, tabName: 'About' })]));
       fixture.detectChanges();
 
       choose('module-form-module-def', 'Announcements');
@@ -1511,7 +1631,7 @@ describe('ModuleFormComponent', () => {
       answerDefinitions();
 
       store.loadTabs(-1);
-      expectRequest('GET', TABS_URL).flush(envelope([tabRow()]));
+      expectRequest('GET', TABS_URL).flush(tabPage([tabRow()]));
       fixture.detectChanges();
 
       choose('module-form-module-def', 'Announcements');
@@ -1572,6 +1692,9 @@ describe('ModuleFormComponent', () => {
         moduleOrder: 3,
         cacheTime: 1200,
         iconFile: null,
+        alignment: null,
+        color: null,
+        border: null,
         visibility: ModuleVisibility.Minimized,
         displayTitle: true,
         setAsDefaultSettings: true,
@@ -1582,7 +1705,30 @@ describe('ModuleFormComponent', () => {
       fixture.detectChanges();
 
       expect(notifySpy).toHaveBeenCalledWith('success', UPDATED_MESSAGE, null, true);
-      expect(navigateSpy).toHaveBeenCalledOnceWith(MODULE_LIST_PATH, { replaceUrl: true });
+      expect(navigateSpy).toHaveBeenCalledOnceWith([MODULE_LIST_PATH], { queryParams: {}, replaceUrl: true });
+    });
+
+    it('round-trips the three appearance columns it does not edit, rather than clearing them', () => {
+      // ⚠ THE REPLACEMENT WRITES EVERY MEMBER IT CARRIES, so a member this form omits is a member the
+      // server sets to nothing. The three container-appearance columns belong to the settings screen and this
+      // form offers no control over them, so it must send back exactly what it read. Without that, renaming a
+      // module here silently wiped the alignment, colour and border an operator had set over there.
+      arriveInEditMode(detail({ alignment: 'right', color: '#003366', border: '2' }));
+
+      type('module-form-title', 'Renamed');
+      save();
+
+      const call = expectRequest('PUT', MODULE_ZERO_URL, 'the replacement');
+      const body = call.request.body as Record<string, unknown>;
+
+      expect(body['alignment']).toBe('right');
+      expect(body['color']).toBe('#003366');
+      expect(body['border']).toBe('2');
+
+      call.flush(
+        envelope(detail({ moduleTitle: 'Renamed', alignment: 'right', color: '#003366', border: '2' })),
+      );
+      fixture.detectChanges();
     });
 
     it('sends no relocation when the page control is left on the module\'s own page', () => {
@@ -1712,7 +1858,7 @@ describe('ModuleFormComponent', () => {
       expectRequest('DELETE', MODULE_ZERO_URL, 'the removal').flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
 
-      expect(navigateSpy).toHaveBeenCalledOnceWith(MODULE_LIST_PATH, { replaceUrl: true });
+      expect(navigateSpy).toHaveBeenCalledOnceWith([MODULE_LIST_PATH], { queryParams: {}, replaceUrl: true });
       expect(dirtyAtNavigation)
         .withContext('there is nothing left to save once the placement is gone')
         .toBeFalse();
@@ -1729,10 +1875,11 @@ describe('ModuleFormComponent', () => {
 
       type('module-form-cache-time', 'abc');
 
-      // Proof that the form really is invalid: the SAVE path refuses and sends nothing.
+      // Proof that the form really is invalid: the SAVE path refuses, sends nothing, and states the rule
+      // BESIDE the field rather than as a page-level summary - the one validation-summary contract.
       save();
       httpMock.expectNone(() => true);
-      expect(notifySpy).toHaveBeenCalledWith('warning', FORM_INVALID_MESSAGE);
+      expect(notifySpy).not.toHaveBeenCalledWith('warning', FORM_INVALID_MESSAGE);
       expect(fieldMessages()).toContain(CACHE_TIME_INVALID_MESSAGE);
 
       // The removal is nonetheless offered and nonetheless works.
@@ -1752,7 +1899,7 @@ describe('ModuleFormComponent', () => {
       fixture.detectChanges();
 
       expect(notifySpy).toHaveBeenCalledWith('success', DELETED_MESSAGE, null, true);
-      expect(navigateSpy).toHaveBeenCalledOnceWith(MODULE_LIST_PATH, { replaceUrl: true });
+      expect(navigateSpy).toHaveBeenCalledOnceWith([MODULE_LIST_PATH], { queryParams: {}, replaceUrl: true });
     });
 
     it('removes nothing when the confirmation is dismissed', () => {
@@ -1788,7 +1935,7 @@ describe('ModuleFormComponent', () => {
       fixture.detectChanges();
 
       expect(notifySpy).toHaveBeenCalledWith('success', DELETED_MESSAGE, null, true);
-      expect(navigateSpy).toHaveBeenCalledOnceWith(MODULE_LIST_PATH, { replaceUrl: true });
+      expect(navigateSpy).toHaveBeenCalledOnceWith([MODULE_LIST_PATH], { queryParams: {}, replaceUrl: true });
     });
 
     it('offers no reversal, because no endpoint reverses it', () => {
@@ -1815,7 +1962,7 @@ describe('ModuleFormComponent', () => {
 
       const call = expectRequest('PUT', MODULE_ZERO_URL);
 
-      expect(commandByClass('module-form__action--primary').disabled).toBeTrue();
+      expect(commandByClass('form-action--primary').disabled).toBeTrue();
 
       query('.module-form')?.dispatchEvent(new Event('submit'));
       fixture.detectChanges();
@@ -2015,7 +2162,7 @@ describe('ModuleFormComponent', () => {
 
       type('module-form-title', 'a change nobody asked to keep');
 
-      const cancel = queryAll<HTMLButtonElement>('.module-form__action').find(
+      const cancel = queryAll<HTMLButtonElement>('.module-form__actions button').find(
         (button) => (button.textContent ?? '').trim() === 'Cancel',
       );
 
@@ -2024,7 +2171,7 @@ describe('ModuleFormComponent', () => {
       (cancel as HTMLButtonElement).click();
       fixture.detectChanges();
 
-      expect(navigateSpy).toHaveBeenCalledOnceWith(MODULE_LIST_PATH);
+      expect(navigateSpy).toHaveBeenCalledOnceWith([MODULE_LIST_PATH], { queryParams: {} });
       httpMock.expectNone(() => true);
     });
 
@@ -2039,7 +2186,7 @@ describe('ModuleFormComponent', () => {
 
       cancelEdit();
 
-      expect(navigateSpy).toHaveBeenCalledOnceWith(MODULE_LIST_PATH);
+      expect(navigateSpy).toHaveBeenCalledOnceWith([MODULE_LIST_PATH], { queryParams: {} });
 
       // Still silent afterwards: cancelling did not trigger the validation pass that saving does.
       expect(fieldMessages()).toEqual([]);
@@ -2057,7 +2204,7 @@ describe('ModuleFormComponent', () => {
 
       cancelEdit();
 
-      expect(navigateSpy).toHaveBeenCalledOnceWith(MODULE_LIST_PATH);
+      expect(navigateSpy).toHaveBeenCalledOnceWith([MODULE_LIST_PATH], { queryParams: {} });
       httpMock.expectNone(() => true);
     });
   });
@@ -2305,6 +2452,48 @@ describe('ModuleFormComponent', () => {
       // And the legacy sentence is the one shown, rather than the withheld explanation.
       expect(revealedHelpFor('module-form-all-tabs'))
         .toContain('appear in the same location on all pages');
+    });
+  });
+  describe('the action bar', () => {
+    it('sits at the foot of the form rather than in the page header', () => {
+      arriveInEditMode();
+
+      assertActionBarPlacement();
+    });
+
+    // ⚠ #22 — ONE ACTION, ONE WORD PER MODE. `cmdUpdate.Text` is the documented legacy wording, but the
+    // legacy screens reused one button for both modes, so this form applied "Update" at `/modules/new` -
+    // over a form for a module that did not exist yet. Two of the four create screens already named their
+    // subject, so a reviewer walking the four met three words for one action. Both captions are asserted so
+    // neither can drift back.
+    it('names what it will create on the creation form, and says Update on the edit form', () => {
+      arriveInCreateMode();
+
+      expect((commandByClass('form-action--primary').textContent ?? '').trim())
+        .withContext('the creation form names its subject')
+        .toBe('Create Module');
+
+      arriveInEditMode();
+
+      expect((commandByClass('form-action--primary').textContent ?? '').trim())
+        .withContext('and the edit form keeps the legacy wording, where the legacy screen applied it')
+        .toBe('Update');
+    });
+
+    it('marks the saving command as the primary one, in the shared vocabulary', () => {
+      arriveInEditMode();
+
+      expect(commandByClass('form-action--primary').type)
+        .withContext('the primary command is the one that submits')
+        .toBe('submit');
+
+      const cancel = queryAll<HTMLButtonElement>('.module-form__actions button').find(
+        (button) => (button.textContent ?? '').trim() === 'Cancel',
+      );
+
+      expect(cancel?.classList)
+        .withContext('and the safe exit is deliberately not primary')
+        .not.toContain('form-action--primary');
     });
   });
 });

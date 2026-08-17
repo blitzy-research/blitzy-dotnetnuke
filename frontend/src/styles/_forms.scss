@@ -25,6 +25,21 @@ legend {
   color: var(--color-primary);
 }
 
+// ⚠ AT THE NARROWEST WIDTHS A SELECT YIELDS HALF ITS INNER GUTTER TO THE VALUE IT EXISTS TO DISPLAY. A
+// closed native select paints its label inside its content box and Chrome reserves roughly 20px of that box
+// for the chevron, so the gutter competes directly with the text. Below `sm` the measure is genuinely scarce
+// - a 320px viewport leaves a field about 271px - and the portal administrator option, a display name and a
+// login name together, measures 231.77px: with the full gutter it fitted by under a pixel, which is not a
+// margin at all. Halving the gutter buys 8px of real headroom.
+//
+// This shifts nothing on the page. Every control is `border-box`, so trimming padding changes what is
+// readable inside the box without changing the box, and no other element moves.
+@include mx.respond-below('sm') {
+  select {
+    padding-inline: var(--space-1);
+  }
+}
+
 //  2. LABELS
 
 // Styled as a genuine element and never as a class on a `<div>`, so the native
@@ -111,6 +126,32 @@ textarea {
   &:hover {
     border-color: var(--color-primary-hover);
   }
+
+  // THE PRESSED STATE — QA-34. Hover already answered "this is interactive"; nothing answered "your press
+  // landed". The button in section 5 has answered that since it was written, with `--color-selected`, so the
+  // entry controls now say it the same way rather than in a second vocabulary of their own.
+  //
+  // ⚠ IT IS A BACKGROUND TINT, AND THE FIRST ATTEMPT WAS AN INSET `box-shadow` RING THAT MEASURABLY DID NOT
+  // WORK. Runtime measurement caught it: the ring WAS painted, but only for the first frame of the press.
+  // `select:active` and `textarea:active` both weigh (0,1,1), which TIES `select:focus-visible` and
+  // `textarea:focus-visible` from section 6, and the focus rule sits later in this file — so it took the
+  // single `box-shadow` slot for the rest of the hold and a sustained press on a select or a textarea looked
+  // identical to focused-and-hovered. Only the text input escaped, and only incidentally, because its long
+  // `:not(...)` prefix lifts it to (0,2,1). A press that is perceivable on one of three control kinds is not
+  // a press state.
+  //
+  // `background-color` is not contested by the focus ring, which claims only `outline` and `box-shadow`, so
+  // the tint is visible throughout the press on all three kinds — and it is the same property, the same token
+  // and the same meaning the button already uses. It cannot shift layout: a background paints inside the
+  // existing border box.
+  //
+  // The two guards matter. `:disabled` never matches `:active` in practice but is stated so the rule reads as
+  // deliberately scoped; `[readonly]` DOES need it, because a read-only text input would otherwise beat its
+  // own read-only surface — (0,2,1) against (0,1,1) — and flash as though it were about to accept typing.
+  &:active:not(:disabled, [readonly]) {
+    border-color: var(--color-primary-hover);
+    background-color: var(--color-selected);
+  }
 }
 
 // The opacity reset is an accessibility measure, not a cosmetic one: some engines apply a partial default
@@ -138,12 +179,43 @@ select[multiple] {
 
 //  4. CHOICE CONTROLS — checkbox and radio
 
-// Native controls, kept native.
+// Native controls, kept native — the tick, the dot and the platform's own focus behaviour are the engine's,
+// and nothing here replaces them with a styled span.
 input[type='checkbox'],
 input[type='radio'] {
   accent-color: var(--color-primary);
   margin: 0;
   cursor: pointer;
+
+  // THE TARGET, WITHOUT REDRAWING THE CONTROL — QA-18. Measured, these render 13×13 CSS pixels, which is a
+  // target roughly a ninth of the area of the 44px minimum the token set carries. They are exempt from that
+  // minimum under the standard's own inline-control carve-out, but 13px is still below the 24px floor that
+  // applies to everything, so the box is grown to the compact target.
+  //
+  // ⚠ `min-block-size`/`min-inline-size` GROW THE BOX, NOT THE GLYPH. The engine keeps drawing the tick at
+  // its native size and centres it, so the control looks unchanged and only its hit area changes. The
+  // entry-control minimum above is deliberately NOT reused: 44px would leave a 13px tick floating in a 44px
+  // square and read as a rendering fault.
+  min-inline-size: var(--target-size-compact);
+  min-block-size: var(--target-size-compact);
+
+  // THE INTERACTIVE STATES — QA-34. Neither state existed: hovering and pressing a checkbox produced no
+  // change whatever, so the only control kind in the application with no state feedback at all was the one
+  // that carries every policy switch on the membership screen.
+  //
+  // A ring rather than a border or a size change, for the same reason as above — an outer `box-shadow` is
+  // painted outside the box without joining the layout, so fourteen switches in a grid cannot be nudged by
+  // being hovered. `accent-color` is left alone: overriding it on hover would repaint the tick itself and
+  // read as the value changing.
+  &:hover:not(:disabled) {
+    box-shadow: 0 0 0 var(--border-width) var(--color-primary-hover);
+  }
+
+  // Twice the hover ring, derived from the same token rather than stated as a second length, so the two
+  // states stay in proportion if the border token is ever retuned.
+  &:active:not(:disabled) {
+    box-shadow: 0 0 0 calc(var(--border-width) * 2) var(--color-primary-hover);
+  }
 }
 
 //  5. ACTIONS — button
@@ -190,6 +262,21 @@ button {
   &:active {
     background-color: var(--color-selected);
   }
+}
+
+// THE SHARED PRIMARY-ACTION TREATMENT
+// ⚠ WHAT IT CLOSES, measured across the four screens that create or amend a record: the row of commands at the
+// foot of each form gave the operator NO indication which of them was the one that saved. All of them were the
+// same bordered button in the same weight, so "Update" beside "Cancel" beside "Delete" read as three equal
+// choices - and on one of the four the saving command was a borderless link-like affordance in the page header
+// instead, i.e. a different species in a different place from its three siblings.
+//
+// The distinction is carried by WEIGHT and by weight alone. A filled primary would have to invent a colour
+// treatment this vocabulary does not declare, and the token set is closed at nine colours; weight is already a
+// declared axis, costs no contrast, and cannot shift layout because the box is floored on both axes for every
+// button in the application.
+.form-action--primary {
+  font-weight: var(--font-weight-bold);
 }
 
 // THE SHARED PAGE-ACTION AFFORDANCE
@@ -323,6 +410,25 @@ textarea[readonly] {
   }
 }
 
+//  9a. NOTE REGION
+
+// A persistent explanatory note that belongs to ONE field and is projected into it — the unit of a numeric
+// value, the reason a choice is unavailable. It is not `form-help`: help is a disclosure the reader opens,
+// whereas a note is always on screen and is usually the target of the control's own `aria-describedby`.
+//
+// ⚠ THE FULL BASIS IS THE WHOLE POINT OF THIS CLASS. The shared field lays its control area out as a wrapping
+// flex row, so without a basis the note would try to share a line with the control and be squeezed into
+// whatever was left over. With one it takes its own line, at the field's full width, directly beneath the
+// control it describes — which is what keeps it from being placed by a screen's own settings grid and ending
+// up in a different column from its field.
+.form-note {
+  flex-basis: var(--size-full);
+  margin-block: 0;
+  color: var(--color-text-muted);
+  font-weight: var(--font-weight-normal);
+  overflow-wrap: anywhere;
+}
+
 //  9. HELP REGION
 
 .form-help {
@@ -331,8 +437,16 @@ textarea[readonly] {
 
   padding: var(--space-1);
 
-  border: var(--border-width) var(--border-style) currentColor;
+  // ⚠ THE BORDER NAMES A TOKEN AND NO LONGER INHERITS `currentColor`, for the reason recorded on the shared
+  // field's own help panel: inherited it computed BLACK, which is not in the colour vocabulary, and it changed
+  // with whatever text enclosed the panel. The STRONG border token is the one named, for the reason recorded
+  // there too — this panel's fill is the same secondary surface that some sections are already filled with.
+  border: var(--border-width) var(--border-style) var(--color-border-strong);
   border-radius: var(--radius-sm);
+
+  // The middle step of the elevation scale — a help panel is a transient disclosure surface, above the inline
+  // banners that carry step one and below the modal dialog that carries step three.
+  box-shadow: var(--elevation-2);
 
   font-size: var(--font-size-md);
   font-weight: var(--font-weight-normal);

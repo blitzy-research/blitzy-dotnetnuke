@@ -7,6 +7,7 @@ import { firstValueFrom } from 'rxjs';
 import type { ProblemDetails, ValidationProblemDetails } from '../models/problem-details.model';
 import { NotificationService, presentedInContext } from '../services/notification.service';
 import type { AppNotification, NotificationSeverity } from '../services/notification.service';
+import { CORRELATION_ID_HEADER } from './correlation-id.interceptor';
 import { errorInterceptor } from './error.interceptor';
 
 // ENDPOINTS
@@ -63,7 +64,7 @@ const NETWORK_UNAVAILABLE_TEXT =
   'The server could not be reached. Check your connection and try again.';
 
 /** Introduces the support reference when one is quoted. */
-const REFERENCE_LABEL = 'Reference:';
+const REFERENCE_LABEL = 'If you report this, quote reference';
 
 /** A canonical identifier as the reverse proxy returns it on a response. */
 const GATEWAY_CORRELATION_ID = '4d19ae7c1b8f4e2a9d6c3f5b7a091e2d';
@@ -594,7 +595,7 @@ describe('errorInterceptor', () => {
       // environment-invariant - the server's detail is fixed text per status and never carries an exception
       // message, a stack trace, a file path or a product version - and an exact match is what pins that no
       // diagnostic internals leaked into what an operator reads.
-      expect(message).toBe(`An unexpected error occurred. ${REFERENCE_LABEL} ${TRACE_ID}`);
+      expect(message).toBe(`An unexpected error occurred. ${REFERENCE_LABEL} ${TRACE_ID}.`);
       expect(severities()).toEqual(['error']);
     });
 
@@ -615,7 +616,7 @@ describe('errorInterceptor', () => {
       expect(message)
         .withContext('the findable identifier wins, and only one is quoted')
         .not.toContain(TRACE_ID);
-      expect(message).toBe(`An unexpected error occurred. ${REFERENCE_LABEL} ${CORRELATION_ID}`);
+      expect(message).toBe(`An unexpected error occurred. ${REFERENCE_LABEL} ${CORRELATION_ID}.`);
     });
 
     it('falls back to the response header when the body carries no correlation identifier', async () => {
@@ -641,7 +642,7 @@ describe('errorInterceptor', () => {
       expect(onlyMessage())
         .withContext('the identifier the proxy returned is what the operator quotes')
         .toBe(
-          `The application is temporarily unavailable. ${REFERENCE_LABEL} ${GATEWAY_CORRELATION_ID}`,
+          `The application is temporarily unavailable. ${REFERENCE_LABEL} ${GATEWAY_CORRELATION_ID}.`,
         );
     });
 
@@ -705,7 +706,14 @@ describe('errorInterceptor', () => {
       expect(message).not.toContain(GATEWAY_CORRELATION_ID);
     });
 
-    it('is omitted for a refusal, which is already self-explanatory', async () => {
+    // ⚠ INVERTED FROM WHAT THIS ONCE REQUIRED, AND THE INVERSION IS THE FIX. It asserted that every one
+    // of the six refusal statuses quoted NO identifier, on the reasoning that a refusal explains itself to
+    // whoever provoked it. That holds for a `400` an operator can see in their own form; it fails badly
+    // for the rest. A `404` on a record someone was sent a link to, a `403` they believe they should have
+    // passed, a `409` whose other party they cannot see - all refusals, all needing a support report, and
+    // all left with nothing to quote. The banner meanwhile rendered `Reference:` from the same document,
+    // so the two surfaces contradicted each other about one response.
+    it('is quoted for every refusal too, because a refusal is exactly what gets reported', async () => {
       const refusals: readonly number[] = [400, 403, 404, 409, 422, 429];
       const raisedMessages: string[] = [];
 
@@ -721,12 +729,16 @@ describe('errorInterceptor', () => {
         raisedMessages.push(await messageFrom(body, status, 'Refused'));
       }
 
-      const joined = raisedMessages.join('\u0000');
-
       expect(raisedMessages.length).toBe(refusals.length);
-      expect(joined).not.toContain(REFERENCE_LABEL);
-      expect(joined).not.toContain(TRACE_ID);
-      expect(joined).not.toContain(CORRELATION_ID);
+
+      for (const [index, raised] of raisedMessages.entries()) {
+        expect(raised)
+          .withContext(`status ${refusals[index]} must offer something to quote`)
+          .toContain(REFERENCE_LABEL);
+        // `correlationId` wins over `traceId` where a document carries both, which is the
+        // precedence `problemSupportReference` already publishes.
+        expect(raised).toContain(CORRELATION_ID);
+      }
     });
 
     it('is absent from the message when the document carried none', async () => {
@@ -1018,6 +1030,56 @@ describe('errorInterceptor', () => {
       expect(severities()).toEqual(['error']);
     });
 
+    // ⚠ THE ONLY REFERENCE THAT SURVIVES A FAILURE WITH NO RESPONSE. Every other route to a reference reads
+    // the ANSWER - the problem document's `correlationId`, or the response header - and a request that was
+    // aborted, blocked, or sent while the network was down has no answer to read. This branch passed a
+    // hard-coded null on the reasoning that there is no server-side reference, which is true and beside the
+    // point: the identifier this application generated for the request still exists, and if the request did
+    // reach the API before the connection broke, the server logged this very value.
+    it('quotes the identifier it put on the outbound request when no response arrives', async () => {
+      const pending = firstValueFrom(
+        http.get(PORTALS_URL, { headers: { [CORRELATION_ID_HEADER]: CORRELATION_ID } }),
+      );
+
+      httpMock.expectOne(PORTALS_URL).error(new ProgressEvent('error'), {
+        status: 0,
+        statusText: '',
+      });
+
+      await expectAsync(pending).toBeRejected();
+
+      const entry: AppNotification = queued()[0];
+
+      expect(entry.reference)
+        .withContext('a transport failure is still reportable to support')
+        .toBe(CORRELATION_ID);
+      // The quoted reference ends the sentence, exactly as it does for every other message this interceptor
+      // composes - see the cases above. A message that stopped mid-sentence on this one branch would be the
+      // only one that did.
+      expect(entry.message).toBe(
+        `${NETWORK_UNAVAILABLE_TEXT} ${REFERENCE_LABEL} ${CORRELATION_ID}.`,
+      );
+    });
+
+    it('quotes nothing when the outbound identifier is not canonical', async () => {
+      // A caller-supplied header must not be able to put arbitrary text in front of an operator.
+      const pending = firstValueFrom(
+        http.get(PORTALS_URL, { headers: { [CORRELATION_ID_HEADER]: 'not-an-identifier' } }),
+      );
+
+      httpMock.expectOne(PORTALS_URL).error(new ProgressEvent('error'), {
+        status: 0,
+        statusText: '',
+      });
+
+      await expectAsync(pending).toBeRejected();
+
+      const entry: AppNotification = queued()[0];
+
+      expect(entry.reference).toBeNull();
+      expect(entry.message).toBe(NETWORK_UNAVAILABLE_TEXT);
+    });
+
     it('falls back by status when the body is a proxy error page rather than JSON', async () => {
       const pending = firstValueFrom(http.get(PORTALS_URL, { responseType: 'text' }));
 
@@ -1185,10 +1247,17 @@ describe('errorInterceptor', () => {
       // Structural as well as appended: the member is what survives the queue's length
       // bound, which is the property the previous concatenation could not offer.
       expect(entry.reference).toBe(CORRELATION_ID);
-      expect(entry.message).toBe(`An unexpected error occurred. ${REFERENCE_LABEL} ${CORRELATION_ID}`);
+      expect(entry.message).toBe(`An unexpected error occurred. ${REFERENCE_LABEL} ${CORRELATION_ID}.`);
     });
 
-    it('quotes no reference on a refusal, and leaves the member null', async () => {
+    // ⚠ THIS SPECIFICATION IS INVERTED FROM WHAT IT ONCE ASSERTED, AND THE INVERSION IS THE FIX. It
+    // required that a refusal quote NO reference, on the reasoning that a refusal is self-explanatory to
+    // whoever provoked it. Measured against real reports, that reasoning fails exactly where help is most
+    // needed: a `404` on a record someone was sent a link to, a `403` they believe they should have
+    // passed, a `409` whose other party they cannot see. Those are refusals, and they were the cases with
+    // nothing to quote. Worse, the two surfaces disagreed - the banner rendered `Reference:` from the very
+    // same document while the notification beside it showed none.
+    it('quotes the reference on a refusal too, so every failure can be reported', async () => {
       const body: ProblemDetails = {
         title: 'Conflict',
         status: 409,
@@ -1200,8 +1269,42 @@ describe('errorInterceptor', () => {
 
       const entry: AppNotification = queued()[0];
 
-      // A refusal is self-explanatory to the operator who provoked it, so an identifier
-      // would add noise and invite them to report a working system as broken.
+      expect(entry.reference)
+        .withContext('the identifier is carried structurally, so the queue bound cannot truncate it away')
+        .toBe(CORRELATION_ID);
+      expect(entry.message).toContain(REFERENCE_LABEL);
+      expect(entry.message).toContain(CORRELATION_ID);
+    });
+
+    it('quotes the reference on a not-found, which is the most reported refusal of all', async () => {
+      const body: ProblemDetails = {
+        title: 'Not Found',
+        status: 404,
+        detail: 'That role could not be found.',
+        traceId: TRACE_ID,
+      };
+
+      await expectRejection(body, 404, 'Not Found');
+
+      const entry: AppNotification = queued()[0];
+
+      expect(entry.reference).toBe(TRACE_ID);
+      expect(entry.message).toContain(REFERENCE_LABEL);
+    });
+
+    it('still quotes nothing when the server supplied no identifier at all', async () => {
+      const body: ProblemDetails = {
+        title: 'Forbidden',
+        status: 403,
+        detail: 'You are not permitted to read this portal.',
+      };
+
+      await expectRejection(body, 403, 'Forbidden');
+
+      const entry: AppNotification = queued()[0];
+
+      // Availability is now the ONLY test, so absence must still mean absence rather than an
+      // invented or blank reference.
       expect(entry.reference).toBeNull();
       expect(entry.message).not.toContain(REFERENCE_LABEL);
     });

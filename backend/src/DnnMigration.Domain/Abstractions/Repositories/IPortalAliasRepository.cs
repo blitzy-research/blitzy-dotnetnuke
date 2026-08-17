@@ -1,3 +1,4 @@
+using DnnMigration.Domain.Common;
 using DnnMigration.Domain.Entities;
 
 namespace DnnMigration.Domain.Abstractions.Repositories;
@@ -43,21 +44,33 @@ public interface IPortalAliasRepository
     Task<PortalAlias?> GetByAliasAsync(string httpAlias, int portalId, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Returns every alias across the installation whose stored host name is exactly one of the supplied
-    /// candidate values.
+    /// Returns, for every alias across the installation whose stored host name is exactly one of the
+    /// supplied candidate values, the facts a request's tenant snapshot is built from.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Every match is returned rather than one chosen row. The host-name column carries an
     /// installation-wide unique constraint, so a second row means the data is defective, and the legacy
     /// resolution procedure collapsed multiple matches with <c>min(PortalID)</c> - returning one row here
     /// would quietly reinstate that cross-tenant defect.
+    /// </para>
+    /// <para>
+    /// ⚠ THE PROJECTION IS THE WHOLE POINT OF THIS MEMBER, and an implementation that satisfies it by
+    /// loading portals as entities has not satisfied it. Two of the nine facts - the administrator and
+    /// registered-user ROLE NAMES - are not columns on <c>Portals</c>, and the only route to them through
+    /// the object graph is the portal's whole role collection. Taking that route made this lookup return one
+    /// row per role of the matched tenant, with every <c>Portals</c> column repeated on each, and made the
+    /// cost of resolving a tenant grow with the number of roles that tenant holds - on every authenticated
+    /// request, for a question whose answer is one row. An implementation resolves the two names BY KEY.
+    /// </para>
     /// </remarks>
     /// <param name="httpAliasCandidates">The candidate addresses to match, exactly as supplied.</param>
     /// <param name="cancellationToken">Token observed while the operation is in flight.</param>
     /// <returns>
-    /// Every alias whose host name matches any candidate, in a stable order; empty when none matches.
+    /// One resolution per alias whose host name matches any candidate, in a stable order; empty when none
+    /// matches.
     /// </returns>
-    Task<IReadOnlyList<PortalAlias>> GetAllByHttpAliasAsync(
+    Task<IReadOnlyList<TenantResolution>> ResolveTenantsByHttpAliasAsync(
         IReadOnlyList<string> httpAliasCandidates,
         CancellationToken cancellationToken = default);
 
@@ -106,7 +119,7 @@ public interface IPortalAliasRepository
     /// The member that makes the legacy wildcard explicit, which is why it takes no parameter: a distinct
     /// question is asked by calling a distinct member rather than by passing a magic value to a shared one.
     /// Intended for installation-wide work, not for resolving one request - resolution matches through <see
-    /// cref="GetAllByHttpAliasAsync"/> and must not filter this result in memory.
+    /// cref="ResolveTenantsByHttpAliasAsync"/> and must not filter this result in memory.
     /// </remarks>
     /// <param name="cancellationToken">Token observed while the operation is in flight.</param>
     /// <returns>Every alias in a stable order; empty when the installation has none.</returns>

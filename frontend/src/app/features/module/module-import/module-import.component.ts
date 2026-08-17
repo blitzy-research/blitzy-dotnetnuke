@@ -8,6 +8,8 @@ import {
   signal,
 } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
+import { MODULE_LIST_ROUTE } from '../../../core/config/app-routes.config';
+import { ListReturnStore } from '../../../core/state/list-return.store';
 import { Router } from '@angular/router';
 
 import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
@@ -60,8 +62,19 @@ interface ModuleImportChoice {
 /** The screen title. */
 const IMPORT_TITLE = 'Import Module';
 
-/** The lead sentence, re-authored from the paragraph inside `ModuleHelp.Text`. */
-const IMPORT_SUBTITLE = 'Administrators can import content for the specified module.';
+/**
+ * The lead sentence.
+ *
+ * ⚠ THE LEGACY SENTENCE IS CARRIED VERBATIM AND THEN CONTINUED, WHICH IS NOT THE SAME AS REPLACING IT. The
+ * first sentence is the paragraph inside `Import.ascx.resx` key `ModuleHelp.Text`, character for character.
+ * What follows is net new, and it is there because the legacy screen named the operation and its audience and
+ * said nothing about what it consumes or what it does to the module - so an operator could not tell whether
+ * importing ADDS to the current content or REPLACES it, which is the one fact worth knowing before pressing
+ * the button. Preserving the wording and stating the consequence are not in competition, so both are done.
+ */
+const IMPORT_SUBTITLE =
+  'Administrators can import content for the specified module. The content is read from an XML document on '
+  + 'this device and replaces the module\u2019s current content.';
 
 /**
  * The module field's label. MIGRATION: NET-NEW, BECAUSE THE FIELD IS NET-NEW. The legacy screen had no
@@ -93,9 +106,17 @@ function formatBytes(bytes: number): string {
 
 /**
  * Guidance for the document field. The first clause is `plFile.Help` verbatim; the second states the
- * published byte limit, because a limit an operator cannot see is one they can only meet by accident.
+ * accepted extension and the third the published byte limit.
+ *
+ * ⚠ THE EXTENSION RESTRICTION WAS ENFORCED SILENTLY. The file input carries `accept=".xml,text/xml,
+ * application/xml"`, so a native picker hides everything else and an operator who has a `.zip` or a `.txt`
+ * export sees an empty folder with no explanation - and the restriction is not a native guarantee either,
+ * because a dragged or pasted file bypasses `accept` entirely and is refused later by the parse. A limit an
+ * operator cannot see is one they can only meet by accident.
  */
-const FILE_FIELD_HELP = `Select the import file (maximum ${formatBytes(MODULE_IMPORT_MAX_FILE_BYTES)})`;
+const FILE_FIELD_HELP =
+  `Select the import file. XML documents only (maximum `
+  + `${formatBytes(MODULE_IMPORT_MAX_FILE_BYTES)})`;
 
 /**
  * The message shown when the chosen document is larger than the transfer contract accepts. MIGRATION:
@@ -140,6 +161,15 @@ const IMPORT_SUCCEEDED_MESSAGE = 'Content was imported into the module.';
 /** Shown in place of the picker when the tenant has no modules to offer. */
 const NO_MODULES_MESSAGE = 'There are no modules available to import content into.';
 
+/**
+ * Shown in place of {@link NO_MODULES_MESSAGE} when the read that should have produced the picker FAILED.
+ * The distinction matters more here than anywhere else on this screen: the two states look identical and
+ * only one of them is a statement about the tenant's data.
+ */
+const MODULES_UNREAD_MESSAGE =
+  'The modules that content could be imported into could not be read, so no destination can be chosen ' +
+  'yet. Use Try again above once the fault above is resolved.';
+
 /** Announced while the module list is being read. */
 const LOADING_MODULES_LABEL = 'Loading modules…';
 
@@ -150,8 +180,6 @@ const IMPORTING_LABEL = 'Importing…';
 // FIXED VALUES
 // =======================================================================================
 
-/** Where the abandon action goes. */
-const MODULE_LIST_ROUTE = '/modules';
 
 // MIGRATION: the page size a picker needs is no longer declared here. The listing defaults to ten rows,
 // which would hide most of a tenant's modules behind paging a picker has no way to expose, and this screen
@@ -296,6 +324,9 @@ export class ModuleImportComponent {
   /** Used for both the abandon action and the post-import return. */
   private readonly router = inject(Router);
 
+  /** Where the listing stands, so a return lands on the page, ordering and search it was showing. */
+  private readonly listReturn = inject(ListReturnStore);
+
   /**
    * Used to notice that the operator left while a document was being read. Reading a document is the one
    * genuinely awaited step on this screen, so it is the one place where work can complete after the
@@ -327,6 +358,8 @@ export class ModuleImportComponent {
 
   protected readonly noModulesMessage = NO_MODULES_MESSAGE;
 
+  protected readonly modulesUnreadMessage = MODULES_UNREAD_MESSAGE;
+
   protected readonly loadingModulesLabel = LOADING_MODULES_LABEL;
 
   protected readonly importingLabel = IMPORTING_LABEL;
@@ -342,12 +375,24 @@ export class ModuleImportComponent {
   // -------------------------------------------------------------------------------------
 
   /**
-   * Reports this screen's unsaved entry to the tracker that guards both ways of leaving it. ⚠ THE ROUTE
-   * DECLARES `unsavedChangesGuard` AND THIS SCREEN USED TO REGISTER NOTHING, so the gate was answered by
-   * a reflective sweep over this component's fields.
+   * Registers this screen's unsaved-entry probe with the application's tracker. ⚠ WHY A REGISTRATION
+   * RATHER THAN A ROUTE-LEVEL READ. Leaving a screen happens two ways and only one of them is a router
+   * navigation: Cancel, an in-application link and the browser's Back button are navigations a route
+   * guard can refuse, while closing or reloading the tab is not, and only the browser's own unload prompt
+   * covers that - which needs the dirty state at an arbitrary moment rather than at a navigation.
+   *
+   * ⚠ THE BUSY EXCLUSION WAS REMOVED, AND ITS REMOVAL CLOSES A MEASURED HOLE. This predicate used to read
+   * `dirty && busy === false`, which reported the screen CLEAN for exactly as long as a write was in flight -
+   * so navigating away mid-save was admitted in silence, the departure destroyed the component, and
+   * `takeUntilDestroyed` cancelled the request. The operator lost the write and was told nothing. A form
+   * holding an unfinished write is the LEAST safe moment to leave, not the safest.
+   *
+   * The exclusion was written to stop the application's OWN post-save navigation being challenged, and that
+   * case is already covered properly: every success path replaces the address imperatively, which
+   * `unsavedChangesGuard` admits explicitly. Nothing here has to approximate it a second time.
    */
   private readonly unsavedEntry = inject(UnsavedChangesTracker).watch(
-    () => this.form.dirty && this.busy() === false,
+    () => this.form.dirty,
   );
 
   protected readonly form = new FormGroup<ModuleImportFormModel>({
@@ -407,6 +452,27 @@ export class ModuleImportComponent {
 
   /** Whether there is at least one module to choose from. */
   protected readonly hasModuleChoices = computed<boolean>(() => this.moduleChoices().length > 0);
+
+  /**
+   * Whether the CHOICE READ failed, so an empty picker means "nothing is known" rather than "there is
+   * nothing to import into".
+   *
+   * ⚠ THIS SCREEN WAS THE WORST-AFFECTED SURFACE OF THE STRICT-DECODER DEFECT, AND THE CLAIM IT MADE WAS
+   * FALSE. A single module row holding an unrecognised `Visibility` code made the whole choice read throw;
+   * the store cleared its choice slice; this screen read that empty slice and stated "There are no modules
+   * available to import content into." while twenty-four modules existed. The Import control was disabled
+   * for ever, there was no target chooser at all, and nothing anywhere reported a fault - no console
+   * message and no response above 399. Consulting the failure is what makes the empty picker honest.
+   */
+  protected readonly choicesFailed = this.store.choicesFailed;
+
+  /**
+   * Whether the picker's absence should be explained as a FAILED read. True only when the read failed and
+   * produced nothing, so a stale-but-usable picker is never withdrawn.
+   */
+  protected readonly choicesUnread = computed<boolean>(
+    () => this.choicesFailed() && this.moduleChoices().length === 0,
+  );
 
   protected readonly moduleChoiceSummary = computed<string | null>(() => {
     if (this.store.choicesLoading()) {
@@ -478,15 +544,24 @@ export class ModuleImportComponent {
    * malformed listing left the choices empty, which leaves {@link canSubmit} false forever, and the
    * banner said nothing at all.
    */
-  protected readonly failureSummary = computed<string | null>(() => {
-    const failure = this.ownFailure();
+  // A FALLBACK SENTENCE USED TO BE COMPOSED HERE, AND IT IS GONE BECAUSE THE FAILURE IT COVERED CANNOT
+  // OCCUR ANY MORE. It existed for the one class of failure that carried no problem document: a response
+  // this client could not decode, which is exactly what a module row holding an unrecognised visibility code
+  // produced. The store now synthesises a document for that case - `contractProblem`, titled "Unexpected
+  // response" - so `problem` above is never null for it and the banner has real wording and a real severity
+  // to render. Keeping the fallback would have left a computed that can only ever return null.
 
-    if (failure === null || failure.problem !== null) {
-      return null;
-    }
-
-    return failure.summary.message;
-  });
+  /**
+   * Re-issues the choice read after a failure.
+   *
+   * ⚠ THERE WAS NO WAY BACK FROM A FAILED CHOICE READ, and that is what made this screen DEAD rather than
+   * merely wrong. With the picker withheld, the submit control disabled and no retry anywhere, the only
+   * recovery was to leave the screen and return to it. The command below is the one affordance the failed
+   * state was missing.
+   */
+  protected onRetryChoices(): void {
+    this.store.loadChoices();
+  }
 
   /** The failure code the server published for this screen's refusal, or `null`. */
   private readonly refusalCode = computed<string | null>(() => this.ownFailure()?.code ?? null);
@@ -523,7 +598,12 @@ export class ModuleImportComponent {
       // navigation below, so it was queued and swept before it could be painted.
       this.notifications.retainAcrossNavigation();
 
-      void this.router.navigate([MODULE_LIST_ROUTE], { replaceUrl: true });
+      // The coordinate the listing was showing travels with the return, so an import launched from a sorted,
+      // filtered page lands back on it rather than on an unsorted page one.
+      void this.router.navigate([MODULE_LIST_ROUTE], {
+        queryParams: this.listReturn.coordinateFor(MODULE_LIST_ROUTE),
+        replaceUrl: true,
+      });
     });
 
     effect(() => {
@@ -760,9 +840,11 @@ export class ModuleImportComponent {
     this.store.importModule(request);
   }
 
-  /** Abandons the screen without validating anything. */
+  /** Abandons the screen without validating anything, returning to the coordinate the listing was showing. */
   protected cancel(): void {
-    void this.router.navigate([MODULE_LIST_ROUTE]);
+    void this.router.navigate([MODULE_LIST_ROUTE], {
+      queryParams: this.listReturn.coordinateFor(MODULE_LIST_ROUTE),
+    });
   }
 
   // -------------------------------------------------------------------------------------

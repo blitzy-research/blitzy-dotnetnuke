@@ -566,6 +566,17 @@ function refusalMessage(pending: AwaitedWrite, failure: UserFailure): string {
  * The profile-property catalogue for the tenant: `/settings/profile-definitions`. this one screen
  * replaces two legacy pages and a three-step wizard.
  */
+/**
+ * THE SUBTITLE, UNDER THE APPLICATION'S ONE SUBTITLE RULE. Every screen's header carries exactly one
+ * subtitle stating that screen's SCOPE: the record it acts on when the title does not already name it,
+ * and otherwise what the screen is for, in one line. It never carries a status, a count or a progress
+ * readout - those belong to the live region that owns them, and a count in two places is two owners of
+ * one fact. Measured finding: subtitles appeared on ten of the twenty screens and carried three
+ * different kinds of thing, so a reader could not tell what the slot was for.
+ */
+const PAGE_SUBTITLE =
+  'The profile properties every account on this site can hold.';
+
 @Component({
   selector: 'app-profile-definition-list',
   standalone: true,
@@ -702,23 +713,23 @@ export class ProfileDefinitionListComponent implements OnInit {
   );
 
   /**
-   * The sentence to show when a READ of this screen's failed without a problem document. ⚠ THE FAILURE
-   * THIS MAKES VISIBLE WAS COMPLETELY SILENT. The runtime decoders that check each response against its
-   * published contract run inside the service's own mapping, which is DOWNSTREAM of the interceptor's
-   * error handling — so a `200` whose body does not match its contract throws a plain error with no
-   * document, no status and no support reference. {@link problem} is therefore `null` for it, and this
-   * screen rendered NOTHING: the grid stayed empty, every command that needs a declaration stayed
-   * unusable, and no surface said why.
+   * Whether the CATALOGUE READ failed, so an empty grid means "nothing is known" rather than "this site
+   * declares no profile properties". Measured before this existed: a `403` on an account's own profile
+   * rendered as that very sentence while thirteen properties were declared.
    */
-  protected readonly readFailureSummary: Signal<string | null> = computed<string | null>(() => {
+  protected readonly listFailed: Signal<boolean> = computed<boolean>(() => {
     const failure: UserFailure | null = this.store.failure();
 
-    if (failure === null || failure.problem !== null || !isCatalogueRead(failure.operation)) {
-      return null;
-    }
-
-    return failure.summary.message;
+    return failure !== null && isCatalogueRead(failure.operation);
   });
+
+  // A FALLBACK SENTENCE USED TO BE COMPOSED HERE, AND IT IS GONE BECAUSE THE FAILURE IT COVERED CANNOT
+  // OCCUR ANY MORE. It existed for the one class of failure that carried no problem document: a response
+  // this client could not decode, which reaches a subscriber as a plain error with no status and no body.
+  // The store now synthesises a document for exactly that case - `contractProblem`, titled "Unexpected
+  // response" - so `problem` above is never null and the banner has real wording, a real severity and a
+  // real support reference to render. Keeping the fallback would have left a computed that can only ever
+  // return null.
 
   /** The document from the most recent write of THIS screen's that was refused, or `null`. */
   private readonly writeProblem = signal<ProblemDetails | null>(null);
@@ -785,8 +796,35 @@ export class ProfileDefinitionListComponent implements OnInit {
 
   // THE INLINE FORM
 
+  /**
+   * Registers this screen's unsaved-entry probe with the application's tracker. ⚠ WHY A REGISTRATION
+   * RATHER THAN A ROUTE-LEVEL READ. Leaving a screen happens two ways and only one of them is a router
+   * navigation: Cancel, an in-application link and the browser's Back button are navigations a route
+   * guard can refuse, while closing or reloading the tab is not, and only the browser's own unload prompt
+   * covers that - which needs the dirty state at an arbitrary moment rather than at a navigation.
+   *
+   * ⚠ THE PROBE USED TO SEE ONLY THE INLINE FORM, AND THAT MADE THE REGISTRATION LOOK LIKE PROTECTION IT WAS
+   * NOT PROVIDING. This screen has two independent kinds of unsaved edit: the create-and-edit form, whose
+   * state `form.dirty` reports, and the per-row bulk toggles, which live in signals and never touch the form
+   * at all. Because only the first was asked, toggling rows until Apply Changes lit up and then leaving through
+   * a sidebar link or the browser's Back button departed immediately and lost the edit — measured as the sole
+   * unguarded screen of the seven editing routes tested, even though the route has always declared the gate and
+   * this component has always registered a probe. `hasPendingChanges()` is the same computed the Apply Changes
+   * button is enabled from, so the question the gate asks is now exactly the question the screen already
+   * answers on its own face: if that button is live, there is something to lose.
+   *
+   * ⚠ THE BUSY EXCLUSION WAS REMOVED, AND ITS REMOVAL CLOSES A MEASURED HOLE. This predicate used to read
+   * `dirty && busy === false`, which reported the screen CLEAN for exactly as long as a write was in flight -
+   * so navigating away mid-save was admitted in silence, the departure destroyed the component, and
+   * `takeUntilDestroyed` cancelled the request. The operator lost the write and was told nothing. A form
+   * holding an unfinished write is the LEAST safe moment to leave, not the safest.
+   *
+   * The exclusion was written to stop the application's OWN post-save navigation being challenged, and that
+   * case is already covered properly: every success path replaces the address imperatively, which
+   * `unsavedChangesGuard` admits explicitly. Nothing here has to approximate it a second time.
+   */
   private readonly unsavedEntry = inject(UnsavedChangesTracker).watch(
-    () => this.form.dirty && this.saving() === false,
+    () => this.form.dirty || this.hasPendingChanges(),
   );
 
   /**
@@ -906,6 +944,9 @@ export class ProfileDefinitionListComponent implements OnInit {
 
   // Wording exposed to the template
 
+  /** The one-line scope statement shown beneath the title. */
+  protected readonly pageSubtitle = PAGE_SUBTITLE;
+
   protected readonly pageTitle = PAGE_TITLE;
   protected readonly helpText = HELP_TEXT;
   protected readonly addLabel = ADD_LABEL;
@@ -940,7 +981,31 @@ export class ProfileDefinitionListComponent implements OnInit {
   protected readonly allRequiredLabel = ALL_REQUIRED_LABEL;
   protected readonly allVisibleLabel = ALL_VISIBLE_LABEL;
 
-  protected readonly removalMessage = DELETE_CONFIRM_MESSAGE;
+  /**
+   * The confirmation body: the legacy question verbatim, then WHICH record it means.
+   *
+   * ⚠ THE MEASURED DEFECT. The dialog read only "Are You Sure You Wish To Delete This Item?" and named nothing at
+   * all - searched against every identifier on the page it matched none of them - while being a real modal
+   * that PHYSICALLY COVERS the grid behind it. Measured with the sixth row targeted, it overlaid the three
+   * rows above it and the top of the target itself, so an operator had no way to check what was about to be
+   * destroyed: the record's identity existed only on the triggering control's accessible name, which is
+   * unreachable once the modal holds focus.
+   *
+   * The wording is APPENDED rather than rewritten, so the measured legacy sentence survives unchanged and
+   * this reads as the same question with the answer to "which one" added. A property definition is named by its property name, which is the identifier the grid shows and the
+   * one the endpoint keys on.
+   */
+  protected readonly removalMessage: Signal<string> = computed<string>(() => {
+    const target: ProfilePropertyDefinition | null = this.removalTarget();
+
+    if (target === null) {
+      return DELETE_CONFIRM_MESSAGE;
+    }
+
+    const named: string = target.propertyName.trim();
+
+    return named.length === 0 ? DELETE_CONFIRM_MESSAGE : `${DELETE_CONFIRM_MESSAGE} ${named}`;
+  });
   protected readonly fieldText = FIELD_TEXT;
 
   /**
@@ -1139,7 +1204,7 @@ export class ProfileDefinitionListComponent implements OnInit {
   /** Discards every staged edit and re-reads the catalogue. */
   protected refresh(): void {
     this.draft.set(new Map<number, GridEdits>());
-    this.store.loadProfileDefinitions();
+    this.store.refreshProfileDefinitions();
   }
 
   // THE INLINE FORM

@@ -1,7 +1,11 @@
 import { inject } from '@angular/core';
 import type { RedirectFunction, Routes } from '@angular/router';
 
-import { SIGN_IN_ROUTE } from './core/config/app-routes.config';
+import {
+  SIGN_IN_ROUTE,
+  credentialRemediationRoute,
+  profileRemediationRoute,
+} from './core/config/app-routes.config';
 import { authGuard } from './core/guards/auth.guard';
 import { permissionGuard } from './core/guards/permission.guard';
 import { unsavedChangesGuard } from './core/guards/unsaved-changes.guard';
@@ -28,24 +32,6 @@ export const HOST_LANDING_ROUTE = `/${ROOT_REDIRECT_PATH}`;
 /** Where a TENANT ADMINISTRATOR who is not a host account lands at the application root. */
 export const TENANT_LANDING_ROUTE = '/modules';
 
-/**
- * @param userId The signed-in account, which is also the only account this address may name — the
- * server's allowance requires the route's account to BE the caller.
- * @returns The absolute address of that account's password screen.
- */
-export function credentialRemediationRoute(userId: number): string {
-  return `/users/${String(userId)}/password`;
-}
-
-/**
- * Where a caller with an outstanding MANDATORY PROFILE COMPLETION is sent.
- *
- * @param userId The signed-in account, which is also the only account this address may name.
- * @returns The absolute address of that account's profile screen.
- */
-export function profileRemediationRoute(userId: number): string {
-  return `/users/${String(userId)}/profile`;
-}
 
 /** @returns The address the root resolves to for the caller arriving at it. */
 export const rootLandingRedirect: RedirectFunction = () => {
@@ -93,24 +79,64 @@ export const APP_ROUTES: Routes = [
     /** Tenant administration. Five children; see `features/portal/portal.routes.ts`. */
     path: ROOT_REDIRECT_PATH,
     canActivate: [authGuard],
+    // ⚠ `canActivateChild` IS NOT A DUPLICATE OF THE LINE ABOVE, AND REMOVING IT REOPENS A MEASURED DEFECT.
+    // Angular does not re-run a RETAINED route's `canActivate`. Navigating between two children of this
+    // group leaves this node activated, so the gate above ran once on entry and never again - and an
+    // account carrying a mandatory obligation could walk from the screen that discharges it to any sibling
+    // screen completely ungated. That was observed in a browser: a caller owing a password change followed
+    // the header's "Manage Profile" link out of `/users/{id}/password`, no guard ran at all, and the server
+    // then refused the screen's own data. `canActivateChild` runs on EVERY child activation, sibling to
+    // sibling included, which is the behaviour this gate needs. The two together cost nothing: a refusal
+    // short-circuits the navigation, so the obligation is still announced exactly once.
+    canActivateChild: [authGuard],
     loadChildren: () => import('./features/portal/portal.routes').then((m) => m.PORTAL_ROUTES),
   },
   {
     /** Module administration. */
     path: 'modules',
     canActivate: [authGuard],
+    // ⚠ `canActivateChild` IS NOT A DUPLICATE OF THE LINE ABOVE, AND REMOVING IT REOPENS A MEASURED DEFECT.
+    // Angular does not re-run a RETAINED route's `canActivate`. Navigating between two children of this
+    // group leaves this node activated, so the gate above ran once on entry and never again - and an
+    // account carrying a mandatory obligation could walk from the screen that discharges it to any sibling
+    // screen completely ungated. That was observed in a browser: a caller owing a password change followed
+    // the header's "Manage Profile" link out of `/users/{id}/password`, no guard ran at all, and the server
+    // then refused the screen's own data. `canActivateChild` runs on EVERY child activation, sibling to
+    // sibling included, which is the behaviour this gate needs. The two together cost nothing: a refusal
+    // short-circuits the navigation, so the obligation is still announced exactly once.
+    canActivateChild: [authGuard],
     loadChildren: () => import('./features/module/module.routes').then((m) => m.MODULE_ROUTES),
   },
   {
     /** Account administration. */
     path: 'users',
     canActivate: [authGuard],
+    // ⚠ `canActivateChild` IS NOT A DUPLICATE OF THE LINE ABOVE, AND REMOVING IT REOPENS A MEASURED DEFECT.
+    // Angular does not re-run a RETAINED route's `canActivate`. Navigating between two children of this
+    // group leaves this node activated, so the gate above ran once on entry and never again - and an
+    // account carrying a mandatory obligation could walk from the screen that discharges it to any sibling
+    // screen completely ungated. That was observed in a browser: a caller owing a password change followed
+    // the header's "Manage Profile" link out of `/users/{id}/password`, no guard ran at all, and the server
+    // then refused the screen's own data. `canActivateChild` runs on EVERY child activation, sibling to
+    // sibling included, which is the behaviour this gate needs. The two together cost nothing: a refusal
+    // short-circuits the navigation, so the obligation is still announced exactly once.
+    canActivateChild: [authGuard],
     loadChildren: () => import('./features/user/user.routes').then((m) => m.USER_ROUTES),
   },
   {
     /** Security role administration. Four children; see `features/role/role.routes.ts`. */
     path: 'roles',
     canActivate: [authGuard],
+    // ⚠ `canActivateChild` IS NOT A DUPLICATE OF THE LINE ABOVE, AND REMOVING IT REOPENS A MEASURED DEFECT.
+    // Angular does not re-run a RETAINED route's `canActivate`. Navigating between two children of this
+    // group leaves this node activated, so the gate above ran once on entry and never again - and an
+    // account carrying a mandatory obligation could walk from the screen that discharges it to any sibling
+    // screen completely ungated. That was observed in a browser: a caller owing a password change followed
+    // the header's "Manage Profile" link out of `/users/{id}/password`, no guard ran at all, and the server
+    // then refused the screen's own data. `canActivateChild` runs on EVERY child activation, sibling to
+    // sibling included, which is the behaviour this gate needs. The two together cost nothing: a refusal
+    // short-circuits the navigation, so the obligation is still announced exactly once.
+    canActivateChild: [authGuard],
     loadChildren: () => import('./features/role/role.routes').then((m) => m.ROLE_ROUTES),
   },
   {
@@ -194,3 +220,11 @@ export const APP_ROUTES: Routes = [
 ];
 
 export const routes: Routes = APP_ROUTES;
+
+/**
+ * Re-exported from the shared route configuration, which is where they now live so that the ROUTE GATE can
+ * compare against them without importing this module — this module imports the gate, so the reverse edge
+ * would be a cycle. Re-exported rather than moved silently, because the route table is where a reader
+ * looks for the address of a screen.
+ */
+export { credentialRemediationRoute, profileRemediationRoute };

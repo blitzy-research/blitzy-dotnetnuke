@@ -20,9 +20,11 @@
     [formControl]="term"
     [placeholder]="placeholder"
     [attr.maxlength]="maxTermLength"
+    [attr.aria-describedby]="limitId"
     (keydown.enter)="submit($event)"
     autocomplete="off"
   />
+
 
   <!--
     MIGRATION: the legacy shared label control set a tab index of minus one on both its help link and
@@ -51,6 +53,24 @@
     Search
   </button>
 </div>
+
+<!--
+  THE TYPING BOUND, STATED WHERE IT IS HEARD. A native `maxlength` stops accepting keystrokes without
+  saying anything: measured with a 300-character term, 256 characters were kept and the rest were dropped
+  in silence. Permanently present, because the description above names it and a reference to an absent
+  element is dropped by some assistive technology and read as empty by others.
+-->
+<p class="search-input__limit" data-visually-hidden [id]="limitId">{{ limitDescription }}</p>
+
+<!--
+  THE ADVISORY. Present only when the term actually had to be changed, so it is silent for every ordinary
+  search and cannot become wallpaper. `role="status"` with `aria-live="polite"` announces it without
+  interrupting typing; it is painted as well as announced, because a sighted operator needs to know why the
+  box they can see disagrees with the listing they can see.
+-->
+@if (adjustmentMessage(); as advisory) {
+  <p class="search-input__advisory" role="status" aria-live="polite">{{ advisory }}</p>
+}
 
 <!--
   Both visible strings are authored inline in English; no translation runtime is wired into this

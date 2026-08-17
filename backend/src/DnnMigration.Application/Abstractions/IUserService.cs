@@ -488,19 +488,30 @@ public interface IUserService
     /// </summary>
     /// <param name="portalId">Identifier of the tenant whose published services are listed.</param>
     /// <param name="userId">Identifier of the account whose subscription state annotates each row.</param>
+    /// <param name="request">
+    /// The page of the catalogue to return. The sort field and the filter are refused, because the catalogue
+    /// is published in one order and has no filterable column of its own.
+    /// </param>
     /// <param name="cancellationToken">Token observed while the catalogue is read.</param>
     /// <returns>
-    /// A successful result carrying the catalogue, which is EMPTY - not absent - when the tenant publishes
-    /// no services.
+    /// A successful result carrying one page of the catalogue, which is an EMPTY page - not absent - when the
+    /// tenant publishes no services, or a failed result carrying <c>user.service.paging_invalid</c> when the
+    /// request names an ordering or a filter this collection does not offer.
     /// </returns>
     /// <remarks>
-    /// The read is deliberately UNPAGED, because the read it replaces was: the legacy grid bound the whole
-    /// result and hid itself when the count was zero (<c>:L154</c>). A tenant's set of public roles is
-    /// small by construction - it is a published price list, not a data set.
+    /// MIGRATION: THE LEGACY READ WAS UNPAGED AND THIS ONE IS NOT, which is a deliberate departure. The
+    /// legacy grid bound the whole result and hid itself when the count was zero (<c>:L154</c>), on the
+    /// assumption that a tenant's published price list is small. That assumption does not survive contact
+    /// with a tenant that publishes a thousand roles: the response carried a thousand rows of eighteen
+    /// fields to a subscriber who could act on one of them, and grew with every role added. Every row is
+    /// still read and classified against one instant, so the ANSWERS are unchanged; what is bounded is how
+    /// much of the catalogue crosses the wire in one response.
     /// </remarks>
-    Task<Result<IReadOnlyList<MemberServiceDto>>> ListMemberServicesAsync(
+    /// <exception cref="ArgumentNullException"><paramref name="request"/> is <see langword="null"/>.</exception>
+    Task<Result<PagedResult<MemberServiceDto>>> ListMemberServicesAsync(
         int portalId,
         int userId,
+        MemberServicePagedRequest request,
         CancellationToken cancellationToken = default);
 
     /// <summary>

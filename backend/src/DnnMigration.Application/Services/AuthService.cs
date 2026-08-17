@@ -280,6 +280,31 @@ public sealed class AuthService : IAuthService
     private readonly ISecurityDiagnostics _diagnostics;
 
     /// <summary>
+    /// The remediation outcome already evaluated for each tenant-and-account pair while serving this one
+    /// request.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠ SCOPED TO ONE REQUEST, AND THAT IS WHAT MAKES IT CORRECT RATHER THAN MERELY FASTER. This service is
+    /// registered scoped, so the memo is discarded with the request. A performance review measured
+    /// <see cref="EvaluateRemediationAsync"/> being evaluated TWICE per protected request - once by the
+    /// pipeline stage that confines a caller with outstanding work to the remediation endpoints, and again by
+    /// the authorisation handler that enforces the same rule - each evaluation re-reading the tenant row, the
+    /// account row and the account's credential snapshot, and each duplicate multiplying one-for-one under
+    /// concurrency.
+    /// </para>
+    /// <para>
+    /// Both askers are READ-ONLY and both run BEFORE any endpoint, so there is no write within the request
+    /// for a memoised answer to be stale against; and the contract's own guarantee - that the decision is
+    /// re-read from the stores on every request rather than trusted from a token snapshot - is preserved
+    /// exactly, because the memo never outlives the request. It is keyed by tenant AND account so that a
+    /// request asking about two subjects cannot be answered from the wrong one.
+    /// </para>
+    /// </remarks>
+    private readonly Dictionary<(int PortalId, int UserId), Result<AuthenticationRemediationState>>
+        _remediationBySubject = [];
+
+    /// <summary>
     /// Initialises the service with the collaborators it verifies credentials and issues tokens through.
     /// </summary>
     /// <param name="users">Account resolution, credential state and the sign-in bookkeeping.</param>
@@ -531,6 +556,29 @@ public sealed class AuthService : IAuthService
         switch (loginStatus)
         {
             case UserLoginStatus.UserLockedOut:
+                // ⚠ DISCLOSED TO WHOEVER PROVED THE CREDENTIAL, AND WITHHELD FROM EVERYONE ELSE. Runtime
+                // testing established the cost of withholding it from both: a user who typed their CORRECT
+                // password was told "the account name or credential is not correct", which is false, and was
+                // given no wait time, no counter, no warning on the attempt that triggered the lock and no
+                // recovery route. Across five failures and the sixth correct attempt the sentence never
+                // changed; only the correlation identifier did.
+                //
+                // WHY THIS IS NOT AN ENUMERATION ORACLE, WHICH IS THE REASON IT WAS WITHHELD ORIGINALLY. The
+                // gate is `credentialAccepted`, computed above for every structurally valid attempt and
+                // deliberately available here. Someone probing account names cannot reach this branch,
+                // because they do not hold the credential; they receive the same uniform refusal as before,
+                // byte for byte. Only the account's own holder learns the state of their own account - which
+                // is exactly the standard the approval ladder already meets, and the internal inconsistency
+                // that made the previous uniformity incoherent: a not-approved account IS disclosed
+                // distinctly behind a correct credential, so lockout alone being generic protected nothing
+                // and merely misdirected the one person entitled to know.
+                if (credentialAccepted)
+                {
+                    return Result<LoginResponse>.Failure(
+                        LockedOutCode,
+                        await LockedOutAdvisoryAsync(cancellationToken).ConfigureAwait(false));
+                }
+
                 return await CallerIsEntitledToDetailAsync(portal, cancellationToken).ConfigureAwait(false)
                     ? Result<LoginResponse>.Failure(
                         LockedOutCode,
@@ -888,7 +936,8 @@ public sealed class AuthService : IAuthService
         }
 
         LoginResponse response = rotated.Value;
-        response.User = BuildIdentitySnapshot(portal, account);
+        response.User = await BuildSnapshotAsync(portal, account, _clock.UtcNow, cancellationToken)
+            .ConfigureAwait(false);
         response.MustChangePassword = mustChangePassword;
         response.PasswordExpiring = passwordExpiring;
         response.MustUpdateProfile = mustUpdateProfile;
@@ -957,6 +1006,38 @@ public sealed class AuthService : IAuthService
         int portalId,
         int userId,
         CancellationToken cancellationToken = default)
+    {
+        // Evaluated once per subject per request; see the memo's own remarks for why that is sound and for
+        // what the unmemoised form was measured to cost. A FAILED outcome is remembered too: it means the
+        // subject could not be resolved, which will not become resolvable part-way through one request, and
+        // re-deriving it would repeat the very reads this memo exists to remove.
+        if (_remediationBySubject.TryGetValue((portalId, userId), out Result<AuthenticationRemediationState>? remembered))
+        {
+            return remembered;
+        }
+
+        Result<AuthenticationRemediationState> evaluated = await EvaluateRemediationCoreAsync(
+            portalId,
+            userId,
+            cancellationToken).ConfigureAwait(false);
+
+        _remediationBySubject[(portalId, userId)] = evaluated;
+
+        return evaluated;
+    }
+
+    /// <summary>Evaluates the remediation state of one subject from authoritative storage.</summary>
+    /// <param name="portalId">The tenant the session addresses.</param>
+    /// <param name="userId">The account behind the session.</param>
+    /// <param name="cancellationToken">Token observed for cancellation.</param>
+    /// <returns>
+    /// The blocking state, or a failure when the tenant or the account behind the session can no longer be
+    /// resolved.
+    /// </returns>
+    private async Task<Result<AuthenticationRemediationState>> EvaluateRemediationCoreAsync(
+        int portalId,
+        int userId,
+        CancellationToken cancellationToken)
     {
         Portal? portal = await _portals
             .GetByIdAsync(portalId, includeAliases: false, cancellationToken)
@@ -1039,6 +1120,57 @@ public sealed class AuthService : IAuthService
     private static Result<LoginResponse> Denied()
         => Result<LoginResponse>.Failure(InvalidCredentialsCode, "The account name or credential is not correct.");
 
+    /// <summary>
+    /// The advisory shown to the holder of a locked account's own credential, carrying the wait that
+    /// actually applies to this installation.
+    /// </summary>
+    /// <param name="cancellationToken">Propagates notification that the work should be abandoned.</param>
+    /// <returns>The advisory sentence, ending in a recovery route the caller can actually take.</returns>
+    /// <remarks>
+    /// <para>
+    /// <strong>THE WAIT IS READ, NOT ASSERTED.</strong> The legacy resource hard-coded "10 minutes", which
+    /// was true only for an installation that had not changed <c>AutoAccountUnlockDuration</c>. This reads
+    /// the same host setting <c>TryAutomaticUnlockAsync</c> consults, so the promise and the mechanism cannot
+    /// disagree - and when the installation disables automatic unlocking altogether, NO WAIT IS PROMISED at
+    /// all. Telling someone to wait for a lock that never lifts by itself is worse than telling them nothing,
+    /// because they will wait instead of asking for help.
+    /// </para>
+    /// <para>
+    /// <strong>MIGRATION:</strong> the legacy sentence closed by directing the user to "the Password
+    /// Reminder option" (<c>Login.ascx.resx</c>, key <c>UserLockedOut.Text</c>, rendered at
+    /// <c>Login.ascx.vb:L858</c>). That option does not exist here and cannot: password retrieval was
+    /// removed deliberately, with neither endpoint nor screen, because the legacy store was reversibly
+    /// encrypted and the replacement is a one-way hash. Naming it would be an instruction the user cannot
+    /// follow. The two sentences that remain true are carried, and the pointer is replaced with the route
+    /// that does exist - an administrator, who has a working one-click unlock.
+    /// </para>
+    /// </remarks>
+    private async Task<string> LockedOutAdvisoryAsync(CancellationToken cancellationToken)
+    {
+        int windowMinutes = await ReadHostSettingIntegerAsync(
+            AutoAccountUnlockDurationHostSettingName,
+            DefaultAutoAccountUnlockDurationMinutes,
+            cancellationToken).ConfigureAwait(false);
+
+        const string Opening =
+            "This account has been locked out after too many unsuccessful sign-in attempts.";
+
+        if (windowMinutes <= 0)
+        {
+            // No automatic unlock is configured, so there is nothing to wait for and the only route is a
+            // person.
+            return Opening
+                + " It will not unlock on its own, so ask an administrator to unlock it for you.";
+        }
+
+        string wait = windowMinutes == 1 ? "1 minute" : FormattableString.Invariant($"{windowMinutes} minutes");
+
+        return Opening
+            + FormattableString.Invariant($" Please wait {wait} before trying again.")
+            + " If you cannot wait, or you no longer know the password, ask an administrator to unlock the"
+            + " account or reset it for you.";
+    }
+
     /// <summary>Records one sign-in outcome on the audit trail.</summary>
     /// <param name="outcome">The outcome the attempt produced.</param>
     /// <param name="portalId">The tenant the credential was presented to.</param>
@@ -1107,7 +1239,12 @@ public sealed class AuthService : IAuthService
                 "This account is awaiting verification. Submit the verification code that was sent to it.",
             VerificationCodeInvalidCode =>
                 "The verification code submitted for this account is not correct.",
-            _ => "This account has not been authorised to sign in to this portal.",
+            // ⚠ "THIS SITE" RATHER THAN "THIS PORTAL", AND THE CHANGE IS ABOUT WHAT THE READER CAN SEE. The
+            // sentence is read on a sign-in screen that names no portal anywhere, so a demonstrative pointing
+            // at one asked the reader to resolve a reference the screen had not given them - and "portal" is
+            // this product's internal word for it besides. "This site" points at the thing they are looking
+            // at, which is the only referent available before anyone has signed in.
+            _ => "This account has not been authorised to sign in to this site.",
         };
 
     /// <summary>
@@ -1308,29 +1445,38 @@ public sealed class AuthService : IAuthService
         LoginResponse response = issued.Value;
         response.MustChangePassword = remediation.MustChangePassword;
         response.MustUpdateProfile = remediation.MustUpdateProfile;
-        response.User = BuildIdentitySnapshot(portal, account);
+        response.User = await BuildSnapshotAsync(portal, account, _clock.UtcNow, cancellationToken)
+            .ConfigureAwait(false);
 
         return Result<LoginResponse>.Success(response);
     }
 
-    /// <summary>Builds the authority-minimised identity carried on login and refresh responses.</summary>
-    /// <param name="portal">The tenant the session addresses.</param>
-    /// <param name="account">The authenticated account.</param>
-    /// <returns>Identity and display fields with empty role and permission collections.</returns>
-    private static CurrentUserDto BuildIdentitySnapshot(Portal portal, User account) => new()
-    {
-        UserId = account.UserId,
-        PortalId = portal.PortalId,
-        PortalName = portal.PortalName,
-        Username = account.Username,
-        DisplayName = account.DisplayName,
-        Email = account.Email ?? string.Empty,
-        IsSuperUser = account.IsSuperUser,
-        Roles = [],
-        Permissions = [],
-    };
-
-    /// <summary>Builds the expanded caller snapshot returned only by the current-user read.</summary>
+    /// <summary>Builds the caller snapshot carried by login, by refresh and by the current-user read.</summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THIS IS THE SINGLE SNAPSHOT BUILDER, AND IT REPLACED A SECOND ONE ON PURPOSE. Login and refresh
+    /// previously answered with an "authority-minimised" identity that set <c>Roles</c> and
+    /// <c>Permissions</c> to empty collections, so a caller who signs in and immediately reads the
+    /// current-user endpoint received two DISAGREEING descriptions of the same session moments apart.
+    /// </para>
+    /// <para>
+    /// An empty collection is an ASSERTION, not an omission: it states that the account holds no roles and
+    /// no permissions, which for every administrative caller is simply false. Withholding authority bought no
+    /// confidentiality either: the current-user read publishes exactly these two members to exactly this
+    /// caller a moment later, so the minimised variant disclosed nothing less and merely disagreed with its
+    /// own sibling. ⚠ THIS SAYS NOTHING ABOUT THE ACCESS TOKEN, WHICH STILL CARRIES NO AUTHORITY AT ALL -
+    /// its claims are the subject, the token identifier, the tenant and the issue instant, and authority is
+    /// re-evaluated server-side on every request. A response body is not a credential. It also silently
+    /// reported
+    /// <c>IsPortalAdministrator</c> as false for every administrator, because it never set that member at
+    /// all.
+    /// </para>
+    /// <para>
+    /// The extra reads this costs on a login are the same reads the client's immediate current-user request
+    /// performs regardless, so the work is not new - it is merely done once, in the place that already knows
+    /// the answer.
+    /// </para>
+    /// </remarks>
     /// <param name="portal">The tenant the caller is signed in to.</param>
     /// <param name="account">The account.</param>
     /// <param name="asOfUtc">The instant role validity windows are evaluated against.</param>

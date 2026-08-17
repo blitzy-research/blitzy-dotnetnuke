@@ -763,26 +763,48 @@ public class AuthServiceApplicationTests
             .Which.EventName.Should().Be(AuditEventNames.LoginSuperUser);
     }
 
-    /// <summary>A locked account's lock is disclosed only to a caller already entitled to that detail.</summary>
+    /// <summary>
+    /// A locked account's lock is disclosed to whoever PROVED the credential, and to an entitled caller,
+    /// and to nobody else.
+    /// </summary>
+    /// <param name="credentialMatches">Whether the submitted credential is the account's own.</param>
     /// <param name="callerIsSuperUser">Whether the signed-in caller is an installation-wide account.</param>
     /// <param name="callerIsTenantAdministrator">Whether the signed-in caller administers this tenant.</param>
     /// <param name="expectedCode">The reason code such a caller receives.</param>
     /// <returns>A task representing the assertions.</returns>
     /// <remarks>
-    /// "This account exists and is locked" is itself a disclosure, so an unauthenticated caller receives
-    /// the uniform denial and an administrator receives the detail it needs in order to act.
+    /// <para>
+    /// ⚠ THE FIRST ROW USED TO EXPECT THE UNIFORM DENIAL, AND THAT IS THE DEFECT THIS NOW PROVES CLOSED.
+    /// Runtime testing measured the cost of withholding the lock from the account's own holder: somebody who
+    /// typed their CORRECT password was told "The account name or credential is not correct." - a false
+    /// statement - with no wait time, no counter, no warning on the attempt that triggered the lock and no
+    /// recovery route. Across five failed attempts and the sixth, correct one the sentence never changed;
+    /// only the correlation identifier did.
+    /// </para>
+    /// <para>
+    /// It is still not an enumeration oracle, and the second row is what establishes that. Disclosure is
+    /// gated on the credential having been ACCEPTED, so somebody probing account names never reaches the
+    /// disclosing branch and receives the same uniform refusal as before, byte for byte. This is also the
+    /// standard the approval ladder already met - a not-approved account IS reported distinctly behind a
+    /// correct credential - so lockout alone being generic protected nothing and misdirected the one person
+    /// entitled to know.
+    /// </para>
     /// </remarks>
     [Theory]
-    [InlineData(false, false, InvalidCredentialsCode)]
-    [InlineData(true, false, LockedOutCode)]
-    [InlineData(false, true, LockedOutCode)]
+    [InlineData(true, false, false, LockedOutCode)]
+    [InlineData(false, false, false, InvalidCredentialsCode)]
+    [InlineData(true, true, false, LockedOutCode)]
+    [InlineData(true, false, true, LockedOutCode)]
+    [InlineData(false, true, false, LockedOutCode)]
     public async Task LoginAsync_ALockedAccount_DisclosesTheLockOnlyToAnEntitledCaller(
+        bool credentialMatches,
         bool callerIsSuperUser,
         bool callerIsTenantAdministrator,
         string expectedCode)
     {
         SignInHarness harness = SignInHarness.Ready();
         harness.IsLockedOut = true;
+        harness.CredentialMatches = credentialMatches;
         harness.SignedInCallerIsSuperUser = callerIsSuperUser;
 
         if (callerIsSuperUser || callerIsTenantAdministrator)
@@ -795,6 +817,43 @@ public class AuthServiceApplicationTests
 
         outcome.IsFailure.Should().BeTrue();
         outcome.Reason!.Code.Should().Be(expectedCode);
+    }
+
+    /// <summary>
+    /// The advisory a locked-out account's own holder receives names a wait and a recovery route rather than
+    /// stating an internal fact.
+    /// </summary>
+    /// <returns>A task representing the assertions.</returns>
+    /// <remarks>
+    /// The wait is deliberately not asserted as a literal: it is read from the installation's own automatic
+    /// unlock window, so a fixed number here would be a second source of truth that could disagree with the
+    /// mechanism. What IS asserted is that the sentence is addressed to a person, carries a recovery route,
+    /// and is not the operator-facing sentence an entitled caller receives.
+    /// </remarks>
+    [Fact]
+    public async Task LoginAsync_ALockedAccountsOwnHolder_ReceivesAnActionableAdvisory()
+    {
+        SignInHarness harness = SignInHarness.Ready();
+        harness.IsLockedOut = true;
+
+        Result<LoginResponse> outcome = await harness.LoginAsync();
+
+        outcome.Reason!.Code.Should().Be(LockedOutCode);
+
+        string advisory = outcome.Reason!.Message;
+
+        advisory.Should().Contain(
+            "locked",
+            "the state is named, which is the whole point: the previous sentence denied it");
+        advisory.Should().Contain(
+            "administrator",
+            "and a recovery route is offered, because the legacy pointed at a password reminder this port has no endpoint or screen for");
+        advisory.Should().NotContain(
+            "The account name or credential is not correct.",
+            "the false statement this replaces");
+        advisory.Should().NotContain(
+            FormattableString.Invariant($"Account {UserId}"),
+            "the operator-facing sentence names the identifier; the reader-facing one must not");
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -829,8 +888,17 @@ public class AuthServiceApplicationTests
                 It.IsAny<CancellationToken>()),
             Times.Once);
 
-        outcome.Value.User.Roles.Should().BeEmpty();
-        outcome.Value.User.Permissions.Should().BeEmpty();
+        // ⚠ REVERSED DELIBERATELY. These two assertions used to require EMPTY collections, which is the
+        // behaviour a runtime audit reported as a defect: a caller who signed in and read the current-user
+        // endpoint a moment later received two disagreeing descriptions of one session. An empty collection
+        // is an assertion that the account holds nothing, not an omission, and for an administrator it is
+        // false. Withholding them bought no confidentiality either, because the current-user read publishes
+        // exactly these members to exactly this caller a moment later. The ACCESS TOKEN still carries no
+        // authority at all, which is a separate property and is asserted separately.
+        outcome.Value.User.Roles.Should().NotBeEmpty(
+            "the sign-in answer states the authority the caller actually holds");
+        outcome.Value.User.Permissions.Should().NotBeEmpty(
+            "and states it from the same resolution the current-user read uses, so the two agree");
         outcome.Value.User.PortalId.Should().Be(PortalId, "and minus one survives as a real tenant identifier");
     }
 
@@ -941,8 +1009,8 @@ public class AuthServiceApplicationTests
         outcome.Value.RefreshToken.Should().Be(
             SignInHarness.RotatedRefreshToken,
             "a successor value is issued, which is what retires the one presented");
-        outcome.Value.User.Roles.Should().BeEmpty(
-            "token responses expose identity only; mutable authority is loaded through /auth/me");
+        outcome.Value.User.Roles.Should().NotBeEmpty(
+            "a rotated pair describes the session as the current-user read would, so the two never disagree");
 
         harness.Tokens.Verify(
             tokens => tokens.RefreshAsync(

@@ -13,7 +13,10 @@ import {
   PASSWORD_UPDATE_MESSAGE,
   passwordUpdateMessage,
 } from '../../../core/utils/form-errors.util';
-import { UserPasswordComponent } from './user-password.component';
+import {
+  CREDENTIAL_REMEDIATION_EXPLANATION,
+  UserPasswordComponent,
+} from './user-password.component';
 
 // THE ADDRESSES
 
@@ -403,6 +406,26 @@ describe('UserPasswordComponent', () => {
   /** Every inline message currently shown beside a control. */
   function inlineMessages(): readonly string[] {
     return queryAll('.form-field__error').map((node) => textOf(node));
+  }
+
+  /**
+   * The messages a screen reader would announce FOR ONE CONTROL, resolved the way assistive technology
+   * resolves them: follow the control's own `aria-describedby` to the elements it names and read those.
+   * This is what makes 'the length rule is stated beside the replacement, and the mismatch beside the
+   * confirmation' an observable claim rather than an assumption about internal ordering.
+   */
+  function messagesFor(controlId: string): readonly string[] {
+    const described = control(controlId).getAttribute('aria-describedby');
+
+    if (described === null || described.trim() === '') {
+      return [];
+    }
+
+    return described
+      .trim()
+      .split(/\s+/)
+      .flatMap((id) => Array.from(host().querySelectorAll(`#${id} .form-field__error`)))
+      .map((node) => textOf(node));
   }
 
   /** Every announcement raised, in order, as severity and message. */
@@ -880,10 +903,16 @@ describe('UserPasswordComponent', () => {
   });
 
   describe('the order of the pre-flight rules', () => {
-    it('reports the mismatch BEFORE the policy when a value breaks both', () => {
-      // THE ASSERTION THAT PINS THE ORDER. A six-character value that also fails to match its confirmation
-      // breaks L272 and L278 at once. L272 ran first and exited, so the mismatch is what a person saw —
-      // never the policy statement.
+    it('LEADS with the mismatch but ALSO states the policy when a value breaks both', () => {
+      // THE ASSERTION THAT PINS THE ORDER, AND THE ONE THAT PINS COMPLETE DISCLOSURE. A six-character value
+      // that also fails to match its confirmation breaks L272 and L278 at once.
+      //
+      // ⚠ THIS BLOCK PREVIOUSLY ASSERTED THAT THE POLICY STATEMENT WAS ABSENT, AND THAT WAS THE DEFECT
+      // RATHER THAN THE REQUIREMENT. Legacy hid it only because `Exit Sub` ran before the length check
+      // could - an artifact of early exit, not a validation rule. The consequence was that an operator who
+      // corrected the mismatch was rejected a second time for a rule that had never been stated. What the
+      // legacy order genuinely governs is which failure LEADS, and that is still asserted below: the
+      // mismatch is `firstFailure()`, exactly as before.
       arriveAsSelf();
       enter(CONTROL_ID.currentPassword, CREDENTIAL_IN_FORCE);
       enter(CONTROL_ID.newPassword, SIX_CHARACTER_PASSWORD);
@@ -891,13 +920,26 @@ describe('UserPasswordComponent', () => {
 
       const stated = inlineMessages();
 
-      expect(stated).withContext('L272 wins').toContain(LEGACY_MISMATCH);
-      expect(stated).withContext('L278 never runs').not.toContain(LEGACY_POLICY_STATEMENT);
-      expect(stated).withContext('exactly one message, as the legacy screen showed').toHaveSize(1);
+      expect(stated).withContext('L272 still leads').toContain(LEGACY_MISMATCH);
+      expect(stated)
+        .withContext('L278 is now STATED rather than hidden until the mismatch is fixed')
+        .toContain(LEGACY_POLICY_STATEMENT);
+      expect(stated).withContext('both rules, each beside its own control').toHaveSize(2);
+
+      // AND EACH MESSAGE SITS BESIDE THE CONTROL IT CONCERNS, resolved through the control's own
+      // `aria-describedby` - so the operator reading the confirmation field is told about the mismatch, and
+      // the operator reading the replacement field is told the length requirement.
+      expect(messagesFor(CONTROL_ID.confirmPassword)).toEqual([LEGACY_MISMATCH]);
+      expect(messagesFor(CONTROL_ID.newPassword)).toEqual([LEGACY_POLICY_STATEMENT]);
+      expect(messagesFor(CONTROL_ID.currentPassword))
+        .withContext('supplied, so nothing to say about it')
+        .toEqual([]);
 
       press(CHANGE_HEADING);
 
-      expect(outstandingRequestCount()).toBe(0);
+      // ⚠ THE BEHAVIOUR-PRESERVATION ASSERTION. Disclosing more must not accept more: the same input the
+      // legacy screen refused is still refused, and nothing is sent.
+      expect(outstandingRequestCount()).withContext('still refused, as legacy refused it').toBe(0);
     });
 
     it('reports the policy before the missing credential in force', () => {
@@ -910,9 +952,13 @@ describe('UserPasswordComponent', () => {
 
       const stated = inlineMessages();
 
-      expect(stated).withContext('L278 wins').toContain(LEGACY_POLICY_STATEMENT);
-      expect(stated).withContext('L284 never runs').not.toContain(LEGACY_MISSING);
-      expect(stated).toHaveSize(1);
+      expect(stated).withContext('L278 still leads').toContain(LEGACY_POLICY_STATEMENT);
+      // Both rules are unmet and each concerns a DIFFERENT control, so both are stated. The order still
+      // decides which leads.
+      expect(stated).withContext('L284 is stated too, beside its own control').toContain(LEGACY_MISSING);
+      expect(stated).toHaveSize(2);
+      expect(messagesFor(CONTROL_ID.newPassword)).toEqual([LEGACY_POLICY_STATEMENT]);
+      expect(messagesFor(CONTROL_ID.currentPassword)).toEqual([LEGACY_MISSING]);
     });
 
     it('reports the missing credential in force before the must-differ rule', () => {
@@ -973,15 +1019,55 @@ describe('UserPasswordComponent', () => {
       expect(announcements()).toEqual([{ severity: 'success', message: LEGACY_PASSWORD_CHANGED }]);
     });
 
-    it('shows one message at a time, never a list', () => {
+    it('states EVERY unmet rule at once, so fixing one cannot reveal an unshown one', () => {
+      // ⚠ THIS BLOCK ONCE ASSERTED THE OPPOSITE ('one message at a time, never a list'). That assertion
+      // encoded the legacy early-exit artifact as though it were a requirement, and it is precisely the
+      // behaviour that made this screen reject a corrected value for a rule it had never stated. The rule
+      // set, the wording of every message and the accept/reject decision are all unchanged; only the
+      // completeness of the disclosure is.
       arriveAsSelf();
       enter(CONTROL_ID.newPassword, SIX_CHARACTER_PASSWORD);
       enter(CONTROL_ID.confirmPassword, OTHER_REPLACEMENT);
       press(CHANGE_HEADING);
 
-      expect(inlineMessages())
-        .withContext('every legacy arm exited, so only one could ever be reported')
-        .toHaveSize(1);
+      const stated = inlineMessages();
+
+      // Three rules are unmet at once here: the confirmation differs, the replacement is too short, and the
+      // credential in force was never supplied. All three are stated.
+      expect(stated).toContain(LEGACY_MISMATCH);
+      expect(stated).toContain(LEGACY_POLICY_STATEMENT);
+      expect(stated).toContain(LEGACY_MISSING);
+      expect(stated).withContext('all three, none withheld').toHaveSize(3);
+
+      // Each beside its own control, and still refused.
+      expect(messagesFor(CONTROL_ID.confirmPassword)).toEqual([LEGACY_MISMATCH]);
+      expect(messagesFor(CONTROL_ID.newPassword)).toEqual([LEGACY_POLICY_STATEMENT]);
+      expect(messagesFor(CONTROL_ID.currentPassword)).toEqual([LEGACY_MISSING]);
+      expect(outstandingRequestCount()).toBe(0);
+    });
+
+    it('withholds the must-differ rule while the policy is breached, as legacy could never show both', () => {
+      // The one deliberate suppression. A replacement equal to the credential in force AND too short breaks
+      // L278 and L290 together; legacy exited at L278 so L290 was unreachable. Telling an operator that a
+      // value must change to satisfy the policy AND must change to differ is one instruction twice, so the
+      // must-differ rule is withheld. This cannot turn a rejection into an acceptance, because L278 has
+      // already contributed a rule.
+      arriveAsSelf();
+      enter(CONTROL_ID.currentPassword, SIX_CHARACTER_PASSWORD);
+      enter(CONTROL_ID.newPassword, SIX_CHARACTER_PASSWORD);
+      enter(CONTROL_ID.confirmPassword, SIX_CHARACTER_PASSWORD);
+      press(CHANGE_HEADING);
+
+      const stated = inlineMessages();
+
+      expect(stated).toContain(LEGACY_POLICY_STATEMENT);
+      expect(stated)
+        .withContext('withheld: the replacement must change either way')
+        .not.toContain(PASSWORD_UPDATE_MESSAGE['user.password.not_different']);
+      expect(messagesFor(CONTROL_ID.newPassword))
+        .withContext('one instruction, not the same instruction twice')
+        .toEqual([LEGACY_POLICY_STATEMENT]);
+      expect(outstandingRequestCount()).withContext('still refused').toBe(0);
     });
   });
 
@@ -1949,6 +2035,54 @@ describe('UserPasswordComponent', () => {
       fixture.detectChanges();
     }
 
+    // -------------------------------------------------------------------------------------------------
+    // THE LANDING IS EXPLAINED
+    // -------------------------------------------------------------------------------------------------
+
+    // ⚠ THE MEASURED DEFECT THESE PROVE CLOSED. A caller carrying a mandatory credential change was moved
+    // onto this screen from wherever they asked to go, and the screen presented itself as an ordinary
+    // Manage Password form. Nothing on it said the rest of the site was waiting on this one action.
+
+    it('explains the landing when the caller was moved here to satisfy an obligation', () => {
+      arriveRemediating(7);
+
+      const explanation = query('.user-password__remediation');
+
+      expect(explanation)
+        .withContext('the reason for the landing is stated on the screen the caller was sent to')
+        .not.toBeNull();
+      expect(textOf(explanation))
+        .withContext('and it is the authored sentence, not a paraphrase assembled in the template')
+        .toBe(CREDENTIAL_REMEDIATION_EXPLANATION);
+      expect(CREDENTIAL_REMEDIATION_EXPLANATION)
+        .withContext('which names what to do rather than describing a permanent condition')
+        .toContain('save');
+    });
+
+    it('does not announce the explanation, because the redirect was announced once already', () => {
+      arriveRemediating(7);
+
+      const explanation = query('.user-password__remediation');
+
+      expect(explanation?.getAttribute('role'))
+        .withContext('a standing explanation, marked as such and not as a live status')
+        .toBe('note');
+      expect(explanation?.getAttribute('aria-live'))
+        .withContext('and it carries no politeness setting of its own')
+        .toBeNull();
+      expect(announcements())
+        .withContext('and the screen announces nothing of its own on arrival')
+        .toEqual([]);
+    });
+
+    it('says nothing about an obligation to a caller who has none', () => {
+      arriveAsSelf(account(7));
+
+      expect(query('.user-password__remediation'))
+        .withContext('an operator changing their own password by choice is told nothing about a requirement')
+        .toBeNull();
+    });
+
     it('issues NO account read, because the API refuses that read in this state', () => {
       arriveRemediating(7);
 
@@ -2039,6 +2173,55 @@ describe('UserPasswordComponent', () => {
         .toHaveBeenCalledWith('/', { replaceUrl: true });
     });
 
+    // ⚠ THE SAFE EXIT, WHICH THIS SCREEN DID NOT HAVE EITHER. The legacy credential page declared three saving
+    // commands - change, reset and the question-and-answer save - and no cancel, so an operator who opened it by
+    // mistake, or who typed a credential they then thought better of, had only the browser's own controls. Added
+    // rather than ported, and recorded as such.
+    it('offers a way out, and where it leads depends on who is on the screen', () => {
+      const navigate = spyOn(TestBed.inject(Router), 'navigateByUrl').and.resolveTo(true);
+
+      arriveAsAdministrator();
+
+      const cancel = buttonLabelled('Cancel');
+
+      expect(cancel).withContext('the screen offers an abandon command').not.toBeNull();
+      expect(cancel?.type)
+        .withContext('it cannot submit, so no validator runs on the way out')
+        .toBe('button');
+
+      press('Cancel');
+
+      // An administrator reached this form from the account editor, so that is where leaving returns them - and
+      // WITHOUT replacing the address, so the unsaved-entry gate sees a departure it is entitled to question.
+      expect(navigate).toHaveBeenCalledOnceWith('/users/7');
+      expect(httpMock.match(() => true))
+        .withContext('and nothing is written on the way out')
+        .toHaveSize(0);
+    });
+
+    it('hands a caller changing their own credential back to the root', () => {
+      const navigate = spyOn(TestBed.inject(Router), 'navigateByUrl').and.resolveTo(true);
+
+      arriveAsSelf();
+
+      press('Cancel');
+
+      expect(navigate).toHaveBeenCalledOnceWith('/');
+    });
+
+    it('marks the saving command as the primary one, as the sibling editors do', () => {
+      arriveAsAdministrator();
+
+      const submit = buttons().find((candidate) => candidate.type === 'submit');
+
+      expect(submit?.classList)
+        .withContext('the shared primary treatment')
+        .toContain('form-action--primary');
+      expect(buttonLabelled('Cancel')?.classList)
+        .withContext('and the safe exit is deliberately not primary')
+        .not.toContain('form-action--primary');
+    });
+
     it('leaves a profile completion outstanding when the account owes both', async () => {
       const navigate = spyOn(TestBed.inject(Router), 'navigateByUrl').and.resolveTo(true);
       const storage = TestBed.inject(TokenStorageService);
@@ -2098,6 +2281,89 @@ describe('UserPasswordComponent', () => {
 
       httpMock.expectNone('/api/v1/auth/refresh');
       expect(navigate).not.toHaveBeenCalled();
+    });
+  });
+
+  // ==========================================================================
+  //  #25 — WHAT A CREDENTIAL FORM OWES A PASSWORD MANAGER AND A KEYBOARD
+  // ==========================================================================
+  describe('the account the credential belongs to, and where a refusal takes the reader', () => {
+    it('carries a read-only account field a password manager can attribute the credential to', () => {
+      arriveAsAdministrator(account(7));
+
+      const field = query('#user-password-username');
+
+      expect(field).withContext('the account is stated in the form, not only in the heading').not.toBeNull();
+
+      const input = field as HTMLInputElement;
+
+      expect(input.getAttribute('autocomplete'))
+        .withContext('the token a manager reads to attribute what it saves')
+        .toBe('username');
+      expect(input.readOnly)
+        .withContext('read-only, so it informs a manager without inviting an edit')
+        .toBeTrue();
+      expect(input.value).toBe(account(7).username);
+      expect(input.getAttribute('formcontrolname'))
+        .withContext('and it is not part of the form model, so the request shape is unchanged')
+        .toBeNull();
+    });
+
+    it('marks the confirming control invalid when it differs, so the refusal is reachable', () => {
+      arriveAsSelf(account(7));
+
+      enter('currentPassword', 'Existing-1');
+      enter('newPassword', REPLACEMENT);
+      enter('confirmPassword', `${REPLACEMENT}-different`);
+
+      press('Change Password');
+
+      const confirmation = control('confirmPassword');
+
+      expect(confirmation.classList.contains('ng-invalid'))
+        .withContext('the control itself is invalid, not only the group around it')
+        .toBeTrue();
+      expect(confirmation.getAttribute('aria-invalid'))
+        .withContext('so assistive technology hears it on the control the reader must correct')
+        .toBe('true');
+      expect(document.activeElement)
+        .withContext('and focus is taken there rather than left on the submit')
+        .toBe(confirmation);
+    });
+
+    it('clears the mismatch when the replacement is corrected to agree with the confirmation', () => {
+      arriveAsSelf(account(7));
+
+      enter('currentPassword', 'Existing-1');
+      enter('newPassword', REPLACEMENT);
+      enter('confirmPassword', `${REPLACEMENT}x`);
+
+      expect(control('confirmPassword').classList.contains('ng-invalid')).toBeTrue();
+
+      // Correcting the OTHER field is what used to leave the message stranded: a control's validators run
+      // when that control changes and at no other time.
+      enter('newPassword', `${REPLACEMENT}x`);
+
+      expect(control('confirmPassword').classList.contains('ng-invalid'))
+        .withContext('the refusal follows the values rather than the keystrokes')
+        .toBeFalse();
+    });
+
+    it('reports an empty confirmation as the omission it is', () => {
+      arriveAsSelf(account(7));
+
+      enter('currentPassword', 'Existing-1');
+      enter('newPassword', REPLACEMENT);
+
+      press('Change Password');
+
+      const confirmation = control('confirmPassword');
+
+      expect(confirmation.value).toBe('');
+      expect(confirmation.classList.contains('ng-invalid'))
+        .withContext('an empty confirmation is a refusal on the confirming control')
+        .toBeTrue();
+      expect(document.activeElement).toBe(confirmation);
     });
   });
 });

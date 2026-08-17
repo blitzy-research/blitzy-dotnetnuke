@@ -23,6 +23,15 @@
 }
 
 // THE FAILURE AFFORDANCE ROW
+// The active-filter disclosure - #36. Muted and small: it explains the listing rather than warning about it,
+// and it carries the same two declarations as `.user-list__filter-disclosure` so one statement reads the same
+// on both listings.
+.module-list__filter-disclosure {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
 .module-list__status {
   display: flex;
   flex-wrap: wrap;
@@ -138,7 +147,11 @@
 
   @include mx.focus-ring;
 
-  @include mx.hover {
+  // ⚠ UNGATED, for the reason the portal listing's own row-command rule records: a measurement showed the
+  // pointer-capability guard silently disabling the hover treatment, leaving a command inside a data row
+  // with the pointer as its only feedback. The three listing screens now agree, and they agree with the
+  // global button rule, whose hover has never been gated.
+  &:hover {
     color: var(--color-primary-hover);
     text-decoration: underline;
   }
@@ -155,7 +168,14 @@
 .module-list__row-command--danger {
   color: var(--color-danger);
 
-  @include mx.hover {
+  // ⚠ UNGATED, for the reason the portal listing's own row-command rule records: a measurement showed the
+  // pointer-capability guard silently disabling the hover treatment, leaving a command inside a data row
+  // with the pointer as its only feedback. The three listing screens now agree, and they agree with the
+  // global button rule, whose hover has never been gated.
+  // The underline carries this one on every row surface already, so no background is needed here - and adding
+  // one would be a second signal where one suffices. The role and account listings DO need a surface change,
+  // because their glyph commands carry no wording an underline could mark.
+  &:hover {
     color: var(--color-danger);
     text-decoration: underline;
   }
@@ -169,6 +189,15 @@
   @include mx.visually-hidden;
 }
 
+// A STORED CODE THIS CONSOLE CANNOT NAME. Painted in the muted text colour so it reads as a reference
+// rather than as a value, which is exactly how the profile-definition listing paints an unnameable data
+// type. The `help` cursor is what tells a pointer user that the `title` beside it is worth reading; colour
+// alone carries no information here, because the sr-only sibling states the same fact in words.
+.module-list__unnameable-code {
+  color: var(--color-text-muted);
+  cursor: help;
+}
+
 // THE HEADING CELL — A BOUNDED DISPLAY OVER AN UNBOUNDED VALUE
 // The column admits 256 characters and a real module in the measured data uses all of them.
 .module-list__title {
@@ -178,4 +207,14 @@
   line-clamp: 4;
   overflow: hidden;
   overflow-wrap: anywhere;
+}
+
+// THE EXPIRED QUALIFIER — the same treatment the portal listing gives the same state, so one state has one
+// appearance across the application. Danger hue and bold weight, and the weight is what carries it for a
+// reader who perceives no colour: the qualifier is a WORD, so the state is never colour-only.
+.module-list__expired {
+  margin-inline-start: var(--space-1);
+  color: var(--color-danger);
+  font-weight: var(--font-weight-bold);
+  white-space: nowrap;
 }

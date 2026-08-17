@@ -21,12 +21,64 @@ import type {
 } from '../../../core/models/problem-details.model';
 import type { AppNotification } from '../../../core/services/notification.service';
 import type {
+
   DataTableColumn,
   DataTableTextColumn,
 } from '../../../shared/components/data-table/data-table.component';
 
+import { HttpParams } from '@angular/common/http';
+
+import type { HttpRequest } from '@angular/common/http';
+
+/**
+ * The filters a request carried, presented as ONE parameter bag whichever transport carried them. ⚠ A
+ * LISTING READ THAT CARRIES A TERM A PERSON TYPED SENDS ITS FILTERS IN THE BODY, because a query string is
+ * written into the reverse proxy's access log and into the API's own request log; a term-free read keeps
+ * them in the query string. Specifications below are about WHAT was sent, not about WHERE, so they read
+ * through here and stay true across both transports.
+ *
+ * @param request The request to read, or the raw request it wraps.
+ * @returns Every filter it carried, as query-parameter-shaped strings.
+ */
+function sentFilters(request: TestRequest | HttpRequest<unknown>): HttpParams {
+  const raw: HttpRequest<unknown> = 'request' in request ? request.request : request;
+  const body = raw.body as Record<string, unknown> | null | undefined;
+
+  if (body === null || body === undefined) {
+    return raw.params;
+  }
+
+  let carried: HttpParams = new HttpParams();
+
+  for (const [name, value] of Object.entries(body)) {
+    if (value !== null && value !== undefined) {
+      carried = carried.set(name, String(value));
+    }
+  }
+
+  return carried;
+}
+
+
+/**
+ * Whether a request is a listing read, on EITHER transport.
+ *
+ * @param candidate The request to test.
+ * @returns True for the term-free read and for the body-bound search alike.
+ */
+function isListingRead(candidate: HttpRequest<unknown>): boolean {
+  return candidate.url === PORTALS_URL || candidate.url === PORTALS_SEARCH_URL;
+}
+
+
 /** The collection address, relative because the production environment is relative. */
 const PORTALS_URL = '/api/v1/portals';
+
+/**
+ * The body-bound search address. ⚠ A SEPARATE ADDRESS FROM {@link PORTALS_URL} ON PURPOSE: a listing read that
+ * carries a term a person typed goes here, so the term never appears in a logged request line.
+ */
+const PORTALS_SEARCH_URL = '/api/v1/portals/search';
 
 /** The legacy absent-integer marker, and simultaneously the portal identity seed. */
 const FIRST_PORTAL_ID = -1;
@@ -210,7 +262,7 @@ describe('PortalListComponent', () => {
     pageIndex = 0,
   ): void {
     const request: TestRequest = http.expectOne(
-      (candidate) => candidate.url === PORTALS_URL,
+      (candidate) => isListingRead(candidate),
       'the initial portal listing request',
     );
     request.flush(pageOf(items, totalCount, pageIndex));
@@ -256,13 +308,13 @@ describe('PortalListComponent', () => {
   it('creates and reads the first page from the relative collection address', () => {
     expect(component).toBeTruthy();
 
-    const request: TestRequest = http.expectOne((candidate) => candidate.url === PORTALS_URL);
+    const request: TestRequest = http.expectOne((candidate) => isListingRead(candidate));
 
     expect(request.request.method).toBe('GET');
     // No page size is requested: the size is the server's to decide.
-    expect(request.request.params.has('pageSize')).toBeFalse();
+    expect(sentFilters(request).has('pageSize')).toBeFalse();
     // No filter is sent on the first read.
-    expect(request.request.params.has('name')).toBeFalse();
+    expect(sentFilters(request).has('name')).toBeFalse();
     // The address must never be absolute - the SPA is served from the same origin.
     expect(request.request.url.startsWith('http')).toBeFalse();
 
@@ -305,19 +357,19 @@ describe('PortalListComponent', () => {
       expect(addressParams()['currentpage']).toBeUndefined();
 
       const request: TestRequest = http.expectOne(
-        (candidate) => candidate.url === PORTALS_URL && candidate.params.get('name') === 'B',
+        (candidate) => isListingRead(candidate) && sentFilters(candidate).get('name') === 'B',
       );
 
       // The repository composes any pattern it needs; a per-cent sign here would double it.
-      expect(request.request.params.get('name')).toBe('B');
-      expect(request.request.params.get('name')).not.toContain('%');
+      expect(sentFilters(request).get('name')).toBe('B');
+      expect(sentFilters(request).get('name')).not.toContain('%');
 
-      expect(request.request.params.has('expired')).toBeFalse();
-      expect(request.request.params.has('isExpired')).toBeFalse();
-      expect(request.request.params.has('expiryDate')).toBeFalse();
+      expect(sentFilters(request).has('expired')).toBeFalse();
+      expect(sentFilters(request).has('isExpired')).toBeFalse();
+      expect(sentFilters(request).has('expiryDate')).toBeFalse();
 
       // And the only parameters carried at all are the paging index and the name.
-      expect(request.request.params.keys().sort()).toEqual(['name', 'pageIndex']);
+      expect(sentFilters(request).keys().sort()).toEqual(['name', 'pageIndex']);
       request.flush(pageOf([]));
     });
 
@@ -326,7 +378,7 @@ describe('PortalListComponent', () => {
 
       invoke<void>('onFilterSelected', { label: 'C', value: 'C' });
       await settleAddress();
-      http.expectOne((candidate) => candidate.params.get('name') === 'C').flush(pageOf([]));
+      http.expectOne((candidate) => sentFilters(candidate).get('name') === 'C').flush(pageOf([]));
       fixture.detectChanges();
 
       invoke<void>('onFilterSelected', { label: 'All', value: null });
@@ -336,9 +388,9 @@ describe('PortalListComponent', () => {
       // bare path - which is also what makes the reset distinguishable from a filter on the empty string.
       expect(addressParams()['filter']).toBeUndefined();
 
-      const request: TestRequest = http.expectOne((candidate) => candidate.url === PORTALS_URL);
+      const request: TestRequest = http.expectOne((candidate) => isListingRead(candidate));
 
-      expect(request.request.params.has('name')).toBeFalse();
+      expect(sentFilters(request).has('name')).toBeFalse();
       request.flush(pageOf([portalRow()]));
     });
 
@@ -349,7 +401,7 @@ describe('PortalListComponent', () => {
       await settleAddress();
       expect(addressParams()['currentpage']).toBe('4');
       http
-        .expectOne((candidate) => candidate.params.get('pageIndex') === '3')
+        .expectOne((candidate) => sentFilters(candidate).get('pageIndex') === '3')
         .flush(pageOf([portalRow()], 40, 3));
       fixture.detectChanges();
 
@@ -361,10 +413,10 @@ describe('PortalListComponent', () => {
       expect(addressParams()['currentpage']).toBeUndefined();
 
       const request: TestRequest = http.expectOne(
-        (candidate) => candidate.params.get('name') === 'D',
+        (candidate) => sentFilters(candidate).get('name') === 'D',
       );
 
-      expect(request.request.params.get('pageIndex')).toBe('0');
+      expect(sentFilters(request).get('pageIndex')).toBe('0');
       request.flush(pageOf([]));
     });
 
@@ -381,7 +433,7 @@ describe('PortalListComponent', () => {
 
       invoke<void>('onFilterSelected', { label: 'M', value: 'M' });
       await settleAddress();
-      http.expectOne((candidate) => candidate.params.get('name') === 'M').flush(pageOf([]));
+      http.expectOne((candidate) => sentFilters(candidate).get('name') === 'M').flush(pageOf([]));
       fixture.detectChanges();
 
       expect(textOf('.portal-list__letter[aria-pressed="true"]')).toEqual(['M']);
@@ -392,7 +444,7 @@ describe('PortalListComponent', () => {
 
       invoke<void>('onFilterSelected', { label: 'N', value: 'N' });
       await settleAddress();
-      http.expectOne((candidate) => candidate.params.get('name') === 'N').flush(pageOf([]));
+      http.expectOne((candidate) => sentFilters(candidate).get('name') === 'N').flush(pageOf([]));
       fixture.detectChanges();
 
       const box: HTMLInputElement | null = host().querySelector<HTMLInputElement>(
@@ -408,12 +460,12 @@ describe('PortalListComponent', () => {
 
       invoke<void>('onSearch', 'QA010');
       await settleAddress();
-      http.expectOne((candidate) => candidate.params.get('name') === 'QA010').flush(pageOf([]));
+      http.expectOne((candidate) => sentFilters(candidate).get('name') === 'QA010').flush(pageOf([]));
       fixture.detectChanges();
 
       invoke<void>('onFilterSelected', { label: 'All', value: null });
       await settleAddress();
-      http.expectOne((candidate) => candidate.url === PORTALS_URL).flush(pageOf([portalRow()], 40));
+      http.expectOne((candidate) => isListingRead(candidate)).flush(pageOf([portalRow()], 40));
       fixture.detectChanges();
 
       // Measured before this was reconciled: the listing was restored while the box still read `QA010`, so
@@ -427,7 +479,7 @@ describe('PortalListComponent', () => {
       // Truthful: the list is filtered, but by none of the strip's entries.
       invoke<void>('onSearch', 'base');
       await settleAddress();
-      http.expectOne((candidate) => candidate.params.get('name') === 'base').flush(pageOf([]));
+      http.expectOne((candidate) => sentFilters(candidate).get('name') === 'base').flush(pageOf([]));
       fixture.detectChanges();
 
       expect(textOf('.portal-list__letter[aria-pressed="true"]')).toEqual([]);
@@ -443,9 +495,9 @@ describe('PortalListComponent', () => {
       invoke<void>('onSearch', '  BaSe ');
       await settleAddress();
 
-      const request: TestRequest = http.expectOne((candidate) => candidate.url === PORTALS_URL);
+      const request: TestRequest = http.expectOne((candidate) => isListingRead(candidate));
 
-      expect(request.request.params.get('name')).toBe('  BaSe ');
+      expect(sentFilters(request).get('name')).toBe('  BaSe ');
       // Untrimmed in the address too, so a reload asks for exactly what was asked for the first time.
       expect(addressParams()['filter']).toBe('  BaSe ');
       request.flush(pageOf([]));
@@ -456,15 +508,15 @@ describe('PortalListComponent', () => {
 
       invoke<void>('onSearch', 'QA010');
       await settleAddress();
-      http.expectOne((candidate) => candidate.params.get('name') === 'QA010').flush(pageOf([]));
+      http.expectOne((candidate) => sentFilters(candidate).get('name') === 'QA010').flush(pageOf([]));
       fixture.detectChanges();
 
       invoke<void>('onSearch', '');
       await settleAddress();
 
-      const request: TestRequest = http.expectOne((candidate) => candidate.url === PORTALS_URL);
+      const request: TestRequest = http.expectOne((candidate) => isListingRead(candidate));
 
-      expect(request.request.params.has('name')).toBeFalse();
+      expect(sentFilters(request).has('name')).toBeFalse();
       expect(addressParams()['filter']).toBeUndefined();
       request.flush(pageOf([portalRow()]));
     });
@@ -480,7 +532,7 @@ describe('PortalListComponent', () => {
       box.value = 'abc';
       box.dispatchEvent(new Event('input'));
       await settleAddress();
-      http.expectOne((candidate) => candidate.params.get('name') === 'ab').flush(pageOf([]));
+      http.expectOne((candidate) => sentFilters(candidate).get('name') === 'ab').flush(pageOf([]));
       fixture.detectChanges();
 
       expect(host().querySelector<HTMLInputElement>('app-search-input input')?.value).toBe('abc');
@@ -616,11 +668,46 @@ describe('PortalListComponent', () => {
       expect(unsortable).toEqual(['edit', 'delete', 'aliases', 'users', 'pages']);
     });
 
-    it('sizes the two command columns from their content', () => {
+    // ⚠ THIS REPLACES A FACT THAT PINNED `min-content` ON THE TWO COMMAND COLUMNS, AND THE REPLACEMENT IS
+    // THE WHOLE POINT — QA-09. `min-content` is a valid CSS width KEYWORD but it is not a LENGTH, and the
+    // grid this descriptor feeds sets `table-layout: fixed`. The fixed algorithm resolves a column from its
+    // first row only and accepts a length or a percentage there; handed a keyword it cannot resolve, it
+    // discards the declaration and falls the column back to the automatic equal share. So the descriptor
+    // asked for "as narrow as the glyph" and the browser painted "one tenth of the table" — measured as a
+    // 16-unit icon sitting in a track wide enough for a sentence, while the Title and Aliases columns that
+    // genuinely needed the room were squeezed into the same share and broke their words mid-token.
+    //
+    // The token is a real length, so the algorithm honours it, and it is a TOKEN rather than a literal so
+    // all four listings size their command columns identically from one declaration.
+    it('sizes the two command columns from the shared command-column token', () => {
       const byKey = new Map(columns().map((column) => [column.key, column]));
 
-      expect(byKey.get('edit')?.width).toBe('min-content');
-      expect(byKey.get('delete')?.width).toBe('min-content');
+      // The TEXT variant of the token, because this screen's two commands are WORDS rather than glyphs —
+      // "Settings" and "Delete", from the legacy resource keys. Measured in the icon track, the word plus
+      // the cell's own inline padding overflowed its cell and painted into the column beside it.
+      expect(byKey.get('edit')?.width).toBe('var(--table-command-column-text-inline-size)');
+      expect(byKey.get('delete')?.width).toBe('var(--table-command-column-text-inline-size)');
+
+      // Every data column but ONE declares a percentage, which the same algorithm resolves.
+      for (const key of ['portalId', 'aliases', 'users', 'pages', 'expiryDate'] as const) {
+        // The percentage form the shared contract admits, DECIMALS INCLUDED. A column is sized to hold its
+        // own heading at the table's floor width, and several of those measurements do not land on a
+        // whole percent; the runtime validator and the `${number}%` type both accept a fraction, so
+        // pinning this to integers only would assert something stricter than the contract itself.
+        expect(byKey.get(key)?.width).toMatch(/^\d+(?:\.\d+)?%$/);
+      }
+
+      // ⚠ AND EXACTLY ONE COLUMN DECLARES NOTHING, WHICH IS A REQUIREMENT RATHER THAN AN OMISSION. Under
+      // `table-layout: fixed` the leftover after the percentages is handed to whichever columns declared
+      // something else — so with EVERY column weighted, the leftover went to the two command columns and
+      // they painted 89.875px against the 5rem they asked for. The title carries the slack instead.
+      expect(byKey.get('portalName')?.width).toBeUndefined();
+
+      const unweighted: readonly string[] = columns()
+        .filter((column) => column.width === undefined)
+        .map((column) => column.key);
+
+      expect(unweighted).withContext('exactly one flexible column').toEqual(['portalName']);
     });
 
     // The descriptor set is one half of the claim; the other half is that the grid actually PAINTS those
@@ -688,7 +775,13 @@ describe('PortalListComponent', () => {
       const byKey = new Map(columns().map((column) => [column.key, column]));
       const diskSpace = byKey.get('hostSpace');
 
-      expect((diskSpace as DataTableTextColumn<PortalListItem>).field).toBe('hostSpace');
+      // ⚠ THE KEY IS WHAT CARRIES THE NAME-PRESERVATION CLAIM NOW, and this column is deliberately no
+      // longer a field column. It was one, which is exactly why a portal holding the legacy absent-integer
+      // marker printed a literal `-1` here while the two tally columns beside it painted an em dash - the
+      // same row disagreeing with itself about the same sentinel. It is a template column over the shared
+      // tally cell, and the key it is still bound by is the unrenamed model member.
+      expect(diskSpace).withContext('the column is still keyed by the model member').not.toBeUndefined();
+      expect(diskSpace?.key).toBe('hostSpace');
       expect(headings.indexOf('Disk Space')).toBe(7);
       expect(cells[7]).toBe('0');
 
@@ -879,14 +972,82 @@ describe('PortalListComponent', () => {
       expect(cells.filter((cell) => cell === '-1').length)
         .withContext('the identifier still paints minus one, because there it is real')
         .toBe(1);
+
+      // ⚠ THIS COUNTS THREE WHERE IT ONCE COUNTED TWO, AND THE THIRD IS THE POINT — QA-15. The row this
+      // fixture builds carries no expiry either, and that cell used to render entirely empty: no text, no
+      // children, nothing announced. Three absent values in this row now render the SAME way, which is the
+      // whole claim of the shared convention.
       expect(cells.filter((cell) => cell.startsWith('\u2014')).length)
-        .withContext('both tallies paint the mark')
-        .toBe(2);
-      // The mark is decorative and the words are the content, so the state reaches a screen reader.
-      expect(textOf('.portal-list__absent-tally')).toEqual(['not recorded', 'not recorded']);
+        .withContext('both tallies and the absent expiry paint the shared mark')
+        .toBe(3);
+
+      // The mark is decorative and the words are the content, so the state reaches a screen reader — and the
+      // wording is now the SHARED wording rather than this screen's own, which is what makes an absent tally
+      // here and an absent period on the role listing announce identically.
+      expect(textOf('app-absent-value .absent-value__description')).toEqual([
+        'not recorded',
+        'not recorded',
+        'not recorded',
+      ]);
       expect(
-        queryAll<HTMLElement>('tbody td span[aria-hidden="true"]').map((node) => node.textContent),
-      ).toEqual(['\u2014', '\u2014']);
+        queryAll<HTMLElement>('tbody td app-absent-value span[aria-hidden="true"]').map(
+          (node) => node.textContent,
+        ),
+      ).toEqual(['\u2014', '\u2014', '\u2014']);
+    });
+
+    /**
+     * Pf-D1 / Pf-P12. `Website/admin/Portal/portals.ascx:L44-L46` declared Users, Pages and DiskSpace as
+     * bare `dnn:textcolumn` data fields, so LEGACY printed `-1` in all three. The target had already chosen
+     * the dash marker for two of them and left the third printing the sentinel, which made one row state
+     * the same absence two different ways - and made `-1` read as a real, negative allowance.
+     */
+    it('marks an absent disk allowance the same way it marks an absent tally', () => {
+      // ⚠ AN EXPIRY IS GIVEN DELIBERATELY, so this row carries exactly the two absences the case is about.
+      // An absent expiry renders the same shared marker - which is its own contract, pinned by the case above
+      // - and leaving it absent here would make this case count that third absence too and say nothing
+      // clearer for it.
+      settleFirstPage([
+        portalRow({ users: 4, pages: -1, hostSpace: -1, expiryDate: '2030-06-30T00:00:00Z' }),
+      ]);
+
+      // Two absences on ONE row, and they must now read identically. Asserted through the SHARED
+      // absent-value component, which is the one idiom every listing reports absence with - this listing
+      // once carried a local span of its own beside it, and two idioms in one row is the defect.
+      expect(textOf('app-absent-value .absent-value__description'))
+        .withContext('one idiom, stated twice, rather than two idioms')
+        .toEqual(['not recorded', 'not recorded']);
+
+      const cells: readonly string[] = textOf('tbody td,tbody th');
+
+      expect(cells.some((cell) => cell.includes('-1')))
+        .withContext('the sentinel never reaches the page as a number')
+        .toBeFalse();
+      expect(cells[7]).withContext('the disk cell carries the mark and its words').toContain('\u2014');
+    });
+
+    it('paints a real disk allowance verbatim, including nought', () => {
+      settleFirstPage([portalRow({ hostSpace: 0 })]);
+
+      // ⚠ NOUGHT IS A REAL ALLOWANCE AND MUST NOT JOIN THE SENTINEL. Only `-1` is the marker, so a test
+      // written as `if (!hostSpace)` would pass every other case here and quietly hide a genuine zero.
+      expect(textOf('tbody td,tbody th')[7]).toBe('0');
+
+      // Scoped to the DISK cell rather than to the row: this fixture states no expiry, and an absent expiry
+      // renders the shared marker by its own contract, so a row-wide count would be measuring that instead.
+      expect(queryAll<HTMLElement>('tbody td,tbody th')[7].querySelector('app-absent-value'))
+        .withContext('a real allowance paints no absence marker')
+        .toBeNull();
+    });
+
+    it('keeps the disk column orderable after the change of column kind', () => {
+      settleFirstPage([portalRow()]);
+
+      const byKey = new Map(columns().map((column) => [column.key, column]));
+
+      // `SortableFields.Portals` admits `hostSpace`, so losing this would remove an ordering the endpoint
+      // still offers - the silent kind of regression a change of column kind invites.
+      expect(byKey.get('hostSpace')?.sortable).toBeTrue();
     });
 
     it('paints a real tally verbatim, including nought', () => {
@@ -896,7 +1057,12 @@ describe('PortalListComponent', () => {
 
       expect(cells).toContain('0');
       expect(cells).toContain('7');
-      expect(queryAll<HTMLElement>('.portal-list__absent-tally').length).toBe(0);
+
+      // NOUGHT IS A REAL TALLY AND MUST NOT BE MARKED ABSENT. The only absent value in this row is its
+      // expiry, so exactly ONE shared absent value is rendered — a second would mean a real nought had been
+      // swallowed, which is the precise failure `if (!tally)` produces and every other expectation here
+      // passes through.
+      expect(queryAll<Element>('tbody app-absent-value').length).toBe(1);
     });
 
     it('drops no row and coerces no identifier across the whole sentinel range', () => {
@@ -947,15 +1113,28 @@ describe('PortalListComponent', () => {
       expect(fees[2]).toBe('1234.50');
     });
 
+    // ⚠ THE ROW ASSERTION WAS NARROWED, AND THE REASON IS THE POINT OF THE SPECIFICATION. It counted
+    // `tbody tr` and required zero, which passed for the wrong reason: the table was not rendered at all
+    // on a failure, so the screen fell through to "No portals match the current filter." - asserting the
+    // site had none when the read had in fact returned one row this client could not decode. The table
+    // shell is now kept and states that it could not read its contents, which puts exactly ONE row in
+    // the body: the full-width placeholder. So the thing to require is that no row is painted FROM THE
+    // PAGE, counted as data cells, not that the body is bare.
     it('refuses a page whose fee is not a finite number rather than painting a row from it', () => {
       settleFirstPage([portalRow({ portalId: 44, hostFee: Number.NaN })]);
 
-      expect(host().querySelectorAll('tbody tr').length)
+      expect(host().querySelectorAll('tbody tr .data-table__cell').length)
         .withContext('no row is painted from an unusable page')
         .toBe(0);
       expect(host().querySelector<HTMLElement>('app-error-banner'))
         .withContext('and the failure is reported through the shared banner')
         .not.toBeNull();
+      expect(host().textContent ?? '')
+        .withContext('while the grid disclaims its contents instead of claiming there are none')
+        .toContain('could not be read');
+      expect(host().querySelector('app-empty-state'))
+        .withContext('so the empty surface must not stand in for the failure')
+        .toBeNull();
     });
 
     // ⚠ MINOR (money differentiation) — a fee below zero is marked; zero and positive are not.
@@ -986,6 +1165,53 @@ describe('PortalListComponent', () => {
       expect(feeCells()[1]).toBe('0.00');
       expect(feeCells()[2]).toBe('4321.99');
     });
+
+    /**
+     * R7 — THE QUALIFIER MUST BE SEPARATED FROM THE FIGURE IT QUALIFIES.
+     *
+     * ⚠ THE SIBLING SPEC ABOVE COULD NOT CATCH THIS, AND THE REASON IS INSTRUCTIVE: it asserts the figure
+     * with `toContain` and the qualifier through its own element, so both are satisfied whether or not
+     * anything separates them. The defect lives in exactly the gap those two assertions leave.
+     *
+     * Angular compiles with `preserveWhitespaces` disabled, and that pass DELETES a whitespace-only text
+     * node standing between two elements — which is precisely what sat between the figure's span and the
+     * qualifier's. The qualifier is `visually-hidden`, so nothing was wrong on screen; the damage was
+     * confined to the accessibility tree, where the cell announced the single token `-99.99negative`.
+     *
+     *
+     * ⚠ THE ASSERTION PINS U+00A0 RATHER THAN "SOME WHITESPACE", AND THAT PRECISION IS ITSELF THE FIX. An
+     * ordinary space reaches the DOM but is not always handed to a screen reader: where Angular's anchor
+     * comments leave the separator an isolated whitespace-only text node, Blink builds no text box for it, so
+     * it never becomes a StaticText node and name-from-contents concatenates regardless. That was measured
+     * through the CDP Accessibility domain in two independent browsers on the sibling role-assignment screen,
+     * where a cell whose DOM `textContent` read "9/20/2027 Active" computed an accessible name of
+     * "9/20/2027Active". A spec asserting only `\s` would accept the very character that regressed.
+     *
+     * Contrast the expiry column, which reads correctly as `1/1/2020 Expired` for one incidental reason
+     * only: its interpolation and the newline after it share ONE text node, so a collapsed space survives.
+     */
+    it('separates a negative fee from the word that qualifies it', () => {
+      settleFirstPage([portalRow({ portalId: 51, hostFee: -99.99 })]);
+
+      const cell: string = feeCells()[0] ?? '';
+
+      expect(cell)
+        .withContext('the figure and the word are announced as two tokens, not one')
+        .toMatch(/-99\.99\u00a0negative/u);
+      expect(cell)
+        .withContext('and never run together, which is what a screen reader measured')
+        .not.toMatch(/-99\.99negative/u);
+    });
+
+    /*
+     * ⚠ NO COMPANION SPEC ASSERTS THE SEPARATOR'S PLACEMENT, AND THAT IS DELIBERATE. The obvious one to
+     * write - that an unqualified row carries no stray separator - CANNOT FAIL: `feeCells()` trims, and
+     * edge whitespace inside a cell is collapsed away by the renderer and stripped by accessible-name
+     * computation, so an unconditionally emitted separator is unobservable by any instrument. Asserting it
+     * would have been asserting an incidental value while appearing to protect an invariant. That the
+     * qualifier itself never widens onto a zero or positive fee IS real, and the sibling spec above already
+     * proves it by counting exactly one qualifier across a mixed page.
+     */
   });
 
   describe('formatting', () => {
@@ -993,7 +1219,14 @@ describe('PortalListComponent', () => {
       settleFirstPage([portalRow()]);
     });
 
-    it('renders an absent expiry and the legacy marker date as an empty cell', () => {
+    // ⚠ THIS REPLACES A FACT THAT PINNED AN EMPTY CELL, AND THE EMPTINESS WAS THE DEFECT — QA-15. The legacy
+    // formatter seeded its result with the empty string and formatted the date only when it was not the
+    // absent-date marker, and the earlier fact reproduced that faithfully. What it reproduced was a cell with
+    // no text, no children and nothing announced, on the six-of-seven rows of a real installation that carry
+    // no expiry — indistinguishable from a cell that had failed to render, and completely silent to a screen
+    // reader. Both absent inputs now render the SHARED absent value: the same mark, colour and wording as an
+    // absent tally beside it and an absent period on the role listing.
+    it('renders an absent expiry and the legacy marker date as the shared absent value', () => {
       const rendered = (expiryDate: string | null): string => {
         settleFirstPage([portalRow({ expiryDate })]);
 
@@ -1003,10 +1236,11 @@ describe('PortalListComponent', () => {
       };
 
       invoke<void>('onRetry');
-      expect(rendered(null)).toBe('');
+      expect(rendered(null)).toBe('\u2014not recorded');
+      expect(queryAll<Element>('tbody app-absent-value').length).toBeGreaterThanOrEqual(1);
 
       invoke<void>('onRetry');
-      expect(rendered(NULL_DATE)).toBe('');
+      expect(rendered(NULL_DATE)).toBe('\u2014not recorded');
 
       // And the three wrong answers a naive renderer gives, named so a regression is unambiguous rather than
       // merely "not empty".
@@ -1038,6 +1272,16 @@ describe('PortalListComponent', () => {
       expect(textOf('.portal-list__expired')).toEqual(['Expired']);
       expect((textOf('tbody td').at(-1) ?? '')).toContain('1/15/2020');
 
+      // ⚠ THE TWO VALUES ARE SEPARATED BY A REAL SPACE CHARACTER, not by a margin. Measured before the
+      // separator was added: the cell's text content was the single run "6/30/2021Expired", so the date and
+      // its qualifier were one word to a screen reader, to a copy-paste and to any text extraction — while a
+      // sighted reader saw a four-pixel gap that came from `margin-inline-start` and exists only in paint.
+      const painted: string = (
+        queryAll<HTMLElement>('tbody td').at(-1)?.textContent ?? ''
+      ).trim();
+
+      expect(painted).toBe('1/15/2020 Expired');
+
       invoke<void>('onRetry');
       settleFirstPage([portalRow({ expiryDate: '2099-12-31T00:00:00' })]);
 
@@ -1056,10 +1300,15 @@ describe('PortalListComponent', () => {
 
       // An unparseable value is treated the same way, so the qualifier and the cell can never disagree about
       // whether there is an expiry at all - both read the one parser.
+      //
+      // ⚠ THE CELL EXPECTATION CHANGED FROM EMPTY TO THE SHARED ABSENT VALUE — QA-15. That an unparseable
+      // value carries NO QUALIFIER is the claim of this case and it is unchanged; what changed is that the
+      // cell beside the missing qualifier now says "there is no expiry recorded" rather than saying nothing
+      // at all. The two verdicts still come from one parser, which is what this case guards.
       invoke<void>('onRetry');
       settleFirstPage([portalRow({ expiryDate: 'not-a-date' })]);
       expect(textOf('.portal-list__expired')).toEqual([]);
-      expect((textOf('tbody td').at(-1) ?? '')).toBe('');
+      expect((textOf('tbody td').at(-1) ?? '')).toBe('\u2014not recorded');
     });
 
     it('puts today itself on the expired side, because the legacy comparison is strict', () => {
@@ -1445,7 +1694,7 @@ describe('PortalListComponent', () => {
       }
 
       http.expectOne(`${PORTALS_URL}/5`).flush(null, { status: 204, statusText: 'No Content' });
-      http.expectOne((candidate) => candidate.url === PORTALS_URL).flush(pageOf([]));
+      http.expectOne((candidate) => isListingRead(candidate)).flush(pageOf([]));
       fixture.detectChanges();
     });
 
@@ -1489,7 +1738,7 @@ describe('PortalListComponent', () => {
       removal.flush(null, { status: 204, statusText: 'No Content' });
 
       // The store re-reads the page, reproducing the legacy BindData() call.
-      http.expectOne((candidate) => candidate.url === PORTALS_URL).flush(pageOf([]));
+      http.expectOne((candidate) => isListingRead(candidate)).flush(pageOf([]));
       fixture.detectChanges();
 
       const queued: readonly AppNotification[] = notifications.notifications();
@@ -1590,7 +1839,7 @@ describe('PortalListComponent', () => {
       // screen that removed the row before the operator agreed - instead of reporting an unexpected open
       // request from another expectation's teardown.
       http.expectNone(`${PORTALS_URL}/11`);
-      http.expectNone((candidate) => candidate.url === PORTALS_URL);
+      http.expectNone((candidate) => isListingRead(candidate));
 
       // And the row the operator declined to remove is still there.
       expect(queryAll<Element>('tbody tr').length).toBe(1);
@@ -1645,7 +1894,13 @@ describe('PortalListComponent', () => {
   // Empty, past-the-end and failure surfaces
 
   describe('the non-grid surfaces', () => {
-    it('shows the empty surface with the add action when nothing matched', () => {
+    // ⚠ THE LAST ASSERTION IS INVERTED, AND THE INVERSION IS THE FIX. It required that the table be
+    // DESTROYED when nothing matched, which took the polite `role="status"` region down with it - so
+    // narrowing the listing to nothing announced NOTHING, the one transition most in need of a report. The
+    // roles and modules listings already rendered their empty state inside the table and kept the region;
+    // this screen and the accounts listing did not, which is the inconsistency being closed. The wording and
+    // the recovery affordance are unchanged; only their home is.
+    it('shows the empty surface with the add action inside the table, so the status survives', () => {
       settleFirstPage([], 0);
 
       const empty: HTMLElement | null = host().querySelector<HTMLElement>('app-empty-state');
@@ -1653,7 +1908,22 @@ describe('PortalListComponent', () => {
       expect(empty).not.toBeNull();
       expect(empty?.textContent).toContain('No portals match the current filter.');
       expect(empty?.textContent).toContain('Add New Portal');
-      expect(host().querySelector('app-data-table')).toBeNull();
+
+      expect(host().querySelector('app-data-table'))
+        .withContext('the table shell is kept, because the announcing region lives in it')
+        .not.toBeNull();
+      expect(host().querySelector('app-empty-state')?.closest('table'))
+        .withContext('and the panel sits inside that table rather than replacing it')
+        .not.toBeNull();
+
+      const status: HTMLElement | null = host().querySelector<HTMLElement>(
+        '.data-table__result-status',
+      );
+
+      expect(status?.getAttribute('role')).toBe('status');
+      expect((status?.textContent ?? '').trim())
+        .withContext('and it announces the narrowing rather than staying silent')
+        .toBe('No records found.');
     });
 
     it('distinguishes past-the-end from nothing-matched, offering a way back', () => {
@@ -1672,7 +1942,7 @@ describe('PortalListComponent', () => {
       invoke<void>('onPageChange', 3);
       await settleAddress();
       http
-        .expectOne((candidate) => candidate.params.get('pageIndex') === '3')
+        .expectOne((candidate) => sentFilters(candidate).get('pageIndex') === '3')
         .flush(pageOf([], 40, 3));
       fixture.detectChanges();
 
@@ -1685,9 +1955,9 @@ describe('PortalListComponent', () => {
 
       expect(addressParams()['currentpage']).toBeUndefined();
 
-      const request: TestRequest = http.expectOne((candidate) => candidate.url === PORTALS_URL);
+      const request: TestRequest = http.expectOne((candidate) => isListingRead(candidate));
 
-      expect(request.request.params.get('pageIndex')).toBe('0');
+      expect(sentFilters(request).get('pageIndex')).toBe('0');
       request.flush(pageOf([portalRow()], 40));
       fixture.detectChanges();
     });
@@ -1698,7 +1968,7 @@ describe('PortalListComponent', () => {
       expect(host().querySelectorAll('app-pagination .pagination__button').length).toBe(4);
 
       invoke<void>('onRetry');
-      http.expectOne((candidate) => candidate.url === PORTALS_URL).flush(pageOf([portalRow()], 1));
+      http.expectOne((candidate) => isListingRead(candidate)).flush(pageOf([portalRow()], 1));
       fixture.detectChanges();
 
       expect(host().querySelector('app-pagination')).not.toBeNull();
@@ -1710,28 +1980,110 @@ describe('PortalListComponent', () => {
         .toBe(0);
     });
 
-    it('shows the indicator while the FIRST page is read, and not on a later read', async () => {
+    it('reports the FIRST read inside the grid, and a later read without blanking it', async () => {
+      // ⚠ THIS CASE USED TO ASSERT THAT THE GRID WAS ABSENT DURING THE FIRST READ, because this screen
+      // substituted a full-width indicator for the whole table while the other three listings kept their
+      // table and let the shared grid draw the indicator in its own placeholder row. One loading shape now
+      // serves all four, so the assertion is inverted rather than adapted: the grid is always present, and
+      // the indicator lives inside it.
+      const spinnerInsidePlaceholder = (): HTMLElement | null =>
+        host().querySelector<HTMLElement>('app-data-table td[data-placeholder] app-loading-spinner');
+
       // Nothing has settled yet, so this is the first read.
-      expect(host().querySelector<HTMLElement>('app-loading-spinner')).not.toBeNull();
-      expect(host().querySelector<HTMLElement>('app-data-table')).toBeNull();
+      expect(host().querySelector<HTMLElement>('app-data-table'))
+        .withContext('the grid owns the waiting state, so it is on screen for it')
+        .not.toBeNull();
+      expect(spinnerInsidePlaceholder())
+        .withContext('the indicator replaces the ROWS, not the table')
+        .not.toBeNull();
+      expect(host().querySelector<HTMLElement>('app-pagination'))
+        .withContext('the pager reports a match set, and no read has produced one yet')
+        .toBeNull();
 
       settleFirstPage([portalRow()], 40);
       expect(host().querySelector<HTMLElement>('app-loading-spinner')).toBeNull();
+      expect(host().querySelector<HTMLElement>('app-pagination')).not.toBeNull();
 
-      // A later read keeps the rows on screen rather than blanking the table.
+      // A later read keeps the rows on screen rather than blanking the table, and says so visibly.
       invoke<void>('onPageChange', 1);
       await settleAddress();
       expect(host().querySelector<HTMLElement>('app-data-table')).not.toBeNull();
+      expect(spinnerInsidePlaceholder())
+        .withContext('the rows are kept, so nothing replaces them')
+        .toBeNull();
+      expect(host().querySelector<HTMLElement>('.data-table__refetch app-loading-spinner'))
+        .withContext('the refetch strip is the seen half of the table\u2019s aria-busy')
+        .not.toBeNull();
 
       http
-        .expectOne((candidate) => candidate.params.get('pageIndex') === '1')
+        .expectOne((candidate) => sentFilters(candidate).get('pageIndex') === '1')
         .flush(pageOf([portalRow()], 40, 1));
       fixture.detectChanges();
+
+      expect(host().querySelector<HTMLElement>('.data-table__refetch')).toBeNull();
+    });
+
+    // ⚠ REGRESSION GUARD. A failed read left `portals()` empty, and the branch that chose between the
+    // grid and the empty surface was keyed on row count alone - so every failure rendered
+    // `app-empty-state` and asserted "No portals match the current filter." over a read that had in fact
+    // returned rows this client could not decode. Two things were wrong at once: the screen made a false
+    // statement about the data, and the table's own `failed` placeholder was unreachable because the
+    // table was not in the view to receive it.
+    it('renders the grid shell rather than the empty surface when the read failed', () => {
+      http
+        .expectOne((candidate) => candidate.url === PORTALS_URL)
+        .flush(
+          problemOf(500, 'server.unexpected_failure', 'The listing could not be produced.'),
+          { status: 500, statusText: 'Internal Server Error' },
+        );
+      fixture.detectChanges();
+
+      expect(host().querySelector('app-empty-state'))
+        .withContext('the empty surface must never stand in for a failure')
+        .toBeNull();
+      expect(host().textContent ?? '')
+        .withContext('and its sentence must not be on screen at all')
+        .not.toContain('No portals match the current filter.');
+
+      expect(host().querySelector('app-data-table'))
+        .withContext('the table shell is kept so it can disclaim its own contents')
+        .not.toBeNull();
+      expect(host().textContent ?? '')
+        .withContext('which is what the shared placeholder says')
+        .toContain('could not be read');
+
+      expect(queryAll<Element>('tbody tr .data-table__cell').length)
+        .withContext('no data row is drawn')
+        .toBe(0);
+      expect(host().querySelector('app-pagination'))
+        .withContext('and no range is claimed, because none is known')
+        .toBeNull();
+    });
+
+    it('restores the empty surface once a retry genuinely returns nothing', () => {
+      http
+        .expectOne((candidate) => candidate.url === PORTALS_URL)
+        .error(new ProgressEvent('error'));
+      fixture.detectChanges();
+      expect(host().querySelector('app-empty-state')).toBeNull();
+
+      invoke<void>('onRetry');
+      http.expectOne((candidate) => candidate.url === PORTALS_URL).flush(pageOf([], 0));
+      fixture.detectChanges();
+
+      const empty: HTMLElement | null = host().querySelector<HTMLElement>('app-empty-state');
+      expect(empty)
+        .withContext('a genuinely empty result still gets the empty surface')
+        .not.toBeNull();
+      expect(empty?.textContent).toContain('No portals match the current filter.');
+      expect(host().textContent ?? '')
+        .withContext('and the failure wording is gone')
+        .not.toContain('could not be read');
     });
 
     it('reports a failure that carried no problem document through the SAME shared banner', () => {
       http
-        .expectOne((candidate) => candidate.url === PORTALS_URL)
+        .expectOne((candidate) => isListingRead(candidate))
         .error(new ProgressEvent('error'));
       fixture.detectChanges();
 
@@ -1757,7 +2109,7 @@ describe('PortalListComponent', () => {
 
     it('reports a failed listing through the shared banner and can retry', () => {
       http
-        .expectOne((candidate) => candidate.url === PORTALS_URL)
+        .expectOne((candidate) => isListingRead(candidate))
         .flush(
           problemOf(
             500,
@@ -1775,7 +2127,7 @@ describe('PortalListComponent', () => {
       );
 
       invoke<void>('onRetry');
-      http.expectOne((candidate) => candidate.url === PORTALS_URL).flush(pageOf([portalRow()]));
+      http.expectOne((candidate) => isListingRead(candidate)).flush(pageOf([portalRow()]));
       fixture.detectChanges();
 
       // The successful re-read empties the banner; the live region it lives in is permanent. See the
@@ -1837,13 +2189,13 @@ describe('PortalListComponent', () => {
       sortControls()[0]?.click();
       await settleAddress();
 
-      const ordered: TestRequest = http.expectOne((candidate) => candidate.url === PORTALS_URL);
+      const ordered: TestRequest = http.expectOne((candidate) => isListingRead(candidate));
 
-      expect(ordered.request.params.get('sortBy')).toBe('portalId');
+      expect(sentFilters(ordered).get('sortBy')).toBe('portalId');
       // The server's own member spelling. `asc` is refused by the model binder with 400.
-      expect(ordered.request.params.get('sortDir')).toBe('Ascending');
+      expect(sentFilters(ordered).get('sortDir')).toBe('Ascending');
       // A row's page depends on the ordering, so the coordinate returns to the first page.
-      expect(ordered.request.params.get('pageIndex')).toBe('0');
+      expect(sentFilters(ordered).get('pageIndex')).toBe('0');
 
       ordered.flush(pageOf([portalRow()], 40, 0));
       fixture.detectChanges();
@@ -1858,16 +2210,16 @@ describe('PortalListComponent', () => {
 
       sortControls()[1]?.click();
       await settleAddress();
-      const ascending: TestRequest = http.expectOne((candidate) => candidate.url === PORTALS_URL);
-      expect(ascending.request.params.get('sortBy')).toBe('portalName');
-      expect(ascending.request.params.get('sortDir')).toBe('Ascending');
+      const ascending: TestRequest = http.expectOne((candidate) => isListingRead(candidate));
+      expect(sentFilters(ascending).get('sortBy')).toBe('portalName');
+      expect(sentFilters(ascending).get('sortDir')).toBe('Ascending');
       ascending.flush(pageOf([portalRow()], 40, 0));
       fixture.detectChanges();
 
       sortControls()[1]?.click();
       await settleAddress();
-      const descending: TestRequest = http.expectOne((candidate) => candidate.url === PORTALS_URL);
-      expect(descending.request.params.get('sortDir')).toBe('Descending');
+      const descending: TestRequest = http.expectOne((candidate) => isListingRead(candidate));
+      expect(sentFilters(descending).get('sortDir')).toBe('Descending');
       descending.flush(pageOf([portalRow()], 40, 0));
       fixture.detectChanges();
 
@@ -1876,9 +2228,9 @@ describe('PortalListComponent', () => {
       // parameter - and a two-step toggle made it reachable only by reloading the page.
       sortControls()[1]?.click();
       await settleAddress();
-      const cleared: TestRequest = http.expectOne((candidate) => candidate.url === PORTALS_URL);
-      expect(cleared.request.params.has('sortBy')).withContext('no key is sent').toBeFalse();
-      expect(cleared.request.params.has('sortDir')).withContext('no direction is sent').toBeFalse();
+      const cleared: TestRequest = http.expectOne((candidate) => isListingRead(candidate));
+      expect(sentFilters(cleared).has('sortBy')).withContext('no key is sent').toBeFalse();
+      expect(sentFilters(cleared).has('sortDir')).withContext('no direction is sent').toBeFalse();
       cleared.flush(pageOf([portalRow()], 40, 0));
       fixture.detectChanges();
 
@@ -1917,7 +2269,7 @@ describe('PortalListComponent', () => {
       expect(host().querySelectorAll('app-pagination .pagination__button').length).toBe(0);
 
       invoke<void>('onRetry');
-      http.expectOne((candidate) => candidate.url === PORTALS_URL).flush(pageOf([portalRow()], 11));
+      http.expectOne((candidate) => isListingRead(candidate)).flush(pageOf([portalRow()], 11));
       fixture.detectChanges();
       expect(host().querySelectorAll('app-pagination .pagination__button').length)
         .withContext('first, previous, next and last')
@@ -1936,9 +2288,9 @@ describe('PortalListComponent', () => {
       next?.click();
       await settleAddress();
 
-      const request: TestRequest = http.expectOne((candidate) => candidate.url === PORTALS_URL);
+      const request: TestRequest = http.expectOne((candidate) => isListingRead(candidate));
 
-      expect(request.request.params.get('pageIndex')).toBe('1');
+      expect(sentFilters(request).get('pageIndex')).toBe('1');
       expect(addressParams()['currentpage']).toBe('2');
       request.flush(pageOf([portalRow()], 40, 1));
       fixture.detectChanges();
@@ -1952,7 +2304,7 @@ describe('PortalListComponent', () => {
       invoke<void>('onPageChange', 3);
       await settleAddress();
       http
-        .expectOne((candidate) => candidate.params.get('pageIndex') === '3')
+        .expectOne((candidate) => sentFilters(candidate).get('pageIndex') === '3')
         .flush(pageOf([portalRow()], 40, 3));
       fixture.detectChanges();
 
@@ -1964,9 +2316,9 @@ describe('PortalListComponent', () => {
       first?.click();
       await settleAddress();
 
-      const request: TestRequest = http.expectOne((candidate) => candidate.url === PORTALS_URL);
+      const request: TestRequest = http.expectOne((candidate) => isListingRead(candidate));
 
-      expect(request.request.params.get('pageIndex')).toBe('0');
+      expect(sentFilters(request).get('pageIndex')).toBe('0');
       request.flush(pageOf([portalRow()], 40, 0));
       fixture.detectChanges();
     });
@@ -1995,10 +2347,10 @@ describe('PortalListComponent', () => {
       // Spelled out in full, because the binder answers `sortDir=asc` with a 400.
       expect(addressParams()['sortdir']).toBe('Ascending');
 
-      const request: TestRequest = http.expectOne((candidate) => candidate.url === PORTALS_URL);
+      const request: TestRequest = http.expectOne((candidate) => isListingRead(candidate));
 
-      expect(request.request.params.get('sortBy')).toBe('portalId');
-      expect(request.request.params.get('sortDir')).toBe('Ascending');
+      expect(sentFilters(request).get('sortBy')).toBe('portalId');
+      expect(sentFilters(request).get('sortDir')).toBe('Ascending');
       request.flush(pageOf([portalRow()], 40));
     });
 
@@ -2007,7 +2359,7 @@ describe('PortalListComponent', () => {
 
       host().querySelector<HTMLButtonElement>('thead th button')?.click();
       await settleAddress();
-      http.expectOne((candidate) => candidate.url === PORTALS_URL).flush(pageOf([portalRow()], 40));
+      http.expectOne((candidate) => isListingRead(candidate)).flush(pageOf([portalRow()], 40));
       fixture.detectChanges();
 
       host().querySelector<HTMLButtonElement>('thead th button')?.click();
@@ -2015,7 +2367,7 @@ describe('PortalListComponent', () => {
 
       expect(addressParams()['sortdir']).toBe('Descending');
       http
-        .expectOne((candidate) => candidate.params.get('sortDir') === 'Descending')
+        .expectOne((candidate) => sentFilters(candidate).get('sortDir') === 'Descending')
         .flush(pageOf([portalRow()], 40));
     });
 
@@ -2025,7 +2377,7 @@ describe('PortalListComponent', () => {
       invoke<void>('onPageChange', 2);
       await settleAddress();
       http
-        .expectOne((candidate) => candidate.params.get('pageIndex') === '2')
+        .expectOne((candidate) => sentFilters(candidate).get('pageIndex') === '2')
         .flush(pageOf([portalRow()], 40, 2));
       fixture.detectChanges();
 
@@ -2036,7 +2388,7 @@ describe('PortalListComponent', () => {
       // page of rows they have already seen.
       expect(addressParams()['currentpage']).toBeUndefined();
       http
-        .expectOne((candidate) => candidate.params.get('pageIndex') === '0')
+        .expectOne((candidate) => sentFilters(candidate).get('pageIndex') === '0')
         .flush(pageOf([portalRow()], 40));
     });
 
@@ -2045,7 +2397,7 @@ describe('PortalListComponent', () => {
 
       invoke<void>('onSortChange', { key: 'portalName', direction: 'Descending' });
       await settleAddress();
-      http.expectOne((candidate) => candidate.url === PORTALS_URL).flush(pageOf([portalRow()], 40));
+      http.expectOne((candidate) => isListingRead(candidate)).flush(pageOf([portalRow()], 40));
       fixture.detectChanges();
 
       const sorted: readonly string[] = queryAll<HTMLElement>('thead th[aria-sort]')
@@ -2074,14 +2426,14 @@ describe('PortalListComponent', () => {
       );
       fixture.detectChanges();
 
-      const request: TestRequest = http.expectOne((candidate) => candidate.url === PORTALS_URL);
+      const request: TestRequest = http.expectOne((candidate) => isListingRead(candidate));
 
       // ONE request for the whole query, not one per coordinate. Four separate store commands would issue
       // four reads for the same page and reset the page index three times on the way to it.
-      expect(request.request.params.get('name')).toBe('QA');
-      expect(request.request.params.get('pageIndex')).toBe('2');
-      expect(request.request.params.get('sortBy')).toBe('hostFee');
-      expect(request.request.params.get('sortDir')).toBe('Descending');
+      expect(sentFilters(request).get('name')).toBe('QA');
+      expect(sentFilters(request).get('pageIndex')).toBe('2');
+      expect(sentFilters(request).get('sortBy')).toBe('hostFee');
+      expect(sentFilters(request).get('sortDir')).toBe('Descending');
       request.flush(pageOf([portalRow()], 40, 2));
       fixture.detectChanges();
 
@@ -2094,7 +2446,7 @@ describe('PortalListComponent', () => {
 
       invoke<void>('onFilterSelected', { label: 'Q', value: 'Q' });
       await settleAddress();
-      http.expectOne((candidate) => candidate.params.get('name') === 'Q').flush(pageOf([]));
+      http.expectOne((candidate) => sentFilters(candidate).get('name') === 'Q').flush(pageOf([]));
       fixture.detectChanges();
 
       // ⚠ THE DEFECT THIS PINS. The store is provided at the application ROOT, so it outlives this route
@@ -2102,10 +2454,10 @@ describe('PortalListComponent', () => {
       await harness.navigateByUrl('/portals');
       fixture.detectChanges();
 
-      const request: TestRequest = http.expectOne((candidate) => candidate.url === PORTALS_URL);
+      const request: TestRequest = http.expectOne((candidate) => isListingRead(candidate));
 
-      expect(request.request.params.has('name')).toBeFalse();
-      expect(request.request.params.get('pageIndex')).toBe('0');
+      expect(sentFilters(request).has('name')).toBeFalse();
+      expect(sentFilters(request).get('pageIndex')).toBe('0');
       request.flush(pageOf([portalRow()], 40));
       fixture.detectChanges();
 
@@ -2126,11 +2478,11 @@ describe('PortalListComponent', () => {
       expect(addressParams()['sortby']).toBeUndefined();
       expect(addressParams()['sortdir']).toBeUndefined();
 
-      const request: TestRequest = http.expectOne((candidate) => candidate.url === PORTALS_URL);
+      const request: TestRequest = http.expectOne((candidate) => isListingRead(candidate));
 
-      expect(request.request.params.get('pageIndex')).toBe('0');
-      expect(request.request.params.has('sortBy')).toBeFalse();
-      expect(request.request.params.has('sortDir')).toBeFalse();
+      expect(sentFilters(request).get('pageIndex')).toBe('0');
+      expect(sentFilters(request).has('sortBy')).toBeFalse();
+      expect(sentFilters(request).has('sortDir')).toBeFalse();
       request.flush(pageOf([portalRow()], 40));
     });
 
@@ -2145,9 +2497,9 @@ describe('PortalListComponent', () => {
 
       expect(addressParams()['sortdir']).toBe('Descending');
 
-      const request: TestRequest = http.expectOne((candidate) => candidate.url === PORTALS_URL);
+      const request: TestRequest = http.expectOne((candidate) => isListingRead(candidate));
 
-      expect(request.request.params.get('sortDir')).toBe('Descending');
+      expect(sentFilters(request).get('sortDir')).toBe('Descending');
       request.flush(pageOf([portalRow()], 40));
     });
 
@@ -2160,9 +2512,9 @@ describe('PortalListComponent', () => {
 
       expect(addressParams()['sortdir']).toBeUndefined();
 
-      const request: TestRequest = http.expectOne((candidate) => candidate.url === PORTALS_URL);
+      const request: TestRequest = http.expectOne((candidate) => isListingRead(candidate));
 
-      expect(request.request.params.has('sortDir')).toBeFalse();
+      expect(sentFilters(request).has('sortDir')).toBeFalse();
       request.flush(pageOf([portalRow()], 40));
     });
   });
@@ -2319,7 +2671,7 @@ describe('PortalListComponent', () => {
 
     it('announces a reported failure through a live region', () => {
       http
-        .expectOne((candidate) => candidate.url === PORTALS_URL)
+        .expectOne((candidate) => isListingRead(candidate))
         .flush(problemOf(500, 'server.unexpected_failure', 'The listing could not be read.'), {
           status: 500,
           statusText: 'Internal Server Error',
@@ -2336,13 +2688,13 @@ describe('PortalListComponent', () => {
       expect(host().querySelector('app-error-banner [aria-live]')).not.toBeNull();
 
       invoke<void>('onRetry');
-      http.expectOne((candidate) => candidate.url === PORTALS_URL).flush(pageOf([portalRow()]));
+      http.expectOne((candidate) => isListingRead(candidate)).flush(pageOf([portalRow()]));
       fixture.detectChanges();
     });
 
     it('surfaces the field errors of a validation document by name', () => {
       http
-        .expectOne((candidate) => candidate.url === PORTALS_URL)
+        .expectOne((candidate) => isListingRead(candidate))
         .flush(
           {
             ...problemOf(400, 'request.validation_failed', 'One or more fields are invalid.'),
@@ -2363,7 +2715,7 @@ describe('PortalListComponent', () => {
       expect(banner?.textContent).toContain('Portal Name is required.');
 
       invoke<void>('onRetry');
-      http.expectOne((candidate) => candidate.url === PORTALS_URL).flush(pageOf([portalRow()]));
+      http.expectOne((candidate) => isListingRead(candidate)).flush(pageOf([portalRow()]));
       fixture.detectChanges();
     });
 
@@ -2405,15 +2757,170 @@ describe('PortalListComponent', () => {
       }
     });
 
-    it('groups and names the filter strip', () => {
+    it('groups, names and declares the filter strip as arrow-navigable', () => {
       settleFirstPage([portalRow()]);
 
       const strip: HTMLElement | null = host().querySelector<HTMLElement>('.portal-list__letters');
 
       // The legacy strip was a centred panel of hyperlinks with no grouping and no name, so twenty-seven
-      // adjacent single-letter links were announced with nothing to say what they filtered.
-      expect(strip?.getAttribute('role')).toBe('group');
+      // adjacent single-letter links were announced with nothing to say what they filtered. That much is
+      // unchanged and is still asserted.
       expect(strip?.getAttribute('aria-label')).toBe('Filter portals by first letter');
+
+      // ⚠ THIS EXPECTATION USED TO READ `group`, AND THE CHANGE IS A STRENGTHENING RATHER THAN A
+      // RELAXATION. `group` grouped the strip and said nothing else; the twenty-seven entries were each their
+      // own tab stop and a real ArrowRight press moved focus nowhere - measured, on this strip and on the
+      // account listing's. They are now one stop with the arrows moving between them, and `toolbar` is the
+      // role that tells a reader those arrows apply at all. A roving tabindex inside a plain `group` would
+      // leave the strip navigable with no way to discover it, so the role and the tab stops are asserted
+      // TOGETHER: either alone is the defect in a different disguise.
+      expect(strip?.getAttribute('role')).toBe('toolbar');
+
+      const entries: readonly HTMLElement[] = Array.from(
+        strip?.querySelectorAll<HTMLElement>('button') ?? [],
+      );
+
+      expect(entries.length).withContext('the full alphabet plus the clearing entry').toBe(27);
+      expect(entries.filter((entry) => entry.tabIndex >= 0).length)
+        .withContext('one stop, not twenty-seven')
+        .toBe(1);
     });
   });
+  // THE EMPTY-TABLE FLASH
+  // ⚠ THE MEASURED DEFECT THESE PROVE CLOSED. An un-asked listing and a listing that matched nothing are
+  // both an empty page with no request in flight, so this screen painted its zero-result surface over a
+  // listing it had not yet asked about - reported as an empty-table flash on every post-save return.
+  describe('an un-asked listing waits rather than claiming to be empty', () => {
+    it('shows the indicator and NO zero-result surface while the address rewrite is in flight', async () => {
+      settleFirstPage([]);
+
+      // A non-canonical address takes the correction arm, which REPLACES the address and returns WITHOUT
+      // reading. The replacement navigation happens a task later, so this is exactly the window in which
+      // nothing is in flight and nothing is held.
+      await harness.navigateByUrl('/portals?currentpage=not-a-number', PortalListComponent);
+      fixture.detectChanges();
+
+      expect(queryAll('app-loading-spinner').length)
+        .withContext('the listing has not been asked about, so it is waiting')
+        .toBe(1);
+      expect(queryAll('app-empty-state').length)
+        .withContext('nothing may assert that no portals match a filter that has not been applied yet')
+        .toBe(0);
+      expect(host().textContent ?? '')
+        .not.withContext('and no zero-result wording of any kind is on screen')
+        .toContain('No portals');
+
+      await settleAddress();
+      settleFirstPage([]);
+    });
+
+    it('shows the zero-result surface once a read has genuinely answered with nothing', () => {
+      settleFirstPage([]);
+
+      expect(queryAll('app-loading-spinner').length).toBe(0);
+      expect(queryAll('app-empty-state').length)
+        .withContext('a settled read that matched nothing IS the empty state')
+        .toBe(1);
+    });
+  });
+
+  // ⚠ MINOR (interaction state) — the broad row-command hover rule was claiming the Delete command.
+  describe('the hover treatment of the command that destroys a tenant', () => {
+    /**
+     * Every rule in the document that tints a row command on hover, flattened out of any media query.
+     *
+     * Nested rules are walked whatever their query resolves to, because the defect is device-dependent: the
+     * override that keeps Delete red is guarded by a pointer-capability query, and on a device with no fine
+     * pointer it leaves the cascade entirely and the broad rule wins. This runner reports no pointing device
+     * at all, so a specification that only measured what THIS browser resolves would be measuring the
+     * failing device and calling it the passing one.
+     *
+     * @returns The hover rules, with their selectors and declarations.
+     */
+    function commandHoverRules(): readonly { selectorText: string; style: CSSStyleDeclaration }[] {
+      const collected: { selectorText: string; style: CSSStyleDeclaration }[] = [];
+
+      const walk = (list: CSSRuleList): void => {
+        Array.from(list).forEach((rule) => {
+          if (rule instanceof CSSMediaRule) {
+            walk(rule.cssRules);
+
+            return;
+          }
+
+          if (
+            rule instanceof CSSStyleRule &&
+            rule.selectorText.includes('portal-list__row-command') &&
+            rule.selectorText.includes(':hover')
+          ) {
+            collected.push({ selectorText: rule.selectorText, style: rule.style });
+          }
+        });
+      };
+
+      Array.from(document.styleSheets).forEach((sheet) => {
+        try {
+          walk(sheet.cssRules);
+        } catch {
+          return;
+        }
+      });
+
+      return collected;
+    }
+
+    it('never lets the generic hover tint reach the Delete command', () => {
+      settleFirstPage([portalRow({ portalId: SECOND_PORTAL_ID, portalName: 'Doomed Portal' })]);
+
+      const remove: HTMLButtonElement | null = host().querySelector<HTMLButtonElement>(
+        'button.portal-list__row-command--danger',
+      );
+
+      if (remove === null) {
+        throw new Error('the Delete command did not render');
+      }
+
+      const generic = commandHoverRules().filter(
+        (rule) => rule.style.getPropertyValue('color').trim() === 'var(--color-primary-hover)',
+      );
+
+      // The control: if this reads zero the stylesheet was never loaded and the assertion below would pass
+      // for the wrong reason.
+      expect(generic.length).withContext('a generic command hover tint is declared').toBeGreaterThan(0);
+
+      // ⚠ THE CASCADE IS ASKED DIRECTLY RATHER THAN THE RULE TEXT MATCHED. Stripping `:hover` from the
+      // selector turns each rule into a question the rendered element can answer: "would you be tinted if a
+      // pointer were over you?" Under the defect the answer is yes and the one command that destroys a
+      // tenant hovers `rgb(37, 86, 154)` — measured — which spends the one unambiguous colour in the
+      // vocabulary on a benign hover. Under the fix the exclusion makes every answer no.
+      generic.forEach((rule) => {
+        const withoutHover: string = rule.selectorText.split(':hover').join('');
+
+        expect(remove.matches(withoutHover))
+          .withContext(`the Delete command must fall outside ${withoutHover}`)
+          .toBeFalse();
+      });
+    });
+
+    it('still lets the generic hover tint reach the commands it is meant for', () => {
+      // The narrowing that keeps the specification above from being satisfied by deleting the rule outright.
+      settleFirstPage([portalRow({ portalId: SECOND_PORTAL_ID, portalName: 'Doomed Portal' })]);
+
+      const edit: HTMLAnchorElement | null = host().querySelector<HTMLAnchorElement>(
+        'a.portal-list__row-command',
+      );
+
+      if (edit === null) {
+        throw new Error('the Settings command did not render');
+      }
+
+      const generic = commandHoverRules().filter(
+        (rule) => rule.style.getPropertyValue('color').trim() === 'var(--color-primary-hover)',
+      );
+      const reaching = generic.filter((rule) => edit.matches(rule.selectorText.split(':hover').join('')));
+
+      expect(reaching.length).withContext('the benign commands are still tinted').toBeGreaterThan(0);
+    });
+  });
+
 });
