@@ -456,6 +456,61 @@ internal sealed class RoleRepository : IRoleRepository
 
     /// <inheritdoc />
     /// <remarks>
+    /// <para>
+    /// SQL SERVER TAKES AN UPDATE LOCK OVER THE KEY RANGE THE PREDICATE NAMES, through <c>UPDLOCK,
+    /// HOLDLOCK</c>. Two arrangements matter and both are deliberate. <c>UPDLOCK</c> rather than a shared
+    /// read, so two callers reading the same pair block one another instead of both reading, both deciding to
+    /// insert, and only then discovering they cannot both be right - and because an update lock is taken
+    /// straight away there is no shared-to-exclusive upgrade for the two to deadlock over. <c>HOLDLOCK</c> so
+    /// that the lock covers the RANGE where a matching row would sit, not merely the rows that exist: the
+    /// case being closed is precisely the one where no row exists yet, which an ordinary row lock cannot
+    /// cover. The exclusion lasts until the caller's transaction ends, which is why the contract obliges a
+    /// caller to open one.
+    /// </para>
+    /// <para>
+    /// THE PREDICATE NAMES THE PAIR AND NOTHING ELSE, AND IT DELIBERATELY DOES NOT JOIN TO <c>dbo.Roles</c> to
+    /// re-check the tenant. A join gives the optimiser a plan in which the tenant filter is satisfied first
+    /// and <c>dbo.UserRoles</c> is never touched, and a table hint on a table the plan does not read takes no
+    /// lock at all - so the very exclusion this member exists for would silently disappear. Tenant scope is
+    /// established by the caller, which resolves the role within its portal before asking this question.
+    /// </para>
+    /// <para>
+    /// ON ANY OTHER PROVIDER the read falls back to the ordinary tracked query. The hints are T-SQL and would
+    /// not parse elsewhere; the test providers this reaches - in-memory and SQLite - serialise writes within a
+    /// connection anyway, so the fallback loses no guarantee they could have offered.
+    /// </para>
+    /// </remarks>
+    public async Task<IReadOnlyList<UserRole>> GetUserRoleForUpdateAsync(
+        int userId,
+        int roleId,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_context.Database.IsSqlServer())
+        {
+            return await _context.UserRoles
+                .Where(assignment => assignment.UserId == userId && assignment.RoleId == roleId)
+                .OrderBy(assignment => assignment.UserRoleId)
+                .ToListAsync(cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        // Every mapped column is projected because FromSql materialises the entity from the result set, and
+        // the rows stay tracked, so the caller amends what it reads rather than re-attaching it.
+        List<UserRole> locked = await _context.UserRoles
+            .FromSql(
+                $@"SELECT [UserRoleID], [UserID], [RoleID], [EffectiveDate], [ExpiryDate], [IsTrialUsed]
+FROM [dbo].[UserRoles] WITH (UPDLOCK, HOLDLOCK)
+WHERE [UserID] = {userId} AND [RoleID] = {roleId}")
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        locked.Sort(static (left, right) => left.UserRoleId.CompareTo(right.UserRoleId));
+
+        return locked;
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
     /// <c>UserRoles</c> carries no portal column, so the scope is applied through the role the assignment
     /// points at, exactly as in <see cref="GetRolesByUserIdAsync"/>. This is the assignment-shaped
     /// counterpart of that member: the same memberships, but each row carrying its effective date, expiry
@@ -656,6 +711,14 @@ internal sealed class RoleRepository : IRoleRepository
         }
 
         _context.UserRoles.RemoveRange(assignments);
+    }
+
+    /// <inheritdoc />
+    public void RemoveUserRole(UserRole assignment)
+    {
+        ArgumentNullException.ThrowIfNull(assignment);
+
+        _context.UserRoles.Remove(assignment);
     }
 
     /// <inheritdoc />

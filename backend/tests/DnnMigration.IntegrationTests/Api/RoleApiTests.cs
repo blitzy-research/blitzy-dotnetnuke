@@ -1421,6 +1421,88 @@ public sealed class RoleApiTests
     }
 
     /// <summary>
+    /// Six SIMULTANEOUS grants of one role to one account leave exactly one assignment row, as the sequential
+    /// path does.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THE ROW COUNT IS THE ASSERTION, NOT THE STATUS. Every grant answers <c>204</c> either way - the
+    /// defect this closes produced six <c>204</c>s and six rows - so a test that only read statuses would have
+    /// passed against the unserialised implementation. Nothing in the schema can refuse the second row:
+    /// <c>dbo.UserRoles</c> is keyed on its own identity column with non-unique indexes over <c>UserID</c> and
+    /// <c>RoleID</c>, and the schema is immutable under this migration, so the invariant is enforced by a
+    /// locking read inside the grant's own transaction instead.
+    /// </para>
+    /// <para>
+    /// The sequential arm runs first and is the control: it establishes that one row is the intended outcome
+    /// of repeating the grant, so the concurrent arm is measured against the implementation's own intent
+    /// rather than against a number chosen by this test.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task AssignUser_ConcurrentIdenticalGrants_LeaveExactlyOneAssignment()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+        RoleDetailDto created = await CreateRoleAsync(client);
+        Uri route = RoleUsersRoute(_fixture.Seed.PortalId, created.RoleId);
+
+        // THE CONTROL: repeating the grant sequentially is idempotent.
+        for (int repeat = 0; repeat < 4; repeat++)
+        {
+            using HttpResponseMessage sequential = await client.PostAsJsonAsync(
+                route,
+                new RoleAssignmentRequest { UserId = _fixture.Seed.MemberUserId },
+                ApiTestFixture.Json);
+
+            sequential.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        }
+
+        (await CountAssignmentsAsync(created.RoleId)).Should().Be(
+            1,
+            "the sequential path proves one row is the intended outcome of repeating the grant");
+
+        // THE MEASUREMENT: the same grant, six times over, all in flight together.
+        Task<HttpResponseMessage>[] inFlight = Enumerable.Range(0, 6)
+            .Select(_ => client.PostAsJsonAsync(
+                route,
+                new RoleAssignmentRequest { UserId = _fixture.Seed.MemberUserId },
+                ApiTestFixture.Json))
+            .ToArray();
+
+        HttpResponseMessage[] answers = await Task.WhenAll(inFlight);
+
+        try
+        {
+            answers.Should().OnlyContain(
+                answer => answer.StatusCode == HttpStatusCode.NoContent,
+                "a grant the account already holds is an amendment, whichever request gets there first");
+        }
+        finally
+        {
+            foreach (HttpResponseMessage answer in answers)
+            {
+                answer.Dispose();
+            }
+        }
+
+        (await CountAssignmentsAsync(created.RoleId)).Should().Be(
+            1,
+            "concurrency must not change the outcome of an idempotent grant - six rows for one membership is "
+            + "unbounded growth in a table the authorisation path reads on every request");
+
+        // The single membership is still withdrawable through the ordinary path, which is what proves the
+        // reconciliation left a row the removal can still address.
+        using HttpResponseMessage removed = await client.DeleteAsync(
+            new Uri(
+                FormattableString.Invariant($"{route.OriginalString}/{_fixture.Seed.MemberUserId}"),
+                UriKind.Relative));
+
+        removed.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        (await CountAssignmentsAsync(created.RoleId)).Should().Be(0);
+    }
+
+    /// <summary>
     /// A delete answers <c>204 No Content</c>, removes the role, and takes its assignments with it so no
     /// account is left holding a role that no longer exists.
     /// </summary>

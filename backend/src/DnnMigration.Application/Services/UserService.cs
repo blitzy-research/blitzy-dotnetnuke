@@ -160,14 +160,24 @@ public sealed class UserService : IUserService
     private const string SessionRevocationFailedCode = "user.session.revocation_store_unavailable";
 
     /// <summary>
-    /// Reported when an account's credential could not be removed during deletion, so the deletion was
+    /// Reported when the credential store could not be REACHED during deletion, so the deletion was
     /// abandoned rather than committed with the credential left behind.
     /// </summary>
     /// <remarks>
+    /// <para>
     /// A credential surviving the account row is unreachable by any administrative screen and is revisited
     /// by no later deletion, so reporting success over one would be a permanent, invisible remnant. Its
     /// reason token ends in <c>store_unavailable</c> so the Api edge answers <c>503</c> and the caller
     /// learns the refusal is temporary.
+    /// </para>
+    /// <para>
+    /// ⚠ IT IS NOW RAISED FOR AN UNREACHABLE STORE ALONE. It used to be raised for an absent credential
+    /// record too, because the store reported both as one <see langword="bool"/>, and that made the two
+    /// callers racing to delete one account irreconcilable with the truth: the loser was answered <c>503</c>
+    /// with a message stating that the account "was left intact" while the account had already been deleted
+    /// by the winner. An absent record is the end state this deletion is reaching for, so the cascade now
+    /// continues through it.
+    /// </para>
     /// </remarks>
     private const string CredentialRemovalFailedCode = "user.credential.removal_store_unavailable";
 
@@ -1331,10 +1341,21 @@ public sealed class UserService : IUserService
         // assignments, its tenant membership, its credential in the external membership store, and the
         // account row - and they cannot be expressed as a single SaveChanges because the credential lives
         // outside the mapped model and is written through its own statement.
-        await using (ITransactionScope transaction = await _unitOfWork
-            .BeginTransactionAsync(TransactionIsolation.Default, cancellationToken)
-            .ConfigureAwait(false))
+        //
+        // THE SCOPE IS WRAPPED SO THAT A LOST RACE ANSWERS AS A REPEAT DELETION DOES. Every write in the
+        // cascade is a removal, and the store reports a removal that affected no row as a concurrency
+        // conflict - so a conflict here means precisely one thing: another caller removed what this cascade
+        // was removing. That is not a conflict a caller can resolve by retrying with fresh state, which is
+        // what a 409 would invite; it is the same condition the pre-flight guard above reports when the
+        // account is already gone. Answering it with the SAME reason keeps the answer independent of timing:
+        // whether a second deletion arrives a moment or a day after the first, it is told the account does
+        // not exist.
+        try
         {
+            await using ITransactionScope transaction = await _unitOfWork
+                .BeginTransactionAsync(TransactionIsolation.Default, cancellationToken)
+                .ConfigureAwait(false);
+
             // THE CASCADE IS ORCHESTRATED THROUGH THE PERMISSION CONTRACT, NOT THROUGH THE GRANT
             // REPOSITORY. The two tables are one concern and the rule bounding the removal to DIRECT grants
             // - grants reaching the account through a role belong to the role, so removing them would strip
@@ -1375,7 +1396,16 @@ public sealed class UserService : IUserService
 
             if (!holdsAnotherMembership)
             {
-                if (!await _users.DeleteCredentialAsync(userId, cancellationToken).ConfigureAwait(false))
+                MembershipWriteOutcome credential = await _users
+                    .DeleteCredentialAsync(userId, cancellationToken)
+                    .ConfigureAwait(false);
+
+                // ONLY AN UNREACHABLE STORE ABANDONS THE CASCADE. NoRecord means the store answered and
+                // holds no credential for this account, which is the state this step exists to produce - so
+                // it is passed through rather than reported as a failure. Reporting it refused two callers
+                // racing to delete one account and, worse, told the loser the account had been left intact
+                // when the winner had already removed it.
+                if (credential == MembershipWriteOutcome.StoreUnavailable)
                 {
                     return Result.Failure(
                         CredentialRemovalFailedCode,
@@ -1389,6 +1419,15 @@ public sealed class UserService : IUserService
             await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
             await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (IsConcurrencyConflict(exception))
+        {
+            // Nothing was committed - the scope was disposed without a commit, so every staged removal is
+            // rolled back - and the account this request addressed is gone, removed by whoever won the race.
+            // The desired end state holds; only this request's own work did not produce it.
+            return Result.Failure(
+                NotFoundCode,
+                FormattableString.Invariant($"Account {userId} does not exist in portal {portalId}."));
         }
 
         // Everything below runs only once the batch is durable, so no eviction and no audit record can

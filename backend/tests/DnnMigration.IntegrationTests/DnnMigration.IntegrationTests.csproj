@@ -101,6 +101,16 @@
     </PackageReference>
     <PackageReference Include="FluentAssertions" Version="6.12.2" />
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="8.0.29" />
+    <!--
+      DECLARED HERE BECAUSE IT NO LONGER ARRIVES TRANSITIVELY, and that is deliberate on both sides.
+      DnnMigration.Infrastructure references the design-time package with PrivateAssets="all" so it cannot
+      reach the API's publish output - the production image was carrying the EF design-time assembly and the
+      whole Roslyn compiler surface behind it. This suite still needs the COMPILE reference, because
+      DnnDbContextFactoryTests asserts that the factory implements IDesignTimeDbContextFactory<DnnDbContext>,
+      and asserting it through reflection on a string type name instead would be a weaker test of the same
+      thing. A test project is never published, so declaring it here adds nothing to any shipped artefact.
+    -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.29" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="8.0.29" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.29" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />

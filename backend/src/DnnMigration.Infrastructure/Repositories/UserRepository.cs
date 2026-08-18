@@ -718,12 +718,21 @@ internal sealed class UserRepository : IUserRepository
     }
 
     /// <inheritdoc />
-    public async Task<bool> DeleteCredentialAsync(int userId, CancellationToken cancellationToken = default)
+    /// <remarks>
+    /// An account row that can no longer be resolved carries no credential this store could reach, so it is
+    /// reported as an absent record and never as an unreachable store - the same rule the sign-in bookkeeping
+    /// above applies, and for the same reason: a caller escalates one of those two and continues past the
+    /// other.
+    /// </remarks>
+    public async Task<MembershipWriteOutcome> DeleteCredentialAsync(
+        int userId,
+        CancellationToken cancellationToken = default)
     {
         string? userName = await ResolveUserNameAsync(userId, cancellationToken).ConfigureAwait(false);
 
-        return userName is not null
-            && await _membership.DeleteAsync(userName, cancellationToken).ConfigureAwait(false);
+        return userName is null
+            ? MembershipWriteOutcome.NoRecord
+            : await _membership.DeleteAsync(userName, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Applies a deterministic ordering to a member listing.</summary>

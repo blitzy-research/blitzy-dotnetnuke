@@ -472,7 +472,7 @@ public class UserServiceApplicationTests
             subject.Users.Setup(users => users.DeleteCredentialAsync(
                     It.IsAny<int>(),
                     It.IsAny<CancellationToken>()))
-                .ReturnsAsync(true)
+                .ReturnsAsync(MembershipWriteOutcome.Recorded)
                 .Callback(() => subject.CallLog.Add("credential.delete"));
             subject.Users.Setup(users => users.Add(It.IsAny<User>()))
                 .Callback<User>(account =>

@@ -61,4 +61,32 @@
     <InternalsVisibleTo Include="DnnMigration.IntegrationTests" />
   </ItemGroup>
 
+  <!--
+    DEBUG SYMBOLS ARE BUILT AND ARE NOT PUBLISHED, which is why this is a publish-time filter rather than
+    <DebugType>none</DebugType>.
+
+    What shipped before: the production image carried DnnMigration.{Api,Application,Domain,Infrastructure}.pdb
+    - four portable symbol files, each embedding the absolute source paths of the machine that built them.
+    Nothing in the running application reads them; the exception handler answers RFC 7807 documents that carry
+    no stack trace at all, so their only effect in production is to describe the build tree to anyone who
+    obtains a layer.
+
+    Why not turn symbols off outright: the whole solution builds in Release for the test gates, and a Release
+    build with no symbols reports failures without file or line numbers, which makes a red test measurably
+    harder to diagnose. Filtering at publish keeps both properties - symbols where they are read, none where
+    they are only exposure.
+
+    ComputeFilesToPublish is the target that assembles the publish set from the build output and from every
+    referenced project, so removing the .pdb items here covers the referenced projects' symbols as well as
+    this one's. It applies to `dotnet publish` alone: `dotnet build` output is untouched, which is what the
+    test gates consume.
+  -->
+  <Target Name="ExcludeSymbolsFromPublishOutput" AfterTargets="ComputeFilesToPublish">
+    <ItemGroup>
+      <ResolvedFileToPublish
+          Remove="@(ResolvedFileToPublish)"
+          Condition="'%(Extension)' == '.pdb'" />
+    </ItemGroup>
+  </Target>
+
 </Project>

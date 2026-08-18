@@ -2452,7 +2452,7 @@ public class PortalServiceTests
         Harness harness = Harness.Ready();
         User account = PortalMember(44, isSuperUser: false, PortalId);
         harness.PortalMembers.Add(account);
-        harness.CredentialDeleted = false;
+        harness.CredentialRemoval = MembershipWriteOutcome.StoreUnavailable;
 
         Result outcome = await harness.Service.DeletePortalAsync(PortalId, CancellationToken.None);
 
@@ -2609,7 +2609,7 @@ public class PortalServiceTests
         harness.RemainingPortalCount = 2;
         User account = PortalMember(47, isSuperUser: false, PortalId);
         harness.PortalMembers.Add(account);
-        harness.CredentialDeleted = false;
+        harness.CredentialRemoval = MembershipWriteOutcome.StoreUnavailable;
 
         Result outcome = await harness.Service.DeletePortalAsync(PortalId, CancellationToken.None);
 
@@ -4122,7 +4122,7 @@ public class PortalServiceTests
             HostRootTab = HostRootTabId;
             HostSettingValues = [];
             CredentialCreated = true;
-            CredentialDeleted = true;
+            CredentialRemoval = MembershipWriteOutcome.Recorded;
             SessionRevocationResult = Result.Success();
             EchoCreatedPortal = true;
             SuperUser = true;
@@ -4320,7 +4320,13 @@ public class PortalServiceTests
 
         public bool CredentialCreated { get; set; }
 
-        public bool CredentialDeleted { get; set; }
+        /// <summary>
+        /// What the credential store reports when a member's credential is removed. An OUTCOME rather than a
+        /// boolean, because the service abandons the tenant removal for an unreachable store and continues
+        /// through a store that answers and holds no credential - the two conditions a single boolean
+        /// conflated.
+        /// </summary>
+        public MembershipWriteOutcome CredentialRemoval { get; set; }
 
         public Result SessionRevocationResult { get; set; }
 
@@ -4694,7 +4700,7 @@ public class PortalServiceTests
                 .Returns((int userId, CancellationToken _) =>
                 {
                     harness.DeletedCredentialUserIds.Add(userId);
-                    return Task.FromResult(harness.CredentialDeleted);
+                    return Task.FromResult(harness.CredentialRemoval);
                 });
 
             harness.Tokens

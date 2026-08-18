@@ -3723,7 +3723,7 @@ public class UserServiceTests
         Harness harness = Harness.Ready();
         harness.LookupUser!.UserPortals.Add(new UserPortal { UserPortalId = 1, UserId = UserId, PortalId = PortalId });
         harness.Membership = harness.LookupUser!.UserPortals.First();
-        harness.CredentialRemoved = false;
+        harness.CredentialRemoval = MembershipWriteOutcome.StoreUnavailable;
 
         Result outcome = await harness.Service.DeleteUserAsync(PortalId, UserId, CancellationToken.None);
 
@@ -3814,6 +3814,75 @@ public class UserServiceTests
     }
 
     /// <summary>
+    /// A credential the store answers is ALREADY ABSENT does not abandon the deletion: the cascade completes,
+    /// the account row is removed and the deletion is reported as the success it is.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// THE COMPANION TO THE TWO FACTS BELOW, AND THE REASON THIS OUTCOME EXISTS SEPARATELY FROM THEM. An
+    /// unreachable store abandons the cascade because nothing is known; a store that answers and holds no
+    /// credential has told us the very state this step is trying to produce. Collapsed into one boolean, the
+    /// second was answered as the first - so two administrators deleting one account at the same moment had
+    /// the loser told the credential store was unavailable and that the account "was left intact", while the
+    /// account had already been removed.
+    /// </remarks>
+    [Fact]
+    public async Task DeleteUser_WhenTheCredentialIsAlreadyAbsent_CompletesTheDeletion()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupUser!.UserPortals.Add(new UserPortal { UserPortalId = 1, UserId = UserId, PortalId = PortalId });
+        harness.Membership = harness.LookupUser!.UserPortals.First();
+        harness.CredentialRemoval = MembershipWriteOutcome.NoRecord;
+
+        Result outcome = await harness.Service.DeleteUserAsync(PortalId, UserId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue(
+            "the credential is gone and the account row was removed, which is the whole of what the caller "
+            + "asked for");
+
+        harness.DeletedCredentialUserIds.Should().Equal(new[] { UserId }, "the store was still asked");
+        harness.RemovedUsers.Select(removed => removed.UserId).Should().Equal(new[] { UserId });
+        harness.TransactionsCommitted.Should().Be(1);
+        harness.AuditRecords.Should().ContainSingle()
+            .Which.EventName.Should().Be(AuditEventNames.UserDeleted);
+    }
+
+    /// <summary>
+    /// A deletion whose own removals affect no rows - because another caller removed the account first - is
+    /// reported as a not-found account rather than as a conflict or a fault.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The answer is deliberately the SAME reason the pre-flight guard reports for an account that is already
+    /// gone, so a second deletion is told the same thing whether it arrives a moment after the first or a day
+    /// after it. A conflict would invite a retry with fresh state, and there is no fresh state to retry
+    /// against; a fault would describe a server that is working correctly.
+    /// </remarks>
+    [Fact]
+    public async Task DeleteUser_WhenAnotherCallerRemovedTheAccountFirst_ReportsItAsNotFound()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupUser!.UserPortals.Add(new UserPortal { UserPortalId = 1, UserId = UserId, PortalId = PortalId });
+        harness.Membership = harness.LookupUser!.UserPortals.First();
+        harness.CredentialRemoval = MembershipWriteOutcome.NoRecord;
+        harness.CommitFault = new DbUpdateConcurrencyException();
+
+        Result outcome = await harness.Service.DeleteUserAsync(PortalId, UserId, CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(NotFoundCode);
+        outcome.Reason!.Message.Should().NotContainEquivalentOf(
+            "left intact",
+            "the account was NOT left intact - the winner removed it - and a message asserting otherwise is "
+            + "the defect this fact exists to hold closed");
+
+        harness.TransactionsCommitted.Should().Be(0);
+        harness.AuditRecords.Should().BeEmpty("this request removed nothing, so it records nothing");
+        harness.InvalidatedPortalIds.Should().BeEmpty();
+        harness.EvictedGrantCaches.Should().BeEmpty();
+    }
+
+    /// <summary>
     /// A cascade abandoned at its last step opens a transaction and never commits it, so disposal rolls the
     /// staged removals back and nothing is evicted.
     /// </summary>
@@ -3829,7 +3898,7 @@ public class UserServiceTests
         harness.LookupUser!.UserPortals.Add(new UserPortal { UserPortalId = 1, UserId = UserId, PortalId = PortalId });
         harness.Membership = harness.LookupUser!.UserPortals.First();
         harness.UserAssignments.Add(new UserRole { UserRoleId = 7, UserId = UserId, RoleId = 5 });
-        harness.CredentialRemoved = false;
+        harness.CredentialRemoval = MembershipWriteOutcome.StoreUnavailable;
 
         Result outcome = await harness.Service.DeleteUserAsync(PortalId, UserId, CancellationToken.None);
 
@@ -7924,8 +7993,18 @@ public class UserServiceTests
         /// </remarks>
         public int? SessionRevocationsBeforeFailure { get; set; }
 
-        /// <summary>Whether the credential store can remove an account's credential. Defaults to true.</summary>
-        public bool CredentialRemoved { get; set; } = true;
+        /// <summary>
+        /// What the credential store reports when an account's credential is removed. Defaults to a recorded
+        /// removal.
+        /// </summary>
+        /// <remarks>
+        /// AN OUTCOME RATHER THAN A BOOLEAN, because the service now treats two of its members as opposites:
+        /// <see cref="MembershipWriteOutcome.StoreUnavailable"/> abandons the deletion cascade, while <see
+        /// cref="MembershipWriteOutcome.NoRecord"/> - the store answered and holds no credential - is the end
+        /// state the cascade is reaching for and is passed through. A boolean could not express the
+        /// difference, which is exactly how a lost race came to be answered as a store outage.
+        /// </remarks>
+        public MembershipWriteOutcome CredentialRemoval { get; set; } = MembershipWriteOutcome.Recorded;
 
         public PasswordPolicyOptions PasswordPolicy { get; }
 
@@ -8481,7 +8560,7 @@ public class UserServiceTests
                 .Returns((int userId, CancellationToken _) =>
                 {
                     harness.DeletedCredentialUserIds.Add(userId);
-                    return Task.FromResult(harness.CredentialRemoved);
+                    return Task.FromResult(harness.CredentialRemoval);
                 });
 
             // Revocation succeeds by default, because the ordinary case for every operation that ends an

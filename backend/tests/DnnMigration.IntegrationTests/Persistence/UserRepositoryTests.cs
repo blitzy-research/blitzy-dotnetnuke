@@ -520,8 +520,8 @@ public sealed class UserRepositoryTests
             format.Should().Be(PasswordFormat.Hashed);
             salt.Should().BeEmpty();
 
-            bool deleted = await users.DeleteCredentialAsync(userId);
-            deleted.Should().BeTrue();
+            MembershipWriteOutcome deleted = await users.DeleteCredentialAsync(userId);
+            deleted.Should().Be(MembershipWriteOutcome.Recorded);
 
             (exists, hash, format, salt, _, _) = await users.GetCredentialStateAsync(userId);
             exists.Should().BeFalse();
@@ -603,9 +603,10 @@ public sealed class UserRepositoryTests
             using IServiceScope scope = _fixture.Services.CreateScope();
             IUserRepository users = scope.ServiceProvider.GetRequiredService<IUserRepository>();
 
-            bool deleted = await users.DeleteCredentialAsync(userId);
+            MembershipWriteOutcome deleted = await users.DeleteCredentialAsync(userId);
 
-            deleted.Should().BeTrue(
+            deleted.Should().Be(
+                MembershipWriteOutcome.Recorded,
                 "the credential row was present, so its removal is what the outcome reports - and a "
                 + "reference violation raised by a dependant row would have surfaced here as an exception");
 
@@ -645,7 +646,15 @@ public sealed class UserRepositoryTests
                     + "against, which is emphatically not the same answer as a refused expectation");
         (await users.SetApprovalAsync(UnknownUserId, isApproved: true)).Should().BeFalse();
         (await users.UnlockAsync(UnknownUserId)).Should().BeFalse();
-        (await users.DeleteCredentialAsync(UnknownUserId)).Should().BeFalse();
+
+        // REPORTED AS AN ABSENT RECORD, NEVER AS AN UNREACHABLE STORE, and the distinction is the one the
+        // two bookkeeping members below already drew. An identifier that resolves to no membership user name
+        // carries no credential for this store to remove, so the end state a removal asks for already holds;
+        // reported as a store failure instead, it made a deletion cascade abandon itself - and tell its
+        // caller the account had been left intact - over an account whose credential was already gone.
+        (await users.DeleteCredentialAsync(UnknownUserId)).Should().Be(
+            MembershipWriteOutcome.NoRecord,
+            "an unresolvable identifier has no credential record to remove, and the store was reachable");
 
         // The two bookkeeping members report an OUTCOME rather than a boolean, and the distinction this
         // test pins is the whole reason for that: an account that cannot be resolved reports "no record",

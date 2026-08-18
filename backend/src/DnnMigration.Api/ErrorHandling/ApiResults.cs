@@ -186,12 +186,20 @@ public static class ApiResults
     };
 
     /// <summary>Codes answered with <c>503</c>, because a dependency could not be reached.</summary>
+    /// <remarks>
+    /// <c>session_revocation_store_unavailable</c> WAS a member and is deliberately gone. It was the code a
+    /// sign-out placed on a family this instance does not hold, and answering that condition 503 partitioned
+    /// the token space for an anonymous caller - a live value answered 204 and an unknown one 503, which is a
+    /// probe for which sessions exist. <c>AuthService.LogoutAsync</c> now reports a completed sign-out for
+    /// every well-formed request and forwards <c>TOKEN_STORE_UNAVAILABLE</c> alone, which is still a member
+    /// here, so an unreachable store is still answered 503 and nothing else on that path is.
+    /// </remarks>
     private static readonly string[] UnavailableCodes =
     {
         "auth.approval_store_unavailable", "auth.credential_migration_store_unavailable",
         "auth.remediation.store_unavailable", "portal.member.credential.removal_store_unavailable",
         "portal.member.session.revocation_store_unavailable", "server.unavailable",
-        "session_revocation_store_unavailable", "token_store_unavailable", "user.create.provider_error",
+        "token_store_unavailable", "user.create.provider_error",
         "user.credential.removal_store_unavailable", "user.session.revocation_store_unavailable",
     };
 

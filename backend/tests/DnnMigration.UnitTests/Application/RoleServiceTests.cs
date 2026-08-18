@@ -1813,6 +1813,25 @@ public class RoleServiceApplicationTests
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.ExistingAssignment);
 
+            // THE LOCKING READ IS ANSWERED FROM THE SAME MODELLED ASSIGNMENT as the ordinary read, so every
+            // fact written against ExistingAssignment continues to describe the situation it always did. The
+            // grant takes this read rather than the one above, because the pair must be held under exclusion
+            // between the decision and the write - dbo.UserRoles has no unique index over the pair and the
+            // schema is immutable, so nothing else can keep a concurrent grant from inserting a second row.
+            harness.Roles
+                .Setup(repository => repository.GetUserRoleForUpdateAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => harness.ExistingAssignment is { } single
+                    ? new List<UserRole> { single }
+                    : new List<UserRole>());
+
+            harness.Roles
+                .Setup(repository => repository.RemoveUserRole(It.IsAny<UserRole>()))
+                .Callback<UserRole>(staged =>
+                    harness.RemovedAssignmentKeys.Add((staged.UserId, staged.RoleId)));
+
             harness.Roles
                 .Setup(repository => repository.GetByPortalIdAsync(
                     It.IsAny<int>(),
@@ -1922,6 +1941,15 @@ public class RoleServiceApplicationTests
                 .Setup(unit => unit.SaveChangesAsync(It.IsAny<CancellationToken>()))
                 .ReturnsAsync(1);
 
+            // The grant joins a transaction rather than opening one, so that it composes inside the account
+            // operations that call it. The scope here records nothing: these facts are about the dates and
+            // the staged rows, and the ordering facts live in the sibling suite.
+            harness.UnitOfWork
+                .Setup(unit => unit.JoinOrBeginTransactionAsync(
+                    It.IsAny<TransactionIsolation>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => new NoOpTransactionScope());
+
             harness.Audit
                 .Setup(sink => sink.Record(It.IsAny<AuditEvent>()))
                 .Callback<AuditEvent>(harness.AuditRecords.Add);
@@ -1930,5 +1958,21 @@ public class RoleServiceApplicationTests
 
             return harness;
         }
+    }
+
+    /// <summary>A transaction scope that records nothing and refuses nothing.</summary>
+    /// <remarks>
+    /// The grant joins or opens a scope and commits it, and these facts are about the values it derives and
+    /// the rows it stages rather than about that boundary; the suite that asserts the boundary - the read
+    /// under exclusion, the ordering, and the single commit - is <c>Services/RoleServiceTests.cs</c>. A stub
+    /// here keeps that separation instead of duplicating the recording harness.
+    /// </remarks>
+    private sealed class NoOpTransactionScope : ITransactionScope
+    {
+        /// <inheritdoc />
+        public Task CommitAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        /// <inheritdoc />
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 }

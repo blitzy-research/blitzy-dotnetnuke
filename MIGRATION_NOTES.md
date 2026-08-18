@@ -16488,7 +16488,7 @@ document at or just below the ceiling may still be refused once JSON string
 escaping has inflated the request body, and that refusal is deliberately left to
 the API rather than guessing the overhead in the browser.
 
-### Session revocation draws on its own rate-limit budget, and an unconfirmed revocation is reported
+### Session revocation draws on its own rate-limit budget, and answers alike for every credential
 
 **Legacy behaviour.** `PortalSecurity.vb:L77` cleared five cookies and took effect
 at once. There was no rate limiter, and sign-out could not fail in a way the
@@ -16501,11 +16501,39 @@ two budgets are independent. It remains bounded rather than exempt, and it keeps
 the concurrency bound and request-body limit that its credential-endpoint mark
 applies.
 
+**Target behaviour, server, second half.** `POST /auth/logout` answers `204` for
+every well-formed request, whatever the presented value turns out to be: a family
+it retired, one that was already retired, one that has expired, one it has never
+held, and no value at all all produce the same empty response. The single condition
+that refuses is an unreachable session store, which answers `503` under
+`TOKEN_STORE_UNAVAILABLE` — a fact about this server rather than about the
+credential, and the one case where a client genuinely must keep its credential and
+retry.
+
+An intermediate design refused an *unconfirmed* retirement too, under a code of its
+own, on the reasoning that a family unknown to this instance might still be live on
+another replica. **That refusal is withdrawn, and it is worth recording why rather
+than simply removing it.** The endpoint is anonymous, so a status that varied with
+whether the presented value existed partitioned the token space for an
+unauthenticated caller — a live value answered `204` and an unknown one `503`,
+which is a probe for which sessions are live — and because every `5xx` is logged at
+`Error`, the same caller could drive error-log volume at will. Against that, the
+condition it described cannot arise in a deployment this solution admits: the
+SQL-backed store is authoritative across replicas and reports an unknown family as
+a completed retirement itself, and the process-local store refuses to start unless
+the operator has acknowledged single-instance operation, where "this instance holds
+no such family" *is* proof that no live family exists anywhere. The refusal
+therefore told no operator anything they could act on, and cost an oracle. Nothing
+is recorded on that path either: no audit entry may assert that a session ended
+when the store did not prove one did, and no diagnostic is written for a path any
+anonymous caller can reach at will.
+
 **Target behaviour, client.** Local sign-out still happens unconditionally and the
 operation still completes successfully, so a person who asks to sign out always
-ends up signed out on this device. What changed is that a failed withdrawal is no
-longer discarded: it is recorded, and reported on the sign-in screen the operator
-is sent to.
+ends up signed out on this device. A failed withdrawal is not discarded: it is
+recorded, and reported on the sign-in screen the operator is sent to. That path is
+now reached only by a genuine store outage, which is exactly the condition an
+operator can act on.
 
 **Why the difference is deliberate.** Withdrawing a refresh token is the one
 operation whose purpose is to shut a session down, so refusing it is not a neutral
@@ -16529,9 +16557,8 @@ credential to make one possible. Both are ruled out by design rather than
 overlooked: a retry folded into the authentication client, or the renewal
 credential copied into a field of it so a later attempt could re-send it, are
 exactly the two forms of creep that client's specification exists to prevent, and
-custody of the credential belongs to one collaborator alone. The substance of the
-defect was never that sign-out absorbed the failure — it was that it reported
-success. It now reports what is true and names the action that genuinely exists.
+custody of the credential belongs to one collaborator alone. What it reports is a
+store outage, which is the one refusal the server still publishes.
 
 ### Work begun under a superseded session no longer commits its result
 
@@ -22893,3 +22920,123 @@ cannot resolve.
   read of the whole listing on every group deletion: the address subscription issues the listing read on every
   emission. A momentarily inaccurate URL string on a screen showing the correct rows was judged the smaller
   cost.
+
+## An unreachable credential store and an absent credential were one answer, and a lost race was told the wrong one
+
+**Legacy behaviour.** Account deletion ran `DeleteUser` as a single stored procedure with no
+transaction spanning it, and the ASP.NET membership half — `aspnet_Users_DeleteUser` — reported
+only whether it had deleted something. Two administrators deleting one account at the same moment
+was undefined behaviour that nothing detected and nothing reported.
+
+**What was wrong in the target.** The credential store returned one `bool` for three different
+facts: "the row was removed", "the store was reachable and holds no such row", and "the store
+could not be reached at all". `UserService.DeleteUserAsync` and `PortalService.DeletePortalAsync`
+both read that boolean as the third case, so an *absent* credential was reported as an
+*unavailable store* — answered `503` under a `…store_unavailable` code, with a message stating
+that "the account was left intact rather than deleted without it".
+
+Under concurrency that message was the opposite of the truth. Six simultaneous deletions of one
+account produced one `204` and five `503`s, each asserting the account had been left intact, while
+the account row had in fact been removed by the request that won. The final data state was correct
+and consistent throughout — no corruption, no partial cascade, every dependant row gone — but five
+callers were told something false about it.
+
+**Target behaviour.** The store now reports `MembershipWriteOutcome`, the same three-way vocabulary
+its sign-in bookkeeping already used: `Recorded`, `NoRecord`, `StoreUnavailable`. Only
+`StoreUnavailable` abandons a deletion — nothing was written and nothing is known, so removing the
+account row would orphan a credential no screen can reach. `NoRecord` is the state the deletion is
+reaching for, so the cascade continues through it.
+
+The request that loses the race then finds its own removals affecting no rows, which the unit of
+work reports as a lost update. That is answered with the *same* not-found reason the pre-flight
+guard reports when the account is already gone, rather than as a conflict: a conflict invites a
+retry with fresh state, and there is no fresh state to retry against. The consequence is that the
+answer no longer depends on timing — a second deletion arriving a moment after the first, or a day
+after it, is told the same thing.
+
+**Why not a schema constraint.** None is available: the schema is immutable under this migration,
+and the account and credential rows live in different stores that cannot participate in one
+constraint at all.
+
+## A role grant was idempotent one request at a time, and not at all under concurrency
+
+**Legacy behaviour.** `UpdateUserRole` was a single stored procedure that read the pair and then
+inserted or updated it, with no transaction and no constraint behind it. `dbo.UserRoles` is keyed on
+`UserRoleID`, an identity column, and carries non-unique indexes over `RoleID` and `UserID` alone —
+so the legacy store could not refuse a second row for one `(UserID, RoleID)` pair either.
+
+**What was wrong in the target.** `RoleService.AssignUserToRoleAsync` reproduced the read-then-write
+faithfully, including its lack of serialisation. Repeated sequentially the grant is idempotent —
+four grants of one role to one account leave one row, because the second and later ones take the
+amendment branch. Issued simultaneously, six grants each read "not held" and each inserted, leaving
+six rows for one membership.
+
+The blast radius was bounded and was measured rather than assumed: membership of a role is a boolean
+fact, so duplicate rows conferred no additional privilege, and a single withdrawal still removed
+every row and revoked the membership immediately. What remained was unbounded growth in a table the
+authorisation path reads on every request.
+
+**Target behaviour.** The read, the decision and the write are one transaction, and the read takes an
+update lock over the key range naming the pair (`UPDLOCK, HOLDLOCK`). A second grant arriving while
+the first is in flight is held at the read until the first commits, then reads the row it wrote and
+takes the amendment branch. `UPDLOCK` rather than a shared read is what avoids the two callers
+deadlocking on a lock upgrade; `HOLDLOCK` is what extends the exclusion to the range where a row
+*would* sit, which is the case being closed.
+
+The transaction is **joined** rather than opened, because the grant is also one step of three account
+operations — service subscription, cancellation, and invitation-code redemption, which calls it once
+per matched role — and a nested transaction is refused rather than nested by this unit of work.
+
+A grant that finds the pair already duplicated keeps the earliest row, amends it, and removes the
+surplus while it still holds the lock, so rows left by a grant taken before this exclusion existed
+are reconciled rather than perpetuated.
+
+**Why not a unique index.** Rule T4 of this migration makes the existing schema immutable: entity
+configurations bind to the legacy tables and the baseline migration is deliberately empty, so no
+`CREATE`, `ALTER` or `DROP` reaches a real DotNetNuke database from this work. The invariant is
+therefore enforced in code, and this note records that the store still cannot enforce it — anything
+writing `dbo.UserRoles` outside this service must serialise the same way.
+
+**On other providers.** The lock hints are T-SQL, so the locking read falls back to an ordinary
+tracked query on any non-SQL-Server provider. The two providers that reaches — in-memory and SQLite,
+both test-only — serialise writes within a connection anyway, so the fallback surrenders no guarantee
+they could have offered.
+
+## The production image carried a compiler it never invokes, and four symbol files describing the build tree
+
+**Legacy behaviour.** There is no counterpart to compare against: the legacy application deployed as
+pre-built assemblies into `Website/bin`, with no publish step and no notion of a design-time
+dependency at all.
+
+**What was wrong in the target.** `DnnMigration.Infrastructure` referenced
+`Microsoft.EntityFrameworkCore.Design` as an ordinary package reference, so the package flowed
+transitively to `DnnMigration.Api` and into its publish output. Measured inside the running
+container, `/app` carried `Microsoft.EntityFrameworkCore.Design.dll` plus the whole Roslyn surface it
+depends on — `Microsoft.CodeAnalysis.dll`, `Microsoft.CodeAnalysis.CSharp.dll`,
+`Microsoft.CodeAnalysis.Workspaces.dll`, `Microsoft.CodeAnalysis.CSharp.Workspaces.dll` — and
+`Humanizer.dll`, alongside portable symbol files for all four production assemblies.
+
+Nothing in the running application invokes any of it: there is no scaffolding or migration endpoint,
+and the exception handler answers problem documents that carry no stack trace, so the symbols are
+never read either. It was unnecessary attack surface — an in-process dynamic-compilation capability —
+and, in the symbol files, a description of the build machine's directory layout.
+
+**Target behaviour.** The design-time reference carries `PrivateAssets="all"`, which stops it flowing
+to consumers while leaving this project's own compile reference intact — it must stay, because
+`DnnDbContextFactory` implements `IDesignTimeDbContextFactory<DnnDbContext>`. `DnnMigration.Api`
+additionally filters `.pdb` files out of `ResolvedFileToPublish`, so symbols are still produced by
+`dotnet build` — where the Release test gates read them for file and line numbers — and are absent
+from `dotnet publish`. `/app` fell from 100 files to 80 and the image from 196 MB to 166 MB.
+
+**What this costs, and the command that replaces it.** The API project is no longer a usable startup
+project for the EF CLI. Migration tooling is invoked against the Infrastructure project as both
+project and startup project, which resolves because the design-time factory supplies the context and
+its connection string without a host:
+
+    dotnet ef migrations add <Name> --project src/DnnMigration.Infrastructure
+                                    --startup-project src/DnnMigration.Infrastructure
+
+Both `dotnet ef dbcontext info` and `dotnet ef migrations list --no-connect` were run through that
+route after the change and resolved the context and the single baseline migration.
+`DnnMigration.IntegrationTests` declares the package itself, because it asserts that the factory
+implements the design-time interface and a test project is never published.

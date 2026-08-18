@@ -734,8 +734,23 @@ WHERE aa.[LoweredApplicationName] = @app AND au.[LoweredUserName] = @user;";
     /// <summary>Deletes the credential record of an account.</summary>
     /// <param name="userName">The DotNetNuke user name.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns><see langword="true"/> when a credential record was deleted.</returns>
+    /// <returns>
+    /// <see cref="MembershipWriteOutcome.Recorded"/> when a credential record was deleted, <see
+    /// cref="MembershipWriteOutcome.NoRecord"/> when the store was reachable and held none, and <see
+    /// cref="MembershipWriteOutcome.StoreUnavailable"/> when the store could not be reached at all.
+    /// </returns>
     /// <remarks>
+    /// <para>
+    /// ⚠ THE THREE OUTCOMES WERE ONE <see langword="bool"/>, AND COLLAPSING THEM WAS A DEFECT RATHER THAN A
+    /// SIMPLIFICATION. "The store could not be asked" and "the store was asked and holds nothing" are
+    /// opposite facts: the first is a server fault whose caller must abandon its work, and the second is the
+    /// end state a deletion is trying to reach. Reported as one <see langword="false"/>, the second was
+    /// answered as the first - so two callers racing to delete one account had the loser told that the
+    /// credential store was unavailable and that the account "was left intact", while the account had in
+    /// fact been deleted. The vocabulary is the same <see cref="MembershipWriteOutcome"/> the sign-in
+    /// bookkeeping on this store already reports, so no caller learns a second one.
+    /// </para>
+    /// <para>
     /// REPRODUCES THE STOCK DELETION ORDER, AND THE ORDER IS THE WHOLE POINT. The membership user row is
     /// referenced by four other tables through NON-CASCADING foreign keys, so removing it first - or
     /// removing only it and the credential row - is refused by the store for any account that has ever held
@@ -744,14 +759,24 @@ WHERE aa.[LoweredApplicationName] = @app AND au.[LoweredUserName] = @user;";
     /// <c>04.00.00.SqlDataProvider</c> lines 475-595) clears the dependants first and in a fixed sequence:
     /// the credential row, then the role memberships, then the profile, then the personalisation, and only
     /// then the user row.
+    /// </para>
+    /// <para>
+    /// MIGRATION: the legacy procedure reported only whether it had deleted something, so "nothing to
+    /// delete" and "could not reach the store" were indistinguishable to every caller. Reporting them
+    /// apart is a deliberate behavioural difference and is recorded in <c>MIGRATION_NOTES.md</c> under
+    /// "An unreachable credential store and an absent credential were one answer, and a lost race was
+    /// told the wrong one", together with the delete-race outcome it corrects.
+    /// </para>
     /// </remarks>
-    public async Task<bool> DeleteAsync(string userName, CancellationToken cancellationToken = default)
+    public async Task<MembershipWriteOutcome> DeleteAsync(
+        string userName,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(userName);
 
         if (!await IsAvailableAsync(cancellationToken).ConfigureAwait(false))
         {
-            return false;
+            return MembershipWriteOutcome.StoreUnavailable;
         }
 
         const string Sql = @"
@@ -807,8 +832,14 @@ SELECT @deleted;";
                 cancellationToken)
             .ConfigureAwait(false);
 
-        return deleted is not null
+        // The statement answers with the number of credential rows it removed, so a zero means the store
+        // held none - the account was never registered here, or a concurrent caller removed it first. Both
+        // are the desired end state rather than a fault, which is why they are NoRecord and not
+        // StoreUnavailable: the store answered.
+        bool removed = deleted is not null
             && Convert.ToInt32(deleted, System.Globalization.CultureInfo.InvariantCulture) > 0;
+
+        return removed ? MembershipWriteOutcome.Recorded : MembershipWriteOutcome.NoRecord;
     }
 
     /// <summary>Reads one batch of account snapshots into the accumulating map.</summary>

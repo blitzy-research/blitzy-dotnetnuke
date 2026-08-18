@@ -2828,6 +2828,89 @@ public class RoleServiceTests
         created.IsTrialUsed.Should().BeFalse();
     }
 
+    /// <summary>
+    /// The grant reads the pair under exclusion inside a transaction, and commits that same transaction - so a
+    /// second grant of the same role to the same account cannot slip between the read and the write.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// ⚠ THE INVARIANT THIS HOLDS CLOSED CANNOT BE ENFORCED BY THE STORE. <c>dbo.UserRoles</c> is keyed on its
+    /// own identity column and carries only non-unique indexes over <c>UserID</c> and <c>RoleID</c>, and the
+    /// schema is immutable under this migration, so no unique constraint may be added over the pair. Six
+    /// simultaneous grants were measured producing six rows for one membership while four sequential ones
+    /// produced one; the exclusion is the whole of what makes the concurrent case agree with the sequential
+    /// one. The ORDER is asserted rather than the calls, because a read taken outside the scope, or a commit
+    /// taken before the write, would each pass a call-count assertion and close nothing.
+    /// </remarks>
+    [Fact]
+    public async Task Assign_ReadsThePairUnderExclusionInsideTheTransactionItCommits()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupRole = FreeRole();
+        harness.ExistingAssignment = null;
+
+        Result outcome = await harness.Service
+            .AssignUserToRoleAsync(PortalId, RoleId, new RoleAssignmentRequest { UserId = UserId }, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+
+        harness.Roles.Verify(
+            roles => roles.GetUserRoleForUpdateAsync(UserId, RoleId, It.IsAny<CancellationToken>()),
+            Times.Once,
+            "the decision must rest on the locking read, not on the ordinary one");
+
+        harness.Roles.Verify(
+            roles => roles.GetUserRoleAsync(
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never,
+            "reading the pair twice would take the exclusion and then decide on a value read without it");
+
+        RecordingTransactionScope scope = harness.OpenedTransactions.Should().ContainSingle().Subject;
+        scope.Committed.Should().BeTrue("the write is inside the scope, so the scope must commit it");
+
+        harness.Steps.Should().ContainInOrder("transaction.begin", "unitOfWork.save", "transaction.commit");
+    }
+
+    /// <summary>
+    /// A grant that finds the pair duplicated keeps the earliest row, amends it, and removes the surplus.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The duplicates this reconciles are rows a grant taken BEFORE the exclusion existed could leave behind.
+    /// Membership of a role is a boolean fact, so a surplus row grants nothing and removing it withdraws
+    /// nothing - which is why the reconciliation is safe to perform on the write path rather than requiring a
+    /// migration the immutable-schema rule would not permit.
+    /// </remarks>
+    [Fact]
+    public async Task Assign_WhenThePairIsAlreadyDuplicated_KeepsTheEarliestRowAndRemovesTheSurplus()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupRole = MonthlyRole();
+
+        var earliest = new UserRole { UserRoleId = 11, UserId = UserId, RoleId = RoleId };
+        var surplusOne = new UserRole { UserRoleId = 12, UserId = UserId, RoleId = RoleId };
+        var surplusTwo = new UserRole { UserRoleId = 13, UserId = UserId, RoleId = RoleId };
+        harness.HeldAssignments = [earliest, surplusOne, surplusTwo];
+
+        Result outcome = await harness.Service
+            .AssignUserToRoleAsync(PortalId, RoleId, new RoleAssignmentRequest { UserId = UserId }, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+
+        harness.AddedAssignments.Should().BeEmpty("the account already holds the role");
+        earliest.ExpiryDate.Should().Be(
+            Now.AddMonths(1),
+            "the row that is kept is the one every read on this repository resolves to");
+
+        harness.RemovedAssignments.Select(removed => removed.UserRoleId).Should().Equal(
+            new[] { 12, 13 },
+            "every row beyond the earliest is surplus, and it is removed while it is held rather than left "
+            + "for a later reader to disambiguate");
+    }
+
     /// <summary>An existing assignment is amended in place rather than replaced by a second row.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -4367,6 +4450,21 @@ public class RoleServiceTests
                     return Task.FromResult<ITransactionScope>(scope);
                 });
 
+            // The idempotent grant JOINS rather than opens, because it is reachable both on its own and as one
+            // step of an account operation that already holds a transaction. The harness records it the same
+            // way, so a fact can assert that the read and the write shared one scope.
+            UnitOfWork
+                .Setup(unit => unit.JoinOrBeginTransactionAsync(
+                    It.IsAny<TransactionIsolation>(),
+                    It.IsAny<CancellationToken>()))
+                .Returns<TransactionIsolation, CancellationToken>((isolation, _) =>
+                {
+                    var scope = new RecordingTransactionScope(isolation, Steps);
+                    OpenedTransactions.Add(scope);
+                    Steps.Add("transaction.begin");
+                    return Task.FromResult<ITransactionScope>(scope);
+                });
+
             // Ordering is recorded rather than inferred. The sweep must precede the role delete, both must
             // precede the commit, and the eviction must follow it; verifying each call in isolation would
             // pass for any permutation of the four.
@@ -4511,6 +4609,17 @@ public class RoleServiceTests
         public List<UserRole> AddedAssignments { get; }
 
         public List<UserRole> RemovedAssignments { get; }
+
+        /// <summary>
+        /// The rows the LOCKING read reports, or <see langword="null"/> to derive them from <c>
+        /// ExistingAssignment</c>.
+        /// </summary>
+        /// <remarks>
+        /// Set only by the facts about duplicate rows - the state a grant taken before the pair was read under
+        /// exclusion could leave behind. Every other fact leaves it null and models one assignment, or none,
+        /// exactly as it did before the locking read existed.
+        /// </remarks>
+        public List<UserRole>? HeldAssignments { get; set; }
 
         public List<RoleGroup> AddedGroups { get; }
 
@@ -4735,6 +4844,28 @@ public class RoleServiceTests
                     It.IsAny<int>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.ExistingAssignment);
+
+            // THE LOCKING READ IS ANSWERED FROM THE SAME MODELLED STATE as the ordinary one, so every fact
+            // written against ExistingAssignment continues to describe the situation it always did. A fact
+            // that needs the duplicate-row case sets HeldAssignments instead.
+            harness.Roles
+                .Setup(r => r.GetUserRoleForUpdateAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => harness.HeldAssignments is { } held
+                    ? held
+                    : harness.ExistingAssignment is { } single
+                        ? new List<UserRole> { single }
+                        : new List<UserRole>());
+
+            harness.Roles
+                .Setup(r => r.RemoveUserRole(It.IsAny<UserRole>()))
+                .Callback<UserRole>(assignment =>
+                {
+                    harness.RemovedAssignmentKeys.Add((assignment.UserId, assignment.RoleId));
+                    harness.RemovedAssignments.Add(assignment);
+                });
 
             // Role-name uniqueness is now answered by the name lookup itself, because IX_RoleName makes
             // it a single-row question. A taken name is therefore modelled as a matching row.

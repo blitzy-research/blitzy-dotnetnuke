@@ -1497,18 +1497,22 @@ public sealed class AuthApiTests
     }
 
     /// <summary>
-    /// Signing out succeeds with nothing to do for a blank value, and reports an UNCONFIRMED retirement -
-    /// repeatably - for a value this instance does not hold.
+    /// Signing out answers <c>204</c> for a blank value, for a value this instance does not hold, and for the
+    /// same unheld value presented again - so the status discloses nothing about which sessions exist.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
-    /// A blank value asks for nothing, so it is still a completed sign-out. An unrecognised value is no
-    /// longer answered <c>204</c>: with families held per process, "I do not hold this" and "this belongs
-    /// to another replica" are the same answer, and reporting the second as a completed sign-out left the
-    /// session live there while the client discarded the only credential able to end it.
+    /// ⚠ THIS FACT ASSERTED <c>503</c> FOR AN UNRECOGNISED VALUE AND THAT EXPECTATION IS WITHDRAWN. The
+    /// endpoint is anonymous, so a status that varied with whether the presented value existed was a probe
+    /// for which sessions are live - a live value answered <c>204</c> and an unknown one <c>503</c>. The
+    /// reasoning for the refusal was that a family unknown here might be live on another replica; a store
+    /// authoritative across replicas already reports an unknown family as a retirement itself, and the
+    /// process-local store is only permitted where single-instance operation has been acknowledged, so the
+    /// condition the refusal described could not arise. The status line is now uniform, which is what both
+    /// this service's own contract and the client's documented expectation require.
     /// </remarks>
     [Fact]
-    public async Task Logout_CompletesForABlankValueAndReportsAnUnconfirmedRetirement()
+    public async Task Logout_AnswersAlikeForABlankValueAnUnheldValueAndARepeat()
     {
         using HttpClient client = _fixture.CreateAnonymousClient();
 
@@ -1518,6 +1522,7 @@ public sealed class AuthApiTests
             ApiTestFixture.Json);
 
         blank.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        (await blank.Content.ReadAsStringAsync()).Should().BeEmpty();
 
         string neverIssued = "never-issued-" + Suffix();
 
@@ -1526,7 +1531,13 @@ public sealed class AuthApiTests
             new RefreshTokenRequest { RefreshToken = neverIssued },
             ApiTestFixture.Json);
 
-        unknown.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
+        unknown.StatusCode.Should().Be(
+            HttpStatusCode.NoContent,
+            "a value this store does not hold can mint no successor, so the sign-out is complete - and an "
+            + "anonymous caller must not be able to tell that case from a live one");
+        (await unknown.Content.ReadAsStringAsync()).Should().BeEmpty(
+            "an empty body carries no discriminator either, so the whole response is uniform rather than "
+            + "only its status line");
 
         // The SAME value again, so this arm asserts repetition rather than a second unknown value.
         using HttpResponseMessage repeated = await client.PostAsJsonAsync(
@@ -1534,7 +1545,51 @@ public sealed class AuthApiTests
             new RefreshTokenRequest { RefreshToken = neverIssued },
             ApiTestFixture.Json);
 
-        repeated.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
+        repeated.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        (await repeated.Content.ReadAsStringAsync()).Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// A live value, an unheld value and a blank value produce byte-identical sign-out responses.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The oracle this closes was a STATUS difference, so the assertion is written on the whole response
+    /// rather than on the status alone: an identical status carrying a different body, or a body only present
+    /// in one arm, would partition the token space just as effectively.
+    /// </remarks>
+    [Fact]
+    public async Task Logout_ForALiveValueAndAnUnheldValue_AnswersIdentically()
+    {
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
+        UserDetailDto account = await CreateUserAsync(administrator);
+
+        using HttpClient client = _fixture.CreateAnonymousClient();
+        LoginResponse issued = await SignInAsync(client, account.Username);
+
+        using HttpResponseMessage live = await client.PostAsJsonAsync(
+            LogoutRoute,
+            new RefreshTokenRequest { RefreshToken = issued.RefreshToken },
+            ApiTestFixture.Json);
+
+        using HttpResponseMessage unheld = await client.PostAsJsonAsync(
+            LogoutRoute,
+            new RefreshTokenRequest { RefreshToken = "never-issued-" + Suffix() },
+            ApiTestFixture.Json);
+
+        unheld.StatusCode.Should().Be(
+            live.StatusCode,
+            "the status is the discriminator an anonymous caller can read most cheaply, so it must not "
+            + "distinguish a credential the store found from one it did not");
+
+        (await unheld.Content.ReadAsStringAsync()).Should().Be(
+            await live.Content.ReadAsStringAsync(),
+            "and neither may the body");
+
+        unheld.Content.Headers.ContentType.Should().BeEquivalentTo(
+            live.Content.Headers.ContentType,
+            "a problem document announces itself through its media type, so a differing content type would "
+            + "reinstate the discriminator the status no longer carries");
     }
 
     /// <summary>The caller's own snapshot requires credentials.</summary>

@@ -1410,17 +1410,25 @@ public class AuthServiceTests
     }
 
     /// <summary>
-    /// A retirement the store could not prove is refused and is recorded nowhere, and the refusal discloses
-    /// nothing about whether the presented value existed.
+    /// A retirement this instance cannot prove is reported as a COMPLETED sign-out and is recorded nowhere,
+    /// so nothing about the presented value reaches the caller.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// ⚠ THIS FACT ASSERTED THE OPPOSITE AND THE EXPECTATION IS WITHDRAWN, because the reading it rested on
-    /// was shown to be unsound. It required an unrecognised token to be reported as a completed sign-out,
-    /// on the reading that a value the store cannot find can no longer mint a successor.
+    /// ⚠ THIS FACT PREVIOUSLY ASSERTED A REFUSAL, AND THAT EXPECTATION IS WITHDRAWN. It required an
+    /// unrecognised token to answer differently from a live one, on the reading that a family unknown HERE
+    /// might still be live on another replica, so the client had to keep its credential and retry. That
+    /// reading cannot arise in a deployment this solution admits: the store that is authoritative across
+    /// replicas reports an unknown family as a completed retirement itself, and the process-local store is
+    /// only permitted where the operator has acknowledged single-instance operation - where "this instance
+    /// holds no such family" is proof that no live family exists anywhere. What the refusal did cost was
+    /// real: the endpoint is anonymous, so a status that varied with whether the value existed handed an
+    /// unauthenticated caller a probe for which sessions are live, and every 5xx is logged at Error, so the
+    /// same caller could drive error-log volume at will. The idempotence this member's own contract
+    /// documents - and which the client contract states verbatim - is therefore restored.
     /// </remarks>
     [Fact]
-    public async Task SignOut_RefusesAndRecordsNothingWhenTheRetirementCouldNotBeProven()
+    public async Task SignOut_ReportsACompletedSignOutWhenTheRetirementCouldNotBeProven()
     {
         Harness harness = Harness.Ready();
         harness.CurrentUser.SetupGet(caller => caller.IsAuthenticated).Returns(true);
@@ -1439,27 +1447,47 @@ public class AuthServiceTests
             new RefreshTokenRequest { RefreshToken = "a-token" },
             CancellationToken.None);
 
-        result.IsFailure.Should().BeTrue(
-            "a retirement this instance cannot prove may still leave a live session behind, and the client "
-            + "must keep the credential rather than discard it");
+        result.IsSuccess.Should().BeTrue(
+            "a value this store does not hold can mint no successor, so the end state the caller asked for "
+            + "already holds - and answering it differently from a live value would turn an anonymous "
+            + "endpoint into a probe for which sessions exist");
 
-        result.Reason!.Code.Should().Be(
-            "SESSION_REVOCATION_STORE_UNAVAILABLE",
-            "the transport maps this one code to the answer that tells a client to retain its credential");
-
-        result.Reason!.Message.Should().NotContain(
-            "a-token",
-            "a refusal may not quote the value presented to it");
-        result.Reason!.Message.Should().NotContainEquivalentOf(
-            "not found",
-            "the wording must not distinguish a value that never existed from a session this instance cannot "
-            + "reach, or the refusal becomes an oracle for whether a guessed token exists");
-        result.Reason!.Message.Should().NotContainEquivalentOf(
-            "unknown",
-            "for the same reason: the two conditions must be indistinguishable from outside");
+        result.Reason.Should().BeNull(
+            "a successful sign-out carries no reason, so there is no code or wording for a caller to "
+            + "distinguish this case by");
 
         harness.AuditRecords.Should().BeEmpty(
-            "the retirement was not confirmed, so no record may assert that the session ended");
+            "the retirement was not confirmed, so no record may assert that the session ended - the answer "
+            + "is uniform to the caller without the trail claiming something it cannot prove");
+    }
+
+    /// <summary>
+    /// An expired family is also reported as a completed sign-out, for the same reason an unknown one is.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// Stated separately because it is a DIFFERENT store outcome reaching the same classification: an expired
+    /// family can never be redeemed again, so the session it sustained is already over. Were it refused, the
+    /// caller could tell an expired value from an unknown one, which is the same oracle in a narrower form.
+    /// </remarks>
+    [Fact]
+    public async Task SignOut_ReportsACompletedSignOutForAnExpiredFamily()
+    {
+        Harness harness = Harness.Ready();
+        harness.Tokens
+            .Setup(tokens => tokens.RevokeRefreshTokenAsync(
+                It.IsAny<string>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Result.Failure(
+                "REFRESH_TOKEN_EXPIRED",
+                "The refresh token has expired, so no session was retired by this request."));
+
+        Result result = await harness.Service.LogoutAsync(
+            new RefreshTokenRequest { RefreshToken = "a-token" },
+            CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue();
+        harness.AuditRecords.Should().BeEmpty();
     }
 
     /// <summary>

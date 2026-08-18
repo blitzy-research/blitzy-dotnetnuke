@@ -843,6 +843,19 @@ public sealed class RoleService : IRoleService
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// MIGRATION: the grant is serialised where the legacy grant was not, and that is a deliberate
+    /// behavioural difference rather than a port. <c>RoleController.vb</c> reached
+    /// <c>UpdateUserRole</c>, a single stored procedure that read the pair and then inserted or updated
+    /// it with no transaction spanning the two and no unique constraint beneath them, so two callers
+    /// granting one role to one account at the same moment each read "not held" and each inserted. The
+    /// duplicate conferred no additional privilege and one withdrawal still removed every row, so the
+    /// legacy defect was latent rather than harmful; it is nonetheless not reproduced, because the rows
+    /// accumulate without bound in a table the authorisation path reads on every request. The exclusion
+    /// is taken in code rather than in the schema because Rule T4 holds the schema immutable - see
+    /// <c>MIGRATION_NOTES.md</c>, "A role grant was idempotent one request at a time, and not at all
+    /// under concurrency", which records the reasoning and the rejected alternatives in full.
+    /// </remarks>
     public async Task<Result> AssignUserToRoleAsync(
         int portalId,
         int roleId,
@@ -876,9 +889,39 @@ public sealed class RoleService : IRoleService
                 $"Portal {portalId} has no member bearing identifier {request.UserId}.");
         }
 
-        UserRole? existing = await _roles
-            .GetUserRoleAsync(portalId, request.UserId, roleId, cancellationToken)
+        // ⚠ THE READ, THE DECISION AND THE WRITE ARE ONE TRANSACTION, AND THEY HAD NONE AT ALL. A grant is
+        // idempotent by intent - four sequential grants of one role to one account leave one row, which the
+        // update branch below is what produces - and nothing in the store enforces that intent, because
+        // dbo.UserRoles is keyed on its own identity column and the schema is immutable, so no unique index
+        // over the pair may be added. Six SIMULTANEOUS grants therefore each read "not held" and each
+        // inserted, leaving six rows for one membership. It conferred nothing extra and one withdrawal still
+        // removed every row, but it is unbounded growth in a table the authorisation path reads.
+        //
+        // JOINED RATHER THAN OPENED, because this member is not always the outermost operation: the account
+        // vertical calls it from service subscription, from cancellation and once per matched role while
+        // redeeming an invitation code, and opening a second transaction inside an operation that already has
+        // one is refused rather than nested. Joining leaves the outer commit boundary in charge, and the
+        // exclusion the locking read takes still lasts until that boundary ends.
+        await using ITransactionScope transaction = await _unitOfWork
+            .JoinOrBeginTransactionAsync(TransactionIsolation.Default, cancellationToken)
             .ConfigureAwait(false);
+
+        // The LOCKING read, whose contract obliges the transaction above. A concurrent caller asking the same
+        // question is held here until this one commits, and then reads the row this one wrote - so it takes
+        // the update branch and no second row is ever inserted.
+        IReadOnlyList<UserRole> held = await _roles
+            .GetUserRoleForUpdateAsync(request.UserId, roleId, cancellationToken)
+            .ConfigureAwait(false);
+
+        UserRole? existing = held.Count == 0 ? null : held[0];
+
+        // A grant taken before this exclusion existed may already have left duplicates, so the surplus rows
+        // are removed while they are held rather than left for a reader to disambiguate. The earliest is
+        // kept, which is the row every read on this repository already resolves to.
+        for (int surplus = 1; surplus < held.Count; surplus++)
+        {
+            _roles.RemoveUserRole(held[surplus]);
+        }
 
         bool bearsProtectedBounds =
             portal.AdministratorId == request.UserId && portal.AdministratorRoleId == roleId;
@@ -906,6 +949,11 @@ public sealed class RoleService : IRoleService
         }
 
         await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+        // COMMITTED BEFORE THE CACHE EVICTION AND THE RECORD, so neither can describe an assignment that a
+        // failed commit rolled back. A scope that joined a caller's transaction commits nothing here - the
+        // outer operation still owns that decision - which is what makes joining safe.
+        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
 
         _cache.InvalidateUser(portalId, member.Username);
 

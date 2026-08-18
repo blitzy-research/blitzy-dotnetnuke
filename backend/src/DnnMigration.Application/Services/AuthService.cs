@@ -108,17 +108,6 @@ public sealed class AuthService : IAuthService
     private const string TokenStoreUnavailableCode = "TOKEN_STORE_UNAVAILABLE";
 
     /// <summary>
-    /// Reported when a sign-out could not be confirmed because this instance does not hold the presented
-    /// family.
-    /// </summary>
-    /// <remarks>
-    /// It is a DISTINCT code from an outage on purpose: the caller must retain its credential and retry,
-    /// exactly as it would for an outage, but an operator reading the trail needs to be able to tell "the
-    /// session store is down" from "the session belongs to another replica".
-    /// </remarks>
-    private const string RevocationUnconfirmedCode = "SESSION_REVOCATION_STORE_UNAVAILABLE";
-
-    /// <summary>
     /// Audit-only code recording that a submitted credential did not match. Never returned to a caller.
     /// </summary>
     /// <remarks>
@@ -986,22 +975,46 @@ public sealed class AuthService : IAuthService
             .RevokeRefreshTokenAsync(request.RefreshToken, cancellationToken)
             .ConfigureAwait(false);
 
+        // THE ONE CONDITION THAT MAY REFUSE A SIGN-OUT IS AN UNREACHABLE STORE, and it is the only one
+        // because it is the only one that describes THIS SERVER rather than the value the caller presented.
+        // The store could not be asked, so nothing is known about the family and a later retry may still
+        // retire it; the Api edge answers this code 503, which tells a client to keep its credential.
         if (revoked.IsFailure && IsTokenStoreFailure(revoked.Reason))
         {
             return Result.Failure(revoked.Reason!);
         }
 
+        // EVERY OTHER OUTCOME IS A COMPLETED SIGN-OUT, AND THE UNIFORMITY IS THE POINT. A retired family, a
+        // family that was already retired, an expired family and a value this store has never held all
+        // answer alike, because the end state the caller asked for - that this value can mint no successor -
+        // holds in all four cases. Answering them differently is what this member must not do: the endpoint
+        // is anonymous, so a status that varied with whether the presented value existed would hand an
+        // unauthenticated caller a probe for which sessions are live. The client contract states the same
+        // requirement in frontend/src/app/core/services/auth.service.ts, which documents 204 "for a
+        // credential it found and for one it did not".
+        //
+        // ⚠ THIS RESTORES THE CLASSIFICATION AND WITHDRAWS THE EARLIER "UNCONFIRMED RETIREMENT" REFUSAL,
+        // whose reasoning was that a family unknown HERE might still be live on another replica, so the
+        // caller had to keep the credential and retry. That reasoning cannot arise in a deployment this
+        // solution admits. A store that is authoritative across replicas - the SQL-backed one - already
+        // reports an unknown family as a completed retirement itself, so the refusal was only ever reachable
+        // with the process-local store; and Infrastructure/DependencyInjection.cs refuses to start on the
+        // process-local store unless the operator has acknowledged single-instance operation, in which case
+        // "this instance holds no such family" IS proof that no live family exists anywhere. The refusal
+        // therefore told no operator anything they could act on, while costing an anonymous oracle and - as
+        // every 5xx is logged at Error - an anonymously inducible error-log volume.
+        if (revoked.IsFailure)
+        {
+            // Deliberately silent. No audit record, because none may assert that a session ended when the
+            // store did not prove one did; and no diagnostic, because this path is reachable by any
+            // anonymous caller with any value, so recording it would reinstate the log-volume vector that
+            // the 5xx carried.
+            return Result.Success();
+        }
+
         // Recorded from the ALREADY-AUTHENTICATED caller rather than from the presented token, because this
         // member is deliberately silent about whether the token was genuine and must not learn anything
         // from it that it would then record.
-        if (revoked.IsFailure)
-        {
-            return Result.Failure(
-                RevocationUnconfirmedCode,
-                "The sign-out could not be confirmed, because this instance holds no such session. "
-                + "Retain the refresh token and retry.");
-        }
-
         _audit.Record(new AuditEvent(AuditEventNames.SessionEnded)
         {
             PortalId = _currentUser.IsAuthenticated ? _currentUser.PortalId : null,

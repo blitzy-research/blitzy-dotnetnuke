@@ -474,6 +474,68 @@ public sealed class RoleRepositoryTests
             .Should().BeNull();
     }
 
+    /// <summary>
+    /// The locking read answers with every row matching the pair, earliest first, and with an empty list when
+    /// the account holds no such assignment.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// THE DUPLICATE ROW IS CREATED ON PURPOSE HERE, and it is only creatable because the schema permits it:
+    /// <c>dbo.UserRoles</c> has no unique index over <c>(UserID, RoleID)</c> and the schema is immutable, so
+    /// the grant path reconciles duplicates rather than relying on the store to refuse them. That path needs
+    /// every matching row and needs them ordered, because it keeps the earliest and removes the rest - a member
+    /// that answered with only the first row could not express the removal at all. The exclusion the read takes
+    /// cannot be observed from a single connection; the concurrent behaviour it produces is asserted at the API
+    /// level instead, where two requests really do race.
+    /// </remarks>
+    [Fact]
+    public async Task GetUserRoleForUpdateAsync_ReturnsEveryMatchingRowEarliestFirst()
+    {
+        int portalId = await CreatePortalAsync();
+        int roleId = await CreateRoleAsync(portalId, FormattableString.Invariant($"Locking {Suffix()}"));
+
+        try
+        {
+            using (IServiceScope empty = _fixture.Services.CreateScope())
+            {
+                IRoleRepository roles = empty.ServiceProvider.GetRequiredService<IRoleRepository>();
+
+                (await roles.GetUserRoleForUpdateAsync(_fixture.Seed.MemberUserId, roleId))
+                    .Should().BeEmpty("an account holding no such assignment has no rows to lock");
+            }
+
+            await AddAssignmentAsync(roleId, _fixture.Seed.MemberUserId);
+            await AddAssignmentAsync(roleId, _fixture.Seed.MemberUserId);
+
+            using IServiceScope scope = _fixture.Services.CreateScope();
+            IRoleRepository reader = scope.ServiceProvider.GetRequiredService<IRoleRepository>();
+
+            IReadOnlyList<UserRole> held = await reader
+                .GetUserRoleForUpdateAsync(_fixture.Seed.MemberUserId, roleId);
+
+            held.Should().HaveCount(2, "the store accepted both rows, so the read must report both");
+            held.Should().BeInAscendingOrder(assignment => assignment.UserRoleId);
+            held.Should().OnlyContain(assignment =>
+                assignment.UserId == _fixture.Seed.MemberUserId && assignment.RoleId == roleId);
+
+            // MATERIALISED AS TRACKED ENTITIES, which the grant path depends on: it amends the row it reads
+            // rather than re-attaching a copy of it, and it stages the surplus rows for removal.
+            IUnitOfWork unitOfWork = scope.ServiceProvider.GetRequiredService<IUnitOfWork>();
+            reader.RemoveUserRole(held[1]);
+            await unitOfWork.SaveChangesAsync();
+
+            (await CountAssignmentsAsync(roleId)).Should().Be(
+                1,
+                "removing one row of a duplicated pair by that row alone leaves the other in place");
+        }
+        finally
+        {
+            await RemoveAssignmentsAsync(roleId);
+            await RemoveRoleAsync(roleId);
+            await RemovePortalAsync(portalId);
+        }
+    }
+
     /// <summary>Assignments resolve by login name, and the role name narrows the answer optionally.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]

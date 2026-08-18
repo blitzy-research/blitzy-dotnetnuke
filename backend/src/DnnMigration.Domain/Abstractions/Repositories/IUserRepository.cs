@@ -423,11 +423,28 @@ public interface IUserRepository
     /// <summary>Deletes a user's credential record from the external membership store.</summary>
     /// <param name="userId">User identifier.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns><see langword="true"/> when a record was deleted.</returns>
+    /// <returns>
+    /// <see cref="MembershipWriteOutcome.Recorded"/> when a record was deleted, <see
+    /// cref="MembershipWriteOutcome.NoRecord"/> when the store was reachable and holds no credential for the
+    /// account, and <see cref="MembershipWriteOutcome.StoreUnavailable"/> when the store could not be
+    /// reached.
+    /// </returns>
     /// <remarks>
+    /// <para>
     /// The account row and the credential record live in different stores, so deleting an account is two
     /// operations. This one is not staged, because the external store is addressed directly rather than
     /// through the change tracker.
+    /// </para>
+    /// <para>
+    /// <b>A caller must distinguish the two failing outcomes, and the reason it must is what this
+    /// enumeration replaced a <see langword="bool"/> for.</b> <see
+    /// cref="MembershipWriteOutcome.StoreUnavailable"/> means nothing was written and nothing is known, so a
+    /// deletion cascade must abandon itself and report a dependency failure - removing the account row while
+    /// its credential survives would leave a credential no screen can reach. <see
+    /// cref="MembershipWriteOutcome.NoRecord"/> means the opposite: the credential is already gone, which is
+    /// precisely the state the cascade is trying to reach, so it must continue rather than report a failure
+    /// that also - falsely - claims the account was left intact.
+    /// </para>
     /// </remarks>
-    Task<bool> DeleteCredentialAsync(int userId, CancellationToken cancellationToken = default);
+    Task<MembershipWriteOutcome> DeleteCredentialAsync(int userId, CancellationToken cancellationToken = default);
 }

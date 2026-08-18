@@ -47,16 +47,40 @@
     <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="8.0.29" />
 
     <!--
-      Keep this reference PLAIN. Adding PrivateAssets="all", the shape the stock
-      template uses, stops the design-time library flowing to referencing
-      projects. The EF CLI resolves design-time services from the startup project,
-      and the API project receives this package only transitively from here, so
-      severing the flow breaks migration tooling with the familiar "startup
-      project does not reference Microsoft.EntityFrameworkCore.Design" error. The
-      separate command-line tooling package is not referenced; dotnet-ef is
-      installed as a global tool.
+      PrivateAssets="all", AND THE ATTRIBUTE IS LOAD-BEARING FOR THE SHIPPED
+      IMAGE. It stops the design-time library flowing to referencing projects,
+      which is what keeps it - and the whole Roslyn compiler surface it drags
+      behind it - out of the API's publish output. Measured before and after: a
+      plain reference put Microsoft.EntityFrameworkCore.Design.dll,
+      Microsoft.CodeAnalysis.dll, Microsoft.CodeAnalysis.CSharp.dll,
+      Microsoft.CodeAnalysis.Workspaces.dll,
+      Microsoft.CodeAnalysis.CSharp.Workspaces.dll and Humanizer.dll into
+      /app inside the production container - an in-process dynamic-compilation
+      capability that no code path there invokes. This project still COMPILES
+      against the package, which it must: DnnDbContextFactory implements
+      IDesignTimeDbContextFactory<DnnDbContext>, declared in this very assembly.
+      PrivateAssets governs the flow to CONSUMERS, not the declaring project's own
+      compile reference.
+
+      MIGRATION TOOLING STILL WORKS, AND HERE IS THE COMMAND IT WORKS THROUGH.
+      The EF CLI resolves design-time services from the startup project it is
+      given, so name THIS project as both:
+
+        dotnet ef migrations add [Name], passing
+        "project src/DnnMigration.Infrastructure" and
+        "startup-project src/DnnMigration.Infrastructure"
+
+      That resolves because the design-time factory above supplies the context and
+      its connection string without a host, which is precisely what that factory
+      exists for. The API project is no longer a usable startup project for the EF
+      CLI, and that is the intended trade: a development convenience that cost
+      production attack surface is replaced by a documented command. The separate
+      command-line tooling package is not referenced; dotnet-ef is installed as a
+      global tool. DnnMigration.IntegrationTests declares its own reference,
+      because it compiles against the same design-time interface and is never
+      published.
     -->
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.29" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.29" PrivateAssets="all" />
 
     <!--
       DIRECT PIN, AND IT MUST STAY DIRECT. Without it the SQL Server provider

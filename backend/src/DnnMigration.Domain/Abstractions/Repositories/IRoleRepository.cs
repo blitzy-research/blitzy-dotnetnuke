@@ -186,6 +186,44 @@ public interface IRoleRepository
     /// <returns>The assignment, or <see langword="null"/> when no stored assignment matches.</returns>
     Task<UserRole?> GetUserRoleAsync(int portalId, int userId, int roleId, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Returns every stored assignment of one account to one role, read so that a concurrent caller asking
+    /// the same question is held until the surrounding transaction ends.
+    /// </summary>
+    /// <param name="userId">The account whose assignment is wanted.</param>
+    /// <param name="roleId">The role the assignment must be to.</param>
+    /// <param name="cancellationToken">Propagates notification that the operation should stop.</param>
+    /// <returns>
+    /// Every matching assignment, earliest first, and an empty list when the account holds no such
+    /// assignment.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// <b>THIS IS THE READ HALF OF AN IDEMPOTENT GRANT, AND IT EXISTS BECAUSE THE STORE CANNOT ENFORCE THE
+    /// INVARIANT ITSELF.</b> <c>dbo.UserRoles</c> is keyed on its own identity column and carries only
+    /// non-unique indexes on <c>RoleID</c> and <c>UserID</c>, so nothing in the schema refuses a second row
+    /// for a pair that already has one - and the schema is immutable under this migration, so nothing may be
+    /// added that would. An ordinary read followed by an insert therefore lets two simultaneous grants of the
+    /// same role to the same account both observe "not held" and both insert, which is exactly what was
+    /// measured: six concurrent grants produced six rows where four sequential ones produced one.
+    /// </para>
+    /// <para>
+    /// An implementer must make concurrent callers serialise on the pair being read, and must hold that
+    /// exclusion until the caller's transaction completes rather than until the read returns - a read whose
+    /// exclusion ends immediately closes nothing. Callers must therefore open a transaction before calling
+    /// this member and write inside it.
+    /// </para>
+    /// <para>
+    /// EVERY MATCH IS RETURNED RATHER THAN THE FIRST, so a caller can reconcile rows that a grant taken
+    /// before this exclusion existed may already have duplicated. Membership of a role is a boolean fact, so
+    /// a duplicate row confers nothing and removing one withdraws nothing.
+    /// </para>
+    /// </remarks>
+    Task<IReadOnlyList<UserRole>> GetUserRoleForUpdateAsync(
+        int userId,
+        int roleId,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Returns every role assignment one user account holds within one portal.</summary>
     /// <param name="portalId">The portal to confine the answer to.</param>
     /// <param name="userId">The account whose assignments are wanted.</param>
@@ -269,6 +307,17 @@ public interface IRoleRepository
     /// <param name="cancellationToken">Propagates notification that the operation should stop.</param>
     /// <returns>A task that completes once the removal has been staged.</returns>
     Task DeleteUserRoleAsync(int userId, int roleId, CancellationToken cancellationToken = default);
+
+    /// <summary>Stages one already-read assignment row for deletion, identified by that row alone.</summary>
+    /// <param name="assignment">The assignment row to remove.</param>
+    /// <remarks>
+    /// DISTINCT FROM <see cref="DeleteUserRoleAsync"/>, WHICH REMOVES EVERY ROW MATCHING A PAIR. This member
+    /// exists for the one caller that must remove SOME of the rows matching a pair and keep another: the
+    /// idempotent grant, reconciling duplicate rows that a grant taken before the pair was read under
+    /// exclusion may have left behind. Expressing that through the pair-matched member would remove the row
+    /// being kept as well.
+    /// </remarks>
+    void RemoveUserRole(UserRole assignment);
 
     /// <summary>
     /// Returns the portal's publicly available roles - those a user account may subscribe itself to.

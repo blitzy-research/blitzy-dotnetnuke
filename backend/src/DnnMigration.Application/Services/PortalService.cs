@@ -97,6 +97,16 @@ public sealed class PortalService : IPortalService
     /// </remarks>
     private const string PortalRemovalIncompleteCode = "portal.delete.partially_applied";
 
+    /// <summary>
+    /// Reported when a member's credential store could not be REACHED while the tenant was being removed, so
+    /// the removal was abandoned rather than committed with a credential left behind.
+    /// </summary>
+    /// <remarks>
+    /// Raised for an unreachable store alone. A store that answers and holds no credential for the member is
+    /// already in the state this step is reaching for, so the removal continues through it - the same rule
+    /// <c>UserService.DeleteUserAsync</c> applies, stated once in both places because it is one rule about
+    /// how a store-unconfirmed outcome is classified rather than two local judgements.
+    /// </remarks>
     private const string MemberCredentialRemovalFailedCode =
         "portal.member.credential.removal_store_unavailable";
 
@@ -906,9 +916,15 @@ public sealed class PortalService : IPortalService
 
                 // This write reaches the external aspnet membership store immediately but uses the unit of
                 // work's connection and ambient transaction.
-                if (!await _users
+                MembershipWriteOutcome credential = await _users
                     .DeleteCredentialAsync(account.UserId, cancellationToken)
-                    .ConfigureAwait(false))
+                    .ConfigureAwait(false);
+
+                // An UNREACHABLE store abandons the removal; a store that answers and holds no credential
+                // does not, because that is the end state this step exists to produce. The two were one
+                // boolean and the message below - which asserts that nothing was separated - was therefore
+                // published over the case where the credential was already gone.
+                if (credential == MembershipWriteOutcome.StoreUnavailable)
                 {
                     return Result.Failure(
                         MemberCredentialRemovalFailedCode,
