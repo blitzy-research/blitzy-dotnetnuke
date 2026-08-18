@@ -66,6 +66,8 @@ function userWith(administersPortal: boolean): CurrentUser {
     // determination, so leaving this false keeps each case honest about what admitted the read.
     isSuperUser: false,
     isPortalAdministrator: administersPortal,
+    mustChangePassword: false,
+    mustUpdateProfile: false,
     roles: administersPortal ? ['Administrators'] : [],
     permissions: [],
   };

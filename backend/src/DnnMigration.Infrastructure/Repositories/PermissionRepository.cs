@@ -78,6 +78,21 @@ internal sealed class PermissionRepository : IPermissionRepository
 
     /// <inheritdoc />
     /// <remarks>
+    /// No predicate, and the ordering is the same one every scoped catalogue reader here applies, so the
+    /// unscoped answer and a scoped answer present their rows in the same sequence. The read is untracked
+    /// like its siblings: the catalogue is reference data this repository never writes.
+    /// </remarks>
+    public async Task<IReadOnlyList<Permission>> GetCatalogueAsync(CancellationToken cancellationToken = default)
+    {
+        return await _dbContext.Permissions
+            .AsNoTracking()
+            .OrderBy(entry => entry.PermissionId)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
     /// The terminal single-row reader selects the five catalogue columns for one primary key, so at most
     /// one row can match and the answer is a nullable entity rather than a list. An identifier naming no
     /// row yields <see langword="null"/>, which is an answer rather than a fault.

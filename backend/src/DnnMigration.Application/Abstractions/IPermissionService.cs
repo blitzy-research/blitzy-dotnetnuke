@@ -20,7 +20,7 @@ namespace DnnMigration.Application.Abstractions;
 /// </remarks>
 public interface IPermissionService
 {
-    /// <summary>Reads the permission keys the catalogue defines, optionally narrowed.</summary>
+    /// <summary>Reads the permission definitions the catalogue declares, optionally narrowed.</summary>
     /// <param name="permissionCode">
     /// Scope code a permission definition belongs to, matched exactly and case-insensitively, or <see
     /// langword="null"/> to place no restriction.
@@ -34,11 +34,30 @@ public interface IPermissionService
     /// </param>
     /// <param name="cancellationToken">Token that cancels the read.</param>
     /// <returns>
-    /// A task producing a successful <see cref="Result{T}"/> whose value is the distinct, upper-cased keys
-    /// in a stable order, and an empty sequence when nothing matches - an empty catalogue is a legitimate
-    /// answer, never a failure.
+    /// A task producing a successful <see cref="Result{T}"/> whose value is the matching definitions,
+    /// distinct by identifier and ordered by it, and an empty sequence when nothing matches - an empty
+    /// catalogue is a legitimate answer, never a failure.
     /// </returns>
-    Task<Result<IReadOnlyList<string>>> GetPermissionKeysAsync(
+    /// <remarks>
+    /// <para>
+    /// <b>THIS RETURNS DEFINITIONS, NOT KEY STRINGS, AND THE DIFFERENCE WAS A DEFECT.</b> The member this
+    /// replaces answered with bare key spellings, which cost the caller two things. It carried no
+    /// identifier, so a client listing the catalogue could not then address a row through
+    /// <see cref="GetPermissionAsync"/> - the list and the detail read shared no handle. And its unscoped
+    /// answer was fabricated from the <see cref="PermissionKey"/> members this solution names rather than
+    /// read from the store, so a key registered by a module package - measured as <c>QA_CUSTOM</c> - was
+    /// absent from the catalogue listing while the module permission matrices displayed and evaluated it.
+    /// One installation cannot hold two catalogues, so the listing now reads the one that exists.
+    /// </para>
+    /// <para>
+    /// The key travels verbatim, exactly as <see cref="PermissionDto"/> documents: a definition registered
+    /// under a spelling this solution does not name reads back as itself rather than being dropped or
+    /// re-cased. The <paramref name="permissionKey"/> filter remains the closed enumeration because it is
+    /// bound from a query string and an undefined member is a caller mistake worth reporting; it narrows the
+    /// answer without bounding what the answer may contain.
+    /// </para>
+    /// </remarks>
+    Task<Result<IReadOnlyList<PermissionDto>>> GetPermissionCatalogueAsync(
         string? permissionCode = null,
         int? moduleDefinitionId = null,
         PermissionKey? permissionKey = null,
@@ -375,10 +394,22 @@ public interface IPermissionService
 /// declared it.
 /// </summary>
 /// <remarks>
-/// The catalogue LIST endpoint deliberately continues to publish bare keys rather than these records: a
-/// catalogue of keys is what the permission vocabulary is, it is what the token carries and what the
-/// client-side permission directive tests, and widening it would change an established contract for no
-/// caller's benefit.
+/// <para>
+/// <b>THE CATALOGUE LIST ENDPOINT NOW PUBLISHES THESE RECORDS, AND THE NOTE THAT ONCE STOOD HERE WAS
+/// WRONG.</b> It reasoned that a catalogue of bare keys is what the permission vocabulary is, and that
+/// widening the listing would change an established contract for no caller's benefit. Two measurements
+/// refuted it. A listing of bare keys carries no identifier, so a client could not move from the listing to
+/// <c>GET /api/v1/permissions/{permissionId}</c> - the two reads shared no handle, which is a caller's
+/// benefit and a plain one. And the key vocabulary a token carries is NOT the same set as the catalogue: the
+/// listing's unscoped answer was assembled from the <see cref="PermissionKey"/> members this solution names,
+/// while the catalogue table also holds keys registered by module packages, so the listing contradicted the
+/// module permission matrices rendered from the same catalogue on the same screen.
+/// </para>
+/// <para>
+/// What survives from that note is the part that was right: the key set is what the token carries and what
+/// the client-side permission directive tests. Those consumers read a caller's EFFECTIVE keys, which is a
+/// different question from what the installation declares, and they are unaffected by this contract.
+/// </para>
 /// </remarks>
 public sealed class PermissionDto
 {

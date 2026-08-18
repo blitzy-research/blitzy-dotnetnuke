@@ -39,6 +39,8 @@ const SESSION_BODY: AuthSession = {
     email: 'operator.a@example.test',
     isSuperUser: false,
     isPortalAdministrator: true,
+    mustChangePassword: false,
+    mustUpdateProfile: false,
     roles: ['Administrators'],
     permissions: ['EDIT'],
   },
@@ -449,6 +451,8 @@ describe('AppComponent', () => {
       holdSession({
         isSuperUser: false,
         isPortalAdministrator: false,
+        mustChangePassword: false,
+        mustUpdateProfile: false,
         roles: ['Subscribers'],
         permissions: [],
       });
@@ -464,6 +468,8 @@ describe('AppComponent', () => {
       holdSession({
         isSuperUser: false,
         isPortalAdministrator: false,
+        mustChangePassword: false,
+        mustUpdateProfile: false,
         roles: ['Subscribers'],
         permissions: ['EDIT'],
       });

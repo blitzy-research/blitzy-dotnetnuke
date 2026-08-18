@@ -104,6 +104,8 @@ const FAKE_USER: CurrentUser = Object.freeze({
   email: 'operator@example.test',
   isSuperUser: false,
   isPortalAdministrator: false,
+  mustChangePassword: false,
+  mustUpdateProfile: false,
   roles: Object.freeze([]),
   permissions: Object.freeze([]),
 });
@@ -1633,6 +1635,110 @@ describe('authInterceptor', () => {
       httpMock.expectNone(REFRESH_URL);
       expect(tokens.session()).not.toBeNull();
       expect(navigate).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('the one 403 that means the SESSION owes something', () => {
+    beforeEach(() => {
+      configureWith([authInterceptor]);
+    });
+
+    /** The refusal the API writes when a session carries an outstanding obligation. */
+    const remediationRefusal: Record<string, unknown> = problemDocument(
+      403,
+      'Mandatory account remediation is required.',
+      'auth.remediation_required',
+      'Complete the required profile fields before continuing.',
+    );
+
+    /** An identity carrying the obligation, which is what the re-read is expected to learn. */
+    const encumberedUser: CurrentUser = { ...FAKE_USER, mustUpdateProfile: true };
+
+    it('re-reads the caller so the obligation reaches the navigation gate', async () => {
+      // ⚠ THE SEQUENCE THAT WAS MEASURED FAILING. An administrator marks a profile property required while
+      // this account is signed in. The obligations on the held session came from sign-in and cannot know
+      // about it, so without this branch the client kept admitting screens whose every read was refused and
+      // never sent the caller to the screen that clears it.
+      tokens.store(sessionFor(FAKE_ACCESS_TOKEN, FAKE_REFRESH_TOKEN));
+
+      expect(tokens.mustUpdateProfile()).withContext('nothing owed at sign-in').toBeFalse();
+
+      const pending = firstValueFrom(http.get(PROTECTED_URL));
+
+      httpMock
+        .expectOne(PROTECTED_URL)
+        .flush(remediationRefusal, { status: 403, statusText: 'Forbidden' });
+
+      const identity = httpMock.expectOne(IDENTITY_URL);
+      expect(identity.request.method).toBe('GET');
+      identity.flush({ data: encumberedUser, meta: null } satisfies SuccessEnvelope<CurrentUser>);
+
+      expect(httpStatusOf(await reasonFor(pending)))
+        .withContext('the refusal still reaches the caller unchanged, so it is still reported')
+        .toBe(403);
+
+      expect(tokens.mustUpdateProfile())
+        .withContext('the value the route gate reads is now true')
+        .toBeTrue();
+
+      httpMock.expectNone(REFRESH_URL);
+      expect(tokens.session())
+        .withContext('an obligation is not an authentication failure; the session stands')
+        .not.toBeNull();
+      expect(navigate).not.toHaveBeenCalled();
+    });
+
+    it('reads nothing for an ordinary permission refusal at the same status', async () => {
+      // A bare 403 means the ACCOUNT lacks a right, which no identity read can change. The status alone must
+      // therefore not trigger one; the problem type is what distinguishes the two. `verify()` in `afterEach`
+      // is what proves no read was issued.
+      tokens.store(sessionFor(FAKE_ACCESS_TOKEN, FAKE_REFRESH_TOKEN));
+
+      const pending = firstValueFrom(http.get(PROTECTED_URL));
+
+      httpMock.expectOne(PROTECTED_URL).flush(bareProblem(403), bareProblemInit(403));
+
+      expect(httpStatusOf(await reasonFor(pending))).toBe(403);
+
+      httpMock.expectNone(IDENTITY_URL);
+      expect(tokens.mustUpdateProfile()).toBeFalse();
+    });
+
+    it('reads once for a burst of refusals rather than once per refused request', async () => {
+      tokens.store(sessionFor(FAKE_ACCESS_TOKEN, FAKE_REFRESH_TOKEN));
+
+      const first = firstValueFrom(http.get(PROTECTED_URL));
+      const second = firstValueFrom(http.get(OTHER_PROTECTED_URL));
+
+      httpMock
+        .expectOne(PROTECTED_URL)
+        .flush(remediationRefusal, { status: 403, statusText: 'Forbidden' });
+      httpMock
+        .expectOne(OTHER_PROTECTED_URL)
+        .flush(remediationRefusal, { status: 403, statusText: 'Forbidden' });
+
+      // `expectOne` is the assertion: a second identity read would fail it here.
+      httpMock
+        .expectOne(IDENTITY_URL)
+        .flush({ data: encumberedUser, meta: null } satisfies SuccessEnvelope<CurrentUser>);
+
+      expect(httpStatusOf(await reasonFor(first))).toBe(403);
+      expect(httpStatusOf(await reasonFor(second))).toBe(403);
+      expect(tokens.mustUpdateProfile()).toBeTrue();
+    });
+
+    it('reads nothing when no session is held', async () => {
+      // No bearer token is presented at all in this state, so the subject passes the request straight
+      // through — and an obligation is meaningless for an account that is not signed in.
+      const pending = firstValueFrom(http.get(PROTECTED_URL));
+
+      httpMock
+        .expectOne(PROTECTED_URL)
+        .flush(remediationRefusal, { status: 403, statusText: 'Forbidden' });
+
+      expect(httpStatusOf(await reasonFor(pending))).toBe(403);
+
+      httpMock.expectNone(IDENTITY_URL);
     });
   });
 

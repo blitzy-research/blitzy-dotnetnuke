@@ -23,8 +23,36 @@ import type { Observable } from 'rxjs';
 /** The catalogue listing URL, written out in full rather than derived. */
 const LIST_URL = '/api/v1/permissions';
 
-/** The whole catalogue vocabulary, as the listing endpoint publishes it. */
-const CATALOGUE_KEYS: readonly string[] = ['VIEW', 'EDIT', 'READ', 'WRITE'];
+/**
+ * The catalogue as the listing endpoint publishes it: DEFINITIONS, each carrying its own identifier.
+ *
+ * The last entry names a key outside the four this codebase declares. That is deliberate — an installation
+ * may register any key, the endpoint reports what the table holds, and this client must carry it through
+ * rather than drop it.
+ */
+const CATALOGUE_DEFINITIONS: readonly Permission[] = [
+  {
+    permissionId: 1,
+    permissionCode: 'SYSTEM_MODULE_DEFINITION',
+    moduleDefId: 0,
+    permissionKey: 'VIEW',
+    permissionName: 'View',
+  },
+  {
+    permissionId: 2,
+    permissionCode: 'SYSTEM_MODULE_DEFINITION',
+    moduleDefId: 0,
+    permissionKey: 'EDIT',
+    permissionName: 'Edit',
+  },
+  {
+    permissionId: 9,
+    permissionCode: 'SYSTEM_MODULE_DEFINITION',
+    moduleDefId: 2,
+    permissionKey: 'QA_CUSTOM',
+    permissionName: 'Custom',
+  },
+];
 
 /** One catalogue definition, spelled with the model's own member names. */
 const PERMISSION_DEFINITION: Permission = {
@@ -103,13 +131,19 @@ describe('PermissionService', () => {
         .withContext('the parameter set is empty')
         .toBe(0);
 
-      request.flush({ data: CATALOGUE_KEYS, meta: null });
+      request.flush({ data: CATALOGUE_DEFINITIONS, meta: null });
 
       const emitted = await pending;
 
       // The payload is handed back exactly as it arrived. This service reshapes nothing, so
       // a sorted, de-duplicated or re-cased array here would be a defect.
-      expect(emitted.data).toEqual(CATALOGUE_KEYS);
+      expect(emitted.data).toEqual(CATALOGUE_DEFINITIONS);
+      expect(emitted.data.map((definition) => definition.permissionId))
+        .withContext('each entry carries the identifier the detail read is addressed by')
+        .toEqual([1, 2, 9]);
+      expect(emitted.data[2].permissionKey)
+        .withContext('a key outside the four this codebase declares reaches the caller intact')
+        .toBe('QA_CUSTOM');
       expect(emitted.meta)
         .withContext('an unpaged sequence has no page to describe, so metadata is null')
         .toBeNull();
@@ -122,7 +156,7 @@ describe('PermissionService', () => {
         const request = httpMock.expectOne(LIST_URL);
         expect(request.request.params.keys().length).toBe(0);
 
-        request.flush({ data: CATALOGUE_KEYS, meta: null });
+        request.flush({ data: CATALOGUE_DEFINITIONS, meta: null });
         await pending;
       }
     });
@@ -139,7 +173,7 @@ describe('PermissionService', () => {
         .withContext('one filter was supplied, so exactly one parameter travels')
         .toEqual(['moduleDefinitionId']);
 
-      request.flush({ data: CATALOGUE_KEYS, meta: null });
+      request.flush({ data: CATALOGUE_DEFINITIONS, meta: null });
       await pending;
     });
 
@@ -163,7 +197,7 @@ describe('PermissionService', () => {
         .withContext('a definition is installation-wide, so it is not tenant-scoped either')
         .toBeFalse();
 
-      request.flush({ data: CATALOGUE_KEYS, meta: null });
+      request.flush({ data: CATALOGUE_DEFINITIONS, meta: null });
       await pending;
     });
 
@@ -182,7 +216,7 @@ describe('PermissionService', () => {
         .withContext('both filters travel, and nothing else joins them')
         .toEqual(['permissionCode', 'permissionKey']);
 
-      request.flush({ data: ['EDIT'], meta: null });
+      request.flush({ data: [CATALOGUE_DEFINITIONS[1]], meta: null });
       await pending;
     });
 
@@ -231,7 +265,7 @@ describe('PermissionService', () => {
           .withContext('forwarded exactly as written')
           .toBe(expected);
 
-        request.flush({ data: CATALOGUE_KEYS, meta: null });
+        request.flush({ data: CATALOGUE_DEFINITIONS, meta: null });
         await pending;
       }
 
@@ -244,7 +278,7 @@ describe('PermissionService', () => {
         .toBeTrue();
       expect(blankRequest.request.params.get('permissionCode')).toBe('');
 
-      blankRequest.flush({ data: CATALOGUE_KEYS, meta: null });
+      blankRequest.flush({ data: CATALOGUE_DEFINITIONS, meta: null });
       await pendingBlank;
     });
 
@@ -267,7 +301,7 @@ describe('PermissionService', () => {
           .toBe('SYSTEM_TAB');
         expect(request.request.params.keys()).toEqual(['permissionCode']);
 
-        request.flush({ data: CATALOGUE_KEYS, meta: null });
+        request.flush({ data: CATALOGUE_DEFINITIONS, meta: null });
         await pending;
       }
     });
@@ -287,7 +321,7 @@ describe('PermissionService', () => {
         .withContext('only the supplied filter travels')
         .toEqual(['permissionKey']);
 
-      request.flush({ data: ['VIEW'], meta: null });
+      request.flush({ data: [CATALOGUE_DEFINITIONS[0]], meta: null });
 
       const emitted = await pending;
       expect(emitted.meta).toBeNull();
@@ -390,7 +424,7 @@ describe('PermissionService', () => {
       expect(listRequest.request.method)
         .withContext('the collection is read, never written')
         .toBe('GET');
-      listRequest.flush({ data: CATALOGUE_KEYS, meta: null });
+      listRequest.flush({ data: CATALOGUE_DEFINITIONS, meta: null });
       await listing;
 
       const single = firstValueFrom(service.getById(5));
@@ -455,16 +489,29 @@ describe('PermissionService', () => {
       }
     }
 
-    it('refuses a key list carrying a non-string element', () => {
+    it('refuses a catalogue listing whose entry is not an object', () => {
       expectViolationAt(
         service.list(),
         LIST_URL,
-        { data: ['VIEW', 7], meta: null },
+        { data: [CATALOGUE_DEFINITIONS[0], 'VIEW'], meta: null },
         'response.data[1]',
       );
     });
 
-    it('refuses a key list that is not an array', () => {
+    it('refuses a catalogue listing entry whose identifier is missing', () => {
+      const malformedEntry: Record<string, unknown> = { ...CATALOGUE_DEFINITIONS[0] };
+
+      delete malformedEntry['permissionId'];
+
+      expectViolationAt(
+        service.list(),
+        LIST_URL,
+        { data: [malformedEntry], meta: null },
+        'response.data[0].permissionId',
+      );
+    });
+
+    it('refuses a catalogue listing that is not an array', () => {
       expectViolationAt(service.list(), LIST_URL, { data: 'VIEW', meta: null }, 'response.data');
     });
 

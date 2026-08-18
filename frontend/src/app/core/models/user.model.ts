@@ -171,6 +171,17 @@ export interface UserDetail {
    * field, which hydrated itself on first read and returned an array either way.
    */
   readonly roles: readonly string[];
+
+  /**
+   * Opaque marker of the revision this account was read at. ⚠ SEND IT BACK UNREAD AND UNMODIFIED. It is a
+   * server-minted token whose internal form is not part of this contract; nothing on this side may parse
+   * it, compare it for ordering, display it, or synthesise one.
+   *
+   * It exists because the update was last-write-wins: two operators editing one account both saved and the
+   * second silently replaced the first, with nothing in either response saying so. Echoing this value back
+   * on {@link UpdateUserRequest.concurrencyToken} is what lets the server answer `409` instead.
+   */
+  readonly concurrencyToken: string;
 }
 
 /**
@@ -223,6 +234,13 @@ export interface UpdateUserRequest {
 
   /** The electronic mail address. */
   readonly email: string;
+
+  /**
+   * The {@link UserDetail.concurrencyToken} of the revision this update was composed against, or `null`.
+   * Optional on the wire: omitting it asks the server to write unconditionally, which is what keeps every
+   * caller written before the token existed working.
+   */
+  readonly concurrencyToken: string | null;
 }
 
 /**
@@ -656,6 +674,8 @@ export const decodeUserDetail: Decoder<UserDetail> = objectOf<UserDetail>({
   roles: arrayOf(decodeString),
   // Decoded exactly as the list projection decodes it: one capability, one spelling, one rule.
   canDelete: decodeBoolean,
+  // Decoded as a plain string and NEVER interpreted. Its internal form is the server's business.
+  concurrencyToken: decodeString,
 });
 
 /**

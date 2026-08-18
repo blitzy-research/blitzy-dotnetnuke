@@ -133,6 +133,43 @@
   }
 }
 
+// THE CONDITION BEHIND A DISABLED ACTION. Muted and small: it explains the control rather than being one, and
+// it must not read as a refusal of something the operator already attempted.
+//
+// ⚠ THE ROW'S HEIGHT MUST NOT DEPEND ON WHETHER THIS SENTENCE HAS ANYTHING TO SAY, AND TWO THINGS TOGETHER ARE
+// WHAT MAKE THAT TRUE. Neither alone is enough, and each was measured failing on its own:
+//
+//   * A floor on the ROW is inert. The action beside this is a full-height button, so the row already stands
+//     taller than any floor small enough to be worth declaring, and the floor never binds.
+//   * A floor on THIS BOX alone is inert too, because below the medium step the row's height is not decided by
+//     this box's height at all - it is decided by whether the wrapping row WRAPS, which is an inline-size
+//     question. An empty sentence measures nought wide, so the row un-wrapped when the condition fell silent
+//     and the action jumped up by a whole line as the operator reached for it. Measured: 67px with a sentence,
+//     44px without one, at both 375 and 768.
+//
+// So the box claims a WHOLE LINE unconditionally - `flex-basis` of the full measure, the same device
+// `.user-form__locked-out` uses for the same reason one screen over, and for the same second reason: a
+// sentence sitting in the queue beside a button reads as a label for that button. The wrap decision is then
+// identical in every state because it no longer depends on the text, and the block reservation keeps that line
+// occupied while the sentence is empty. Height is constant at every width, and the arrangement is the same at
+// every width rather than flipping at a breakpoint.
+.role-assignment__blocked {
+  flex-basis: var(--size-full);
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-tight);
+  min-block-size: calc(var(--font-size-xs) * var(--line-height-tight));
+}
+
+// A FAULT, PAINTED AS ONE. The same muted grey served both 'you have not chosen an account yet' and 'the
+// expiry you entered precedes its effective bound', so a mistake was indistinguishable from an unfinished
+// step. This is the design vocabulary's validation colour, and it is never the only carrier of the
+// distinction: the wording differs, and the field the fault belongs to is marked in its own right.
+.role-assignment__blocked--invalid {
+  color: var(--color-danger);
+}
+
 // MIGRATION: a net addition with a stated substitution. The measured legacy command-button class is 11px at
 // NORMAL weight, which the form vocabulary already resolves, and the legacy screen distinguished this
 // particular action by hanging an icon on it.

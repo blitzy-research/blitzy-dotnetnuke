@@ -15,7 +15,16 @@ import {
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 
-import { EMPTY, count, expand, map, throwError, type Observable, type Subscription } from 'rxjs';
+import {
+  EMPTY,
+  count,
+  expand,
+  map,
+  merge,
+  throwError,
+  type Observable,
+  type Subscription,
+} from 'rxjs';
 import {
   FormControl,
   FormGroup,
@@ -59,6 +68,7 @@ import {
   summarizeProblem,
 } from '../../../core/utils/form-errors.util';
 import { parseRouteId } from '../../../core/utils/route-id.util';
+import { AbsentValueComponent } from '../../../shared/components/absent-value/absent-value.component';
 import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialog/confirm-dialog.component';
 import {
   BAD_INPUT_ERROR,
@@ -209,6 +219,16 @@ export const ROLE_ASSIGNMENT_TEXT = Object.freeze({
 
   /** `valDates.Text`. */
   expiryNotAfterEffective: '<br>Expiry Date must be Greater than Effective Date',
+
+  /**
+   * Stated at the action when no account has been chosen. NET-NEW WORDING: the legacy screen had no
+   * equivalent, because it refused the post server-side rather than gating the button, so there is nothing to
+   * reproduce and this names the condition in the screen's own vocabulary.
+   */
+  chooseAccountFirst: 'Choose an account before adding it to this role.',
+
+  /** Stated at the action when a date bound cannot be read. Net-new wording, for the same reason. */
+  correctTheDatesFirst: 'Correct the highlighted dates before saving.',
 
   /** `RoleRemoveError.Text`, used when the server does not itself supply the wording. */
   removalRefused: 'You Can Not Remove The Portal Administrator Or The Registered Users Role',
@@ -798,6 +818,26 @@ export function dateOrderValidator(group: AbstractControl): ValidationErrors | n
 }
 
 /**
+ * Whether the expiry FIELD is already stating the ordering rule in its own right.
+ *
+ * ⚠ ONE SENTENCE, SAID ONCE. The rule is stated in two places for two different reasons: the field message
+ * marks WHICH bound is at fault and carries `aria-invalid`, `aria-describedby` and the red border with it,
+ * while the statement beside the action explains why the action is unavailable. Where both would carry the
+ * SAME sentence, a reader meets it twice - once from an assertive field container and again from a polite
+ * status line. This predicate is the single condition both sites branch on, so the two can never drift into
+ * duplicating or into both falling silent.
+ *
+ * The field message is withheld until BOTH bounds are touched, because naming an ordering fault against a
+ * bound the operator has not yet reached accuses them of a mistake they have not made.
+ *
+ * @param state The form snapshot.
+ * @returns `true` when the expiry field itself is stating the ordering rule.
+ */
+export function expiryFieldStatesDateOrder(state: RoleAssignmentFormState): boolean {
+  return state.effectiveDateTouched && state.expiryDateTouched && state.datesOutOfOrder;
+}
+
+/**
  * Reads the route's raw parameter as a role identifier. Route parameters arrive as strings, so the
  * conversion is explicit.
  *
@@ -916,6 +956,7 @@ const PAGE_SUBTITLE =
     ReactiveFormsModule,
     RouterLink,
     PageHeaderComponent,
+    AbsentValueComponent,
     ErrorBannerComponent,
     FormFieldComponent,
     SearchInputComponent,
@@ -1589,6 +1630,69 @@ export class RoleAssignmentComponent {
   });
 
   /**
+   * Why the action cannot be taken yet, or `null` when it can.
+   *
+   * ⚠ A DISABLED CONTROL STATES THAT SOMETHING IS WRONG AND NEVER WHAT. The submit was gated by
+   * {@link canSubmit} alone, so an operator who had not chosen an account - or whose expiry bound did not
+   * follow its effective bound - met a dead button with no field error, no banner and no message, and no way
+   * to discover which of the two it was. The condition is named here instead.
+   *
+   * The blockers are reported in the order an operator meets them, and only ONE is reported at a time: naming
+   * a second condition they cannot yet act on adds nothing. The date rule is spelt out here ONLY where the
+   * expiry field is not already spelling it out - see {@link expiryFieldStatesDateOrder}. That field message
+   * is withheld until both bounds are touched while the button is not, so without this the ordering fault was
+   * refused in silence; with it stated in both places at once a reader met the same sentence twice. Where the
+   * field does carry it, this line points at the marked field instead, which the field's red border and its
+   * `aria-invalid` make a true statement rather than a promise.
+   */
+  public readonly submitBlockedReason: Signal<string | null> = computed(() => {
+    // Nothing is blocked while the write is in flight; the busy state speaks for that.
+    if (this.saving() || this.roleIdSignal() === null) {
+      return null;
+    }
+
+    const state = this.formStateSignal();
+
+    if (state.userId === null) {
+      return ROLE_ASSIGNMENT_TEXT.chooseAccountFirst;
+    }
+
+    if (state.datesOutOfOrder && expiryFieldStatesDateOrder(state) === false) {
+      // The legacy sentence carries a leading `<br>` that only the shared field wrapper strips, and this
+      // statement is rendered outside one - so it is stripped here rather than shown verbatim.
+      return ROLE_ASSIGNMENT_TEXT.expiryNotAfterEffective.replace(/^(?:<br\s*\/?>)+/i, '');
+    }
+
+    if (!state.valid) {
+      return ROLE_ASSIGNMENT_TEXT.correctTheDatesFirst;
+    }
+
+    return null;
+  });
+
+  /**
+   * Whether the statement beside the action is reporting a FAULT rather than an unfinished step.
+   *
+   * ⚠ 'NOTHING IS WRONG YET' AND 'WHAT YOU ENTERED IS WRONG' ARE NOT THE SAME MESSAGE. Both were painted in
+   * the same muted grey, so arriving at the screen and having nothing chosen looked exactly like entering an
+   * expiry that precedes its effective bound. The design vocabulary already carries a colour for validation
+   * text, and the wording plus the marked field carry the distinction for a reader who perceives no colour at
+   * all, so colour is never the only signal.
+   *
+   * An account being chosen is the dividing line: until one is, the operator has not asserted anything that
+   * could be wrong.
+   */
+  public readonly submitBlockedByFailure: Signal<boolean> = computed(() => {
+    if (this.saving() || this.roleIdSignal() === null) {
+      return false;
+    }
+
+    const state = this.formStateSignal();
+
+    return state.userId !== null && state.valid === false;
+  });
+
+  /**
    * The action's label, which becomes 'Update User Role' once the chosen account already holds the role.
    * only ONE of the two legacy relabel branches is live in this mode.
    */
@@ -1643,7 +1747,7 @@ export class RoleAssignmentComponent {
     if (state.expiryDateNativelyUnusable || (state.expiryDateTouched && state.expiryDateInvalid)) {
       messages.push(ROLE_ASSIGNMENT_TEXT.invalidExpiryDate);
     }
-    if (state.effectiveDateTouched && state.expiryDateTouched && state.datesOutOfOrder) {
+    if (expiryFieldStatesDateOrder(state)) {
       messages.push(ROLE_ASSIGNMENT_TEXT.expiryNotAfterEffective);
     }
     messages.push(...this.serverMessagesFor(EXPIRY_DATE_CONTROL));
@@ -1794,9 +1898,24 @@ export class RoleAssignmentComponent {
       }
     });
 
-    this.form.events.pipe(takeUntilDestroyed()).subscribe(() => {
-      this.formStateSignal.set(this.readFormState());
-    });
+    // ⚠ THE GROUP'S STREAM ALONE LEAVES THE TOUCHED FLAGS STALE, AND THAT IS NOT A THEORETICAL GAP.
+    // `AbstractControl.events` emits a touched event only when THAT control's own touched state changes.
+    // Blurring the first date bound flips the GROUP from untouched to touched and does emit; blurring the
+    // second flips only the child, leaves the already-touched group unchanged, and emits NOTHING on the
+    // group's stream - so the snapshot kept `expiryDateTouched`/`effectiveDateTouched` at whatever they were
+    // one blur earlier. The observable consequence was a form that suppressed the expiry field's error, its
+    // `aria-invalid`, its `aria-describedby` and its red border for the ordinary fill-then-blur path, while
+    // exposing all four for the same logical state reached by a later keystroke. Each bound's own stream is
+    // merged in so a blur is never invisible, whichever bound it lands on.
+    merge(
+      this.form.events,
+      this.form.controls.effectiveDate.events,
+      this.form.controls.expiryDate.events,
+    )
+      .pipe(takeUntilDestroyed())
+      .subscribe(() => {
+        this.formStateSignal.set(this.readFormState());
+      });
 
     // The tenant's own record, for the protected pairing. Read from the CALLER'S identity and never from a
     // route, and idempotent in the store — several screens asking on initialisation issue one request
@@ -2334,6 +2453,29 @@ export class RoleAssignmentComponent {
       change.direction === null ? null : ACCOUNT_SORT_FIELD,
       change.direction,
     );
+  }
+
+  /**
+   * Whether a membership bound renders as nothing, so the cell can state the absence instead of drawing an
+   * empty box.
+   *
+   * ⚠ THIS LISTING WAS THE LAST ONE STILL RENDERING A BARE EMPTY CELL. The legacy formatter returned the
+   * empty string for an unrecorded bound, and every other listing in this application has already moved off
+   * that: the roles grid, the accounts grid, the tenants grid and the modules grid all draw the shared mark
+   * and announce what it means, because an empty cell cannot be told apart from a cell that failed to draw.
+   * Both membership date columns still drew nothing at all - measured as zero characters, not even a space -
+   * while the row's own name column beside them was fully populated. The mark, its colour and its words are the
+   * shared ones, so this listing now answers the question the same way its siblings do.
+   *
+   * The test goes through the same parser the cell's own pipe uses, for the reason recorded on
+   * {@link boundInstant}: a bound the cell paints as empty can never be reported as present, and a bound it
+   * paints can never be reported as absent.
+   *
+   * @param wire The bound exactly as it arrived.
+   * @returns True when the cell would otherwise be empty.
+   */
+  protected isBoundAbsent(wire: string | null | undefined): boolean {
+    return boundInstant(wire) === null;
   }
 
   /** Reads the live form into the snapshot the derived views above depend on. */

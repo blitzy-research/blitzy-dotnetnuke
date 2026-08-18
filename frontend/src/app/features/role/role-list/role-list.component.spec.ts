@@ -3,7 +3,7 @@
  * NEEDS ITS OWN SPECIFICATION It is TWO screens sharing one surface: a listing of roles, and an inline
  * editor for the role GROUP currently being filtered by.
  */
-import { signal } from '@angular/core';
+import { computed, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
@@ -11,6 +11,7 @@ import { Router, provideRouter } from '@angular/router';
 
 import { NotificationService } from '../../../core/services/notification.service';
 import { AuthStore } from '../../../core/state/auth.store';
+import { PortalStore } from '../../../core/state/portal.store';
 import { RoleStore } from '../../../core/state/role.store';
 import { RoleListComponent } from './role-list.component';
 
@@ -233,6 +234,11 @@ describe('RoleListComponent', () => {
   let httpMock: HttpTestingController;
   let administersPortal: WritableSignal<boolean>;
   let notifySpy: jasmine.Spy;
+  let contextRequests: number[];
+  let portalContext: WritableSignal<{
+    readonly administratorRoleId: number | null;
+    readonly registeredRoleId: number | null;
+  }>;
 
   /**
    * Whether {@link create} has run in the CURRENT case. ⚠ A CLOSURE VARIABLE SURVIVES THE CASE THAT
@@ -246,6 +252,11 @@ describe('RoleListComponent', () => {
 
     // ⚠ ORDER IS LOAD-BEARING: the real client FIRST, then the testing backend that displaces it.
     administersPortal = signal<boolean>(true);
+    contextRequests = [];
+    portalContext = signal<{
+      readonly administratorRoleId: number | null;
+      readonly registeredRoleId: number | null;
+    }>({ administratorRoleId: null, registeredRoleId: null });
 
     await TestBed.configureTestingModule({
       imports: [RoleListComponent],
@@ -256,7 +267,29 @@ describe('RoleListComponent', () => {
         // ADDRESS and writes them with a real navigation.
         provideRouter([{ path: '**', component: RoleListComponent }]),
         RoleStore,
-        { provide: AuthStore, useValue: { administersCurrentPortal: administersPortal } },
+        {
+          provide: AuthStore,
+          useValue: {
+            administersCurrentPortal: administersPortal,
+            // The listing reads the caller's tenant so it can ask for the tenant record that names the two
+            // protected roles. `Portals.PortalID` is `IDENTITY(-1, 1)`, so -1 is a real tenant.
+            currentUser: signal({ portalId: -1 }),
+          },
+        },
+        // Only the two protected-role identifiers are read by this screen, so only those are supplied. Both
+        // default to `null`, which is the "tenant not resolved" state in which no role is protected.
+        {
+          provide: PortalStore,
+          useValue: {
+            administratorRoleId: computed(() => portalContext().administratorRoleId),
+            registeredRoleId: computed(() => portalContext().registeredRoleId),
+            // Recorded rather than ignored, so a case can assert the listing ASKS for the tenant record -
+            // without it, nothing is ever protected.
+            loadCurrentPortalContext: (portalId: number): void => {
+              contextRequests.push(portalId);
+            },
+          },
+        },
       ],
     }).compileComponents();
 
@@ -539,6 +572,8 @@ describe('RoleListComponent', () => {
       lastPasswordChangeDate: null,
       roles: [],
       canDelete: true,
+      // Opaque and never interpreted here: a fixture only has to carry one for the round trip to close.
+      concurrencyToken: `account-revision-${userId}`,
     };
   }
 
@@ -1596,6 +1631,430 @@ describe('RoleListComponent', () => {
       expect(httpMock.match(() => true)).withContext('nothing is re-read').toHaveSize(0);
       expect(notifications()).toEqual([{ severity: 'warning', message: 'Not permitted.' }]);
     });
+
+    // ⚠ AREA 20 - QA-9. A name filter that matched nothing must not be reported as an empty TENANT.
+    //
+    // MEASURED FAULT: filtering by a name no role carried produced "No security roles have been defined for
+    // this site yet." over a tenant holding fifteen roles - a false sentence that also contradicted the
+    // `Filtered:` disclosure directly above it. The group-narrowed path already got this right.
+    it('blames the name filter, not the tenant, when a filter matches nothing', async () => {
+      arrive([roleGroup()], [roleRow()]);
+
+      // Driven through the SHARED CONTROL rather than the component member, so the spec exercises the same
+      // path an operator does: the box emits, the emission writes the address, and the address issues the read.
+      const box: HTMLInputElement | null = query<HTMLInputElement>('app-search-input input');
+
+      expect(box).withContext('the filter box is mounted').not.toBeNull();
+      box!.value = 'nothing matches this';
+      box!.dispatchEvent(new Event('input'));
+      box!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      fixture.detectChanges();
+      await settleAddress();
+      expectRequest('GET', ROLES_URL, 'the filtered read').flush(pageOf([]));
+      fixture.detectChanges();
+
+      const shown: string = fixture.nativeElement.textContent ?? '';
+
+      expect(shown)
+        .withContext('the filter is named as the reason, with the way out')
+        .toContain('No role name matches this filter. Clear the filter to see every role.');
+      expect(shown)
+        .withContext('and the tenant is NOT reported as empty when it holds roles')
+        .not.toContain('No security roles have been defined for this site yet.');
+    });
+
+    // The counterpart: with nothing filtering, the empty-tenant sentence is the correct one and must survive.
+    it('still reports an genuinely empty tenant as empty', () => {
+      arrive([roleGroup()], []);
+
+      expect(fixture.nativeElement.textContent ?? '')
+        .withContext('no filter in force, so the tenant really is empty')
+        .toContain('No security roles have been defined for this site yet.');
+    });
+
+  });
+
+  // ---------------------------------------------------------------------------------------------------
+  // WHAT THE SCREEN NOW DISCLOSES
+  // ---------------------------------------------------------------------------------------------------
+
+  describe('what the screen discloses', () => {
+    /** The role identifiers this tenant protects, as the portal context reports them. */
+    function protectedBy(administratorRoleId: number, registeredRoleId: number): void {
+      portalContext.set({ administratorRoleId, registeredRoleId });
+    }
+
+    /** Presses the removal command on the row at an index. */
+    function pressRowRemoval(index: number): void {
+      const button: HTMLButtonElement | null = rows()[index]?.querySelector<HTMLButtonElement>(
+        'button.role-list__row-action--danger',
+      ) ?? null;
+
+      expect(button).withContext(`row ${index} offers a removal command`).not.toBeNull();
+      button?.click();
+      fixture.detectChanges();
+    }
+
+    /** The removal dialog's body text. */
+    function dialogueBody(): string {
+      return (query('.confirm-dialog__message')?.textContent ?? '').trim();
+    }
+
+    /**
+     * ⚠ DESTROYING A ROLE ALSO DESTROYS EVERY MEMBERSHIP IN IT, silently. An operator confirming the removal
+     * could not know they were revoking the role from everyone holding it, because the dialog said only that
+     * the role would be deleted. The count is read when the dialog opens - not carried on every row, which
+     * would put a correlated subquery on every read of this grid.
+     */
+    it('discloses how many accounts will lose the role', () => {
+      arrive([roleGroup()], [roleRow(7, { roleName: 'Subscribers' })]);
+
+      pressRowRemoval(0);
+
+      const count: TestRequest = httpMock.expectOne(
+        (candidate) => candidate.url === `${ROLES_URL}/7/users`,
+        'the membership count',
+      );
+
+      expect(count.request.params.get('pageSize'))
+        .withContext('only the total is wanted, so the page is as small as the contract allows')
+        .toBe('1');
+
+      count.flush(pageOf([], 4));
+      fixture.detectChanges();
+
+      expect(dialogueBody()).withContext('the record is still named').toContain('Subscribers');
+      expect(dialogueBody()).withContext('and the cascade is stated').toContain('4 accounts');
+      expect(dialogueBody()).toContain('will lose it');
+    });
+
+    /** An empty role says so, rather than leaving the operator to wonder whether the count failed. */
+    it('states plainly when no account holds the role', () => {
+      arrive([roleGroup()], [roleRow(7)]);
+
+      pressRowRemoval(0);
+      httpMock.expectOne((candidate) => candidate.url === `${ROLES_URL}/7/users`).flush(pageOf([], 0));
+      fixture.detectChanges();
+
+      expect(dialogueBody()).toContain('No accounts hold this role');
+    });
+
+    /** Singular wording for one holder, because "1 accounts" reads as a defect. */
+    it('says account rather than accounts for a single holder', () => {
+      arrive([roleGroup()], [roleRow(7)]);
+
+      pressRowRemoval(0);
+      httpMock.expectOne((candidate) => candidate.url === `${ROLES_URL}/7/users`).flush(pageOf([], 1));
+      fixture.detectChanges();
+
+      expect(dialogueBody()).toContain('1 account currently hold');
+      expect(dialogueBody()).not.toContain('1 accounts');
+    });
+
+    /**
+     * ⚠ A COUNT THAT CANNOT BE READ MUST NOT BLOCK THE REMOVAL, and must not raise an alarm about it either.
+     * The operator did not ask for the figure; they asked to delete a role, and that is still available.
+     */
+    it('leaves the removal available when the count cannot be read', () => {
+      arrive([roleGroup()], [roleRow(7, { roleName: 'Subscribers' })]);
+
+      pressRowRemoval(0);
+      httpMock.expectOne((candidate) => candidate.url === `${ROLES_URL}/7/users`).flush(
+        problem('role.not_found', 500, 'Server Error'),
+        { status: 500, statusText: 'Server Error' },
+      );
+      fixture.detectChanges();
+
+      expect(dialogueBody()).withContext('the dialog still names the record').toContain('Subscribers');
+      expect(notifications()).withContext('and raises no alarm about a figure nobody asked for').toEqual([]);
+
+      pressDialogue(REMOVAL_CONFIRM_LABEL);
+      fixture.detectChanges();
+
+      expectRequest('DELETE', `${ROLES_URL}/7`, 'the removal still happens').flush(null, {
+        status: 204,
+        statusText: 'No Content',
+      });
+      fixture.detectChanges();
+
+      httpMock.match(() => true).forEach((pending) => {
+        if (pending.request.url === ROLE_GROUPS_URL) {
+          pending.flush(envelope([roleGroup()]));
+        } else {
+          pending.flush(pageOf([roleRow()]));
+        }
+      });
+      fixture.detectChanges();
+    });
+
+    /**
+     * ⚠ THE TWO PROTECTED ROLES OFFER NO EDITING OR REMOVAL COMMAND, AND SAY WHY. The server refuses both
+     * writes with `role.protected` and the legacy screen withheld the commands, so offering them meant an
+     * operator could be asked to confirm destroying the role their own access depends on and only then be
+     * refused - which reads as a fault rather than as a rule.
+     */
+    /**
+     * ⚠ THE LISTING MUST ASK FOR THE TENANT RECORD, OR NOTHING IS EVER PROTECTED. This is the exact gap runtime
+     * testing caught: the protection rule reads `administratorRoleId` and `registeredRoleId` from the tenant's
+     * record, nothing on this screen was requesting that record, so both stayed `null`, every row answered
+     * "not protected", and the withheld commands rendered as ordinary ones. The row corrected itself only
+     * after some OTHER screen had loaded the record for its own reasons - which is why the defect looked
+     * intermittent rather than absolute.
+     */
+    it('asks for the tenant record on arrival, which is what makes protection knowable', () => {
+      arrive();
+
+      expect(contextRequests)
+        .withContext('the tenant that names the protected roles is read from the caller identity')
+        .toEqual([-1]);
+    });
+
+    it('withholds the editing and removal commands on a protected role, with the reason', () => {
+      protectedBy(0, 1);
+      arrive(
+        [roleGroup()],
+        [roleRow(0, { roleName: 'Administrators' }), roleRow(9, { roleName: 'Subscribers' })],
+      );
+
+      const protectedRow: HTMLElement = rows()[0];
+      const ordinaryRow: HTMLElement = rows()[1];
+
+      // ⚠ THE EDIT LINK SPECIFICALLY, NOT EVERY ROW LINK. "Manage Users" is also a row link and MUST survive:
+      // administering the membership of a protected role is permitted, and only its terms are fixed.
+      expect(protectedRow.querySelector('a.role-list__row-action[aria-label^="Edit"]'))
+        .withContext('no link to an editor that can change nothing')
+        .toBeNull();
+      expect(protectedRow.querySelector('a.role-list__row-action[aria-label^="Manage Users"]'))
+        .withContext('but its membership is still administrable')
+        .not.toBeNull();
+      expect(protectedRow.querySelector('button.role-list__row-action--danger'))
+        .withContext('and no removal command for an act the server refuses')
+        .toBeNull();
+      expect(protectedRow.textContent)
+        .withContext('the reason is available to a reader')
+        .toContain('required by this site');
+
+      expect(ordinaryRow.querySelector('a.role-list__row-action[aria-label^="Edit"]'))
+        .withContext('an ordinary role is unaffected')
+        .not.toBeNull();
+      expect(ordinaryRow.querySelector('button.role-list__row-action--danger')).not.toBeNull();
+    });
+
+    /**
+     * The free-text filter reaches the WIRE as the contract's own parameter, and resets the page with it: a
+     * filtered listing is shorter, so page four of the unfiltered set is routinely past its end.
+     */
+    it('sends the filter as the contract parameter and returns to the first page', async () => {
+      await TestBed.inject(Router).navigateByUrl('/roles?currentpage=3');
+      arrive([roleGroup()], [roleRow()]);
+      await settleAddress();
+
+      const box: HTMLInputElement = queryOrFail<HTMLInputElement>(host(), 'input[type="search"]');
+      box.value = 'Subscr';
+      box.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+
+      // The shared control debounces, so the request is not issued in this task.
+      await new Promise<void>((resolve) => setTimeout(resolve, 400));
+      fixture.detectChanges();
+      await settleAddress();
+
+      const filtered: readonly TestRequest[] = httpMock.match(
+        (candidate) => candidate.url === ROLES_URL,
+      );
+
+      expect(filtered.length).withContext('one read for the filter').toBe(1);
+      expect(filtered[0].request.params.get('query')).toBe('Subscr');
+      expect(filtered[0].request.params.get('pageIndex'))
+        .withContext('a shorter listing cannot honour the page the longer one was on')
+        .toBe('0');
+
+      filtered[0].flush(pageOf([roleRow()]));
+      fixture.detectChanges();
+      await settleAddress();
+
+      expect(host().textContent)
+        .withContext('and the screen states what it is filtered by')
+        .toContain('role name contains');
+    });
+  });
+
+  // ---------------------------------------------------------------------------------------------------
+  // A NARROWING WHOSE GROUP IS GONE
+  // ---------------------------------------------------------------------------------------------------
+
+  /**
+   * ⚠ THE ADDRESS IS WHAT ISSUES THIS SCREEN'S READ, so a narrowing naming a group that no longer exists is
+   * asked for again on every later emission - a Back, a paging click, a sort - and refused again each time.
+   * The operator met an empty grid under a failure banner with no way out, and a role created moments earlier
+   * appeared to have been lost.
+   *
+   * Two layers cover it, and both are asserted here. The FIRST read of an arrival cannot be checked against a
+   * group set that has not been read yet, so the store heals it when the server reports the group gone. From
+   * the SECOND emission the group set is known, so the key is dropped before any read is issued.
+   */
+  describe('a narrowing whose group is gone', () => {
+    /** Reads the query parameters the screen has actually navigated to. */
+    function statedParams(): Readonly<Record<string, string>> {
+      const router: Router = TestBed.inject(Router);
+
+      return router.parseUrl(router.url).queryParams as Readonly<Record<string, string>>;
+    }
+
+    /**
+     * LAYER ONE — the bookmarked address. Entering on a narrowing the server denies must land the operator on
+     * a populated listing rather than on a failure they can do nothing about.
+     */
+    it('recovers to a populated listing when the server denies the narrowing on arrival', async () => {
+      await TestBed.inject(Router).navigateByUrl('/roles?group=42');
+      create();
+
+      expectRequest('GET', ROLE_GROUPS_URL, 'the group read').flush(envelope([roleGroup(4)]));
+      fixture.detectChanges();
+
+      expectRequest('GET', ROLES_URL, 'the narrowed read').flush(
+        problem('role_group.not_found', 404, 'Portal -1 has no role group bearing that identifier.'),
+        { status: 404, statusText: 'Not Found' },
+      );
+      fixture.detectChanges();
+      await settleAddress();
+
+      // The store discards the narrowing and re-reads under the default. The group set is NOT re-read,
+      // because it arrived successfully moments ago in the same chain.
+      const healed: TestRequest = expectRequest('GET', ROLES_URL, 'the healed read');
+
+      expect(healed.request.params.get('scope'))
+        .withContext('the healed read carries the default narrowing')
+        .toBe('Ungrouped');
+      expect(healed.request.params.get('roleGroupId'))
+        .withContext('the denied key is gone from the wire')
+        .toBeNull();
+
+      healed.flush(pageOf([roleRow()]));
+      fixture.detectChanges();
+      await settleAddress();
+
+      expect(TestBed.inject(RoleStore).groupFilter())
+        .withContext('the unsatisfiable narrowing is discarded')
+        .toEqual({ kind: 'GlobalRoles' });
+      expect(host().textContent)
+        .withContext('the operator ends on the listing, not on a refusal')
+        .toContain('Administrators');
+      expect(query('.error-banner')).withContext('and no refusal is painted').toBeNull();
+    });
+
+    /**
+     * THE PAIRED HALF: the withdrawn read must not be REPORTED. It describes a request the store has already
+     * replaced, and it was the banner - not the empty grid - that made this read as data loss.
+     */
+    it('reports no failure for the arrival read it withdrew', async () => {
+      await TestBed.inject(Router).navigateByUrl('/roles?group=42');
+      create();
+
+      expectRequest('GET', ROLE_GROUPS_URL).flush(envelope([roleGroup(4)]));
+      fixture.detectChanges();
+      expectRequest('GET', ROLES_URL).flush(
+        problem('role_group.not_found', 404, 'Gone.'),
+        { status: 404, statusText: 'Not Found' },
+      );
+      fixture.detectChanges();
+      await settleAddress();
+
+      expectRequest('GET', ROLES_URL, 'the healed read').flush(pageOf([roleRow()]));
+      fixture.detectChanges();
+      await settleAddress();
+
+      expect(TestBed.inject(RoleStore).failure())
+        .withContext('a superseded request is not an operator-facing failure')
+        .toBeNull();
+    });
+
+    /**
+     * LAYER TWO — once the group set is known, a stale key is dropped BEFORE a read is issued, so the
+     * refusable request is never sent at all. The address is rewritten by the screen's existing
+     * canonicalisation, which is why exactly ONE read follows rather than two.
+     */
+    it('drops a stale key from a later emission without issuing a refusable read', async () => {
+      // The removal affordance is offered only for a real group that holds no roles, so the group is CHOSEN
+      // through the selector and answered empty - the same precondition the removal cases upstream use.
+      arrive([roleGroup(4, { roleGroupName: 'Paid Services' })], []);
+      await chooseFilter('Paid Services');
+      expectRequest('GET', ROLES_URL, 'the narrowed read').flush(pageOf([]));
+      fixture.detectChanges();
+      await settleAddress();
+
+      expect(statedParams()['group']).withContext('the narrowing is stated first').toBe('4');
+
+      // The group is removed from under the address: the client's group set no longer contains it.
+      pressGroupCommand('remove');
+      fixture.detectChanges();
+      pressDialogue(REMOVAL_CONFIRM_LABEL);
+      fixture.detectChanges();
+
+      expectRequest('DELETE', `${ROLE_GROUPS_URL}/4`).flush(null, {
+        status: 204,
+        statusText: 'No Content',
+      });
+      fixture.detectChanges();
+      await settleAddress();
+
+      // The store's own re-read of the whole administration follows the removal.
+      expectRequest('GET', ROLE_GROUPS_URL, 'the group re-read').flush(envelope([]));
+      fixture.detectChanges();
+      expectRequest('GET', ROLES_URL, 'the role re-read').flush(pageOf([roleRow()]));
+      fixture.detectChanges();
+      await settleAddress();
+
+      // The next emission is where the stale key would have been re-staged. Sorting is the cheapest one, and
+      // it is pressed through the real control rather than a component method.
+      const sort: HTMLButtonElement | null = host().querySelector<HTMLButtonElement>(
+        'th.data-table__header button.data-table__sort',
+      );
+
+      expect(sort).withContext('an ordering control is offered').not.toBeNull();
+      sort?.click();
+      fixture.detectChanges();
+      await settleAddress();
+
+      const followUp: readonly TestRequest[] = httpMock.match(
+        (candidate) => candidate.url === ROLES_URL,
+      );
+
+      expect(followUp.length).withContext('exactly one read, not one per navigation').toBe(1);
+      expect(followUp[0].request.params.get('roleGroupId'))
+        .withContext('the deleted key is never asked for again')
+        .toBeNull();
+      expect(statedParams()['group'])
+        .withContext('and the address has let go of it')
+        .not.toBe('4');
+
+      followUp[0].flush(pageOf([roleRow()]));
+      fixture.detectChanges();
+      await settleAddress();
+    });
+
+    /**
+     * ⚠ AN UNREAD GROUP SET IS NOT AN EMPTY ONE. Before the groups are read there is nothing to check a key
+     * against, and discarding it on a guess would break every legitimate bookmarked narrowing. This case
+     * pins that the arrival read still carries the stated key.
+     */
+    it('states the narrowing on the first read, before any group set is known', async () => {
+      await TestBed.inject(Router).navigateByUrl('/roles?group=4');
+      create();
+
+      expectRequest('GET', ROLE_GROUPS_URL).flush(envelope([roleGroup(4)]));
+      fixture.detectChanges();
+
+      const first: TestRequest = expectRequest('GET', ROLES_URL, 'the arrival read');
+
+      expect(first.request.params.get('roleGroupId'))
+        .withContext('a bookmarked narrowing is honoured, not guessed away')
+        .toBe('4');
+
+      first.flush(pageOf([roleRow()]));
+      fixture.detectChanges();
+      await settleAddress();
+    });
   });
 
   // ---------------------------------------------------------------------------------------------------
@@ -1951,6 +2410,32 @@ describe('RoleListComponent', () => {
   // PROOF 7 — THE GRID'S TEN DATA COLUMNS
 
   describe('the grid data columns', () => {
+    // ⚠ AREA 21 - QA-11. A NAMEABLE frequency must announce its unit ONCE, not twice.
+    //
+    // MEASURED FAULT: the frequency cells announced the unit twice - "WWeekWeek", "NNoneNone", "MMonthMonth",
+    // "DDayDay", "YYearYear" - because a screen-reader-only span naming the unit sat inside the nameable
+    // branch WHILE the unconditional sibling below it resolved to the same word, `frequencyDescription`
+    // returning `frequencyName` for any code it can name. The sibling is the one that stays, because it is
+    // the only branch-independent accessible text on the template.
+    it('announces a nameable frequency unit once rather than twice', () => {
+      arrive([roleGroup()], [roleRow(3, { billingFrequency: 'W', billingPeriod: 2 })]);
+
+      // A local reader, because the shared `cellUnder` helper is scoped to a later describe. Same mechanism:
+      // find the column by its heading, then read the whole cell INCLUDING clipped spans, which is exactly
+      // what an assistive technology receives and therefore what the doubling showed up in.
+      const cell: string = cellUnder('Billing Period');
+
+      expect(cell)
+        .withContext('the painted code and the spoken unit, in that order')
+        .toBe('WWeek');
+      expect(cell)
+        .withContext('and NOT the doubled announcement the duplicate span produced')
+        .not.toBe('WWeekWeek');
+      expect((cell.match(/Week/gu) ?? []).length)
+        .withContext(`the unit appears exactly once, in: ${cell}`)
+        .toBe(1);
+    });
+
     /** Every heading cell of the grid, in column order. */
     function headerCells(): readonly HTMLTableCellElement[] {
       return queryAll<HTMLTableCellElement>('th.data-table__header');
@@ -2135,6 +2620,26 @@ describe('RoleListComponent', () => {
       }
     });
 
+    // ⚠ A ROLE NAME IS ONE TOKEN, AND THE GRID USED TO SPLIT IT. The shared stylesheet lets any cell break
+    // inside a word so a narrow column cannot overflow, which is right for prose and wrong for a name.
+    // Measured at a 768 viewport before this guard, in the 100.80px name track: `Administrators` painted as
+    // `Administrator` + `s`. Declaring the column atomic keeps the value on one line and ellipsises what will
+    // not fit, so what shows is a recognisable prefix rather than two fragments that read as corruption.
+    it('keeps the role name whole instead of breaking it mid-word', () => {
+      arrive();
+
+      const cells = headerCells();
+
+      expect(cells[3]?.getAttribute('data-atomic')).withContext('the name is one token').toBe('true');
+
+      // ⚠ THE COUNTERPART, AND THE REASON THIS IS NOT A BLANKET RULE. Index 4 is the description - the one
+      // track left flexible, holding a sentence rather than a name. Wrapping is correct there, and
+      // ellipsising it would hide text that fits perfectly well on a second line.
+      expect(cells[4]?.getAttribute('data-atomic'))
+        .withContext('the flexible column holds a sentence and should wrap')
+        .toBeNull();
+    });
+
     it('clips the heading of each command column rather than publishing one', () => {
       arrive();
 
@@ -2192,8 +2697,52 @@ describe('RoleListComponent', () => {
     it('renders a period of zero as zero in both period columns', () => {
       arrive([roleGroup()], [roleRow(0, { billingPeriod: 0, trialPeriod: 0 })]);
 
-      expect(cellUnder('Billing Every')).toBe('0');
-      expect(cellUnder('Trial Every')).toBe('0');
+      // The PAINTED figure is what the legacy guard decides, and it is unchanged. The whole-cell reading now
+      // also carries the clipped sentence that distinguishes no-recurrence from a working schedule, so the
+      // painted text is asserted on its own rather than through the whole cell.
+      expect(paintedCellUnder('Billing Every')).toBe('0');
+      expect(paintedCellUnder('Trial Every')).toBe('0');
+      expect(cellElementUnder('Billing Every').querySelector('app-absent-value'))
+        .withContext('zero is recorded data, so no absence is claimed')
+        .toBeNull();
+    });
+
+    /**
+     * ⚠ A COUNT WHOSE RECORDED UNIT CANNOT BE NAMED SAYS SO, AND ONLY THEN. The frequency column already marks
+     * a stored code it has no word for; the count beside it was drawn as an ordinary period either way, so the
+     * two cells described the same row differently.
+     */
+    it('marks a period whose recorded unit cannot be named, and leaves a nameable one alone', () => {
+      arrive([roleGroup()], [roleRow(0, { billingPeriod: 2, billingFrequency: 'Q' })]);
+
+      expect(paintedCellUnder('Billing Every'))
+        .withContext('the count is still painted verbatim')
+        .toBe('2');
+      expect(clippedCellUnder('Billing Every'))
+        .withContext('and the doubt its unit carries is carried here too')
+        .toBe('unit not recognised, so the period is unknown');
+
+      arrive([roleGroup()], [roleRow(0, { billingPeriod: 2, billingFrequency: 'M' })]);
+
+      expect(paintedCellUnder('Billing Every')).toBe('2');
+      expect(clippedCellUnder('Billing Every'))
+        .withContext('a nameable unit leaves the count entirely alone')
+        .toBe('');
+    });
+
+    /**
+     * ⚠ AND AN ABSENT UNIT IS NOT AN UNRECOGNISED ONE. Nothing was recorded, so there is nothing to fail to
+     * recognise - and this is the ordinary state of every role with no paid membership, so hanging a doubt on it
+     * would put a warning on the commonest row on the grid. The frequency cell's own absence mark already tells
+     * this state correctly.
+     */
+    it('leaves a count alone when its unit was simply never recorded', () => {
+      arrive([roleGroup()], [roleRow(0, { billingPeriod: 2, billingFrequency: null })]);
+
+      expect(paintedCellUnder('Billing Every')).toBe('2');
+      expect(clippedCellUnder('Billing Every'))
+        .withContext('an absent unit is the frequency cell\u2019s business, not the count\u2019s')
+        .toBe('');
     });
 
     /**
@@ -2248,9 +2797,20 @@ describe('RoleListComponent', () => {
         .withContext('the exact stored amount is still available, in words')
         .toBe('no charge, amount 0.00');
 
+      // ⚠ THE PERIOD EXPECTATIONS MOVED FOR THE SAME REASON THE FEE ONES ABOVE DID, AND THE CLAIM IS
+      // UNCHANGED. A recorded zero is still DATA and is still PAINTED as the figure it is - what is added is
+      // that "every 0 months" is no recurrence at all, and it was drawn identically to a working schedule. The
+      // sentence is CLIPPED, so nothing on screen contradicts the legacy rendering, and the decisive
+      // never-an-absence expectation below is untouched.
       expect(paintedCellUnder('Billing Every')).toBe('0');
       expect(paintedCellUnder('Trial Every')).toBe('0');
-      expect(clippedCellUnder('Billing Every')).toBe('');
+      expect(clippedCellUnder('Billing Every'))
+        .withContext('the state is named in words, and it is not an absence')
+        .toBe('no recurring period');
+      expect(clippedCellUnder('Trial Every')).toBe('no recurring period');
+      expect(clippedCellUnder('Billing Every'))
+        .withContext('and it must never claim the value was not recorded')
+        .not.toContain('not recorded');
 
       // The decisive expectation: none of the four cells this fixture RECORDS a value in claims an absence.
       // Scoped to those four rather than to the row, because the fixture leaves both frequency characters
@@ -2567,11 +3127,57 @@ describe('RoleListComponent', () => {
         .toHaveSize(0);
     });
 
-    it('offers no free-text filter, because the legacy screen had none', () => {
+    /**
+     * ⚠ THIS CASE ONCE ASSERTED THE OPPOSITE, AND THE REVERSAL IS DELIBERATE. It read "offers no free-text
+     * filter, because the legacy screen had none", on the reasoning that an absence in `roles.ascx` is as much
+     * of the specification as a presence. That reasoning is sound in general and wrong here, for two reasons
+     * that both outrank it:
+     *
+     * AAP 0.3.2 declares the shared `search-input` component the thing that "Backs every `GET ...?query=`
+     * endpoint", and `GET /api/v1/roles` accepts one - `RoleRepository` matches
+     * `RoleName.ToLower().Contains(...)`. So the filter is required by the design contract, not merely
+     * permitted by it, and this was the one listing in the application not offering it while every sibling
+     * did.
+     *
+     * Parity is also a FLOOR rather than a ceiling: AAP 0.9.1 requires every legacy workflow to be supported,
+     * which an addition cannot breach. What it forbids is losing behaviour, and nothing is lost here.
+     */
+    it('offers a free-text filter, naming the role name as the only thing matched', () => {
       arrive();
 
-      expect(query('app-search-input')).toBeNull();
-      expect(queryAll('input[type="search"]')).toHaveSize(0);
+      expect(query('app-search-input'))
+        .withContext('AAP 0.3.2: the shared control backs every query endpoint')
+        .not.toBeNull();
+
+      // ⚠ THE PROMPT MUST NOT PROMISE MORE THAN THE SERVER MATCHES. The endpoint filters on the role NAME
+      // alone - not the description and not the group - and a prompt offering more would send an operator
+      // hunting for a role by a description that can never match. This is the same defect the module listing
+      // carries in its own copy.
+      const box: HTMLInputElement | null = host().querySelector<HTMLInputElement>('input[type="search"]');
+
+      expect(box).withContext('a real search control, not a bare text box').not.toBeNull();
+      expect((box?.getAttribute('placeholder') ?? '').toLowerCase())
+        .withContext('the prompt names the role name')
+        .toContain('role name');
+      expect((box?.getAttribute('placeholder') ?? '').toLowerCase())
+        .withContext('and promises nothing the server cannot match')
+        .not.toContain('description');
+    });
+
+    /**
+     * The default narrowing HIDES grouped roles, and said so nowhere. An operator who could not find a role
+     * they knew existed had no way to tell the listing was narrowed at all, because a default reads as "no
+     * filter". Stated only when the tenant actually has groups, since with none there is nothing hidden.
+     */
+    it('discloses that the default narrowing hides grouped roles', () => {
+      arrive([roleGroup(4, { roleGroupName: 'Paid Services' })], [roleRow()]);
+
+      const said: string = host().textContent ?? '';
+
+      expect(said)
+        .withContext('the operator is told what the default is withholding')
+        .toContain('belong to no group');
+      expect(said).withContext('and how to see the rest').toContain('All Roles');
     });
 
     it('offers three commands per row: two links, then the removal button', () => {
@@ -3281,7 +3887,23 @@ describe('RoleListComponent row-command hover feedback', () => {
         provideHttpClientTesting(),
         provideRouter([{ path: '**', component: RoleListComponent }]),
         RoleStore,
-        { provide: AuthStore, useValue: { administersCurrentPortal: signal<boolean>(true) } },
+        {
+          provide: AuthStore,
+          useValue: {
+            administersCurrentPortal: signal<boolean>(true),
+            currentUser: signal({ portalId: -1 }),
+          },
+        },
+        // This suite measures stylesheet rules rather than protection, so the two keys stay absent and the
+        // tenant read is a no-op - but both members must EXIST or the component cannot be constructed.
+        {
+          provide: PortalStore,
+          useValue: {
+            administratorRoleId: signal<number | null>(null),
+            registeredRoleId: signal<number | null>(null),
+            loadCurrentPortalContext: (): void => undefined,
+          },
+        },
       ],
     }).compileComponents();
 

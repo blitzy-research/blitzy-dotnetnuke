@@ -120,7 +120,10 @@
 
 // The per-field hint reproduces the legacy shared label control, which rendered its explanatory text as a
 // block below the label rather than as a tooltip. Two differences are deliberate.
-.profile-definitions__form-hint {
+// `--grid-note` shares this treatment because it carries the same kind of fact - a quiet sentence
+// qualifying the control or column above it - and duplicating the declarations would let the two drift.
+.profile-definitions__form-hint,
+.profile-definitions__grid-note {
   display: block;
   margin-block-start: var(--space-1);
 
@@ -130,6 +133,12 @@
   color: var(--color-text-muted);
 
   overflow-wrap: break-word;
+}
+
+// A `<p>` arrives with UA block margins on BOTH sides; the shared treatment above only sets the start
+// margin, so the end margin is collapsed here rather than left to the user agent.
+.profile-definitions__grid-note {
+  margin-block-end: 0;
 }
 
 // Focus indication is deliberately not declared here. Every control this screen renders receives the shared

@@ -7,7 +7,7 @@ import type { Observable } from 'rxjs';
 
 import { API_ENDPOINTS } from '../config/api-endpoints';
 import { decodePermission } from '../models/permission.model';
-import { arrayOf, decodeResponse, decodeString, responseOf } from '../utils/decode.util';
+import { arrayOf, decodeResponse, responseOf } from '../utils/decode.util';
 import { presentedInContext } from './notification.service';
 import { map } from 'rxjs';
 
@@ -21,8 +21,8 @@ import { permissionListParams, type PermissionListFilter } from '../utils/http-p
  * `responseOf` rather than `envelopeOf` because the published signatures of the methods below RETURN THE
  * ENVELOPE, and validating must not change the shape they return.
  */
-const PERMISSION_KEY_LIST_RESPONSE: Decoder<ApiResponse<readonly string[]>> = responseOf(
-  arrayOf(decodeString),
+const PERMISSION_LIST_RESPONSE: Decoder<ApiResponse<readonly Permission[]>> = responseOf(
+  arrayOf(decodePermission),
 );
 const PERMISSION_RESPONSE: Decoder<ApiResponse<Permission>> = responseOf(decodePermission);
 
@@ -40,20 +40,27 @@ export class PermissionService {
   private readonly http = inject(HttpClient);
 
   /**
-   * Reads the catalogue, optionally narrowed by the filters the server accepts. The payload is a bare
-   * array of key strings, not a list of records - that is the server's contract, and it is what a
-   * client-side permission check tests against.
+   * Reads the catalogue, optionally narrowed by the filters the server accepts. The payload is a list of
+   * DEFINITIONS, each carrying its own identifier, so a caller that lists the catalogue can then read any
+   * entry of it through {@link getById}.
+   *
+   * MIGRATION: this used to decode a bare array of key strings, because that is what the endpoint used to
+   * publish. Two things were wrong with it and both were server-side: a bare key carried no identifier, so
+   * the listing and the detail read shared no handle; and the unfiltered listing was assembled from the
+   * four keys this codebase names rather than read from the catalogue table, so a key an installation had
+   * registered — measured as `QA_CUSTOM` — was absent from the listing while the module permission matrix
+   * on the same screen displayed it. The endpoint now returns the catalogue, and this decoder reads it.
    *
    * @param filter The restrictions to apply, or omitted or `null` to read the whole catalogue.
-   * @returns The success envelope carrying every matching key. 200 is the only success status.
+   * @returns The success envelope carrying every matching definition. 200 is the only success status.
    */
-  list(filter?: PermissionListFilter | null): Observable<ApiResponse<readonly string[]>> {
+  list(filter?: PermissionListFilter | null): Observable<ApiResponse<readonly Permission[]>> {
     return this.http
       .get<unknown>(API_ENDPOINTS.permissions.collection(), {
         params: permissionListParams(filter),
         context: presentedInContext(),
       })
-      .pipe(map((body) => decodeResponse(PERMISSION_KEY_LIST_RESPONSE, body)));
+      .pipe(map((body) => decodeResponse(PERMISSION_LIST_RESPONSE, body)));
   }
 
   /**

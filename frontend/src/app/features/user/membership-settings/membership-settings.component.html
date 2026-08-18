@@ -403,3 +403,22 @@
 }
 
 <app-member-services [accountId]="ownAccountId()" />
+
+<!--
+  ⚠ THE ONE FIELD ON THIS FORM THAT REWRITES OTHER RECORDS, ASKED ABOUT BEFORE IT DOES SO. A changed
+  display-name format renames every account in the site, replacing display names an operator typed by hand,
+  and it was reported only in the confirmation AFTERWARDS - after 19 accounts had been renamed, with no undo.
+  The sweep is legacy behaviour and is preserved; being told before it happens, and how many records it
+  reaches, is what was missing. Marked as destructive because it destroys authored values, even though the
+  command it stands in front of is a save.
+-->
+@if (rewriteConfirmationOpen()) {
+  <app-confirm-dialog
+    [title]="rewriteTitle"
+    [message]="rewriteWarning()"
+    [confirmLabel]="rewriteConfirmLabel"
+    [danger]="true"
+    (confirm)="onRewriteConfirmed()"
+    (cancel)="onRewriteCancelled()"
+  />
+}

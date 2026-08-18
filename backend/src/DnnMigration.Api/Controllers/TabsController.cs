@@ -13,8 +13,27 @@ namespace DnnMigration.Api.Controllers;
 
 /// <summary>The tab resource: the page abstraction that modules are placed on.</summary>
 /// <remarks>
+/// <para>
 /// The collection is nested under its portal because the service reads it per portal; the individual tab is
 /// addressed at its own path because the service identifies it by its own key alone.
+/// </para>
+/// <para>
+/// <strong>SCOPE: THE TWO BY-IDENTIFIER ACTIONS ARE AN API-ONLY CAPABILITY IN THIS RELEASE, AND THAT IS A
+/// DECISION RATHER THAN AN OVERSIGHT.</strong> The collection action is consumed by the administration client,
+/// which reads a portal's pages as a lookup when it has to say which page a module placement sits on. The
+/// by-identifier read and replace below have no client screen, because the plan this migration is delivered
+/// against admits no page-management area: it enumerates the client's routes exhaustively and none of them
+/// addresses a page, and it lists the client's in-scope feature areas as portal, module, user, role and
+/// authentication only. It also names the page transport explicitly as a lookup that exists even though there
+/// is no page feature folder. Adding a page-management route here would contradict all three.
+/// </para>
+/// <para>
+/// So these two actions are supported, tested and documented as a programmatic interface for callers
+/// integrating directly against this API — not as dead code, and not as a screen that was forgotten. A page
+/// administration area is a scope decision for a later release, not a defect to be patched by wiring a route
+/// the plan does not contain. Anyone who does add such a screen should reach these actions through the
+/// existing typed transport rather than a new one.
+/// </para>
 /// </remarks>
 // The legacy authorisation gate was imperative and doubled.
 [ApiController]
@@ -107,9 +126,15 @@ public sealed class TabsController : ControllerBase
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
     /// <returns>The tab, or <c>404 Not Found</c> when it does not exist.</returns>
     /// <remarks>
+    /// <para>
     /// <strong>In practice that <c>404</c> is nearly unreachable, and deliberately so.</strong> This route
     /// addresses pages in every tenant, so the authorisation policy is evaluated before the action runs and
     /// refuses an identifier it cannot resolve a grant for.
+    /// </para>
+    /// <para>
+    /// <strong>API-only in this release.</strong> No administration screen calls this action; see the scope
+    /// note on <see cref="TabsController"/> for why, and for what would have to change before one did.
+    /// </para>
     /// </remarks>
     [HttpGet("tabs/{tabId:int}", Name = GetTabRouteName)]
     [Authorize(Policy = PolicyNames.TabView)]
@@ -134,6 +159,12 @@ public sealed class TabsController : ControllerBase
     /// <param name="request">The new state, including where the page sits in the tree.</param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
     /// <returns>The updated tab.</returns>
+    /// <remarks>
+    /// <strong>API-only in this release.</strong> No administration screen calls this action; see the scope
+    /// note on <see cref="TabsController"/> for why, and for what would have to change before one did. The
+    /// request is validated on exactly the same terms either way, so a direct caller is held to the same rules
+    /// a screen would have imposed.
+    /// </remarks>
     [HttpPut("tabs/{tabId:int}")]
     [Authorize(Policy = PolicyNames.TabEdit)]
     [TenantOptional(TokenScopedJustification)]

@@ -2377,6 +2377,8 @@ describe('ModuleFormComponent', () => {
         // case is honest about which arm admitted it.
         isSuperUser: false,
         isPortalAdministrator: administersPortal,
+        mustChangePassword: false,
+        mustUpdateProfile: false,
         roles: administersPortal ? ['Administrators'] : [],
         permissions: [],
       };

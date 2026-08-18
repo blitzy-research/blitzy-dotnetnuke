@@ -235,8 +235,17 @@ export class SidebarComponent {
   public readonly collapsed: Signal<boolean> = computed(() => {
     const chosen = this.collapsedSignal();
 
-    return chosen ?? this.sideBySideSignal() === false;
+    return chosen ?? this.derivedCollapsed();
   });
+
+  /**
+   * What the CURRENT arrangement would choose on its own, with no operator preference recorded. Stacked
+   * above the content the rail opens collapsed so a handset reaches its content first; beside the content
+   * it opens expanded, because there it is a column of the page rather than a disclosure.
+   */
+  private derivedCollapsed(): boolean {
+    return this.sideBySideSignal() === false;
+  }
 
   /** The router, read for the address currently showing. */
   private readonly router = inject(Router);
@@ -411,7 +420,19 @@ export class SidebarComponent {
     // rail and appeared to do nothing.
     const next: boolean = this.collapsed() === false;
 
-    this.collapsedSignal.set(next);
+    // ⚠ A PRESS THAT ONLY RESTATES THIS ARRANGEMENT'S OWN DEFAULT IS NOT A PREFERENCE, AND RECORDING IT AS
+    // ONE STRANDED THE NAVIGATION. Above the content the rail opens collapsed, so a reader who expands it,
+    // follows a link and closes it again has pressed the control twice and asked for nothing the layout was
+    // not already doing. That second press used to be stored all the same, and a stored value outranks the
+    // derivation in every arrangement - so widening the window to a desktop rail kept the rail shut: an
+    // empty rail beside the content, all eight links measuring 0x0, and no way back to them except finding
+    // a disclosure control the desktop layout gives a reader no reason to look for.
+    //
+    // Clearing the slot instead returns the rail to "not yet chosen", so it derives again and opens with
+    // the arrangement it is now in. A press that genuinely CONTRADICTS the default is still recorded and
+    // still outlives a resize, which is the behaviour this control is for: expanding a handset rail keeps
+    // it expanded, and collapsing a desktop rail keeps it collapsed. Only the redundant press is dropped.
+    this.collapsedSignal.set(next === this.derivedCollapsed() ? null : next);
   }
 }
 

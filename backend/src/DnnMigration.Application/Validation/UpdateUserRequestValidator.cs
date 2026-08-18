@@ -56,17 +56,23 @@ public class UpdateUserRequestValidator : AbstractValidator<UpdateUserRequest>
         RuleFor(request => request.FirstName)
             .Cascade(CascadeMode.Stop)
             .NotEmpty().WithMessage(FirstNameRequiredMessage)
-            .MaximumLength(50);
+            .MaximumLength(50)
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage);
 
         RuleFor(request => request.LastName)
             .Cascade(CascadeMode.Stop)
             .NotEmpty().WithMessage(LastNameRequiredMessage)
-            .MaximumLength(50);
+            .MaximumLength(50)
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage);
 
         RuleFor(request => request.DisplayName)
             .Cascade(CascadeMode.Stop)
             .NotEmpty().WithMessage(DisplayNameRequiredMessage)
-            .MaximumLength(128);
+            .MaximumLength(128)
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage);
 
         // MIGRATION: requiredness here is an API-LEVEL rule and is NOT a restatement of the column's
         // nullability. The column permits null; the legacy screen did not, and the screen's rule is what an

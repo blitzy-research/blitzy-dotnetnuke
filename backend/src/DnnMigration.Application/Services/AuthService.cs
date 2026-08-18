@@ -936,7 +936,17 @@ public sealed class AuthService : IAuthService
         }
 
         LoginResponse response = rotated.Value;
-        response.User = await BuildSnapshotAsync(portal, account, _clock.UtcNow, cancellationToken)
+
+        // The SAME value populates the top-level members and the embedded snapshot, so a rotation cannot
+        // answer with a body that contradicts itself.
+        var rotatedRemediation = new AuthenticationRemediationState(mustChangePassword, mustUpdateProfile);
+
+        response.User = await BuildSnapshotAsync(
+                portal,
+                account,
+                _clock.UtcNow,
+                rotatedRemediation,
+                cancellationToken)
             .ConfigureAwait(false);
         response.MustChangePassword = mustChangePassword;
         response.PasswordExpiring = passwordExpiring;
@@ -1075,8 +1085,24 @@ public sealed class AuthService : IAuthService
 
     /// <inheritdoc />
     /// <remarks>
+    /// <para>
     /// An anonymous request is answered with no value rather than with a failure, because asking who the
     /// caller is when there is no caller is a legitimate question with a legitimate answer.
+    /// </para>
+    /// <para>
+    /// ⚠ THE REMEDIATION STATE IS RE-READ HERE, AND THIS ENDPOINT IS THE ONLY HYDRATION PATH THAT HAS TO
+    /// ASK. Sign-in and refresh evaluate it as part of admitting the caller and hand the answer to the
+    /// snapshot builder; this member is reached at any later moment, so it asks the same question through
+    /// the same memoised service member. Its omission was measured as a defect: an obligation imposed
+    /// AFTER sign-in reached the client on no path at all, because this endpoint is deliberately open
+    /// during remediation and was the one response the client could still read.
+    /// </para>
+    /// <para>
+    /// FAILS CLOSED, for the same reason the rotation and the pipeline stage do. An unreadable remediation
+    /// state is not evidence that no obligation stands, and answering with a snapshot that silently
+    /// reported none would put the client in the one state it cannot recover from - rendering the ordinary
+    /// console while every ordinary endpoint refuses it.
+    /// </para>
     /// </remarks>
     public async Task<Result<CurrentUserDto?>> GetCurrentUserAsync(CancellationToken cancellationToken = default)
     {
@@ -1103,7 +1129,24 @@ public sealed class AuthService : IAuthService
                 FormattableString.Invariant($"Account {userId} no longer exists in portal {portalId}."));
         }
 
-        CurrentUserDto snapshot = await BuildSnapshotAsync(portal, account, _clock.UtcNow, cancellationToken)
+        // Memoised per subject for the life of this request, so a request that has already been through the
+        // restricted-session stage or the remediation authorisation handler pays nothing for asking again.
+        Result<AuthenticationRemediationState> remediation = await EvaluateRemediationAsync(
+            portalId,
+            userId,
+            cancellationToken).ConfigureAwait(false);
+
+        if (remediation.IsFailure)
+        {
+            return Result<CurrentUserDto?>.Failure(remediation.Reason!);
+        }
+
+        CurrentUserDto snapshot = await BuildSnapshotAsync(
+                portal,
+                account,
+                _clock.UtcNow,
+                remediation.Value,
+                cancellationToken)
             .ConfigureAwait(false);
 
         return Result<CurrentUserDto?>.Success(snapshot);
@@ -1445,7 +1488,7 @@ public sealed class AuthService : IAuthService
         LoginResponse response = issued.Value;
         response.MustChangePassword = remediation.MustChangePassword;
         response.MustUpdateProfile = remediation.MustUpdateProfile;
-        response.User = await BuildSnapshotAsync(portal, account, _clock.UtcNow, cancellationToken)
+        response.User = await BuildSnapshotAsync(portal, account, _clock.UtcNow, remediation, cancellationToken)
             .ConfigureAwait(false);
 
         return Result<LoginResponse>.Success(response);
@@ -1480,6 +1523,12 @@ public sealed class AuthService : IAuthService
     /// <param name="portal">The tenant the caller is signed in to.</param>
     /// <param name="account">The account.</param>
     /// <param name="asOfUtc">The instant role validity windows are evaluated against.</param>
+    /// <param name="remediation">
+    /// The blocking obligations this session carries, ALREADY EVALUATED by the caller from authoritative
+    /// storage. Taken as an argument rather than evaluated here so that the three responses this builder
+    /// serves cannot disagree with their own top-level members, and so that a caller which has already
+    /// asked - sign-in and refresh both have - does not pay for the reads twice.
+    /// </param>
     /// <param name="cancellationToken">Token observed for cancellation.</param>
     /// <returns>The snapshot.</returns>
     /// <remarks>
@@ -1490,6 +1539,7 @@ public sealed class AuthService : IAuthService
         Portal portal,
         User account,
         DateTime asOfUtc,
+        AuthenticationRemediationState remediation,
         CancellationToken cancellationToken)
     {
         IReadOnlyList<string> roles = await _users
@@ -1527,6 +1577,8 @@ public sealed class AuthService : IAuthService
             Email = account.Email ?? string.Empty,
             IsSuperUser = account.IsSuperUser,
             IsPortalAdministrator = administersPortal,
+            MustChangePassword = remediation.MustChangePassword,
+            MustUpdateProfile = remediation.MustUpdateProfile,
             Roles = roles,
             Permissions = permissions.IsSuccess ? permissions.Value : [],
         };

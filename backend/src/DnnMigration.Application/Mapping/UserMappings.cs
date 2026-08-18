@@ -1,3 +1,4 @@
+using DnnMigration.Application.Common;
 using DnnMigration.Application.Dtos.User;
 using DnnMigration.Domain.Common;
 using DnnMigration.Domain.Entities;
@@ -180,7 +181,39 @@ public static class UserMappings
             // the detail contract carried no capability at all and the client screen approximated the rule,
             // omitting the administrator clause - so the two surfaces disagreed for one account.
             CanDelete = CanBeDeleted(user, portalAdministratorId),
+
+            ConcurrencyToken = ConcurrencyTokenFor(user),
         };
+    }
+
+    /// <summary>Derives the optimistic-concurrency token for an account.</summary>
+    /// <param name="user">The account whose current values are hashed.</param>
+    /// <returns>The token.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="user"/> is <see langword="null"/>.</exception>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THE MEMBER ORDER IS PART OF THE CONTRACT, and so is the member SET. The token published by a read
+    /// and the token verified by a write are both produced here, so a change stays self-consistent - but a
+    /// token already in a browser's hands stops matching, and every open editor is refused once.
+    /// </para>
+    /// <para>
+    /// ⚠ ONLY THE FOUR MEMBERS AN UPDATE REPLACES CONTRIBUTE, and excluding the rest is the point rather
+    /// than an economy. Approval, lock state, the last-login moment and the must-change-password flag all
+    /// move through paths of their own - a sign-in, a failed sign-in, an administrator's approval switch -
+    /// and several move with no operator acting at all. Including any of them would refuse an
+    /// administrator's rename because the account's owner happened to sign in while the form was open,
+    /// which is a false conflict: nothing the caller proposed to write had been touched.
+    /// </para>
+    /// </remarks>
+    internal static string ConcurrencyTokenFor(UserEntity user)
+    {
+        ArgumentNullException.ThrowIfNull(user);
+
+        return ConcurrencyToken.From(
+            user.FirstName,
+            user.LastName,
+            user.DisplayName,
+            user.Email);
     }
 
     /// <summary>Projects a profile property definition onto its transfer contract.</summary>

@@ -98,6 +98,9 @@ describe('MembershipSettingsComponent', () => {
   const SECTION_HEADING = 'User Accounts Settings';
   const COLUMNS_HEADING = 'Account Listing Columns';
   const SUBMIT_LABEL = 'Update';
+
+  /** Affirmative wording of the display-name rewrite confirmation. */
+  const RENAME_CONFIRM_LABEL = 'Save and rename';
   const CANCEL_LABEL = 'Cancel';
   const LOADING_LABEL = 'Loading user settings…';
   const SAVING_LABEL = 'Saving user settings…';
@@ -543,6 +546,8 @@ describe('MembershipSettingsComponent', () => {
         email: 'administrator@example.test',
         isSuperUser: false,
         isPortalAdministrator: true,
+        mustChangePassword: false,
+        mustUpdateProfile: false,
         roles: ['Administrators'],
         permissions: [],
       },
@@ -704,6 +709,55 @@ describe('MembershipSettingsComponent', () => {
   /** Submits the form through its own submit event, as pressing the command does. */
   function submitForm(): void {
     press(SUBMIT_LABEL);
+  }
+
+  /**
+   * Accepts the display-name rewrite confirmation, and answers the account count it asks for on the way.
+   *
+   * ⚠ CHANGING THE DISPLAY-NAME FORMAT NO LONGER WRITES STRAIGHT THROUGH. That one field renames every account
+   * in the site, so a confirmation now stands between the submit and the write. Any case that changes the
+   * format and then expects the write must come through here; every other field still writes directly.
+   *
+   * @param totalCount How many accounts to report, or `null` to leave the count unanswered - which is a real
+   * state, since a count that cannot be read must never block the save.
+   */
+  function acceptTheRenameWarning(totalCount: number | null = 3): void {
+    const counted: ReturnType<HttpTestingController['expectOne']> = httpMock.expectOne(
+      (candidate) => candidate.method === 'GET' && candidate.url === USERS_URL,
+      'the confirmation asks how many accounts the rename would reach',
+    );
+
+    if (totalCount === null) {
+      counted.flush(null, { status: 500, statusText: 'Server Error' });
+    } else {
+      counted.flush({
+        items: [],
+        meta: { pageIndex: 0, pageSize: 1, totalCount, totalPages: totalCount },
+      });
+    }
+
+    fixture.detectChanges();
+    pressDialogue(RENAME_CONFIRM_LABEL);
+  }
+
+  /**
+   * Presses one of the confirmation's own buttons. Scoped to the dialog and matched on a CONTAINED label
+   * rather than an exact one, because the destructive variant prefixes a warning glyph to its wording - the
+   * same approach the roles listing's specification takes to the same shared component.
+   *
+   * @param label The wording to press.
+   */
+  function pressDialogue(label: string): void {
+    const control: HTMLButtonElement | undefined = queryAll<HTMLButtonElement>(
+      '.confirm-dialog__button',
+    ).find((candidate) => (candidate.textContent ?? '').trim().includes(label));
+
+    if (control === undefined) {
+      throw new Error(`Expected the "${label}" control of the confirmation to be offered`);
+    }
+
+    control.click();
+    fixture.detectChanges();
   }
 
   /** The messages the shared field component is rendering, in document order. */
@@ -1306,6 +1360,8 @@ describe('MembershipSettingsComponent', () => {
           email: 'administrator@example.test',
           isSuperUser: false,
           isPortalAdministrator: true,
+          mustChangePassword: false,
+          mustUpdateProfile: false,
           roles: ['Administrators'],
           permissions: [],
         },
@@ -1871,6 +1927,10 @@ describe('MembershipSettingsComponent', () => {
       choosePage('redirectAfterLogout', NO_REDIRECT_LABEL);
 
       submitForm();
+
+      // Emptying the display-name format IS a change to it, so the rename confirmation stands in the way.
+      // The claim this case makes is about the BODY, so it is accepted and the body examined as before.
+      acceptTheRenameWarning();
 
       const write = expectRequest('PUT', SETTINGS_URL);
       const body = writtenPolicy(write);
@@ -2953,6 +3013,193 @@ describe('MembershipSettingsComponent', () => {
    * box sat about 300px from its own caption and roughly 30px from the NEXT one, and at 1024px three of the
    * nine column switches sat in the fieldset's right padding entirely.
    */
+  /**
+   * ⚠ ONE FIELD ON THIS FORM REWRITES EVERY ACCOUNT IN THE SITE. Saving a changed display-name format renames
+   * every account, replacing display names an operator typed by hand, and the only report of it arrived
+   * AFTERWARDS - after the accounts had been renamed, with no undo. The sweep is legacy behaviour and is
+   * preserved; being told before it happens, and how many records it reaches, is what was missing.
+   *
+   * Each case fails for a different reason if the guard regresses: the confirmation must stand in the way, it
+   * must state the count, it must not appear for any OTHER field, cancelling must write nothing at all, and a
+   * count that cannot be read must not block a save the operator is entitled to make.
+   */
+  describe('renaming every account', () => {
+    const CURRENT_FORMAT = '[FIRSTNAME] [LASTNAME]';
+    const NEW_FORMAT = '[LASTNAME], [FIRSTNAME]';
+
+    /** A policy whose display-name format is known, so a change to it is unambiguous. */
+    function policyWithFormat(): MembershipSettings {
+      return settings({ securityDisplayNameFormat: CURRENT_FORMAT });
+    }
+
+    it('asks before renaming, and states how many accounts it would reach', () => {
+      arrive(policyWithFormat());
+      type('securityDisplayNameFormat', NEW_FORMAT);
+      submitForm();
+
+      // Nothing is written until the question is answered.
+      httpMock.expectNone(
+        (candidate) => candidate.method === 'PUT' && candidate.url === SETTINGS_URL,
+      );
+
+      const counted: ReturnType<HttpTestingController['expectOne']> = httpMock.expectOne(
+        (candidate) => candidate.method === 'GET' && candidate.url === USERS_URL,
+        'the count is asked for when the confirmation opens',
+      );
+
+      expect(counted.request.params.get('pageSize'))
+        .withContext('one record is asked for, because only the total is used')
+        .toBe('1');
+
+      counted.flush({
+        items: [],
+        meta: { pageIndex: 0, pageSize: 1, totalCount: 19, totalPages: 19 },
+      });
+      fixture.detectChanges();
+
+      const spoken: string = (query('.confirm-dialog')?.textContent ?? '').trim();
+
+      expect(spoken).withContext('the consequence is named').toContain('renames accounts across this site');
+      // ⚠ "UP TO" IS ASSERTED, NOT INCIDENTAL - QA-9. This previously read "19 accounts in this site will be
+      // renamed", which was measured to be untrue: a dialogue predicting 18 was followed by a server report
+      // of 8 actually rewritten, because an account already matching the format is left alone. The count is
+      // the sweep's REACH, so the sentence has to state a bound rather than a certainty.
+      expect(spoken)
+        .withContext('and counted as a bound, because the exact figure is not knowable before the write')
+        .toContain('Up to 19 accounts in this site will be renamed');
+      // ⚠ ANCHORED AT A SENTENCE BOUNDARY, because the bare claim is a SUBSTRING of the qualified one - the
+      // first attempt at this assertion asserted `not.toContain('19 accounts...')` and was unsatisfiable by
+      // construction. What must be absent is the count starting a sentence with no bound in front of it.
+      expect(/(?:^|[.!?]\s+)19 accounts in this site will be renamed/u.test(spoken))
+        .withContext(`the count is never claimed unqualified, in: ${spoken}`)
+        .toBeFalse();
+      expect(spoken).withContext('and the absence of an undo is named with a remedy').toContain('no undo');
+
+      // ⚠ THE HEADING IS ASSERTED BECAUSE THE SHARED DIALOGUE DEFAULTS IT TO A DELETION - QA-9. Measured at
+      // runtime: this dialogue rendered "Confirm Delete" over a body about renaming, because no title was
+      // passed. The heading is the first thing read, so it cannot contradict the body.
+      const heading: string = (query('.confirm-dialog__title')?.textContent ?? '').trim();
+
+      expect(heading).withContext('the heading names the act it stands in front of').toBe('Confirm Rename');
+      expect(heading)
+        .withContext('and not the shared dialogue\'s deletion default')
+        .not.toBe('Confirm Delete');
+    });
+
+    it('agrees with itself about one account', () => {
+      arrive(policyWithFormat());
+      type('securityDisplayNameFormat', NEW_FORMAT);
+      submitForm();
+
+      httpMock
+        .expectOne((candidate) => candidate.method === 'GET' && candidate.url === USERS_URL)
+        .flush({ items: [], meta: { pageIndex: 0, pageSize: 1, totalCount: 1, totalPages: 1 } });
+      fixture.detectChanges();
+
+      expect((query('.confirm-dialog')?.textContent ?? '').trim())
+        .withContext('"1 accounts" reads as a defect in the application')
+        .toContain('1 account in this site will be renamed');
+    });
+
+    it('writes the policy once the rename is accepted', () => {
+      const policy = policyWithFormat();
+
+      arrive(policy);
+      type('securityDisplayNameFormat', NEW_FORMAT);
+      submitForm();
+      acceptTheRenameWarning(19);
+
+      const write = expectRequest('PUT', SETTINGS_URL);
+
+      expect(writtenPolicy(write).securityDisplayNameFormat)
+        .withContext('the format the operator authored is the one written')
+        .toBe(NEW_FORMAT);
+
+      write.flush(writeReport());
+      fixture.detectChanges();
+      answerWriteFollowUp(policy);
+    });
+
+    it('writes NOTHING when the rename is declined, and keeps the entry', () => {
+      arrive(policyWithFormat());
+      type('securityDisplayNameFormat', NEW_FORMAT);
+      submitForm();
+
+      httpMock
+        .expectOne((candidate) => candidate.method === 'GET' && candidate.url === USERS_URL)
+        .flush({ items: [], meta: { pageIndex: 0, pageSize: 1, totalCount: 19, totalPages: 19 } });
+      fixture.detectChanges();
+
+      pressDialogue('Cancel');
+
+      httpMock.expectNone(
+        (candidate) => candidate.method === 'PUT' && candidate.url === SETTINGS_URL,
+      );
+
+      expect(field<HTMLInputElement>('securityDisplayNameFormat').value)
+        .withContext('declining must not discard what the operator typed')
+        .toBe(NEW_FORMAT);
+      expect(query('.confirm-dialog')).withContext('and the question is gone').toBeNull();
+    });
+
+    it('does not ask when some OTHER field changed', () => {
+      const policy = policyWithFormat();
+
+      arrive(policy);
+      type('securityEmailValidation', '^.+@.+$');
+      submitForm();
+
+      // Straight through: no confirmation, and no count read either.
+      httpMock.expectNone((candidate) => candidate.method === 'GET' && candidate.url === USERS_URL);
+
+      const write = expectRequest('PUT', SETTINGS_URL);
+
+      write.flush(writeReport());
+      fixture.detectChanges();
+      answerWriteFollowUp(policy);
+    });
+
+    /**
+     * ⚠ A FORMAT TYPED OVER AND TYPED BACK IS NOT A CHANGE. The test is against the policy AS THE SERVER SENT
+     * IT, not against the form's dirty state, so touching the field and restoring it asks nothing.
+     */
+    it('does not ask when the format ends up as it started', () => {
+      const policy = policyWithFormat();
+
+      arrive(policy);
+      type('securityDisplayNameFormat', NEW_FORMAT);
+      type('securityDisplayNameFormat', CURRENT_FORMAT);
+      submitForm();
+
+      httpMock.expectNone((candidate) => candidate.method === 'GET' && candidate.url === USERS_URL);
+
+      const write = expectRequest('PUT', SETTINGS_URL);
+
+      write.flush(writeReport());
+      fixture.detectChanges();
+      answerWriteFollowUp(policy);
+    });
+
+    /**
+     * ⚠ A FIGURE THAT CANNOT BE READ MUST NEVER BLOCK A SAVE THE OPERATOR IS ENTITLED TO MAKE. The
+     * confirmation stands without a count and still writes when accepted.
+     */
+    it('still offers the rename when the count cannot be read', () => {
+      const policy = policyWithFormat();
+
+      arrive(policy);
+      type('securityDisplayNameFormat', NEW_FORMAT);
+      submitForm();
+      acceptTheRenameWarning(null);
+
+      const write = expectRequest('PUT', SETTINGS_URL);
+
+      write.flush(writeReport());
+      fixture.detectChanges();
+      answerWriteFollowUp(policy);
+    });
+  });
+
   describe('switch arrangement', () => {
     /** Every choice field on the screen, paired with its caption row and its box. */
     function switches(): readonly { name: string; captionRow: HTMLElement; box: HTMLElement }[] {

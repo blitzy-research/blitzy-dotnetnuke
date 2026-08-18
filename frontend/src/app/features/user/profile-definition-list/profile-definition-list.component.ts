@@ -33,6 +33,7 @@ import { FocusFirstInvalidDirective } from '../../../shared/directives/focus-fir
 import type {
   CreateProfilePropertyDefinitionRequest,
   ProfilePropertyDefinition,
+  ProfilePropertyDefinitionPosition,
   UpdateProfilePropertyDefinitionRequest,
 } from '../../../core/models/profile.model';
 import type {
@@ -108,6 +109,19 @@ const FIELD_TEXT = {
   },
   propertyCategory: {
     label: 'Property Category:',
+    // ⚠ "dislayed" IS NOT A TYPO IN THIS FILE - IT IS THE LEGACY RESOURCE, REPRODUCED BYTE FOR BYTE.
+    //
+    // Website/admin/Users/App_LocalResources/EditProfileDefinition.ascx.resx:142 reads "...to be
+    // grouped when dislayed to the user." QA raised the misspelling as a defect, and it was
+    // considered and DELIBERATELY LEFT STANDING under AAP 0.9.1 domain-logic preservation: a defect
+    // discovered in the legacy is annotated in place and not fixed unless it blocks delivery, and a
+    // misspelling in help text blocks nothing. The same rule already governs two odder survivals on
+    // neighbouring screens - the Add role-group form whose primary action reads "Update", and the
+    // empty billing terms that coerce to 0/1/N rather than staying unknown - so correcting this one
+    // would make the parity policy arbitrary rather than make the product better.
+    //
+    // DO NOT "FIX" THIS SPELLING. It is guarded by the spec named "preserves the legacy misspelling
+    // in the category hint", which fails the moment the word is corrected.
     help:
       'Enter the category for this property.  This will allow the related properties to ' +
       'be grouped when dislayed to the user.',
@@ -176,10 +190,19 @@ const DUPLICATE_NAME_MESSAGE =
   'This Property already exists.  Property Names must be unique.  Please select a ' +
   'different name for this property.';
 
-/** Authored: the `409` a removal draws when values are recorded against the declaration. */
+/**
+ * Authored: a `409` on a removal that is none of the refusals this screen recognises by code.
+ *
+ * ⚠ THIS IS NOW THE FALLBACK AND NOT THE COMMON CASE, and the distinction matters because the sentence used
+ * to be wrong. It was the only thing a `409` on a removal produced, and it asserted that the property was
+ * "in use" and told the operator to "remove the recorded values first" — advice that names no way to do it,
+ * for a condition it was guessing at. The two refusals the API actually issues are now recognised by their
+ * codes above and each reports what the server said, so this is reached only by a genuine concurrency
+ * conflict, which is what it now describes.
+ */
 const DEFINITION_IN_USE_MESSAGE =
-  'That profile property is in use, so it was not deleted. Remove the recorded values ' +
-  'first.';
+  'That profile property was changed by someone else, so it was not deleted. Read the list ' +
+  'again and retry.';
 
 /** Authored: the `404` a removal or replacement draws when the declaration is already gone. */
 const DEFINITION_GONE_MESSAGE =
@@ -199,6 +222,20 @@ const DEFINITION_GONE_MESSAGE =
 function batchRefusalMessage(propertyName: string, sentence: string): string {
   return `${propertyName}: ${sentence}`;
 }
+
+/**
+ * What a batch refusal is attributed to when it belongs to the ATOMIC DISPLAY-ORDER WRITE rather than to
+ * one declaration.
+ *
+ * ⚠ NOT A PROPERTY NAME, AND IT MUST NOT BE ONE. Positions are written as a single unit of work because a
+ * move exchanges two of them, so naming either declaration would tell the operator that one row was at
+ * fault when neither was — and would imply the other row's move succeeded, which it did not.
+ */
+const ORDER_REFUSAL_SUBJECT = 'Display order';
+
+/** What is announced when the atomic order write is refused, so no field edit is attempted either. */
+const ORDER_REFUSAL_SUFFIX =
+  ' No display order was changed, and no other change was applied.';
 
 const GRID_CAPTION = 'Profile properties declared for this site';
 
@@ -231,11 +268,31 @@ const UNDELETABLE_PROPERTY_NAMES: readonly string[] = Object.freeze([
 const DUPLICATE_NAME_CODE = 'profile_definition.duplicate_name';
 const NOT_FOUND_CODE = 'profile_definition.not_found';
 
+/**
+ * The `409` refused because the declaration is one of the four the platform reserves. Terminal: there is no
+ * parameter that performs it, so the screen reports the reason and offers nothing further.
+ */
+const PROTECTED_CODE = 'profile_definition.protected';
+
+/**
+ * The `409` refused because accounts hold answers that removal would destroy. RECOVERABLE, and the only
+ * refusal on this screen that is: the server's detail reports how many answers are at stake, and repeating
+ * the call with consent performs it.
+ */
+const VALUE_CASCADE_CODE = 'profile_definition.value_deletion_unacknowledged';
+
 /** The three store operations this screen awaits the outcome of. */
 type AwaitedWrite =
   | { readonly id: number; readonly kind: 'create' }
   | { readonly id: number; readonly kind: 'update'; readonly propertyDefinitionId: number }
-  | { readonly id: number; readonly kind: 'delete'; readonly propertyName: string };
+  // The identifier is carried alongside the name because a removal can come BACK as a question - the server
+  // refuses a cascade until it is consented to - and the retry addresses the declaration by id.
+  | {
+      readonly id: number;
+      readonly kind: 'delete';
+      readonly propertyDefinitionId: number;
+      readonly propertyName: string;
+    };
 
 /**
  * The store operation each awaited write settles as. Declared as a lookup rather than a switch so that
@@ -354,10 +411,40 @@ const UNNAMEABLE_DATA_TYPE_SUFFIX = ', name unavailable';
  */
 const NO_DATA_TYPE_CHOSEN_DESCRIPTION = 'no data type chosen';
 
-/** The create-mode defaults, measured from the legacy field initialisers. */
+/**
+ * The column note standing under the grid, explaining why the Data Type column carries a NUMBER.
+ *
+ * `ProfilePropertyDefinition.DataType` stores a `ListEntryID` into the legacy `Lists` table, and the
+ * name behind that identifier is only readable through the DotNetNuke list subsystem. AAP 0.2.2.2
+ * places `Library/Components/Lists/**` explicitly out of scope, so there is no catalogue in this
+ * console to resolve the reference against and no in-scope place to add one - naming the type would
+ * mean porting an excluded subsystem, which the AAP forbids. QA raised the bare `#349` as unhelpful,
+ * and it is: what was missing was not the name but the REASON the name is absent. This states the
+ * reason once for the whole column instead of leaving each row to look like a rendering fault.
+ */
+const DATA_TYPE_COLUMN_NOTE =
+  'Data Type shows the stored reference number rather than a name, because the data type ' +
+  'catalogue is not part of this console. A dash means no data type has been chosen yet.';
+
+/**
+ * The create-mode defaults, measured from the legacy field initialisers.
+ *
+ * ⚠ ONE DEPARTURE, AND IT IS THE DATA TYPE - QA-10. The legacy field initialiser is `Null.NullInteger`,
+ * which is -1, and this used to seed the control with it. But the control is a `type="number"` box, so the
+ * operator was presented with a required field already containing the literal text "-1" - a real number
+ * that looks chosen - and the form's own `notNullInteger` validator then refused it with "The Data Type is
+ * required". A field cannot both offer a value and reject it.
+ *
+ * `null` states the same fact honestly: -1 MEANS "nothing chosen yet", and an empty box is what "nothing
+ * chosen" looks like. Nothing downstream changes, because -1 was never a submittable value: the validator
+ * rejected it, and `apply()` already refuses a null data type before composing a request, so the sentinel
+ * never reached the wire under either spelling. The stored sentinel is untouched - an EXISTING row that
+ * holds -1 still loads it (see the edit-mode patch, which reads `definition.dataType` directly), and the
+ * grid still paints it behind its own reference wording.
+ */
 const CREATE_DEFAULTS: ProfileDefinitionFormValue = {
   propertyName: '',
-  dataType: NULL_INTEGER,
+  dataType: null,
   propertyCategory: '',
   length: 0,
   defaultValue: '',
@@ -553,7 +640,16 @@ function refusalMessage(pending: AwaitedWrite, failure: UserFailure): string {
     return DEFINITION_GONE_MESSAGE;
   }
 
-  // A conflict on a REMOVAL is the declaration being in use, which is a different refusal from a duplicate
+  // ⚠ THE SERVER'S OWN SENTENCE WINS FOR BOTH PROTECTIONS ON A REMOVAL, and neither may fall through to the
+  // generic conflict wording below. One reports WHICH reserved property was refused and what to do instead;
+  // the other reports HOW MANY recorded answers are at stake, that the loss is permanent, and where to take a
+  // backup first. Replacing either with a fixed sentence authored here would discard the count — the single
+  // fact that makes the decision an informed one.
+  if (failure.code === PROTECTED_CODE || failure.code === VALUE_CASCADE_CODE) {
+    return stripLegacyBreakTags(failure.summary.message);
+  }
+
+  // Any OTHER conflict on a removal is a concurrent writer, which is a different refusal from a duplicate
   // name and is worded as its own thing rather than left to the generic sentence.
   if (pending.kind === 'delete' && failure.problem?.status === 409) {
     return DEFINITION_IN_USE_MESSAGE;
@@ -671,6 +767,18 @@ export class ProfileDefinitionListComponent implements OnInit {
 
   /** The declaration awaiting confirmation of removal, or `null` when none is. */
   private readonly pendingRemoval = signal<ProfilePropertyDefinition | null>(null);
+
+  /**
+   * The declaration whose recorded answers the server has asked the operator to consent to destroying,
+   * together with the sentence it used to ask, or `null` when no such consent is outstanding.
+   *
+   * The message is the SERVER'S, carried rather than re-authored, because it states the number of answers at
+   * stake — a fact this screen does not otherwise hold and must not invent.
+   */
+  private readonly pendingCascade = signal<{
+    readonly definition: ProfilePropertyDefinition;
+    readonly message: string;
+  } | null>(null);
 
   /** The single write whose outcome is being awaited, or `null`. */
   private readonly awaited = signal<AwaitedWrite | null>(null);
@@ -942,6 +1050,9 @@ export class ProfileDefinitionListComponent implements OnInit {
   /** The declaration awaiting confirmation, or `null`. */
   protected readonly removalTarget = this.pendingRemoval.asReadonly();
 
+  /** The outstanding cascade consent, or `null`. Its presence is what opens the second dialog. */
+  protected readonly cascadeTarget = this.pendingCascade.asReadonly();
+
   // Wording exposed to the template
 
   /** The one-line scope statement shown beneath the title. */
@@ -955,6 +1066,13 @@ export class ProfileDefinitionListComponent implements OnInit {
   protected readonly cancelLabel = CANCEL_LABEL;
   protected readonly editLabel = EDIT_LABEL;
   protected readonly deleteLabel = DELETE_LABEL;
+
+  /**
+   * The confirm label on the cascade dialog. Distinct from {@link deleteLabel} on purpose: the
+   * operator has already pressed Delete once, so repeating the same word would make the second ask
+   * look like the first rather than like the escalation it is.
+   */
+  protected readonly deletePermanentlyLabel = 'Delete permanently';
   protected readonly moveUpLabel = MOVE_UP_LABEL;
   protected readonly moveDownLabel = MOVE_DOWN_LABEL;
 
@@ -978,6 +1096,7 @@ export class ProfileDefinitionListComponent implements OnInit {
   /** The Visible column's heading, for composing a check box's accessible name. */
   protected readonly visibleHeading = VISIBLE_HEADING;
   protected readonly gridCaption = GRID_CAPTION;
+  protected readonly dataTypeColumnNote = DATA_TYPE_COLUMN_NOTE;
   protected readonly allRequiredLabel = ALL_REQUIRED_LABEL;
   protected readonly allVisibleLabel = ALL_VISIBLE_LABEL;
 
@@ -1185,20 +1304,39 @@ export class ProfileDefinitionListComponent implements OnInit {
   }
 
   /**
-   * Applies every staged edit as ONE BATCH: one write per changed declaration, in turn. THIS IS A
-   * TRANSPORT CHANGE ONLY, not a behavioural one.
+   * Applies every staged edit as ONE BATCH, in two steps whose difference matters.
+   *
+   * ## Positions first, together, as one unit of work
+   *
+   * ⚠ THE POSITIONS ARE NO LONGER SENT AS INDEPENDENT REPLACEMENTS, AND THAT IS THE FIX. A move
+   * EXCHANGES the stored positions of two declarations, so the two writes are only correct together: land
+   * one and lose the other and both rows claim the same position, which is neither the order the operator
+   * started from nor the one they asked for. The whole position set therefore goes to
+   * `PUT /api/v1/profile-definitions/order`, which commits it once — and if that is refused, no field write
+   * is attempted either, because applying flags over an order the server declined would report a partial
+   * success that did not happen.
+   *
+   * ## Field edits stay one write per declaration
+   *
+   * A required or visible flag is a fact about ONE declaration and holds or fails on its own, so a refused
+   * row simply keeps the flag it had; there is no relation between rows to corrupt. Keeping them per-row is
+   * what lets a five-row apply report WHICH three declarations were refused rather than reporting only that
+   * something was.
    */
   protected applyChanges(): void {
-    const edits: readonly ProfileDefinitionEdit[] = this.pendingRows().map((definition) => ({
-      propertyDefinitionId: definition.propertyDefinitionId,
-      request: toUpdateRequest(definition),
-    }));
+    const positions: readonly ProfilePropertyDefinitionPosition[] = this.pendingPositions();
+    const edits: readonly ProfileDefinitionEdit[] = this.pendingFieldEdits();
 
     // A confirmation of the PREVIOUS batch must not still be readable while this one is in flight.
     this.batchApplied.set('');
-    this.batchRows.set(edits.length);
 
-    this.batchWrite.set(this.store.applyProfileDefinitionEdits(edits));
+    // The count the operator is shown is the number of DECLARATIONS they changed, which is what
+    // `pendingRows` reports — not the number of requests the two steps happen to need. A reorder of two
+    // neighbours is two changes to an operator and one request on the wire, and the confirmation must speak
+    // the operator's terms.
+    this.batchRows.set(this.pendingRows().length);
+
+    this.batchWrite.set(this.store.applyProfileDefinitionEdits(edits, positions));
   }
 
   /** Discards every staged edit and re-reads the catalogue. */
@@ -1387,7 +1525,38 @@ export class ProfileDefinitionListComponent implements OnInit {
     this.awaited.set({
       id: this.store.deleteProfileDefinition(target.propertyDefinitionId),
       kind: 'delete',
+      propertyDefinitionId: target.propertyDefinitionId,
       propertyName: target.propertyName,
+    });
+  }
+
+  /** Abandons a removal the server asked a second time about, leaving the declaration and its answers. */
+  protected cancelCascade(): void {
+    this.pendingCascade.set(null);
+    this.restoreFocusAfterRemoval();
+  }
+
+  /**
+   * Repeats a removal WITH consent to destroying the recorded answers, which is the only call in this screen
+   * that passes the flag. It is reachable solely from the dialog the server's own refusal opened, so consent
+   * cannot be given by a caller who was never shown the count.
+   */
+  protected confirmCascade(): void {
+    const outstanding = this.pendingCascade();
+
+    if (outstanding === null) {
+      return;
+    }
+
+    this.pendingCascade.set(null);
+    this.awaited.set({
+      id: this.store.deleteProfileDefinition(
+        outstanding.definition.propertyDefinitionId,
+        true,
+      ),
+      kind: 'delete',
+      propertyDefinitionId: outstanding.definition.propertyDefinitionId,
+      propertyName: outstanding.definition.propertyName,
     });
   }
 
@@ -1413,6 +1582,79 @@ export class ProfileDefinitionListComponent implements OnInit {
         return staged !== undefined && differs(staged, definition);
       })
       .map((definition) => this.withDraft(definition, edits));
+  });
+
+  /**
+   * The staged POSITION changes, which are written as one unit of work.
+   *
+   * ⚠ SPLIT FROM THE FIELD EDITS ON PURPOSE, AND THE SPLIT IS THE FIX. A move EXCHANGES the stored
+   * positions of two declarations, so the two writes are only correct together: land one and lose the other
+   * and both rows claim the same position, which is neither the order the operator started from nor the one
+   * they asked for. Sending them as independent replacements — which is what this screen used to do — cannot
+   * express that however precisely it reports which row failed.
+   *
+   * A row is included only when its position ACTUALLY differs from what the server reported, so toggling a
+   * flag does not drag an unchanged position into the order write.
+   */
+  private readonly pendingPositions = computed<readonly ProfilePropertyDefinitionPosition[]>(() => {
+    const edits: ReadonlyMap<number, GridEdits> = this.draft();
+
+    if (edits.size === 0) {
+      return [];
+    }
+
+    const positions: ProfilePropertyDefinitionPosition[] = [];
+
+    for (const definition of this.store.profileDefinitions()) {
+      const staged: GridEdits | undefined = edits.get(definition.propertyDefinitionId);
+
+      if (staged !== undefined && staged.viewOrder !== definition.viewOrder) {
+        positions.push({
+          propertyDefinitionId: definition.propertyDefinitionId,
+          viewOrder: staged.viewOrder,
+        });
+      }
+    }
+
+    return positions;
+  });
+
+  /**
+   * The staged FIELD changes — required and visible — as complete replacement requests.
+   *
+   * These stay one request per declaration, and that is not an oversight. A flag is a fact about ONE
+   * declaration and holds or fails on its own, so a refused row simply keeps the flag it had and there is no
+   * relation between rows to corrupt. Keeping them per-row is what lets a five-row apply report WHICH three
+   * declarations were refused rather than reporting only that something was.
+   *
+   * A row whose position also moved carries the moved position in its body, which is the value the order
+   * write has already stored by the time this runs — so the two agree rather than fighting.
+   */
+  private readonly pendingFieldEdits = computed<readonly ProfileDefinitionEdit[]>(() => {
+    const edits: ReadonlyMap<number, GridEdits> = this.draft();
+
+    if (edits.size === 0) {
+      return [];
+    }
+
+    const staged: ProfileDefinitionEdit[] = [];
+
+    for (const definition of this.store.profileDefinitions()) {
+      const pending: GridEdits | undefined = edits.get(definition.propertyDefinitionId);
+
+      if (pending === undefined) {
+        continue;
+      }
+
+      if (pending.required !== definition.required || pending.visible !== definition.visible) {
+        staged.push({
+          propertyDefinitionId: definition.propertyDefinitionId,
+          request: toUpdateRequest(this.withDraft(definition, edits)),
+        });
+      }
+    }
+
+    return staged;
   });
 
   // PRIVATE — HELPERS
@@ -1666,6 +1908,31 @@ export class ProfileDefinitionListComponent implements OnInit {
 
     this.writeProblem.set(recorded.problem);
 
+    // A CASCADE REFUSAL IS A QUESTION, NOT A FAILURE, so it re-opens the confirmation carrying the server's
+    // count instead of being announced and left. The operator sees exactly what the server said and answers
+    // it; declining leaves the declaration untouched, which is the same outcome as never having asked.
+    //
+    // The identity comes from the AWAITED write rather than from the dialog, which has already closed by the
+    // time this runs, and it is matched against the list so the second attempt addresses a declaration the
+    // screen can still see.
+    if (recorded.code === VALUE_CASCADE_CODE && pending.kind === 'delete') {
+      const target: ProfilePropertyDefinition | undefined = this.store
+        .profileDefinitions()
+        .find((candidate) => candidate.propertyDefinitionId === pending.propertyDefinitionId);
+
+      if (target !== undefined) {
+        this.pendingCascade.set({
+          definition: target,
+          message: stripLegacyBreakTags(recorded.summary.message),
+        });
+
+        // Deliberately NOT announced as a refusal as well. The dialog is modal and takes focus, so a
+        // simultaneous notification would state the same sentence twice in two places and read as two
+        // separate events.
+        return;
+      }
+    }
+
     this.notifications.notify(
       recorded.summary.severity,
       refusalMessage(pending, recorded),
@@ -1704,6 +1971,21 @@ export class ProfileDefinitionListComponent implements OnInit {
     );
 
     for (const refused of refusals) {
+      // A refusal carrying no identifier is the ATOMIC ORDER WRITE's, so it is attributed to the order
+      // itself and says plainly that nothing was applied — including the field edits, which are abandoned
+      // rather than written over an order the server declined.
+      if (refused.propertyDefinitionId === null) {
+        this.notifications.notify(
+          refused.failure.summary.severity,
+          batchRefusalMessage(
+            ORDER_REFUSAL_SUBJECT,
+            `${stripLegacyBreakTags(refused.failure.summary.message)}${ORDER_REFUSAL_SUFFIX}`,
+          ),
+          refused.failure.summary.supportReference,
+        );
+        continue;
+      }
+
       // The refusal's own wording is composed by the SHARED chooser, so a duplicate name, a vanished
       // declaration and a generic refusal read identically here and in the single-write path.
       const sentence: string = refusalMessage(
@@ -1807,6 +2089,19 @@ export class ProfileDefinitionListComponent implements OnInit {
       //   non-nullable string, so there is nothing to format.
       {
         key: 'propertyName',
+        // ⚠ ATOMIC BECAUSE A PROPERTY NAME IS NOT A PHRASE, AND WRAPPING ONE FRACTURES IT. The shared stylesheet
+        // lets any cell break inside a word so a narrow column can never overflow, which is right for prose
+        // and wrong for a value read as a single token. Measured before this line: `PostalCode` painted as `PostalCod` + `e` at a 768 viewport.
+        // This grid declares no percentage anywhere and the four command columns ask for `min-content`, which
+        // wins nothing under a fixed table layout - so all twelve columns collapse to an even one-twelfth share,
+        // 80px at 768 and 86.5px at 1280, and no column here can ever be wider than that. The nine-character
+        // names survive 80px; the ten-character one does not.
+        // Marked atomic the value stays on one line and a column too narrow to hold it ellipsises instead, so
+        // what shows is a recognisable prefix rather than two fragments that read as corruption. The whole
+        // value stays in the accessibility tree and in the DOM either way, so this shortens what is painted
+        // and hides nothing. No width changes - see the note on the width above for why rebalancing is not
+        // the remedy here.
+        atomic: true,
         rowHeader: true,
         label: NAME_HEADING,
         headerAlign: 'center',

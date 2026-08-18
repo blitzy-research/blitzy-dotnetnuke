@@ -208,34 +208,54 @@ public abstract class PortalSettingsUpdateRequestValidator<TRequest> : AbstractV
         // A WIDTH BOUND AND NOTHING ELSE, which is the whole of what the legacy markup declared on this
         // control.
         RuleFor(request => request.PortalName)
-            .MaximumLength(PortalNameMaximumLength);
+            .MaximumLength(PortalNameMaximumLength)
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage);
 
         RuleFor(request => request.LogoFile)
-            .MaximumLength(FileReferenceMaximumLength);
+            .MaximumLength(FileReferenceMaximumLength)
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage);
 
         RuleFor(request => request.BackgroundFile)
-            .MaximumLength(FileReferenceMaximumLength);
+            .MaximumLength(FileReferenceMaximumLength)
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage);
 
         RuleFor(request => request.FooterText)
-            .MaximumLength(FooterTextMaximumLength);
+            .MaximumLength(FooterTextMaximumLength)
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage);
 
         RuleFor(request => request.Currency)
-            .MaximumLength(CurrencyMaximumLength);
+            .MaximumLength(CurrencyMaximumLength)
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage);
 
         RuleFor(request => request.Description)
-            .MaximumLength(MetadataMaximumLength);
+            .MaximumLength(MetadataMaximumLength)
+            .Must(TextIntegrityRules.IsMultiLineSafe)
+            .WithMessage(TextIntegrityRules.MultiLineMessage);
 
         RuleFor(request => request.KeyWords)
-            .MaximumLength(MetadataMaximumLength);
+            .MaximumLength(MetadataMaximumLength)
+            .Must(TextIntegrityRules.IsMultiLineSafe)
+            .WithMessage(TextIntegrityRules.MultiLineMessage);
 
         RuleFor(request => request.DefaultLanguage)
-            .MaximumLength(DefaultLanguageMaximumLength);
+            .MaximumLength(DefaultLanguageMaximumLength)
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage);
 
         RuleFor(request => request.PaymentProcessor)
-            .MaximumLength(ProcessorFieldMaximumLength);
+            .MaximumLength(ProcessorFieldMaximumLength)
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage);
 
         RuleFor(request => request.ProcessorUserId)
-            .MaximumLength(ProcessorFieldMaximumLength);
+            .MaximumLength(ProcessorFieldMaximumLength)
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage);
 
         // The legacy free-text password is replaced by a managed-secret reference. Null and empty remain
         // valid because they mean keep and clear respectively; every replacement must carry the secret://
@@ -269,7 +289,9 @@ public abstract class PortalSettingsUpdateRequestValidator<TRequest> : AbstractV
             .When(request => request.HostFee.HasValue);
 
         RuleFor(request => request.HomeDirectory)
-            .MaximumLength(HomeDirectoryMaximumLength);
+            .MaximumLength(HomeDirectoryMaximumLength)
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage);
 
         // The one rule on the offset, and it exists because the legacy CLOSED SELECTOR became a free-text
         // box. See TimeZoneOffsetMinimum for where the two bounds are measured from. Guarded by When so that

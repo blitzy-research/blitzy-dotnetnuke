@@ -397,6 +397,18 @@ public static class ServiceCollectionExtensions
                 // order a controller-scoped filter runs AFTER a global one - so at the default order this
                 // filter's work is overwritten on every response and the media type never changes.
                 options.Filters.Add<ProblemDetailsContentTypeFilter>(order: 1);
+
+                // ⚠ AN UNSATISFIABLE `Accept` IS ANSWERED `406`, NOT 200 JSON. The framework's default is to
+                // ignore an `Accept` header it cannot satisfy and send its only representation anyway, so a
+                // caller asking for `application/xml`, `text/csv` or `image/png` was answered `200` with a
+                // JSON body - a content type it had explicitly said it would not take. A client written
+                // against the header it sent would then parse the body as the type it asked for and fail on
+                // data that is perfectly well formed for what it actually is.
+                //
+                // This API publishes exactly one representation and says so on every controller with
+                // [Produces("application/json")], so refusing what it cannot serve is the honest answer and
+                // costs nothing: a caller sending no `Accept`, `*/*`, or any JSON media type is unaffected.
+                options.ReturnHttpNotAcceptable = true;
             })
             .AddJsonOptions(options =>
             {

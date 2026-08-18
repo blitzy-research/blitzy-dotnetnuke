@@ -80,6 +80,8 @@ function userWith(permissions: readonly string[], administersPortal: boolean): C
     // admitted it.
     isSuperUser: false,
     isPortalAdministrator: administersPortal,
+    mustChangePassword: false,
+    mustUpdateProfile: false,
     roles: administersPortal ? ['Administrators'] : [],
     permissions,
   };
@@ -592,6 +594,33 @@ describe('ModuleListComponent', () => {
     // OVER goes to the columns that declared something else. With every column weighted, that leftover went to
     // the command columns: the single commands column was left one percent, so its four commands stacked one per line and made every row 196px tall. One unweighted column absorbs the slack instead, so every
     // other track resolves to exactly the share it declares.
+    // ⚠ A NAME IS ONE TOKEN, AND THE TWO NARROWEST COLUMNS HERE USED TO SPLIT THEIRS. The slack column on this
+    // grid is not the roomy one: the others claim 77% and the commands column takes a fixed 144px, leaving the
+    // undeclared "Module" track about 9.1% of the table - 94.81px at a 1280 viewport, 76.83px at 768. Measured
+    // before these were marked atomic: `Announcements` painted `Announcem` + `ents` at 1280 and `Announce` +
+    // `ments` at 768, `Text/HTML` painted `Text/HTM` + `L`, and the package beside it painted
+    // `QA_Announcement` + `s`, orphaning one letter by 3.39px.
+    it('keeps the module and package names whole instead of breaking them mid-word', () => {
+      arrive([moduleRow()]);
+
+      const headers: readonly Element[] = queryAll<Element>('thead th');
+      const atomicAt = (index: number): string | null => headers[index]?.getAttribute('data-atomic') ?? null;
+      const headingAt = (index: number): string => (headers[index]?.textContent ?? '').trim();
+
+      // Addressed by position and cross-checked by heading, so a reordering of the set cannot silently move
+      // these assertions onto a different track.
+      expect(headingAt(3)).toContain('Module');
+      expect(atomicAt(3)).withContext('a module type name is one token').toBe('true');
+
+      expect(headingAt(4)).toContain('Package');
+      expect(atomicAt(4)).withContext('a package name is one token').toBe('true');
+
+      // ⚠ THE COUNTERPART, AND THE REASON THIS IS NOT A BLANKET RULE. The title column holds a phrase an
+      // operator wrote, so wrapping is correct there and ellipsising it would hide text that fits on a second
+      // line. It measured zero fractures at both viewports even for the deliberately long title.
+      expect(atomicAt(2)).withContext('a title is a phrase and should wrap').toBeNull();
+    });
+
     it('leaves exactly one column track flexible so the declared tracks resolve as written', () => {
       arrive([moduleRow()]);
 
@@ -1419,6 +1448,52 @@ describe('ModuleListComponent', () => {
       expect(notifications()).toHaveSize(0);
     });
 
+    // ⚠ THE COMMAND IS PLACEMENT-SCOPED WHILE THE LEGACY SENTENCE SAYS "MODULE" - QA-10. The two cases have
+    // genuinely different consequences, so the dialogue states which one the operator is in. This matters
+    // because of the placement-delete rule this migration corrected: removing the FINAL placement no longer
+    // strands a live module, it recycles it.
+    it('says the removal reaches this page only when the module is on every page', () => {
+      arrive([moduleRow({ allTabs: true })], 1);
+
+      requestRemoval();
+
+      const body: string = (query('.confirm-dialog__message')?.textContent ?? '').trim();
+
+      expect(body)
+        .withContext('the legacy question still opens it')
+        .toContain(REMOVE_CONFIRM_MESSAGE);
+      expect(body)
+        .withContext('and the scope is stated: this page only')
+        .toContain('removes it from this page only');
+      expect(body)
+        .withContext('and the other placements are said to survive')
+        .toContain('left as they are');
+      expect(body)
+        .withContext('an every-page module is NOT described as losing its last placement')
+        .not.toContain('no placement');
+    });
+
+    it('says the module is recycled when this is its only placement', () => {
+      arrive([moduleRow({ allTabs: false })], 1);
+
+      requestRemoval();
+
+      const body: string = (query('.confirm-dialog__message')?.textContent ?? '').trim();
+
+      expect(body)
+        .withContext('the legacy question still opens it')
+        .toContain(REMOVE_CONFIRM_MESSAGE);
+      expect(body)
+        .withContext('and the consequence of losing the last placement is stated')
+        .toContain('leaves the module with no placement');
+      expect(body)
+        .withContext('and that the module goes with it')
+        .toContain('recycled');
+      expect(body)
+        .withContext('a single-placement module is NOT described as surviving elsewhere')
+        .not.toContain('this page only');
+    });
+
     it('addresses the placement with both identities and re-reads once it succeeds', () => {
       arrive([moduleRow({ moduleId: 4, tabModuleId: 11 })]);
 
@@ -2001,9 +2076,15 @@ describe('ModuleListComponent', () => {
       expectList('the filtered read').flush(pageOf([moduleRow()], 1));
       fixture.detectChanges();
 
+      // ⚠ THE WORDING CHANGED HERE, AND THE OLD WORDING WAS WRONG - QA-9. This previously read "module
+      // title or name", copied from the account listing for consistency of phrasing. But
+      // ModuleRepository.cs:356-360 filters on `placement.Module.ModuleTitle` ALONE - there is no name
+      // term in the query at all - so the sentence promised a search the endpoint does not perform and
+      // a reader whose module matched on name only was told it had been looked for. Matching a sibling
+      // screen's phrasing does not outrank describing this screen's own behaviour accurately.
       expect(disclosure())
-        .withContext('the same wording the user listing uses for the same statement')
-        .toBe('Filtered: module title or name contains \u201cannounce\u201d.');
+        .withContext('the wording names only what the endpoint actually matches on')
+        .toBe('Filtered: module title contains \u201cannounce\u201d.');
       expect(query<HTMLElement>('.module-list__filter-disclosure')?.getAttribute('aria-live'))
         .withContext('and it is announced, not only painted')
         .toBe('polite');

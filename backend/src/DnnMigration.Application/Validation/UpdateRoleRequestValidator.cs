@@ -55,12 +55,20 @@ public class UpdateRoleRequestValidator : AbstractValidator<UpdateRoleRequest>
 
         // No validator was declared on the invitation code either, and nothing in the schema makes it
         // unique, so a clash is not a conflict and the column width is the only ported bound.
+        // ⚠ THE STRENGTH RULE IS DELIBERATELY ABSENT HERE AND IS ENFORCED IN THE SERVICE INSTEAD. It is a
+        // rule about a code being AUTHORED, and whether this request authors one can only be answered by
+        // comparing it against the code already stored - which a validator cannot see. Asserted here it
+        // therefore fired on every update, including one that submits the stored value back unchanged, so a
+        // role carrying a code predating the rule could not be edited at all: not its name, not its fee, not
+        // its group. Refusing that update removes no weak code from the database, because the weak code stays
+        // exactly where it was; it only stops the operator fixing anything else about the role.
+        //
+        // The two rules that remain are properties of the VALUE and hold whatever its provenance, so they
+        // belong at the boundary: a code cannot exceed its column, and it cannot smuggle in a line break.
         RuleFor(request => request.RsvpCode)
             .MaximumLength(RoleTermsRules.RsvpCodeMaximumLength)
             .Must(TextIntegrityRules.IsSingleLineSafe)
-            .WithMessage(TextIntegrityRules.SingleLineMessage)
-            .Must(RoleTermsRules.IsStrongAuthoredRsvpCode)
-            .WithMessage(RoleTermsRules.RsvpCodeTooWeakMessage);
+            .WithMessage(TextIntegrityRules.SingleLineMessage);
 
         // The column width plus the containment rule. THIS is the rule the update path was missing: the
         // creation validator declared it and this one did not, so the same column accepted a rooted or

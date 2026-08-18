@@ -34,6 +34,8 @@ const OPERATOR_A: CurrentUser = {
   email: 'ann.admin@example.test',
   isSuperUser: false,
   isPortalAdministrator: false,
+  mustChangePassword: false,
+  mustUpdateProfile: false,
   roles: ['Administrators'],
   permissions: ['EDIT'],
 };
@@ -48,6 +50,8 @@ const OPERATOR_B: CurrentUser = {
   email: 'bob.editor@example.test',
   isSuperUser: false,
   isPortalAdministrator: false,
+  mustChangePassword: false,
+  mustUpdateProfile: false,
   roles: ['Administrators'],
   permissions: ['EDIT'],
 };

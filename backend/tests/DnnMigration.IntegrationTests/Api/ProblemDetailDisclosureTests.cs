@@ -3,7 +3,10 @@ using DnnMigration.Api.ErrorHandling;
 using DnnMigration.Application.Abstractions;
 using DnnMigration.Domain.Common;
 using FluentAssertions;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Infrastructure;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace DnnMigration.IntegrationTests.Api;
@@ -165,6 +168,131 @@ public sealed class ProblemDetailDisclosureTests
         }
 
         await Task.CompletedTask;
+    }
+
+    // ---- Tenant-identifier redaction ------------------------------------------------------------------
+    //
+    // A QA run found command paths publishing the tenant discriminator: POST /users/99999/unlock answered
+    // "Account 99999 does not exist in portal -1." The services interpolate it on purpose - it is what makes a
+    // support report actionable, and it keeps doing so in the log - but on most routes the portal is resolved
+    // from the caller's own token rather than supplied in the URL, so publishing it discloses how the
+    // installation numbers its tenants in the course of answering an ordinary "no such thing".
+
+    /// <summary>Every shape in which a service names a tenant is redacted on the way out.</summary>
+    /// <param name="authored">The message a service places on its failed outcome.</param>
+    /// <param name="expected">What the caller must receive instead.</param>
+    /// <remarks>
+    /// The cases are the real sentences, taken from the services, and they cover both grammatical positions -
+    /// mid-sentence after a preposition, and opening the sentence - because the replacement has to agree with
+    /// the sentence it lands in. The negative identifier is not an edge case but the COMMON one: the legacy
+    /// schema seeds <c>Portals.PortalID</c> with <c>IDENTITY(-1,1)</c>, so a rule matching only digits would
+    /// miss the default installation entirely.
+    /// </remarks>
+    [Theory]
+    [InlineData(
+        "Account 99999 does not exist in portal -1.",
+        "Account 99999 does not exist in this portal.")]
+    [InlineData(
+        "Portal -1 has no role bearing identifier 99999.",
+        "This portal has no role bearing identifier 99999.")]
+    [InlineData(
+        "Module 12 does not belong to portal 0.",
+        "Module 12 does not belong to this portal.")]
+    [InlineData(
+        "Page 7 is not a content page of portal -1, so a module cannot be moved onto it.",
+        "Page 7 is not a content page of this portal, so a module cannot be moved onto it.")]
+    [InlineData(
+        "Portal 42 already declares a profile property of that name.",
+        "This portal already declares a profile property of that name.")]
+    [InlineData(
+        "Placing a module on every page reaches beyond the page and requires administering portal -1.",
+        "Placing a module on every page reaches beyond the page and requires administering this portal.")]
+    public void ATenantIdentifier_IsNotPublished(string authored, string expected)
+    {
+        Detail(Result.Failure("some.code", authored)).Should().Be(expected);
+    }
+
+    /// <summary>
+    /// ⚠ THE CALLER'S OWN IDENTIFIERS SURVIVE, which is the point of redacting narrowly rather than broadly.
+    /// </summary>
+    /// <remarks>
+    /// An account, role, page or module identifier in a not-found detail is the address the caller just asked
+    /// about, echoed back so they can see WHICH of several addresses failed. Redacting those would cost real
+    /// diagnostic value and protect nothing, because the caller already holds the value. This case exists so a
+    /// later, broader rule cannot quietly take them away.
+    /// </remarks>
+    [Fact]
+    public void TheCallersOwnIdentifiers_AreStillPublished()
+    {
+        Detail(Result.Failure("some.code", "Account 99999 does not exist in portal -1."))
+            .Should().Contain("99999", "the caller asked about 99999 and is told it was 99999 that failed");
+
+        Detail(Result.Failure("some.code", "Module 12 is not placed on page 5 in portal -1."))
+            .Should().Be("Module 12 is not placed on page 5 in this portal.");
+    }
+
+    /// <summary>A message that never mentions a tenant is published byte for byte.</summary>
+    /// <remarks>
+    /// The redaction is a substitution and not a rewrite, so the overwhelming majority of details - which name
+    /// no tenant - must be untouched. "portable" and "Portalgruppe" are here because the rule is anchored on a
+    /// word boundary and requires a following integer, so a word merely containing "portal" cannot match.
+    /// </remarks>
+    [Theory]
+    [InlineData("The current credential is not correct.")]
+    [InlineData("The page index must not be negative.")]
+    [InlineData("This module is not portable, so its content cannot be exported.")]
+    [InlineData("Portalgruppe 7 is not a recognised value.")]
+    [InlineData("The portal template could not be read.")]
+    public void AMessageNamingNoTenant_IsPublishedUnchanged(string authored)
+    {
+        Detail(Result.Failure("some.code", authored)).Should().Be(authored);
+    }
+
+    /// <summary>Redaction runs on per-field messages too, not only on the summary detail.</summary>
+    /// <remarks>
+    /// A failure that attributes itself to fields is published through the validation-problem path instead, and
+    /// each field message is published just as verbatim as the summary is - so a rule applied to only one of the
+    /// two would leave the other leaking.
+    /// </remarks>
+    [Fact]
+    public void ATenantIdentifierInAFieldMessage_IsNotPublishedEither()
+    {
+        var reason = new ResultReason(
+            "some.code",
+            "Portal -1 has no role bearing identifier 99999.",
+            new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal)
+            {
+                ["roleId"] = new[] { "Portal -1 has no role bearing identifier 99999." },
+            });
+
+        // The per-field path routes through the shared factory - which is what attaches traceId and
+        // correlationId - so the controller needs the real registered one. Resolved from the composed host
+        // rather than substituted, so this exercises the same factory a live request would.
+        using ScopedServices scope = _fixture.CreateScopedServices();
+
+        var controller = new DisclosureController
+        {
+            ProblemDetailsFactory =
+                scope.ServiceProvider.GetRequiredService<ProblemDetailsFactory>(),
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext { RequestServices = scope.ServiceProvider },
+            },
+        };
+
+        ActionResult translated = controller.Complete(Result.Failure(reason));
+
+        ObjectResult payload = translated.Should().BeOfType<ObjectResult>().Subject;
+        ValidationProblemDetails problem =
+            payload.Value.Should().BeOfType<ValidationProblemDetails>().Subject;
+
+        problem.Detail.Should().NotContain("-1");
+        problem.Errors["roleId"].Should().OnlyContain(
+            message => !message.Contains("-1", StringComparison.Ordinal),
+            "a field message is published as verbatim as the summary, so it is redacted the same way");
+        problem.Errors["roleId"].Should().OnlyContain(
+            message => message.Contains("99999", StringComparison.Ordinal),
+            "and the caller's own identifier survives there too");
     }
 
     /// <summary>Publishes a failed outcome through the edge and reads back the detail.</summary>

@@ -45,7 +45,20 @@
   // at 7.85:1 on this surface, which is how the legacy header pairing rendered.
   --color-border-strong: #CCCCCC;
 
-  // COLOUR — text ONE token, and the reasoning for the four that are deliberately absent.
+  // COLOUR — text.
+
+  // THE DEFAULT TEXT COLOUR, AND IT IS BLACK BY MEASUREMENT RATHER THAN BY CHOICE — QA-11.
+  //
+  // This token did not exist, and `body` declared no `color` at all, so every unqualified run of text in the
+  // application resolved to the user agent's own black. That was faithful — the legacy `.Normal` class
+  // (default.css L92-97) declares font-family, size and weight and NO colour, so legacy body text fell back
+  // to exactly the same black — but it left the single most-used colour in the product outside the token
+  // vocabulary, reachable by no name and auditable by nothing.
+  //
+  // Declaring it changes NO pixel: the value is the colour that was already resolving. What changes is that
+  // the vocabulary is now complete, so a future change to body text is a one-line token edit rather than a
+  // search for every place that inherited an undeclared default.
+  --color-text: #000000;
 
   // 9 occurrences, and NOT ONE of them renders text — the token name describes its target role, not its
   // legacy role.

@@ -84,6 +84,25 @@ public static class DependencyInjection
     private const string MigrationsHistoryTableName = "__EFMigrationsHistory";
 
     /// <summary>
+    /// The canonical connection-string keyword for the connection-attempt timeout, as
+    /// <see cref="SqlConnectionStringBuilder"/> spells it.
+    /// </summary>
+    /// <remarks>
+    /// The canonical spelling is what <see cref="System.Data.Common.DbConnectionStringBuilder.ShouldSerialize"/>
+    /// expects; the builder maps the "Connection Timeout" and "Timeout" synonyms onto it, so testing this one
+    /// keyword covers all three spellings an operator might have used.
+    /// </remarks>
+    private const string ConnectTimeoutKeyword = "Connect Timeout";
+
+    /// <summary>Seconds a connection attempt may take before the store is reported unavailable.</summary>
+    /// <remarks>
+    /// Applied only when the configured connection string states no timeout of its own. The reasoning for the
+    /// value, and for why the default is worth replacing at all, is on
+    /// <see cref="ApplyDefaultConnectTimeout"/>.
+    /// </remarks>
+    private const int DefaultConnectTimeoutSeconds = 5;
+
+    /// <summary>
     /// Largest number of entries the shared memory cache will hold before the runtime evicts the least
     /// recently used of them.
     /// </summary>
@@ -190,7 +209,56 @@ public static class DependencyInjection
                 + "password. " + KeyDescription);
         }
 
-        return connectionString;
+        return ApplyDefaultConnectTimeout(builder, connectionString);
+    }
+
+    /// <summary>
+    /// Bounds how long a connection attempt may hang before the API can answer that the store is
+    /// unavailable, without overriding an operator who has chosen a value.
+    /// </summary>
+    /// <param name="builder">The parsed connection string.</param>
+    /// <param name="connectionString">The configured connection string, returned unchanged when it already
+    /// states a connect timeout.</param>
+    /// <returns>The connection string the context should use.</returns>
+    /// <remarks>
+    /// <para>
+    /// <strong>THE COST OF LEAVING THIS UNSTATED IS PAID ON THE ERROR PATH, WHICH IS WHERE IT HURTS MOST.</strong>
+    /// SqlClient defaults a connection attempt to fifteen seconds. When the database is genuinely gone, the
+    /// classifier and the exception handler already produce the right answer - 503 with Retry-After - but the
+    /// caller waits out that full default before receiving it, and so does every other caller queued behind
+    /// the same dead dependency. A health probe that is meant to detect an outage promptly instead reports it
+    /// a quarter of a minute late.
+    /// </para>
+    /// <para>
+    /// Five seconds is chosen against the topology this API is deployed in rather than as a round number.
+    /// docker-compose puts the API and the database one hop apart, so a healthy connect completes in
+    /// milliseconds; the remaining budget covers container DNS resolution and a server that is up but busy
+    /// accepting logins. It is comfortably above both and far below the point at which a caller concludes the
+    /// request was lost.
+    /// </para>
+    /// <para>
+    /// ⚠ AN OPERATOR'S OWN VALUE IS NEVER OVERRIDDEN, AND DETECTING THAT IS SUBTLER THAN IT LOOKS.
+    /// <c>ConnectTimeout</c> reads 15 whether the keyword was supplied as 15 or omitted entirely, and
+    /// <c>ContainsKey</c> answers true in BOTH cases because the builder pre-populates every keyword it
+    /// knows - measured, not assumed. <c>ShouldSerialize</c> is the one member that distinguishes them, and it
+    /// resolves the synonyms too, answering true for "Connect Timeout", "Connection Timeout" and "Timeout"
+    /// alike. A deployment that has tuned this keeps its value; only a deployment that said nothing gets one.
+    /// </para>
+    /// </remarks>
+    private static string ApplyDefaultConnectTimeout(
+        SqlConnectionStringBuilder builder,
+        string connectionString)
+    {
+        if (builder.ShouldSerialize(ConnectTimeoutKeyword))
+        {
+            // The operator stated a value. Returning the ORIGINAL string rather than the builder's rebuild
+            // keeps this method free of any other normalisation side effect on the path it does not need to
+            // change.
+            return connectionString;
+        }
+
+        builder.ConnectTimeout = DefaultConnectTimeoutSeconds;
+        return builder.ConnectionString;
     }
 
     /// <summary>Reports whether a parsed connection string names a way to authenticate.</summary>

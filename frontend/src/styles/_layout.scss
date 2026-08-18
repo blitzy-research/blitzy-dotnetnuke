@@ -136,6 +136,18 @@
   // and this rule's own inline padding come off first), so every viewport the census covered up to 1280 is
   // byte-for-byte unchanged and only 1920 moves.
   max-inline-size: mx.breakpoint('xl');
+
+  // ⚠ THE WIDTH IS STATED BECAUSE THE AUTO MARGINS BELOW OTHERWISE STOP THIS FILLING ITS OWN COLUMN. A grid
+  // item stretches to its area by default, but auto inline margins SUPPRESS that self-alignment: the item is
+  // sized to fit-content instead and the margins absorb whatever is left. So this box stopped tracking the
+  // column and started tracking its widest content, and on a form whose widest contributor is a `<textarea>`
+  // that means a default column count decides the width of the whole region. Measured at 768 on the role
+  // group form: a 568px column holding a 471.8px main, 48.09px dead to its left and 48.11px dead to its
+  // right, and a form that never approached its own 30rem measure because it had 439.8px to work with.
+  //
+  // With the width stated, the cap still caps and the margins still centre - they simply have nothing to
+  // absorb until the column is genuinely wider than the cap, which is the only case they were added for.
+  inline-size: var(--size-full);
   margin-inline: auto;
 }
 

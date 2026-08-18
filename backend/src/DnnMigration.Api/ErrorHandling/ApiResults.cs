@@ -36,7 +36,8 @@ public static class ApiResults
         "portal.permission_catalogue_incomplete", "portal.processor_reference_invalid",
         "portal.tab_reference_invalid", "portal.tenant_unresolved", "portal_alias_ambiguous",
         "portal_context_incomplete", "profile_definition.validation_expression_invalid", "request.failed",
-        "request.invalid", "role.paging_invalid", "role_assignment.expired_not_removed",
+        "request.invalid", "role.paging_invalid", "role.rsvp_code_too_weak",
+        "role_assignment.expired_not_removed",
         "role_group.scope_invalid", "tab.name_reserved", "tab.paging_invalid", "tab.parent_cross_portal",
         "tab.parent_cycle",
         "tenant_path_prefix_mismatch", "user.choices.sort_unsupported", "user.create.invalid_email",
@@ -49,7 +50,12 @@ public static class ApiResults
         "user.password.unsupported_operation", "user.profile.property_validation_failed",
         "user.profile.required_property_missing", "user.profile.too_many_properties",
         "user.profile.value_too_long", "user.profile.visibility_invalid", "user.service.code_not_matched",
-        "user.service.code_required", "user.service.paging_invalid", "user.unlock.not_locked",
+        "user.service.code_required", "user.service.paging_invalid",
+
+        // `user.unlock.not_locked` was removed from this table along with the refusal it classified.
+        // Clearing a lockout is idempotent, so an account that is already unlocked is answered as a success
+        // rather than refused, and leaving the entry here would suggest a status this edge can no longer
+        // produce.
     };
 
     /// <summary>
@@ -83,7 +89,8 @@ public static class ApiResults
     private static readonly string[] NotFoundCodes =
     {
         "auth.user_not_found", "module.definition_not_found", "module.not_found",
-        "module.placement_not_found", "module.portal_not_found", "module.tab_not_found",
+        "module.package_not_found", "module.placement_not_found", "module.portal_not_found",
+        "module.tab_not_found",
         "permission.module_not_found", "permission.portal_not_found", "permission.role_not_found",
         "permission.tab_not_found", "permission.user_not_found", "portal.alias_not_found",
         "portal.not_found", "portal_alias_not_found", "profile_definition.not_found", "resource.not_found",
@@ -116,11 +123,18 @@ public static class ApiResults
     {
         "persistence.conflict", "portal.administrator_duplicate", "portal.alias_duplicate",
         "portal.alias_in_use.conflict", "portal.concurrency_conflict", "portal.creation_conflict",
-        "portal.last_remaining", "profile_definition.duplicate_name", "resource.conflict",
+        "portal.last_remaining", "profile_definition.duplicate_name",
+        // Both guards on withdrawing a profile declaration. 409 rather than 403: the caller is entitled to the
+        // operation, and it is the state of the thing addressed - a reserved name, or answers that would be
+        // destroyed - that refuses it. The second is resolvable by the caller, which is why it names the count
+        // to send back rather than simply declining.
+        "profile_definition.protected", "profile_definition.value_deletion_unacknowledged",
+        "resource.conflict",
         "role.concurrency_conflict", "role.name_duplicate", "role_group.in_use",
         "role_group.name_duplicate", "user.approval.unchanged", "user.create.duplicate_email",
         "user.create.duplicate_username", "user.create.user_already_registered",
-        "user.create.username_already_exists", "user.membership_settings.storage_conflict",
+        "user.concurrency_conflict", "user.create.username_already_exists",
+        "user.membership_settings.storage_conflict",
         "user.password.change_already_required", "user.password.not_different", "user.password.superseded",
         "user.profile.duplicate_property",
     };
@@ -612,7 +626,11 @@ public static class ApiResults
             && message.IndexOf('\r', StringComparison.Ordinal) < 0
             && !NamesAnExceptionType(message);
 
-        return looksAuthored ? message : UnauthoredDetail;
+        // ⚠ THE SHAPE TEST DECIDES WHETHER TO PUBLISH; THE REDACTION DECIDES WHAT. They are separate steps
+        // because a message can be perfectly well authored and still name the tenant it resolved to - the
+        // services write it that way on purpose, so the log says which tenant a support report concerns. The
+        // stand-in text names nothing, so it needs no redaction.
+        return looksAuthored ? PublishedDetail.Redact(message) : UnauthoredDetail;
     }
 
     /// <summary>Reports whether a message contains a word that names a CLR exception type.</summary>

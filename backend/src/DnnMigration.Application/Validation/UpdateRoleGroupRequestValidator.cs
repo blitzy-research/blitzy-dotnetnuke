@@ -35,10 +35,14 @@ public sealed class UpdateRoleGroupRequestValidator : AbstractValidator<UpdateRo
         RuleFor(request => request.RoleGroupName)
             .NotEmpty()
             .WithMessage(RoleGroupTermsRules.RoleGroupNameRequiredMessage)
-            .MaximumLength(RoleGroupTermsRules.RoleGroupNameMaximumLength);
+            .MaximumLength(RoleGroupTermsRules.RoleGroupNameMaximumLength)
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage);
 
         // No validator was declared on the description, so only the column width is asserted.
         RuleFor(request => request.Description)
-            .MaximumLength(RoleGroupTermsRules.DescriptionMaximumLength);
+            .MaximumLength(RoleGroupTermsRules.DescriptionMaximumLength)
+            .Must(TextIntegrityRules.IsMultiLineSafe)
+            .WithMessage(TextIntegrityRules.MultiLineMessage);
     }
 }

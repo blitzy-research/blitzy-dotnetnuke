@@ -225,8 +225,9 @@ public sealed class ValidationProblemDetailsFactory : ProblemDetailsFactory
 
         int resolvedStatusCode = statusCode ?? DefaultValidationStatusCode;
 
-        // Message text is passed through unmodified, byte for byte.
-        var problemDetails = new ValidationProblemDetails(modelStateDictionary)
+        // ⚠ BINDER MESSAGES ARE REWRITTEN; APPLICATION MESSAGES ARE PASSED THROUGH BYTE FOR BYTE. See
+        // SanitiseBinderFailures for what a binder message is and why its own text may not be published.
+        var problemDetails = new ValidationProblemDetails(SanitiseBinderFailures(modelStateDictionary))
         {
             Status = resolvedStatusCode,
             Type = type,
@@ -288,6 +289,170 @@ public sealed class ValidationProblemDetailsFactory : ProblemDetailsFactory
         ApplyProblemDetailsDefaults(httpContext, problemDetails, resolvedStatusCode);
 
         return problemDetails;
+    }
+
+    /// <summary>
+    /// The key the deserialiser uses for a fault in the document as a whole.
+    /// </summary>
+    /// <remarks>
+    /// Also the key an EMPTY body is republished under. The binder reports that one under the EMPTY STRING,
+    /// which serialises as an `errors` member with no name at all - a shape a client cannot address, cannot
+    /// map to a control, and cannot even read aloud. It is a fault in the document, so it is reported where
+    /// every other document-level fault is reported.
+    /// </remarks>
+    private const string DocumentKey = "$";
+
+    /// <summary>What is published in place of the deserialiser's own account of a malformed document.</summary>
+    private const string MalformedDocumentMessage = "The request body is not valid JSON.";
+
+    /// <summary>What is published when a member carried a value of the wrong type.</summary>
+    private const string WrongTypeMessage =
+        "The value supplied for this member is not of the type this member accepts.";
+
+    /// <summary>What is published when the document carried a member the contract does not declare.</summary>
+    private const string UnknownMemberMessage = "This member is not part of the request contract.";
+
+    /// <summary>What is published when no body was sent at all.</summary>
+    private const string BodyRequiredMessage = "A request body is required.";
+
+    /// <summary>Marker identifying the deserialiser's wrong-type account, which names a CLR type.</summary>
+    private const string WrongTypeMarker = "could not be converted to";
+
+    /// <summary>Marker identifying the deserialiser's unknown-member account, which names a CLR type.</summary>
+    private const string UnknownMemberMarker = "could not be mapped to any";
+
+    /// <summary>Marker identifying the binder's parameter-level "field is required" entry.</summary>
+    private const string ParameterRequiredMarker = "field is required";
+
+    /// <summary>
+    /// Rewrites the deserialiser's own failure text and drops the entries that name no client field, leaving
+    /// every application-authored message untouched.
+    /// </summary>
+    /// <param name="modelState">The model state as the binder and the filters left it.</param>
+    /// <returns>The `errors` map to publish.</returns>
+    /// <remarks>
+    /// <para>
+    /// <b>What was leaking.</b> The deserialiser's messages are written for a developer holding the payload
+    /// in a debugger, and this API was publishing them verbatim to any caller. A truncated body disclosed
+    /// the parser's JSON path, line number and BYTE POSITION; a value of the wrong type disclosed the
+    /// framework type name <c>System.Nullable`1[System.Decimal]</c>; and an unrecognised member disclosed
+    /// the FULLY QUALIFIED name of the internal contract class it failed to bind to, namespace included.
+    /// None of that helps a caller correct the request, and all of it describes the inside of this
+    /// application to somebody outside it.
+    /// </para>
+    /// <para>
+    /// <b>How a binder message is told apart from a real one - by KEY SHAPE, not by text.</b> The
+    /// deserialiser keys its failures by JSON path, so they are <c>$</c> or begin <c>$.</c> or <c>$[</c>.
+    /// Application validators key theirs by MEMBER name, which never begins with a dollar sign. The
+    /// discriminator is therefore structural and survives a framework wording change or a localised build;
+    /// the message text is consulted afterwards only to choose which of three sentences is the most useful,
+    /// and an unrecognised binder message still falls back to the malformed-document sentence rather than
+    /// being published.
+    /// </para>
+    /// <para>
+    /// <b>The two entries that name no client field are dropped.</b> When a body fails to bind at all the
+    /// binder ALSO records a parameter-level entry - keyed by the action's parameter name, in practice
+    /// <c>request</c> - saying that field is required. There is no such field on any client form; it is the
+    /// name of a C# argument. It appeared on every malformed-body response beside the real complaint and
+    /// invited a client to look for a control it does not have. It is dropped only when a document-level
+    /// fault is present, so an application message that legitimately concerned a member called
+    /// <c>request</c> would survive.
+    /// </para>
+    /// </remarks>
+    private static IDictionary<string, string[]> SanitiseBinderFailures(ModelStateDictionary modelState)
+    {
+        var sanitised = new Dictionary<string, string[]>(StringComparer.Ordinal);
+        bool sawDocumentFault = false;
+
+        foreach (KeyValuePair<string, ModelStateEntry> entry in modelState)
+        {
+            string[] messages = entry.Value.Errors
+                .Select(error => error.ErrorMessage)
+                .Where(message => !string.IsNullOrWhiteSpace(message))
+                .ToArray();
+
+            if (messages.Length == 0)
+            {
+                continue;
+            }
+
+            // An empty key is the binder's account of an empty body. Republished under the document key.
+            if (entry.Key.Length == 0)
+            {
+                sawDocumentFault = true;
+                sanitised[DocumentKey] = [BodyRequiredMessage];
+                continue;
+            }
+
+            if (!IsBinderKey(entry.Key))
+            {
+                // An application message. Untouched, byte for byte.
+                sanitised[entry.Key] = messages;
+                continue;
+            }
+
+            sawDocumentFault = true;
+            sanitised[entry.Key] = [.. messages.Select(DescribeBinderFailure).Distinct(StringComparer.Ordinal)];
+        }
+
+        if (sawDocumentFault)
+        {
+            RemoveParameterLevelRequiredEntries(modelState, sanitised);
+        }
+
+        return sanitised;
+    }
+
+    /// <summary>Whether a model-state key was written by the JSON deserialiser.</summary>
+    /// <param name="key">The model-state key.</param>
+    /// <returns><see langword="true"/> when the key is a JSON path.</returns>
+    private static bool IsBinderKey(string key) =>
+        key.Length > 0 && key[0] == '$';
+
+    /// <summary>Chooses the sentence to publish in place of one deserialiser message.</summary>
+    /// <param name="message">The deserialiser's own message, which is never published.</param>
+    /// <returns>The sentence to publish.</returns>
+    private static string DescribeBinderFailure(string message)
+    {
+        if (message.Contains(WrongTypeMarker, StringComparison.OrdinalIgnoreCase))
+        {
+            return WrongTypeMessage;
+        }
+
+        if (message.Contains(UnknownMemberMarker, StringComparison.OrdinalIgnoreCase))
+        {
+            return UnknownMemberMessage;
+        }
+
+        return MalformedDocumentMessage;
+    }
+
+    /// <summary>
+    /// Removes the binder's parameter-level "field is required" entries, which name a C# argument rather
+    /// than anything a caller sent.
+    /// </summary>
+    /// <param name="modelState">The model state, consulted for the original message text.</param>
+    /// <param name="sanitised">The map being built, from which the entries are removed.</param>
+    private static void RemoveParameterLevelRequiredEntries(
+        ModelStateDictionary modelState,
+        Dictionary<string, string[]> sanitised)
+    {
+        foreach (KeyValuePair<string, ModelStateEntry> entry in modelState)
+        {
+            if (IsBinderKey(entry.Key) || entry.Key.Length == 0)
+            {
+                continue;
+            }
+
+            bool onlyTheRequiredNotice = entry.Value.Errors.Count > 0
+                && entry.Value.Errors.All(error =>
+                    error.ErrorMessage.Contains(ParameterRequiredMarker, StringComparison.OrdinalIgnoreCase));
+
+            if (onlyTheRequiredNotice)
+            {
+                sanitised.Remove(entry.Key);
+            }
+        }
     }
 
     /// <summary>

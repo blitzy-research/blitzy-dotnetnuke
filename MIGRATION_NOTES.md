@@ -22308,3 +22308,588 @@ Measured in the browser rather than reasoned about: six genuine key presses acro
 **The control is a text box with `inputmode="numeric"`, not `type="number"`, so it carries no `min` or `max` attribute.** A re-measurement of the screen noted their absence, and it is a deliberate shape rather than an omission. The stored unit is minutes and the legacy screen offered a select filled from `TimeZones.xml`; a numeric spinner would invite arrow-key stepping through 1500 single-minute values to reach a neighbouring zone, and `type="number"` additionally varies in what it accepts and how it reports an unparseable entry. The box therefore accepts a whole number of minutes, states the unit and an example in a programmatically associated hint, and rejects out-of-range entries through validators.
 
 **The bound is enforced on both layers, and the numbers are the same on each.** The client rejects anything outside −720 to 780 with a message naming both ends and their UTC equivalents; `UpdatePortalRequestValidator` holds `TimeZoneOffsetMinimum = -720` and `TimeZoneOffsetMaximum = 780` with its own out-of-range message, so a caller that bypasses the screen entirely is refused with a 400 rather than storing an offset no zone occupies. The consequence worth stating for anyone auditing from the markup alone: the range is **not** discoverable from the element's attributes, and reading them will suggest the field is unbounded when it is not.
+
+
+## One visible-text policy now governs every administrator-authored label, and a page name is the reason
+
+**The defect was not a missing rule; it was a rule applied to some members and not their siblings.** A shared predicate already refused text a column can hold but no operator can read — C0 and C1 control characters plus a short list of zero-width formatting characters — and it was applied by the two security-role write contracts and nowhere else. A security role therefore refused a name carrying a NUL, a zero-width space, a newline or a tab, while the page contract accepted all four with a 200.
+
+**A page name is the worst place to accept one, because it is route-generating and the two representations are produced differently.** `Tabs.TabName` persists verbatim; `Tabs.TabPath` is produced by stripping every non-word character from that name, which is byte-for-byte what the legacy path generator did (`Website/admin/Tabs/ManageTabs.ascx.vb` line 272, reproduced as `TabService.StripNonWord`). A name submitted as `P9<NUL>NUL` therefore stored as six characters — `LEN 6`, `DATALENGTH 12` — and generated the five-character path `//P9NUL`. The label an operator reads and the route the page answers on no longer represented the same text, and **neither value was wrong on its own terms**, which is precisely why the divergence could not be repaired downstream: nothing later in the request knows which of the two the operator meant. Refusing the name is the only fix that leaves both correct, and the path generator is untouched.
+
+**The rule now reaches every comparable member, and the reach is stated in one place.** `Application/Validation/TextIntegrityRules` documents it and the following contracts apply it: the page contract (name, title, description, keywords, head text, icon reference and link target), the security-role and role-group contracts on both the create and the update path, the module contracts (title and icon reference), the tenant create and settings contracts (name, footer text, currency, description, keywords, default language, the two processor fields, logo, background, home directory, template file and the initial administrator's given name, family name and login name), the account contracts (login name, given name, family name, display name) and the profile-definition contracts (category). Single-line members refuse a tab and a line break; text-block members admit both, and that is the only difference between the two rules.
+
+**Two members are deliberately outside the policy.** A profile definition's property *name* is already confined to an ASCII subset by its own pattern, so the rule would be unreachable there. A module's header and footer carry authored HTML fragments and have never been validated at all, so bringing them in would impose a brand-new rule on an unbounded member rather than make two existing rules agree.
+
+**The bidirectional controls were added, and they are refused for a different reason from the zero-width group.** The eleven characters carrying the Unicode `Bidi_Control` property — U+061C, U+200E, U+200F, U+202A to U+202E and U+2066 to U+2069 — are now refused. They are named by that property rather than assembled by hand so the set is complete and checkable against the standard. The distinction matters: a zero-width character is *unreadable*, whereas a bidirectional control **reorders the characters around it**, so a stored value can render as text that is not the text stored. U+202E, the right-to-left override, was measured being accepted and persisted on a role name. A role name that displays as something other than what it is, on the screen where authorisation is administered, is worse than one that displays as nothing.
+
+**U+200D, the zero-width joiner, is deliberately NOT refused.** It is invisible in isolation and would qualify on that test alone, but it is what holds a multi-code-point emoji together — a family or a flag glyph — and this installation's own stored data carries emoji in page and module titles. Refusing it would refuse text an operator can see perfectly well. A test asserts that an emoji sequence joined by it survives every contract, so the exclusion cannot be closed by accident.
+
+**Two rules were ordered rather than simply added, and the ordering is deliberate.** A portal home directory and a portal template file already carried predicates that refuse a control character and word that refusal as the path problem it is. The shared rule is asked *after* those, so it contributes the zero-width and bidirectional group — which every path test passes — without taking over a complaint another rule words better.
+
+**The refusal wording changed, because the old wording would have misdirected the operator.** It said the value contains characters that cannot be displayed. A bidirectional control *can* be displayed; that is the problem with it. Both messages now name direction-changing characters alongside control and zero-width ones.
+
+**This remains the one place where this migration is stricter than the screens it replaces**, which is what the shared rule's own header has always said. The widening does not change that standing; it makes the standing uniform.
+
+
+## The permission catalogue listing publishes definitions, and it used to publish a catalogue it had not read
+
+**`GET /api/v1/permissions` returned bare key spellings, and that cost two distinct things.** It carried no identifier, so a client that listed the catalogue held no handle to pass to `GET /api/v1/permissions/{permissionId}` — the listing and the detail read shared nothing, and list-to-detail navigation was impossible from the API alone. And its unscoped answer was assembled from the four `PermissionKey` members this solution names, with no store read at all, so a key an installation had registered — measured as `QA_CUSTOM` — was absent from the listing while the module permission matrix rendered from the same catalogue on the same screen displayed and evaluated it. One installation reported two different catalogues depending on which filter a caller happened to use.
+
+**The reasoning behind the fabricated answer is worth recording, because it was sound until an endpoint published a catalogue.** The repository contract deliberately mirrored the legacy provider's reader surface, which declares readers by identifier, by module definition, by module, by folder path, by scope-code-and-key and by page — and no wildcard. With no scope named there was no row set to read, so the answer became the vocabulary this solution names. That held for the legacy application because **nothing in it ever listed the catalogue**. It stopped holding the moment an endpoint did.
+
+**`IPermissionRepository.GetCatalogueAsync` is therefore the one table-wide read on that contract, and its documentation says why.** `dbo.Permission` is bounded reference data seeded by the upgrade scripts and extended when a module package calls `AddPermission` at install time, so it is measured in rows rather than pages and is returned whole. Every other member still narrows by a scope the store can narrow by, and naming a module definition still takes the definition-scoped reader rather than this one.
+
+**The code-scoped shape also got cheaper.** It used to probe the code-and-key reader once per enumeration member — four round trips whose union could only ever contain those four spellings. It is now one read narrowed in memory, which returns more and costs less.
+
+**A lone key filter now selects rather than echoes.** Asking whether `WRITE` is declared used to return `WRITE` without reading anything, so an installation that declares no `WRITE` row answered yes. The filter now narrows what exists, which means a defined member that nothing declares is an empty answer rather than a confirmation.
+
+**The service member was replaced, not duplicated.** `IPermissionService.GetPermissionKeysAsync` is gone and `GetPermissionCatalogueAsync` takes its place with the same three filters and the same three refusals — a blank scope code, an undefined key member, and a module definition identifier below 1 — each still reported before any read is issued. Keeping both would have left one member fabricating an answer the other read from the store, which is the contradiction this closed. The key filter itself stays typed to the closed enumeration because it is bound from a query string and an undefined member is a caller mistake worth reporting; it narrows the answer without bounding what the answer may contain.
+
+**What did not change, and the note that used to claim otherwise.** `PermissionDto` carried a remark asserting that the listing deliberately published bare keys because a catalogue of keys is what the permission vocabulary is, what a token carries and what the client-side permission directive tests. The last part is right and is unaffected: those consumers read a caller's **effective** keys, which is a different question from what an installation declares. The first part did not survive measurement, and the remark now records why.
+
+**The client was updated in step.** `PermissionService.list` decodes definitions rather than a string array, and its spec fixture deliberately holds an entry whose key is outside the four this codebase declares, so the client is proven to carry an unrecognised key through intact rather than dropping it.
+
+
+---
+
+## An address is governed by two rules, and only one of them was ever asked of a stored value
+
+`PUT /api/v1/users/{userId}` refused an edit that changed nothing about the address it carried. Amending an
+account's surname on either seeded account was answered `400 user.create.invalid_email`, and no submission
+could have satisfied the rule short of altering data the caller had not come to touch.
+
+**Two rules, both legitimate.** The first is the address **shape**, `Domain/ValueObjects/EmailAddress`. It
+says what an address may look like at all, it is not configurable, and it is mirrored on the client by
+`core/utils/email-grammar.util.ts` so the two surfaces agree. The second is the tenant's **admission** rule,
+the `Security_EmailValidation` expression stored against the accounts-module instance, which an operator may
+set to anything.
+
+**Why the pair produced a dead end.** DotNetNuke's own default expression ends in `[a-zA-Z]{2,4}`, and it is
+not merely a default here — it is the value this installation actually stores. The seeded accounts hold
+`admin@setup.local` and `member@setup.local`, whose final label is five letters. The shape rule admits them
+because the server widened that bound to 2–63 for the reasons recorded under MIGRATION 3; the tenant
+expression does not. The address was already in the column, nothing was proposing to change it, and the
+update re-ran the admission rule over the value the caller had merely echoed back.
+
+**The admission rule is now asked only of an address that is actually being changed.** `UpdateUserAsync`
+compares the submitted address against the stored one case-insensitively — the store matches an address that
+way, so two spellings differing only in case name one account — and puts it to the tenant expression only when
+the two differ. The shape rule still applies to both, so a caller cannot write a malformed address by
+claiming it was already stored, and a genuinely new address that the expression refuses is refused exactly as
+before.
+
+**The stored expression was NOT rewritten, and rewriting it was rejected.** It is tenant data. Migrating it
+to the wider bound would change a configured policy the installation chose, on every tenant, from code that
+was asked to fix an update path — and it would do so silently. Behavioural equivalence means the tenant's rule
+keeps governing what may be **written**; grandfathering is only about what is already **stored**.
+
+**The client now says so before the round trip.** The account form compiles the tenant's published expression
+and warns when a **changed** address does not satisfy it. Three properties of that notice are deliberate:
+
+- It is an **advisory, not a validator**. Making it block would recreate on the client the very refusal that
+  was just removed from the server.
+- It is **silent for an unchanged address**, mirroring the grandfathering exactly, so a surname edit is never
+  reported as about to fail when it is not.
+- It is compiled **inside a guard**, and `test` is used rather than an anchored match. The value is
+  operator-authored text, .NET and ECMAScript regular-expression syntax differ, and the legacy expression is
+  `\b`-delimited rather than `^…$`-anchored — so an uncompilable value leaves the notice silent, and
+  anchoring it would refuse addresses the server admits.
+
+---
+
+## The account update was last-write-wins, and nothing said so
+
+Two operators editing one account both saved and the second silently replaced the first. Neither response
+mentioned it.
+
+`UserDetailDto` now publishes a `concurrencyToken` and `UpdateUserRequest` carries it back. A stale marker is
+answered `409 user.concurrency_conflict`. The token is **derived** from the members an operator can edit —
+first name, last name, display name, address — rather than stored, because the legacy schema is immutable and
+carries no row version. Approval, lock state and last-login are deliberately excluded from the derivation:
+they move without any operator acting, so including them would manufacture conflicts nobody caused.
+
+**The check runs before any field rule**, including the grandfathering above. A caller holding an out-of-date
+snapshot should be told their snapshot is stale, not told about a field — the field they are being told about
+may not be the one that changed.
+
+**An absent token is permissive.** A caller that supplies none is not claiming to have read anything, so the
+write is unconditional. That is what keeps every caller written before the token existed working.
+
+**The screen offers a way out, because without one a conflict is a dead end.** The marker an update carries
+comes from the account the form **read**, and a refusal does not change that account — so pressing Update
+again sends the same refused marker, indefinitely. The form now states that nothing was saved and offers to
+read the account again, through the store's deliberately unguarded re-read rather than its idempotent
+selection, and the recovery wording states its own cost: re-reading replaces every value on screen, so
+unsaved edits are lost. A reader needs to know that before pressing the button.
+
+**The two `409`s are not the same failure and do not share a response.** A duplicate address is corrected in a
+field and the submission can be retried as it stands. A stale read cannot be corrected in the form at all.
+Only the second earns the recovery affordance.
+
+---
+
+## The account listing withheld what it had already read
+
+This note previously claimed this was fixed and named a guard test for it. Neither was true: the code still
+blanked the columns, and the test did not exist. Both are now real, and the claim is restated here as what the
+code does rather than as what it should have done.
+
+`ListUsersAsync` ran every account column through the tenant's grid settings and emptied whatever those
+settings hid. A stored first name, last name, display name and electronic-mail address became the empty
+string; a creation instant and a last-login instant became absent; and an **approved account was reported as
+unapproved**. That last one is the sharpest: a caller reading such a row cannot distinguish a member who was
+never approved from one whose tenant simply does not put the column in its grid, and nothing in the response
+says which it is looking at. A presentation setting was changing a membership fact.
+
+The legacy grid did no such thing. At `UserModuleBase.vb:L98-L115` it honoured a hidden column by **declining
+to render it**, and the value stayed in the row it came from.
+
+**Account columns are now projected as stored.** The method is renamed `WithholdProfileValuesTheTenantHides`
+and gates only the address and telephone — and those two are different in kind. They are not account columns
+at all: they are profile **answers** the listing composes from a second, batched read, so a tenant that
+renders neither pays for neither read, and `null` there means "not requested" rather than "not held". That is
+a genuine minimisation and it is kept.
+
+The endpoint that made the old behaviour self-defeating is worth naming: filtering the listing by address
+returned rows that would not say what any of them was.
+
+Three tests that encoded the old behaviour were corrected, each carrying its own note, and the guard test this
+document already promised —
+`UserServiceTests.ListUsers_SuppressesTheProfileReadsAndKeepsTheAccountColumnsAsStored` — now exists. It hides
+all nine columns and requires every account column to survive, including the approval flag.
+
+---
+
+## Reordering profile properties was a sequence of independent writes
+
+A property's position is a member of the per-declaration update contract, so reordering needed no route of its
+own and had none: the catalogue screen exchanged two positions by issuing two independent replacements.
+
+**A position is not a per-row fact.** Moving a declaration one place **exchanges** two stored positions, so the
+two writes are only correct together. Land the first and lose the second and both declarations hold the same
+position — an order that is neither the one the operator started from nor the one they asked for, and one no
+amount of precision about which row failed can describe.
+
+`PUT /api/v1/profile-definitions/order` now takes the whole exchange as one request and commits it in one unit
+of work. Four properties of it are deliberate:
+
+- **All or nothing.** Every named declaration is resolved before anything is staged, so a request naming one
+  unknown, withdrawn or foreign-tenant declaration writes nothing at all. The resolution runs in two passes
+  precisely because the resolved declarations are tracked entities: assigning as the loop went left an earlier
+  declaration carrying a new position in memory after a later identifier failed to resolve, and the next
+  commit anywhere in the request would then have persisted a change this member had just declined to make.
+- **Positions only.** The request carries pairs of identifier and position, not whole declarations, so a Move
+  Up cannot rename a property or change its data type as a side effect of a keystroke — from a body the screen
+  assembled out of whatever it last read rather than out of anything the operator touched.
+- **Nothing is renumbered.** The submitted values are stored exactly as submitted. The legacy grid exchanged
+  two stored values and left the sequence sparse, and tidying it would silently move declarations the caller
+  never named.
+- **The answer is the whole catalogue in its new order**, so a caller rebinds from the response rather than
+  following it with a read that could observe another writer and appear to have lost the move.
+
+**The client splits its batch by dimension rather than sending everything one way.** Positions go first,
+together, as one request; if that is refused, the field writes behind it are abandoned, because applying flags
+over an order the server has just declined would report a partial success that did not happen. Required and
+visible flags stay one request per declaration, and that is not an oversight: a flag is a fact about one
+declaration and holds or fails on its own, so a refused row simply keeps the flag it had. Keeping them per-row
+is what lets a five-row apply report **which** three declarations were refused rather than reporting only that
+something was.
+
+A refusal of the order write is attributed to the order itself rather than to either declaration in it.
+Naming one would tell the operator that row was at fault when neither was, and would imply the other row's
+move succeeded.
+
+## A request the caller walked away from was reported as a fault of the server
+
+A caller who closes a tab, navigates away, or times out mid-request leaves the server holding a half-finished
+piece of work. The abandonment surfaces from the persistence layer, and it was not recognised as an
+abandonment: two measured requests were recorded as unhandled provider exceptions and answered 500, so an
+event whose cause was entirely on the client's side was published in the log as a defect of the server. An
+operator reading that log had no way to tell the two apart, which matters most precisely when a real fault is
+present and is competing for attention with a queue of navigations.
+
+The persistence layer now answers the question directly. `IStoreFailureClassifier` gained a member that
+reports whether a chain describes the caller's own cancellation, implemented against the provider's error
+numbers because only the persistence assembly may name the client's types. It walks the whole chain, flattens
+aggregates, and recognises both the ordinary cancellation shape and the aborted-batch number the provider
+raises when a statement is torn down mid-flight.
+
+**A command TIMEOUT is deliberately not a cancellation, and that exclusion is tested first.** The two look
+alike — both end a statement early, and both can arrive under the same error number — but they differ in the
+only way that matters: a caller who timed out is still there, still waiting, and is owed the availability
+answer. Classifying a timeout as an abandonment would swallow a genuine outage and answer nothing at all, so
+the timeout number is excluded before any other test can match it.
+
+What is written now depends on what was actually observed. A recognised cancellation is recorded at
+information level, because nothing went wrong. Anything else seen while the caller was disconnecting is
+recorded at warning level and names the store-availability condition, so an outage that happens to coincide
+with a departure stays visible even though the one caller who would have received the 503 has gone. Neither
+arm writes a response: there is no longer anybody to read one.
+
+## The API answered in JSON regardless of what the caller said it could read
+
+Every controller declares that it produces `application/json`, and that declaration was not enforced. A
+caller asking for XML — because XML is the only thing it can parse — was sent JSON with a 200, and discovered
+the problem at its own parser rather than from the response. The host now returns 406 for a media type it
+cannot satisfy, which is what the declaration already promised. Wildcard and JSON accept headers are
+unaffected, and that is guarded by its own tests, because the wildcard forms are what browsers and most HTTP
+clients send by default and a regression there would take the whole API offline for them.
+
+## A refused request body described how the server is built
+
+Four separate disclosures travelled in the payload of a body the server could not read: a JSON path with a
+line number and byte offset, the fully-qualified name of a request type, a nullable value type spelled out
+with its CLR generic syntax, and error keys naming the framework's own action parameter rather than anything
+the caller had sent. One of those keys was the EMPTY STRING, which no client can present beside a field.
+
+Deserialisation failures are now rewritten into three sentences — the document is not valid JSON, this member
+is not part of the contract, this value is not of the type the member accepts — and an unrecognised binder
+message falls back to the malformed-document sentence rather than being published.
+
+**The rule that separates a framework failure from an application one is structural, not textual.** The
+deserialiser keys its failures by JSON path, so its keys begin with `$`; a validator keys its own by member
+name. Message text is consulted only to choose among the three sentences, never to decide whether a failure is
+the framework's. That is what makes this survive a framework release that rewords its diagnostics, or a
+localised build that writes them in another language. A genuine per-field complaint passes through untouched,
+and there is a test whose only job is to prove it.
+
+## An internal tenant identifier accompanied every answer about something that did not exist
+
+Roughly seventy-five failure messages across the services name the tenant a request resolved to. They are
+written that way on purpose — it is the fact that makes a support report actionable — and they go on doing so
+in the log. What they must not do is travel to the caller: on most routes the tenant is resolved from the
+caller's own token rather than supplied in the URL, so an ordinary "no such account" was also disclosing how
+the installation numbers its tenants.
+
+Rewriting seventy-five messages would have destroyed that diagnostic value, so the redaction happens where
+the text becomes a response and nowhere else. Both publication edges — the expected-failure translator and
+the unhandled-exception handler's caller-safe detail — pass their text through one rule that replaces a named
+tenant with a demonstrative phrase, carrying the leading letter's case so the sentence still reads. The
+optional sign in that rule is not defensive: the legacy schema seeds the portal key at minus one, so the value
+is negative in the default installation and a digits-only rule would have missed it entirely.
+
+**Every other identifier survives, and that is the point of redacting narrowly.** An account, role, page or
+module identifier in a not-found detail is the address the caller just asked about, echoed back so they can
+see which of several addresses failed. Removing those would cost real diagnostic value and protect nothing,
+because the caller already holds the value. There is a test asserting they are still published, so a later and
+broader rule cannot quietly take them away.
+
+## Every successful audit record claimed to carry a refusal
+
+The audit envelope's failure code is written by its producers as "the code, or nothing when the outcome was
+accepted" — absence is how a success is spelled. The transport collapsed absence and unsafe-to-write into one
+substitute, so every success was published carrying the marker meant for a value that could not be written. A
+QA run measured it on 218 of 218 successful outcomes: a reader filtering the audit log for refusals matched
+all of them, which is the exact opposite of what the field exists for.
+
+The two conditions are now separate parameters and each call site chooses both. A failure code that is absent
+stays absent. A failure code that arrived malformed still leaves its marker, because "a refusal happened and
+its code could not be written" is evidence and folding it into absence would delete it. An event with no name
+at all keeps the loud stand-in for both conditions, since there is no legitimate absent case there.
+
+## A database outage took fifteen seconds to be reported
+
+The answer to an outage was already correct — 503 with a retry hint — but the client library defaults a
+connection attempt to fifteen seconds, and nothing in the configuration said otherwise. Every caller waited
+out that full default before receiving the answer, as did every caller queued behind the same dead
+dependency, and a health probe meant to detect an outage promptly reported it a quarter of a minute late.
+Measured after the change, a cold attempt answers in about four and a half seconds and subsequent attempts in
+milliseconds.
+
+A bounded timeout is now filled in when, and only when, the configured connection string states none. Five
+seconds is chosen against the topology this API is deployed in: the API and the database sit one hop apart, so
+a healthy connect completes in milliseconds and the remaining budget covers container name resolution and a
+server that is up but busy.
+
+**Detecting "the operator said nothing" is subtler than it looks, and getting it wrong would silently
+overwrite a tuned deployment.** The timeout property reads fifteen whether the keyword was supplied as fifteen
+or omitted altogether, and the contains-key test answers true in both cases because the builder pre-populates
+every keyword it knows. Both of those were measured rather than assumed. Only the should-serialize test
+distinguishes the two, and it resolves the three synonyms a deployment might have written, so a value stated
+in any spelling is preserved — including one deliberately LONGER than the default, which a cross-region
+deployment may need and which this rule does not clamp.
+
+## Withdrawing a profile property destroyed every answer accounts held for it, on one request
+
+The store cascades: removing a profile property declaration takes the recorded answers with it. A single
+authenticated request removed a declaration and irreversibly destroyed the answers six accounts held against
+it, with nothing in the request to indicate the scale of what was being lost. Two protections now guard the
+operation, and they address genuinely different hazards.
+
+**The four reserved declarations are refused outright.** The legacy administration grid set its delete command
+invisible for exactly these four names, compared case-insensitively. In the legacy application that WAS the
+enforcement — the grid was the only path to the operation, so hiding the control made it unreachable, and the
+observable behaviour of the system was that these four could not be removed. This API is a second path the
+legacy design never had. Reproducing only the hidden button would have looked faithful while quietly widening
+what the system permits, so the rule is restated on the server. Consent does not unlock it: the reserved test
+runs first, and a declaration that is both reserved and answered is refused as reserved.
+
+**Any other declaration that accounts have answered is refused until the caller consents.** The refusal is the
+impact report: it states how many answers will be destroyed, that the loss cannot be undone, which table to
+back up first, and the one parameter that performs it. A declaration nobody has answered needs no consent,
+because there is nothing to consent to — making the ordinary case ask twice would train an operator to send
+consent reflexively, which would defeat the protection on the case that needs it.
+
+**The override is a flag rather than the count, which is a deliberate choice against a stricter alternative.**
+Requiring the caller to echo the exact number back would guard against the total changing between the two
+requests. It would also force every client to recover that number from prose, because the count is a fact
+about the store rather than a field of the request and there is no structured channel it belongs in. The
+consent being sought is "remove this declaration and whatever answers it holds", which is well defined however
+many there turn out to be.
+
+The administration screen carries this as a second ask, and the sentence it shows is the server's own rather
+than one authored again on the client — the count is the whole point, and the screen does not hold it
+otherwise. Declining leaves the declaration and its answers exactly as they were. A refusal is not also
+announced as a notification: the dialog is modal and holds focus, so doing both would state one event twice.
+
+One authored sentence was corrected as a consequence. A conflict on this removal used to be reported as the
+property being "in use", advising the operator to "remove the recorded values first" — advice for a condition
+the screen was guessing at, naming no way to carry it out. The two refusals the server actually issues are now
+recognised by their codes and report what the server said; a conflict carrying neither code is a concurrent
+writer, which is what the fallback sentence now describes.
+
+## The asset cache policy is stated once instead of twice
+
+The supplied proxy configuration wrote the one-year immutable policy as a directive PAIR — an expiry directive
+plus a cache-control header — and the proxy emits one field line for each, because the expiry directive always
+contributes a cache-control of its own and offers no way to suppress it. A client joins repeated field lines
+with commas, so the two spellings were equivalent and the effective policy was already correct. A response
+carrying the same field name twice nevertheless reads as a configuration mistake to every operator and
+scanner that meets it, so it is now written once, byte-for-byte the policy the pair produced, in the order the
+pair produced it.
+
+This drops the expiry date the pair also emitted. That field is the HTTP/1.0 mechanism and any cache that
+understands max-age is required to ignore it, so no client reaching this container reads it. The policy the
+migration plan specifies is preserved exactly; it is the SPELLING that changed. The snippet is shared by both
+the plain-HTTP and the TLS listener, so the change reaches both.
+
+## A body the proxy refused was answered in HTML naming the proxy
+
+The proxy's body limit and the API's largest limit are deliberately one number, so a body that exceeds it
+exceeds both — but the proxy sees it first and, left to itself, answered with its own HTML error page naming
+itself. A caller therefore received a different contract for "too large" depending on which of the two layers
+happened to refuse, and the single-page application's error interceptor could recover neither the reason nor
+the correlation reference from the HTML one.
+
+The proxy now answers that condition with a problem document, following the pattern the configuration already
+used for an unreachable API. The type, title and explanation are copied from the API's own answer rather than
+reworded, so the two documents are indistinguishable and a caller need never discover that two answers to one
+question exist. It carries no retry hint, because unlike an unreachable upstream this condition will not
+resolve on its own — the same request repeated unchanged is refused identically. The only value interpolated
+is the correlation identifier, which the configuration constrains to hexadecimal and hyphens precisely so it
+can be placed in a document the proxy cannot escape for us.
+
+## The page read and replace are an interface without a screen
+
+`GET /api/v1/tabs/{tabId}` and `PUT /api/v1/tabs/{tabId}` are implemented, authorised, validated and covered by
+integration tests, and **no screen in the administration console calls either of them**. There is no page
+management route. That is a scope decision and it is written down here so that it cannot be mistaken later for
+a screen somebody forgot, or for two methods on a transport that a tidying pass should delete.
+
+The console does use the collection. `GET /api/v1/portals/{portalId}/tabs` is read as a lookup, because a
+module placement belongs to a page and the module screens have to be able to say which one — so the page
+transport exists, is consumed, and is exercised by real screens. It is only the two by-identifier members that
+no screen reaches.
+
+Three separate provisions of the migration plan make a page management screen a change of scope rather than a
+defect to be patched. The plan enumerates this console's routes exhaustively, and not one of the
+twenty-five addresses a page. It lists the console's in-scope feature areas, and they are portal, module, user,
+role and authentication — there is no page area. And it describes the page transport itself as a lookup that
+exists *even though there is no page feature folder*, which is a statement about intent rather than an
+accident of ordering. Wiring a route to these endpoints would contradict all three at once.
+
+What was done instead is to make the situation explicit at all four places a reader can meet it: the controller
+carries the scope decision and each of the two actions points at it, so the published interface description
+states plainly that the capability has no client; the two transport members carry the same note, phrased as an
+instruction not to delete them and not to wire a route to them; and the project's own README records it beside
+the rest of the interface description. The methods stay because the transport is the typed client for the page
+resource as the interface actually publishes it, and because a page management area added later should reach
+these endpoints through the one place that already knows how, rather than opening a second path to them.
+
+Nothing is owed on the server for that later release. Both actions already resolve the tenant from the caller's
+signed token, already evaluate the page view and page edit policies, and already hold a submitted page name to
+the same visible-character rule the role names are held to — so a page management screen would be presentation
+work rather than a reopening of the authorisation or validation questions.
+
+
+## The subscription code is graded when it is authored, never when it is redeemed
+
+DotNetNuke lets an operator put an RSVP code on a role so that anyone holding the code can add themselves to
+it. `Roles.RSVPCode` is `nvarchar(50)` and the legacy editor applied no strength rule whatsoever, so codes as
+short and as guessable as `GOLD` were stored and worked.
+
+This migration grades a code, and the grading is deliberately confined to one of three cases so that no
+existing arrangement stops working:
+
+- **Redeeming** a code is never graded. Whatever is stored is accepted from whoever presents it. Grading here
+  would lock existing holders out of roles they already have a valid code for, which is a data-loss outcome
+  dressed as hardening.
+- **Authoring or changing** a code is graded: at least twelve characters, and letters mixed with digits or
+  punctuation. A refusal is `role.rsvp_code_too_weak` at 400. Anyone holding the code can join the role
+  without an administrator's involvement, so the code is a credential and is treated as one — AAP 0.7.5.5
+  requires exactly this reading of a self-service join secret.
+- **Re-submitting the code already stored, unchanged**, is not graded. This is the case that matters in
+  practice: an operator opening a role to change its description would otherwise be refused because of a code
+  they never touched, and the only way forward would be to invent a new code and break every holder of the old
+  one. The server compares the submitted code against the stored one and skips the rule when they are equal.
+
+The client mirrors the same three cases rather than declaring native `minlength` and `pattern` constraints,
+because a native constraint is provenance-blind: it cannot tell an authored code from an untouched one, so it
+would block the save the third case exists to allow. The field's help text states the rule and the exemption
+together.
+
+## Empty billing and trial terms are stored as zero, one and none, and the screen now says so
+
+`EditRoles.ascx.vb:L212-L214` is literally `sglServiceFee = 0`, `intBillingPeriod = 1` and
+`strBillingFrequency = "N"`. Leaving either box of a period pair empty therefore does not store "unknown" — it
+stores a real zero fee, a real period of one, and the frequency code for none. There is no way to express
+"unknown" through that form, and this migration does not add one, because the coercion is the legacy's own
+behaviour and the columns are not nullable in the shape the legacy writes them.
+
+What changed is that the form now discloses it. Both period fields' help text states that leaving either box
+empty, or choosing no frequency, stores no billing terms — the fee as zero and the period as one — and that
+there is no way to save these as unknown. The trial help adds the second condition the legacy applied: a trial
+is only stored when a service fee is present.
+
+## One stored amount now has one published spelling
+
+`Roles.ServiceFee`, `Roles.TrialFee` and `Portals.HostFee` are SQL `money`, which is `decimal(19,4)`. A .NET
+`decimal` remembers the scale it was constructed with, so an amount submitted as `4.5` was stored as `4.5`
+while an amount read back from the column arrived as `4.5000` — and both were published verbatim. A created
+role therefore reported `serviceFee: 4.5` in its `201` and `serviceFee: 4.5000` on the next `GET`, for a value
+that had not changed. Two spellings of one amount is a contract defect: a client comparing a response against
+what it sent sees a difference that is not there.
+
+Amounts bound for a `money` column are now normalised to the column's own scale before they are stored, so
+there is exactly one stored form and exactly one published form. The rounding that was already applied is
+unchanged; only the scale is pinned.
+
+One boundary deserves stating because it is easy to conflate with the above: a **negative** hosting fee is
+stored verbatim. Flooring belongs to the role service fee, which the legacy clamped at zero, and not to the
+portal hosting charge, which the legacy did not.
+
+## Zero, unrecognised and absent are three different things on the roles grid
+
+A role's billing and trial period columns previously painted a stored zero, a stored period whose frequency
+code cannot be named, and an absent period identically — as a bare number or an empty cell. They are three
+different facts and now read as three:
+
+- a stored period of zero states that there is no recurring period;
+- a stored period whose frequency code is not one of `D`, `W`, `M`, `Y` or `N` paints the code muted, with a
+  tooltip and screen-reader text saying the unit is not recognised so the period is unknown. The code itself is
+  still painted verbatim, because `Roles.BillingFrequency` is `char(1)` constrained by a foreign key and the
+  character is load-bearing data;
+- an absent period uses the same absent-value marker as every other listing in the console.
+
+An **absent** frequency is deliberately not described as "not recognised". Absence is the commonest state on
+the grid and saying a doubtful thing about it would hang a doubt on almost every row.
+
+## A role membership date that was never recorded now says so
+
+`SecurityRoles.ascx.vb:L377-L383 FormatDate` returns the empty string for a missing effective or expiry date,
+and the membership grid reproduced it — four cells containing literally zero characters, not a space and not a
+dash. Every other grid in this console had already moved off that legacy empty string to the shared
+absent-value marker. The membership grid now uses it too, so a bound that was never recorded is announced as
+"not recorded" rather than as silence. Whether a bound counts as unrecorded is decided by the same parser the
+cell paints with, so a cell that renders as empty can never be reported as present.
+
+## Changing the display name format asks before it renames
+
+Saving a changed display name format sweeps every account in the tenant and rewrites its display name,
+replacing values an operator typed by hand. `UserSettings.ascx.vb` performs the same sweep, so the behaviour is
+faithful parity — but the legacy reported the count only afterwards, and there is no undo.
+
+The save is now intercepted when the format is actually changing, and a confirmation states the consequence,
+the number of accounts the sweep reaches, and that there is no undo, with a suggestion to export the current
+names first. Declining writes nothing and keeps the pending edit intact. The test is against the policy as the
+server sent it rather than the form's dirty state, so a format typed over and typed back asks nothing.
+
+Two details of that confirmation are worth recording because both were wrong first:
+
+- The count is stated as an upper bound — "up to N accounts will be renamed" — not as a certainty. The number
+  available before the write is the count of accounts the sweep REACHES, which is every account; the number it
+  CHANGES is smaller, because an account already matching the format is left alone. Establishing the exact
+  figure in advance would require evaluating the format against every account, which is the write itself. The
+  confirmation afterwards reports what actually happened.
+- The dialogue supplies its own heading. The shared confirmation component was written for deletions and
+  defaults its heading to "Confirm Delete" when a caller passes none, which is how a warning about renaming
+  came to be headed as a deletion.
+
+## Two wordings corrected, and four left exactly as the legacy wrote them
+
+Corrected, because each promised something untrue:
+
+- The module listing's filter advisory said the filter matched the module "title or name". The endpoint
+  matches the title alone, so a module that matched on name only was reported as having been looked for. It
+  now names only what is matched.
+- The module removal confirmation said "Delete This Module" for a command that is placement-scoped. The
+  legacy question is kept verbatim and a sentence is appended stating which case the operator is in: a module
+  on every page loses this page's placement only, while a module with a single placement loses its last
+  placement and is recycled with it. That second consequence is the placement-delete rule this migration
+  corrected, and it is the reason the loose wording had to change.
+
+Left alone, because each is the legacy's own and carries no behaviour:
+
+- The profile property category help text reads "grouped when dislayed to the user". The misspelling is
+  `EditProfileDefinition.ascx.resx:142` reproduced byte for byte. It was corrected and then restored, under the
+  same rule that preserves the "Update" label on an Add form and the 0/1/N coercion above: a defect discovered
+  in the legacy is annotated in place and not fixed unless it blocks delivery, and a misspelling blocks
+  nothing. A spec guards the spelling so it cannot be silently "fixed" later.
+- The role group creation confirmation says the group was "added" while a role is "created". The wording was
+  aligned and then reverted, because the duplicate-name refusal beside it is legacy verbatim and reads "The new
+  group was not added." Matching a sibling screen would have made the success and failure sentences on the same
+  screen disagree, and an operator sees one of those two together whereas they never see a role confirmation
+  beside a group confirmation.
+- The portal Description and Keywords fields accept 475 characters on the settings screen and 500 on the
+  creation screen, for the same `nvarchar(500)` columns, because `sitesettings.ascx` declares `MaxLength="475"`
+  and `signup.ascx` declares `maxlength="500"`. Neither number is moved to match the other. Each screen states
+  the bound it enforces, through the shared field component that renders the bound from the control's own
+  attribute — a sentence added per screen was removed again once it proved to duplicate that shared one.
+- The three spellings of "nothing chosen" — `<None Specified>` on page selectors, `Not Specified` on the module
+  settings radio list, and a fuller sentence on the account redirect selectors — are two legacy resources plus
+  one deliberate divergence. Absence means something different on a redirect selector, where it means the
+  account stays where it is, from a page selector, where it means the portal has no such page.
+
+## A required field no longer offers a value it then refuses
+
+The profile property Data Type control is a numeric input and opened pre-filled with `-1`, the legacy
+`Null.NullInteger` field initialiser. The form's own validator then refused it as missing, so the field both
+offered and rejected the same value. `-1` means "nothing chosen yet", and the control now opens empty, which is
+what that looks like. Nothing downstream moved: `-1` was never submittable, and the submit path already refused
+a null data type before composing a request. An existing declaration that stores `-1` still loads it, and the
+listing still paints it behind its own reference wording.
+
+## The data type catalogue is not part of this console, and the column says so
+
+`ProfilePropertyDefinition.DataType` stores a list entry identifier whose name is only readable through the
+DotNetNuke list subsystem, which AAP 0.2.2.2 places out of scope. The name therefore cannot be resolved here
+without porting an excluded subsystem. The column paints the stored reference, and one sentence under the grid
+states the reason once for the whole column rather than leaving eight rows each looking like a rendering fault.
+
+## The default text colour now has a name
+
+`body` declared no `color` at all, so every unqualified run of text in the application resolved to the user
+agent's black — the single most-used colour in the product, reachable by no token name and auditable by
+nothing. The legacy `.Normal` class likewise declares family, size and weight and no colour, so black was
+already the faithful result. A `--color-text` token was added holding that same black and `body` now declares
+it. No pixel changes; what changes is that the vocabulary is complete.
+
+## A frequency unit is announced once
+
+The roles grid frequency cells emitted their screen-reader text twice — "WWeekWeek", "NNoneNone" and so on —
+because a hidden span naming the unit sat inside one template branch while an unconditional sibling below it
+resolved to the same word. The branch span was removed and the unconditional one kept, because it is the only
+branch-independent accessible text on the template and it is what still announces a code the naming helper
+cannot resolve.
+
+## Two decisions deliberately deferred rather than dropped
+
+- **The role membership grid does not persist its sort order in the address.** Every other listing does. It was
+  left as it is rather than changed, and it is recorded here so the inconsistency is visible.
+- **An address that names a role group just deleted keeps the dead key until the next navigation.** The listing
+  itself recovers — the selector falls back to the default and the correct roles are shown — and the dead key is
+  healed on every route back into the screen by two mechanisms that are both tested. A correction that rewrote
+  the address was written, measured and removed, because supplying a second navigation source cost a duplicate
+  read of the whole listing on every group deletion: the address subscription issues the listing read on every
+  emission. A momentarily inaccurate URL string on a screen showing the correct rows was judged the smaller
+  cost.

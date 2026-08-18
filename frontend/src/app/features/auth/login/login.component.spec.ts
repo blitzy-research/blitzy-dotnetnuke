@@ -179,6 +179,8 @@ function currentUser(overrides: Partial<CurrentUser> = {}): CurrentUser {
     email: 'admin@example.test',
     isSuperUser: false,
     isPortalAdministrator: false,
+    mustChangePassword: false,
+    mustUpdateProfile: false,
     roles: ['Administrators'],
     permissions: ['VIEW'],
     ...overrides,

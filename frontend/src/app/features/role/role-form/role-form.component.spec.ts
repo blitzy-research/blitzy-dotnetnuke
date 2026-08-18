@@ -8,6 +8,7 @@ import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guar
 import { NotificationService } from '../../../core/services/notification.service';
 import { AuthStore } from '../../../core/state/auth.store';
 import { PortalStore } from '../../../core/state/portal.store';
+import { ListReturnStore } from '../../../core/state/list-return.store';
 import { RoleStore } from '../../../core/state/role.store';
 import { RoleFormComponent } from './role-form.component';
 
@@ -20,6 +21,7 @@ const TENANT_ID = -1;
 import type { WritableSignal } from '@angular/core';
 import type { ComponentFixture } from '@angular/core/testing';
 import type { TestRequest } from '@angular/common/http/testing';
+import type { Params } from '@angular/router';
 import type { ProblemDetails } from '../../../core/models/problem-details.model';
 import type {
   BillingFrequency,
@@ -4378,6 +4380,284 @@ describe('RoleFormComponent', () => {
 
         expect(submittedUpdate(7)).withContext('the explicit command is unaffected').toBeTruthy();
       });
+    });
+  });
+  /**
+   * AREA 17 — the invitation-code strength rule, and the legacy codes it must not lock out.
+   *
+   * The rule is net-new hardening: an invitation code is a shared secret that grants role membership, and
+   * the legacy application bounded it only above, so a one-character code was accepted and thereafter
+   * redeemable by anyone who guessed it. The rule is therefore held against AUTHORING.
+   *
+   * ⚠ THE GRANDFATHERING IS WHAT MAKES IT SURVIVABLE, and these cases exist to keep it. Held against every
+   * submission, the rule made a role carrying a pre-rule code un-editable: amending its description posts
+   * the stored code back and the rule refuses it, so the only escape is rotating the code - which
+   * invalidates it for every member holding it. AAP 0.7.5.5 forbids exactly that class of migration-time
+   * tightening. The screen mirrors the server: it judges the value being WRITTEN, not the value submitted.
+   */
+  describe('AREA 17 — authoring an invitation code, and grandfathering a stored one', () => {
+    /** A code that satisfies the rule: at least twelve characters carrying two character classes. */
+    const STRONG_CODE = 'JOINUS-2026x';
+
+    /** The wording both sides report, mirroring `RoleTermsRules.RsvpCodeTooWeakMessage`. */
+    const TOO_WEAK =
+      'An RSVP Code must be at least 12 characters long and must mix letters with digits or punctuation.';
+
+    /**
+     * A stored short code is left alone. This is the case the server fix admits and the screen must not
+     * contradict - a refusal here would block the save before the request was ever sent, reintroducing the
+     * trap one layer higher.
+     */
+    it('says nothing about a stored short code that has not been touched', () => {
+      editMode(role(7, { rsvpCode: 'JOIN' }));
+
+      expect(input(CONTROL_ID.rsvpCode).value).withContext('the stored code is rendered').toBe('JOIN');
+      expect(messagesFor(CONTROL_ID.rsvpCode))
+        .withContext('nothing is authored, so there is nothing to judge')
+        .toEqual([]);
+    });
+
+    /**
+     * THE PAIRED HALF of the case above: the untouched short code must not merely be silent, it must still
+     * SAVE. A screen that reported nothing but refused to submit would be just as broken.
+     */
+    it('saves an unrelated edit while a stored short code rides along unchanged', () => {
+      editMode(role(7, { rsvpCode: 'JOIN' }));
+      type(CONTROL_ID.description, 'Amended description');
+      press('Update');
+
+      const sent: UpdateRoleRequest | undefined = submittedUpdate(7);
+      expect(sent).withContext('the update reaches the server').toBeTruthy();
+      expect(sent?.rsvpCode).withContext('the stored code is carried back verbatim').toBe('JOIN');
+    });
+
+    /**
+     * Rotating a weak code IN is authoring, and is refused before the round trip. This is the guidance the
+     * register asked for: the caller learns of the rule while typing rather than through a 400 after saving.
+     */
+    it('refuses a different weak code, naming the rule', () => {
+      editMode(role(7, { rsvpCode: 'JOIN' }));
+      type(CONTROL_ID.rsvpCode, 'JOIN2008');
+
+      expect(messagesFor(CONTROL_ID.rsvpCode)).withContext('the rule is stated').toEqual([TOO_WEAK]);
+    });
+
+    /**
+     * Casing-only change counts as authoring, matching the server's ordinal, case-SENSITIVE comparison. The
+     * value is a shared secret rather than a name, so a different casing is a different secret.
+     */
+    it('treats a casing-only change as authoring', () => {
+      editMode(role(7, { rsvpCode: 'JOIN' }));
+      type(CONTROL_ID.rsvpCode, 'join');
+
+      expect(messagesFor(CONTROL_ID.rsvpCode))
+        .withContext('a different secret is being authored')
+        .toEqual([TOO_WEAK]);
+    });
+
+    /** Restoring the stored value clears the refusal, so the rule is recoverable rather than sticky. */
+    it('clears the refusal once the stored code is typed back', () => {
+      editMode(role(7, { rsvpCode: 'JOIN' }));
+      type(CONTROL_ID.rsvpCode, 'JOIN2008');
+      expect(messagesFor(CONTROL_ID.rsvpCode)).withContext('refused first').toEqual([TOO_WEAK]);
+
+      type(CONTROL_ID.rsvpCode, 'JOIN');
+
+      expect(messagesFor(CONTROL_ID.rsvpCode)).withContext('nothing is authored again').toEqual([]);
+    });
+
+    /** A strong replacement is admitted, so the rule permits the rotation it is asking for. */
+    it('admits a strong replacement', () => {
+      editMode(role(7, { rsvpCode: 'JOIN' }));
+      type(CONTROL_ID.rsvpCode, STRONG_CODE);
+
+      expect(messagesFor(CONTROL_ID.rsvpCode)).withContext('the rule is met').toEqual([]);
+    });
+
+    /**
+     * Creation stores nothing, so every non-empty value there is authored and the rule always applies. This
+     * is the arm that keeps the hardening real once the unchanged case is admitted.
+     */
+    it('refuses a weak code on the creation route, where nothing is stored', () => {
+      createMode();
+      type(CONTROL_ID.rsvpCode, 'JOIN');
+
+      expect(messagesFor(CONTROL_ID.rsvpCode))
+        .withContext('nothing is stored, so this is authoring')
+        .toEqual([TOO_WEAK]);
+    });
+
+    /** An empty code is not a code, and clearing one must stay permitted. */
+    it('permits clearing the code altogether', () => {
+      editMode(role(7, { rsvpCode: 'JOIN' }));
+      type(CONTROL_ID.rsvpCode, '');
+
+      expect(messagesFor(CONTROL_ID.rsvpCode)).withContext('an absent code breaks no rule').toEqual([]);
+    });
+
+    /**
+     * The requirement is disclosed BEFORE a caller types, which is what the register asked for. Both halves
+     * are asserted: the rule itself, and the fact that a stored code is exempt - a hint stating only the
+     * rule would leave an administrator believing a working legacy code was broken.
+     */
+    it('discloses the rule and the exemption in the field help', () => {
+      editMode(role(7, { rsvpCode: 'JOIN' }));
+
+      // The help sits behind a disclosure, so it is absent from the document until opened. Asserting the
+      // collapsed field's text would pass against an EMPTY help string, which is why the toggle is pressed
+      // first and the disclosure's own paragraph is the thing read.
+      const field = fieldOf(CONTROL_ID.rsvpCode);
+      queryOrFail<HTMLButtonElement>(field, 'button.form-field__help-toggle').click();
+      fixture.detectChanges();
+
+      const help = textOf(queryOrFail<HTMLElement>(fieldOf(CONTROL_ID.rsvpCode), 'p.form-field__help'));
+
+      expect(help).withContext('the length is stated').toContain('12');
+      expect(help).withContext('the mixing rule is stated').toContain('mix letters');
+      expect(help).withContext('the exemption is stated').toContain('keeps working');
+    });
+
+    /**
+     * ⚠ NO NATIVE `minlength` OR `pattern` ON THE CONTROL. Both are provenance-blind, so either would refuse
+     * a stored short code the role is entitled to keep - the very trap this area exists to prevent. This
+     * case pins their absence so a later "helpful" addition cannot silently reinstate it.
+     */
+    it('carries no provenance-blind native constraint', () => {
+      editMode(role(7, { rsvpCode: 'JOIN' }));
+      const control = input(CONTROL_ID.rsvpCode);
+
+      expect(control.getAttribute('minlength')).withContext('no native minimum').toBeNull();
+      expect(control.getAttribute('pattern')).withContext('no native pattern').toBeNull();
+      expect(control.checkValidity())
+        .withContext('the browser must not block the stored code')
+        .toBeTrue();
+    });
+  });
+  /**
+   * AREA 18 — the remembered listing coordinate, and the group that is no longer there.
+   *
+   * ⚠ THE MEASURED DEFECT: A SAVE THAT SUCCEEDED LANDED ON A LISTING REPORTING FAILURE, WITH THE NEW ROLE
+   * NOWHERE IN IT. The listing remembers where the operator was so a save does not lose their place, and that
+   * is right - but "where they were" is remembered as an ADDRESS, and an address naming a group that has
+   * since been deleted is a request the server answers 404 to. The role was created; it simply could not be
+   * seen, which is indistinguishable from data loss.
+   */
+  describe('AREA 18 — returning to a listing whose group may be gone', () => {
+    /** Remembers a listing coordinate narrowed to one group, as the listing itself would have. */
+    function rememberNarrowedTo(roleGroupId: number): void {
+      TestBed.inject(ListReturnStore).remember(ROLE_LIST_ROUTE, {
+        group: String(roleGroupId),
+        currentpage: '2',
+      });
+    }
+
+    /** The query parameters the screen navigated back to. */
+    function returnedWith(): Params {
+      const call: readonly unknown[] | undefined = navigateSpy.calls.mostRecent()?.args;
+      const options = call?.[1] as { queryParams?: Params } | undefined;
+
+      return options?.queryParams ?? {};
+    }
+
+    /**
+     * A narrowing the group set still contains is kept, which is the whole point of remembering it. Asserted
+     * FIRST, because a guard that dropped every narrowing would satisfy every case below and quietly undo the
+     * feature it is protecting.
+     */
+    it('keeps a remembered narrowing whose group still exists', () => {
+      rememberNarrowedTo(4);
+      editMode(role(7), { groups: [roleGroup(4)] });
+      fillRoleName('Renamed');
+
+      press('Update');
+      submittedUpdate(7);
+
+      expect(returnedWith()['group']).withContext('the operator keeps their place').toBe('4');
+      expect(returnedWith()['currentpage']).withContext('including their page').toBe('2');
+    });
+
+    /**
+     * A narrowing naming a group the set does NOT contain is dropped, so the return address cannot be refused.
+     * The rest of the coordinate is left alone - only the unusable part is removed.
+     */
+    it('drops a remembered narrowing whose group has gone, keeping the rest', () => {
+      rememberNarrowedTo(42);
+      editMode(role(7), { groups: [roleGroup(4)] });
+      fillRoleName('Renamed');
+
+      press('Update');
+      submittedUpdate(7);
+
+      expect(returnedWith()['group'])
+        .withContext('a group that is not there cannot be returned to')
+        .toBeNull();
+      expect(returnedWith()['currentpage'])
+        .withContext('only the unusable part is dropped')
+        .toBe('2');
+    });
+
+    /**
+     * ⚠ AN UNREAD GROUP SET IS NOT AN EMPTY ONE, and the guard distinguishes them by asking whether the read
+     * SETTLED rather than whether the set has members. Its unsettled arm is DEFENSIVE rather than reachable,
+     * and this case is what establishes that: no save can happen under an unsettled group set, because the
+     * form is not offered until the set arrives. Recorded so the arm is not mistaken for dead code and
+     * removed - the latch is set on the failure path too, so "unsettled" means "in flight", and the day this
+     * screen renders its fields before that read completes, the arm is the only thing standing between a
+     * valid remembered narrowing and being discarded on a guess.
+     */
+    it('offers no save at all while the group set is still in flight', () => {
+      rememberNarrowedTo(42);
+
+      fixture = TestBed.createComponent(RoleFormComponent);
+      fixture.componentRef.setInput('roleId', '7');
+      fixture.detectChanges();
+
+      const groups: TestRequest = expectRequest('GET', ROLE_GROUPS_URL, 'the group read');
+      expectRequest('GET', roleUrl(7), 'the role read').flush(envelope(role(7)));
+      fixture.detectChanges();
+
+      expect(command('Update'))
+        .withContext('the fields are not offered before the group set arrives, so nothing can be saved')
+        .toBeUndefined();
+      expect(navigateSpy).withContext('and nothing has navigated').not.toHaveBeenCalled();
+
+      // Settling the read is what reveals the form, which is the paired half of the same fact.
+      groups.flush(envelope([roleGroup(4)]));
+      fixture.detectChanges();
+
+      expect(command('Update')).withContext('and it is offered once the set arrives').toBeDefined();
+    });
+
+    /**
+     * A genuinely EMPTY group set is settled knowledge, and a narrowing cannot survive it. This is the case
+     * the length-based test could never express: the set holds nothing AND that is the answer.
+     */
+    it('drops a remembered narrowing when the group set is settled and empty', () => {
+      rememberNarrowedTo(42);
+      editMode(role(7), { groups: [] });
+      fillRoleName('Renamed');
+
+      press('Update');
+      submittedUpdate(7);
+
+      expect(returnedWith()['group'])
+        .withContext('an answered empty set contains no group to return to')
+        .toBeNull();
+    });
+
+    /**
+     * The listing's own intent tokens are not keys, so there is no group to look up and nothing to
+     * invalidate. Dropping one would silently reset the operator's chosen scope.
+     */
+    it('leaves a non-numeric intent token exactly as remembered', () => {
+      TestBed.inject(ListReturnStore).remember(ROLE_LIST_ROUTE, { group: 'all' });
+      editMode(role(7), { groups: [roleGroup(4)] });
+      fillRoleName('Renamed');
+
+      press('Update');
+      submittedUpdate(7);
+
+      expect(returnedWith()['group']).withContext('an intent is not a key').toBe('all');
     });
   });
 });

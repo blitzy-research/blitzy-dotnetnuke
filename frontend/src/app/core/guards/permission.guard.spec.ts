@@ -240,6 +240,8 @@ function identity(overrides: Partial<Identity> = {}): Identity {
     email: 'admin@example.test',
     isSuperUser: false,
     isPortalAdministrator: false,
+    mustChangePassword: false,
+    mustUpdateProfile: false,
     roles: [],
     permissions: [],
     ...overrides,

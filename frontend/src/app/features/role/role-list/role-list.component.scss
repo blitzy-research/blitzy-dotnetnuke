@@ -158,6 +158,52 @@
   @include mx.visually-hidden;
 }
 
+// A COMMAND THAT IS NOT OFFERED, and the reason it is not. The two roles the portal depends on cannot be
+// edited or destroyed, so their cells carry a dash where the other rows carry a control. The dash is
+// decorative and the sentence behind it is clipped rather than removed, so a reader is told WHY the command
+// is absent while the painted cell stays as quiet as an empty one - a visible sentence in a 52px command
+// track would wrap to several lines and pull every row of the grid taller.
+.role-list__row-action-withheld {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-block-size: var(--target-size-compact);
+  color: var(--color-text-muted);
+}
+
+.role-list__row-action-reason {
+  @include mx.visually-hidden;
+}
+
+// THE CONDITION BEHIND AN ABSENT COMMAND, sitting in the row of filter controls where that command would be.
+// Muted and at the small measure, because it explains a control rather than being one, and it must not read
+// as a refusal of something the operator just attempted.
+// WHAT THE GRID IS ANSWERING, said in words. Muted and small for the same reason the note below is: it
+// describes the rows rather than being a control, and it sits under the filter row where the operator's
+// attention already is.
+.role-list__filter-disclosure {
+  margin: var(--space-1) 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-tight);
+}
+
+.role-list__search {
+  // The shared control sizes itself; this only stops it stretching to the whole filter row, where it would
+  // push the group selector and its two commands out of reach on a narrow viewport.
+  flex: 0 1 var(--control-inline-size-lg);
+  min-inline-size: 0;
+}
+
+.role-list__filter-note {
+  margin: 0;
+  align-self: center;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-tight);
+  max-inline-size: var(--control-inline-size-lg);
+}
+
 // THE FREE-ROLE STATE, painted as a word rather than as a price. Muted, because it is a state rather than an
 // amount and must not compete with the figures in the rows around it, and italic so the distinction survives
 // for a reader who perceives no colour at all — colour is never the only carrier of meaning here.

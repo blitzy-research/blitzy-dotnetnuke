@@ -2531,8 +2531,39 @@ public class ModuleServiceTests
     /// module survives on the pages it still occupies.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// A SECOND PLACEMENT IS STAGED DELIBERATELY, because "the module survives" is only true while it still
+    /// occupies a page: withdrawing the LAST placement recycles the module, which the test below asserts.
+    /// </remarks>
     [Fact]
     public async Task DeleteModule_WithdrawsOneNamedPlacementWithoutDeletingTheModule()
+    {
+        Harness harness = Harness.Ready();
+        Module module = harness.LookupModule!;
+        TabModule placement = module.TabModules.Single();
+        harness.PlacementsByModuleId[ModuleId] = [placement, Placement(OtherTabModuleId, SecondTabId)];
+
+        Result outcome = await harness.Service
+            .DeleteModuleAsync(PortalId, ModuleId, TabModuleId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.RemovedPlacements.Should().ContainSingle().Which.Should().BeSameAs(placement);
+        module.IsDeleted.Should().BeFalse();
+        harness.InvalidatedTabIds.Should().Equal(new[] { TabId });
+    }
+
+    /// <summary>
+    /// Withdrawing the LAST placement recycles the module, so no live module is left standing on no page.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The legacy provider did exactly this in the same place: <c>ModuleController.vb</c>
+    /// <c>DeleteTabModule</c> L847-L855 removes the row and then, "check if all modules instances have been
+    /// deleted", soft-deletes the module when none remain. Without it the row was live on no page and its own
+    /// endpoints disagreed about whether it existed at all.
+    /// </remarks>
+    [Fact]
+    public async Task DeleteModule_WithdrawingTheLastPlacementRecyclesTheModule()
     {
         Harness harness = Harness.Ready();
         Module module = harness.LookupModule!;
@@ -2543,8 +2574,11 @@ public class ModuleServiceTests
 
         outcome.IsSuccess.Should().BeTrue();
         harness.RemovedPlacements.Should().ContainSingle().Which.Should().BeSameAs(placement);
-        module.IsDeleted.Should().BeFalse();
-        harness.InvalidatedTabIds.Should().Equal(new[] { TabId });
+        module.IsDeleted.Should().BeTrue();
+
+        // ONE commit publishes both the row removal and the recycle flag, so no reader observes a live
+        // module with no placement.
+        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
     }
 
     /// <summary>Withdrawing a placement removes its settings too.</summary>
@@ -2628,6 +2662,14 @@ public class ModuleServiceTests
     {
         Harness harness = Harness.Ready();
 
+        // A second placement survives the withdrawal, so the module genuinely does survive it and the
+        // placement event is the only record this operation owes.
+        harness.PlacementsByModuleId[ModuleId] =
+        [
+            harness.LookupModule!.TabModules.Single(),
+            Placement(OtherTabModuleId, SecondTabId),
+        ];
+
         Result outcome = await harness.Service
             .DeleteModuleAsync(PortalId, ModuleId, TabModuleId, CancellationToken.None);
 
@@ -2640,6 +2682,32 @@ public class ModuleServiceTests
         record.EventName.Should().NotBe(ModuleDeletedEventName);
         record.Properties["Operation"].Should().Be("RemovePlacement");
         record.Properties["TabModuleId"].Should().Be(TabModuleId.ToString(CultureInfo.InvariantCulture));
+    }
+
+    /// <summary>
+    /// Withdrawing the LAST placement is recorded twice: once as the placement that went, and once as the
+    /// module that was recycled with it, because both facts happened.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task DeleteModule_WithdrawingTheLastPlacementRecordsTheRecycleAsWell()
+    {
+        Harness harness = Harness.Ready();
+
+        Result outcome = await harness.Service
+            .DeleteModuleAsync(PortalId, ModuleId, TabModuleId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.AuditRecords.Should().HaveCount(2);
+
+        AuditEvent placementRecord = harness.AuditRecords[0];
+        placementRecord.EventName.Should().Be(ModulePlacementDeletedEventName);
+        placementRecord.Properties["RecycledWithLastPlacement"].Should().Be(bool.TrueString);
+
+        AuditEvent recycleRecord = harness.AuditRecords[1];
+        recycleRecord.EventName.Should().Be(ModuleDeletedEventName);
+        recycleRecord.Properties["Operation"].Should().Be("Recycle");
+        recycleRecord.Properties["Cause"].Should().Be("LastPlacementRemoved");
     }
 
     /// <summary>
@@ -3484,18 +3552,53 @@ public class ModuleServiceTests
         outcome.Value.Should().OnlyContain(row => row.DesktopModuleId == DesktopModuleId);
     }
 
-    /// <summary>A package identifier that names nothing yields an empty sequence rather than a failure.</summary>
+    /// <summary>
+    /// A package identifier that names nothing is reported ABSENT rather than answered with an empty
+    /// sequence.
+    /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The empty-sequence answer this replaces could not be told apart from an installed package that
+    /// declares nothing here, so a caller holding a stale or mistyped identifier was told the package exists
+    /// and is empty. The two cases are now distinct, and the companion test below pins the other half.
+    /// </remarks>
     [Fact]
-    public async Task ListDesktopModuleDefinitions_ReportsAnUnknownPackageAsEmpty()
+    public async Task ListDesktopModuleDefinitions_ReportsAnUnknownPackageAsAbsent()
     {
         Harness harness = Harness.Ready();
 
         Result<IReadOnlyList<ModuleDefinitionDto>> outcome = await harness.Service
             .ListDesktopModuleDefinitionsAsync(PortalId, 987654, CancellationToken.None);
 
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be("module.package_not_found");
+        outcome.Reason!.Message.Should().Be("Module package 987654 is not installed.");
+    }
+
+    /// <summary>
+    /// An installed package that declares no definition this tenant may use still answers with an empty
+    /// sequence, which is the case the absent answer above must not swallow.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ListDesktopModuleDefinitions_ForAnInstalledPackageDeclaringNothingHere_IsEmpty()
+    {
+        Harness harness = Harness.Ready();
+
+        // Installed, and named by no definition in the tenant's catalogue.
+        const int OtherPackageId = 987654;
+        harness.Packages[OtherPackageId] = new DesktopModule
+        {
+            DesktopModuleId = OtherPackageId,
+            ModuleName = "Unused_Package",
+            FriendlyName = "Unused Package",
+        };
+
+        Result<IReadOnlyList<ModuleDefinitionDto>> outcome = await harness.Service
+            .ListDesktopModuleDefinitionsAsync(PortalId, OtherPackageId, CancellationToken.None);
+
         outcome.IsSuccess.Should().BeTrue();
-        outcome.Value.Should().BeEmpty("a catalogue read answers with a sequence, never with an absence");
+        outcome.Value.Should().BeEmpty("the package IS installed and simply declares nothing here");
     }
 
     /// <summary>Exporting content requires a request.</summary>

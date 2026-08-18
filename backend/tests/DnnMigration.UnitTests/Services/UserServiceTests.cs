@@ -165,8 +165,6 @@ public class UserServiceTests
     /// <summary>The refusal an administrative reset carries when the caller does not administer the tenant.</summary>
     private const string PasswordResetForbiddenCode = "user.password.reset-forbidden";
 
-    private const string UnlockNotLockedCode = "user.unlock.not-locked";
-
     private const string MembershipSelfForbiddenCode = "user.membership.self-forbidden";
 
     private const string ApprovalUnchangedCode = "user.approval.unchanged";
@@ -191,6 +189,13 @@ public class UserServiceTests
     private const string ProfileDefinitionDuplicateNameCode = "profile-definition.duplicate-name";
 
     private const string ProfileDefinitionNotFoundCode = "profile-definition.not-found";
+
+    /// <summary>The refusal issued for one of the four declarations the platform reserves.</summary>
+    private const string ProfileDefinitionProtectedCode = "profile-definition.protected";
+
+    /// <summary>The refusal issued when removal would destroy answers nobody has consented to losing.</summary>
+    private const string ProfileDefinitionValueCascadeCode =
+        "profile-definition.value-deletion-unacknowledged";
 
     /// <summary>The tenant has switched self-service subscription off - <c>Profile_ManageServices</c>.</summary>
     private const string ServiceDisabledCode = "user.service.disabled-forbidden";
@@ -254,6 +259,7 @@ public class UserServiceTests
             "GetProfilePropertyDefinitionAsync",
             "CreateProfilePropertyDefinitionAsync",
             "UpdateProfilePropertyDefinitionAsync",
+            "ReorderProfilePropertyDefinitionsAsync",
             "DeleteProfilePropertyDefinitionAsync",
             "ListMemberServicesAsync",
             "SubscribeToServiceAsync",
@@ -940,17 +946,32 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// A column the tenant hides is WITHHELD from every list row, and the profile reads behind the two
-    /// profile-backed columns are not issued at all.
+    /// A hidden PROFILE column is withheld by not being read at all, while every ACCOUNT column is projected
+    /// exactly as stored.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>
-    /// This asserts server-side data MINIMISATION, and it deliberately reverses an intermediate revision
-    /// that projected every column as stored and left the hiding to the client. Two things settle it
-    /// against that revision.
+    /// <para>
+    /// MIGRATION: THIS TEST USED TO REQUIRE THE ACCOUNT COLUMNS TO BE EMPTIED TOO, and requiring it was the
+    /// defect. It reduced a stored first name, last name, display name and electronic-mail address to the
+    /// empty string, a creation instant and a last-login instant to absent, and an APPROVED account to
+    /// unapproved - so a caller could not tell a member who had never been approved from one whose tenant
+    /// simply does not put that column in its grid.
+    /// </para>
+    /// <para>
+    /// The legacy grid honoured a hidden column by DECLINING TO RENDER it, at
+    /// <c>UserModuleBase.vb:L98-L115</c>; the value stayed in the row. A rendering setting decides what is
+    /// displayed, not what the account is, and reporting an approved account as unapproved is a presentation
+    /// setting changing a membership FACT.
+    /// </para>
+    /// <para>
+    /// The two profile members are different in kind and the minimisation there is real, so it is kept: an
+    /// address and a telephone number are profile ANSWERS the listing composes from a second, batched read,
+    /// and a tenant that renders neither pays for neither read. Their absence means "not requested".
+    /// </para>
     /// </remarks>
     [Fact]
-    public async Task ListUsers_WithholdsEveryColumnTheTenantHidesAndSkipsTheirReads()
+    public async Task ListUsers_WithholdsTheProfileReadsAndProjectsEveryAccountColumnAsStored()
     {
         User stored = StoredUser();
         stored.CreatedDate = new DateTime(2019, 4, 7, 9, 30, 0, DateTimeKind.Utc);
@@ -985,17 +1006,22 @@ public class UserServiceTests
         row.Username.Should().Be(Username);
         row.UserId.Should().Be(UserId);
 
-        // Every configurable account column is withheld, each one reduced to its contract's absent value.
-        row.FirstName.Should().BeEmpty("a column the tenant hides must not cross the API boundary");
-        row.LastName.Should().BeEmpty("a column the tenant hides must not cross the API boundary");
-        row.DisplayName.Should().BeEmpty("a column the tenant hides must not cross the API boundary");
-        row.Email.Should().BeEmpty("a column the tenant hides must not cross the API boundary");
-        row.CreatedDate.Should().BeNull("a nullable instant expresses withholding without inventing a value");
-        row.LastLoginDate.Should().BeNull("a nullable instant expresses withholding without inventing a value");
-        row.IsApproved.Should().BeFalse(
-            "the flag is not nullable on the contract, so withholding it is expressed as its default; the "
-            + "tenant published the setting that says the column is hidden, and the privileged detail read "
-            + "remains the way to obtain the true value");
+        // EVERY ACCOUNT COLUMN IS AS STORED, although this tenant hides all nine of them.
+        row.FirstName.Should().Be(
+            stored.FirstName,
+            "a hidden column is not rendered by a grid; it is not erased from a payload");
+        row.LastName.Should().Be(stored.LastName);
+        row.DisplayName.Should().Be(stored.DisplayName);
+        row.Email.Should().Be(
+            stored.Email,
+            "an electronic-mail address the store holds is not the empty string because a grid hides it");
+        row.CreatedDate.Should().Be(
+            stored.CreatedDate,
+            "a creation instant is a fact about the account, not a rendering choice");
+        row.LastLoginDate.Should().Be(stored.LastLoginDate);
+        row.IsApproved.Should().BeTrue(
+            "⚠ THE WORST OF THE NINE: an approved account reported as unapproved is a presentation setting "
+            + "changing a membership fact, and no caller can tell the two apart");
 
         // Profile values: withheld a step earlier, by not being fetched at all.
         row.Address.Should().BeNull("the address read is skipped when the tenant hides the column");
@@ -2002,6 +2028,189 @@ public class UserServiceTests
         harness.LookupUser!.LastName.Should().Be("Hopper");
         harness.LookupUser!.DisplayName.Should().Be("Grace Hopper");
         harness.LookupUser!.Email.Should().Be("grace.hopper@example.com");
+    }
+
+    /// <summary>
+    /// An address the caller merely ECHOED BACK is admitted on the strength of already being stored, even
+    /// when the tenant's admission expression would refuse it today.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THE MAINTENANCE DEAD END THIS CLOSES. Two independent rules govern an address. The SHAPE rule lives
+    /// in the domain and says what an address may look like at all. The ADMISSION rule is the tenant's own
+    /// stored expression, which an operator may set to anything. Only the shape rule was ever asked of the
+    /// value already sitting in the column - so re-running the admission rule over an echoed-back address
+    /// could refuse an update no submission could have satisfied.
+    /// </para>
+    /// <para>
+    /// It was not hypothetical. DotNetNuke's own default expression ends in <c>[a-zA-Z]{2,4}</c>, this
+    /// installation's seeded accounts hold <c>.local</c> addresses whose final label is five letters, and
+    /// editing an unrelated field on either account - a surname, a display name - was refused outright.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task UpdateUser_AdmitsAnUnchangedAddressTheTenantExpressionWouldNowRefuse()
+    {
+        Harness harness = Harness.Ready();
+        harness.AddMembershipSettingsSource();
+
+        // The legacy default, verbatim: a final label of two to four letters.
+        harness.StoreSetting(
+            "Security_EmailValidation",
+            @"\b[a-zA-Z0-9._%\-+']+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,4}\b");
+
+        // A stored address whose final label is FIVE letters, so the tenant's expression cannot admit it.
+        harness.LookupUser!.Email = "member@setup.local";
+
+        UpdateUserRequest request = ValidUpdateRequest();
+        request.Email = "member@setup.local";
+        request.LastName = "Hopper-Amended";
+
+        Result<UserDetailDto> outcome = await harness.Service
+            .UpdateUserAsync(PortalId, UserId, request, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue(
+            "an address already in the column is admitted by being there; the caller proposed no change to "
+            + "it and no submission could have satisfied the rule short of altering untouched data");
+        harness.LookupUser!.LastName.Should().Be(
+            "Hopper-Amended",
+            "the field the caller actually came to change is written");
+        harness.LookupUser!.Email.Should().Be("member@setup.local", "and the address is left as it was");
+    }
+
+    /// <summary>
+    /// The echoed-address admission is case-insensitive, because the store matches an address that way.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task UpdateUser_TreatsAnEchoedAddressDifferingOnlyInCaseAsUnchanged()
+    {
+        Harness harness = Harness.Ready();
+        harness.AddMembershipSettingsSource();
+        harness.StoreSetting(
+            "Security_EmailValidation",
+            @"\b[a-zA-Z0-9._%\-+']+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,4}\b");
+
+        harness.LookupUser!.Email = "Member@Setup.Local";
+
+        UpdateUserRequest request = ValidUpdateRequest();
+        request.Email = "member@setup.local";
+
+        Result<UserDetailDto> outcome = await harness.Service
+            .UpdateUserAsync(PortalId, UserId, request, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue(
+            "the account read by address matches case-insensitively, so two spellings differing only in case "
+            + "name one account and echoing either back is echoing the stored value");
+    }
+
+    /// <summary>
+    /// A GENUINELY NEW address is still put to the tenant's admission expression, so the grandfathering
+    /// cannot be used to smuggle one past it.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task UpdateUser_StillAppliesTheTenantExpressionToAChangedAddress()
+    {
+        Harness harness = Harness.Ready();
+        harness.AddMembershipSettingsSource();
+        harness.StoreSetting(
+            "Security_EmailValidation",
+            @"\b[a-zA-Z0-9._%\-+']+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,4}\b");
+
+        harness.LookupUser!.Email = "member@setup.local";
+
+        UpdateUserRequest request = ValidUpdateRequest();
+
+        // A DIFFERENT address, and one the tenant's expression refuses for the same reason as the stored one.
+        request.Email = "someone.else@setup.local";
+
+        Result<UserDetailDto> outcome = await harness.Service
+            .UpdateUserAsync(PortalId, UserId, request, CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue(
+            "the tenant's rule governs what may be WRITTEN; grandfathering is about what is already stored");
+        outcome.Reason!.Code.Should().Be(CreateInvalidEmailCode);
+        harness.LookupUser!.Email.Should().Be("member@setup.local", "and nothing is written");
+    }
+
+    /// <summary>
+    /// A stale concurrency token is reported as staleness BEFORE any field rule runs, so a caller editing an
+    /// out-of-date snapshot is told to reload rather than told about a field.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The legacy screen was last-write-wins: two operators editing one account both saved, and the second
+    /// silently replaced the first. The token is DERIVED from the members an operator can edit rather than
+    /// stored, because the legacy schema is immutable and carries no row version.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateUser_RefusesAStaleSnapshotBeforeAnyFieldRule()
+    {
+        Harness harness = Harness.Ready();
+
+        UpdateUserRequest request = ValidUpdateRequest();
+        request.ConcurrencyToken = "not-the-stored-token";
+
+        Result<UserDetailDto> outcome = await harness.Service
+            .UpdateUserAsync(PortalId, UserId, request, CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be("user.concurrency_conflict");
+        harness.LookupUser!.LastName.Should().Be(
+            "Hopper",
+            "a stale snapshot writes nothing at all");
+    }
+
+    /// <summary>
+    /// The token the single read publishes is the token the update accepts, so a client that echoes what it
+    /// was given is never told its snapshot is stale.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task UpdateUser_AcceptsTheTokenThePrecedingReadPublished()
+    {
+        Harness harness = Harness.Ready();
+
+        Result<UserDetailDto?> read = await harness.Service
+            .GetUserAsync(PortalId, UserId, CancellationToken.None);
+
+        read.IsSuccess.Should().BeTrue();
+        string token = read.Value!.ConcurrencyToken;
+        token.Should().NotBeNullOrWhiteSpace("a read publishes the token an update is to echo");
+
+        UpdateUserRequest request = ValidUpdateRequest();
+        request.ConcurrencyToken = token;
+
+        Result<UserDetailDto> outcome = await harness.Service
+            .UpdateUserAsync(PortalId, UserId, request, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue("the round trip closes");
+        outcome.Value.ConcurrencyToken.Should().NotBe(
+            token,
+            "the written state is different state, so it publishes a different token");
+    }
+
+    /// <summary>
+    /// An ABSENT token is permissive, which is what keeps every caller written before the token existed
+    /// working.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task UpdateUser_TreatsAnAbsentTokenAsUnconditional()
+    {
+        Harness harness = Harness.Ready();
+
+        UpdateUserRequest request = ValidUpdateRequest();
+        request.ConcurrencyToken = null;
+
+        Result<UserDetailDto> outcome = await harness.Service
+            .UpdateUserAsync(PortalId, UserId, request, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue(
+            "a caller that supplies no token is not claiming to have read anything, so there is no staleness "
+            + "to report");
     }
 
     /// <summary>
@@ -3065,12 +3274,17 @@ public class UserServiceTests
     }
 
     /// <summary>
-    /// Unlocking refuses an unknown account, an account with no credential, and an account that is not
-    /// locked, in that order.
+    /// Unlocking reports an unknown account and an account with no credential as absent, in that order.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The third case this used to assert - an account that is not locked - moved to <see
+    /// cref="UnlockUser_IsIdempotentForAnAccountThatIsAlreadyUnlocked"/> when the refusal became a success.
+    /// Neither of the two that remain is the requested end state: an account that does not exist cannot be
+    /// unlocked, and one holding no credential has no lockout to clear.
+    /// </remarks>
     [Fact]
-    public async Task UnlockUser_RefusesAnUnknownAccountANoCredentialAccountAndAnUnlockedAccount()
+    public async Task UnlockUser_ReportsAnUnknownAccountAndANoCredentialAccountAsAbsent()
     {
         Harness harness = Harness.Ready();
         harness.LookupUser = null;
@@ -3085,13 +3299,32 @@ public class UserServiceTests
         Result noCredential = await harness.Service.UnlockUserAsync(PortalId, UserId, CancellationToken.None);
         noCredential.Reason!.Code.Should().Be(NotFoundCode);
         noCredential.Reason!.Message.Should().Be($"Account {UserId} holds no credential.");
+    }
 
+    /// <summary>
+    /// Clearing a lockout that is already clear succeeds, and writes nothing.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The expectation this replaced required a refusal, and the refusal was the defect: an operator saw a
+    /// failed action for work that had in fact been done, and a retry after a lost answer - or a second
+    /// administrator clearing the same lockout - reported failure for a lockout that was gone. The
+    /// unlocked state IS the requested end state. The store write is asserted absent as well, because
+    /// "succeeded" must not be reached by performing the write again.
+    /// </remarks>
+    [Fact]
+    public async Task UnlockUser_IsIdempotentForAnAccountThatIsAlreadyUnlocked()
+    {
+        Harness harness = Harness.Ready();
         harness.CredentialExists = true;
         harness.CredentialLockedOut = false;
 
-        Result notLocked = await harness.Service.UnlockUserAsync(PortalId, UserId, CancellationToken.None);
-        notLocked.Reason!.Code.Should().Be(UnlockNotLockedCode);
-        notLocked.Reason!.Message.Should().Be($"Account {UserId} is not locked.");
+        Result outcome = await harness.Service.UnlockUserAsync(PortalId, UserId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.Users.Verify(
+            u => u.UnlockAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never);
     }
 
     /// <summary>
@@ -6396,6 +6629,283 @@ public class UserServiceTests
     }
 
     /// <summary>
+    /// An exchange of positions is written as ONE unit of work, so a half-applied swap is not expressible.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THE DEFECT THIS CLOSES. Position is a member of the per-declaration update contract, so reordering
+    /// needed no member of its own and had none: the screen exchanged two positions by issuing two
+    /// independent replacements. But a position is not a per-row fact. Land the first replacement and lose
+    /// the second and BOTH declarations hold the same position - an order that is neither the one the
+    /// operator started from nor the one they asked for, and one no amount of precision about which row
+    /// failed can describe.
+    /// </para>
+    /// <para>
+    /// The single commit is the whole point, so it is asserted directly rather than inferred from the
+    /// outcome.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ReorderProfilePropertyDefinitions_WritesEveryPositionInOneUnitOfWork()
+    {
+        Harness harness = Harness.Ready();
+
+        Result<IReadOnlyList<ProfilePropertyDefinitionDto>> outcome = await harness.Service
+            .ReorderProfilePropertyDefinitionsAsync(
+                PortalId,
+                new ReorderProfilePropertyDefinitionsRequest
+                {
+                    Positions =
+                    [
+                        new ProfilePropertyDefinitionPosition
+                        {
+                            PropertyDefinitionId = StreetPropertyId,
+                            ViewOrder = 2,
+                        },
+                        new ProfilePropertyDefinitionPosition
+                        {
+                            PropertyDefinitionId = CityPropertyId,
+                            ViewOrder = 1,
+                        },
+                    ],
+                },
+                CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+
+        harness.Definitions
+            .Single(definition => definition.PropertyDefinitionId == StreetPropertyId)
+            .ViewOrder.Should().Be(2);
+        harness.Definitions
+            .Single(definition => definition.PropertyDefinitionId == CityPropertyId)
+            .ViewOrder.Should().Be(1);
+
+        harness.Profiles.Verify(
+            profiles => profiles.UpdateDefinitionAsync(
+                It.IsAny<ProfilePropertyDefinition>(),
+                It.IsAny<CancellationToken>()),
+            Times.Exactly(2),
+            "both declarations are staged");
+
+        harness.UnitOfWork.Verify(
+            unitOfWork => unitOfWork.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Once,
+            "⚠ ONE commit for the whole exchange. Two commits would make a half-applied swap reachable "
+            + "again, which is the defect this member exists to remove");
+
+        harness.Cache.Verify(
+            cache => cache.InvalidateProfileDefinitions(PortalId),
+            Times.Once,
+            "the catalogue every caller reads has changed order");
+    }
+
+    /// <summary>
+    /// The answer carries the whole catalogue in its new order, so a caller rebinds from the response rather
+    /// than following it with a read.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// A follow-up read could observe another writer's work and make the move look as though it had been
+    /// lost, so the ordering the caller just established is reported back to them directly.
+    /// </remarks>
+    [Fact]
+    public async Task ReorderProfilePropertyDefinitions_AnswersWithTheWholeCatalogueInItsNewOrder()
+    {
+        Harness harness = Harness.Ready();
+
+        Result<IReadOnlyList<ProfilePropertyDefinitionDto>> outcome = await harness.Service
+            .ReorderProfilePropertyDefinitionsAsync(
+                PortalId,
+                new ReorderProfilePropertyDefinitionsRequest
+                {
+                    Positions =
+                    [
+                        new ProfilePropertyDefinitionPosition
+                        {
+                            PropertyDefinitionId = TelephonePropertyId,
+                            ViewOrder = 0,
+                        },
+                    ],
+                },
+                CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+
+        outcome.Value.Select(definition => definition.PropertyDefinitionId).Should().Equal(
+            [TelephonePropertyId, StreetPropertyId, CityPropertyId],
+            "the declaration moved to position zero leads the catalogue the answer carries");
+    }
+
+    /// <summary>
+    /// A request naming a declaration the tenant does not hold writes NOTHING, rather than applying the part
+    /// of the order it could resolve.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// This is the all-or-nothing property stated as an assertion. The absence is reported BEFORE anything is
+    /// staged, so the declarations the request did resolve keep the positions they held.
+    /// </remarks>
+    [Fact]
+    public async Task ReorderProfilePropertyDefinitions_RefusesAnUnknownDeclarationWithoutWritingAnything()
+    {
+        Harness harness = Harness.Ready();
+
+        Result<IReadOnlyList<ProfilePropertyDefinitionDto>> outcome = await harness.Service
+            .ReorderProfilePropertyDefinitionsAsync(
+                PortalId,
+                new ReorderProfilePropertyDefinitionsRequest
+                {
+                    Positions =
+                    [
+                        // Resolvable, and deliberately FIRST so that a member staging as it went would have
+                        // written this one before discovering the second.
+                        new ProfilePropertyDefinitionPosition
+                        {
+                            PropertyDefinitionId = StreetPropertyId,
+                            ViewOrder = 9,
+                        },
+                        new ProfilePropertyDefinitionPosition
+                        {
+                            PropertyDefinitionId = 4242,
+                            ViewOrder = 0,
+                        },
+                    ],
+                },
+                CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(ProfileDefinitionNotFoundCode);
+        outcome.Reason!.Message.Should()
+            .Be($"Profile property definition 4242 does not exist in portal {PortalId}.");
+
+        harness.Definitions
+            .Single(definition => definition.PropertyDefinitionId == StreetPropertyId)
+            .ViewOrder.Should().Be(1, "the resolvable declaration keeps the position it held");
+
+        harness.Profiles.Verify(
+            profiles => profiles.UpdateDefinitionAsync(
+                It.IsAny<ProfilePropertyDefinition>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never,
+            "nothing is staged once any named declaration cannot be resolved");
+
+        harness.UnitOfWork.Verify(
+            unitOfWork => unitOfWork.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never);
+
+        harness.Cache.Verify(
+            cache => cache.InvalidateProfileDefinitions(It.IsAny<int>()),
+            Times.Never,
+            "nothing was committed, so the catalogue every caller reads did not change");
+    }
+
+    /// <summary>
+    /// A withdrawn declaration is absent to this member too, matching every other member of the contract.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ReorderProfilePropertyDefinitions_TreatsAWithdrawnDeclarationAsAbsent()
+    {
+        Harness harness = Harness.Ready();
+
+        // The catalogue read excludes withdrawn declarations by contract, which is what makes ONE absence
+        // test sufficient for unknown, foreign-tenant and withdrawn alike.
+        harness.Definitions.RemoveAll(
+            definition => definition.PropertyDefinitionId == CityPropertyId);
+
+        Result<IReadOnlyList<ProfilePropertyDefinitionDto>> outcome = await harness.Service
+            .ReorderProfilePropertyDefinitionsAsync(
+                PortalId,
+                new ReorderProfilePropertyDefinitionsRequest
+                {
+                    Positions =
+                    [
+                        new ProfilePropertyDefinitionPosition
+                        {
+                            PropertyDefinitionId = CityPropertyId,
+                            ViewOrder = 0,
+                        },
+                    ],
+                },
+                CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(ProfileDefinitionNotFoundCode);
+    }
+
+    /// <summary>A request that repositions nothing is a programming fault rather than a refusal.</summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The shape is settled by the request validator before the service is reached, so an empty set arriving
+    /// here means a caller inside the process assembled one - which is a defect in that caller, not a
+    /// decision for an operator to act on.
+    /// </remarks>
+    [Fact]
+    public async Task ReorderProfilePropertyDefinitions_RequiresARequestAndAtLeastOnePosition()
+    {
+        Harness harness = Harness.Ready();
+
+        await Assert.ThrowsAsync<ArgumentNullException>(
+            () => harness.Service.ReorderProfilePropertyDefinitionsAsync(
+                PortalId,
+                null!,
+                CancellationToken.None));
+
+        await Assert.ThrowsAsync<DomainException>(
+            () => harness.Service.ReorderProfilePropertyDefinitionsAsync(
+                PortalId,
+                new ReorderProfilePropertyDefinitionsRequest(),
+                CancellationToken.None));
+
+        harness.UnitOfWork.Verify(
+            unitOfWork => unitOfWork.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// Submitted positions are stored EXACTLY as submitted; nothing is renumbered or compacted.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The legacy grid exchanged two stored values and persisted them unchanged, leaving the sequence sparse.
+    /// Tidying it here would silently move declarations the caller never named.
+    /// </remarks>
+    [Fact]
+    public async Task ReorderProfilePropertyDefinitions_StoresSparsePositionsWithoutRenumbering()
+    {
+        Harness harness = Harness.Ready();
+
+        Result<IReadOnlyList<ProfilePropertyDefinitionDto>> outcome = await harness.Service
+            .ReorderProfilePropertyDefinitionsAsync(
+                PortalId,
+                new ReorderProfilePropertyDefinitionsRequest
+                {
+                    Positions =
+                    [
+                        new ProfilePropertyDefinitionPosition
+                        {
+                            PropertyDefinitionId = StreetPropertyId,
+                            ViewOrder = 40,
+                        },
+                    ],
+                },
+                CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+
+        harness.Definitions
+            .Single(definition => definition.PropertyDefinitionId == StreetPropertyId)
+            .ViewOrder.Should().Be(40, "the submitted value is stored, not an index derived from it");
+        harness.Definitions
+            .Single(definition => definition.PropertyDefinitionId == CityPropertyId)
+            .ViewOrder.Should().Be(2, "a declaration the request did not name is not moved");
+        harness.Definitions
+            .Single(definition => definition.PropertyDefinitionId == TelephonePropertyId)
+            .ViewOrder.Should().Be(3);
+    }
+
+    /// <summary>
     /// A declaration is created against the tenant from the route, is not withdrawn, and the catalogue
     /// cache is discarded so the new property becomes visible.
     /// </summary>
@@ -6686,6 +7196,176 @@ public class UserServiceTests
     /// could have inspected first.
     /// </remarks>
     /// <returns>A task representing the assertion.</returns>
+    /// <summary>
+    /// The four reserved declarations cannot be withdrawn, which restores a protection the legacy screen
+    /// provided by hiding its delete command.
+    /// </summary>
+    /// <param name="propertyName">The reserved name, in each of the spellings an operator might send.</param>
+    /// <remarks>
+    /// ⚠ WHY THIS IS PARITY AND NOT A NEW RULE. `grdProfileProperties_ItemDataBound` set the delete command
+    /// invisible for exactly these four, compared against `PropertyName.ToLower`. The grid was the ONLY path to
+    /// the operation, so hiding the control was the enforcement - the observable behaviour of the system was
+    /// that these four could not be removed. This API is a second path the legacy design never had, so
+    /// reproducing only the hidden button would have widened what the system permits while looking faithful.
+    /// The casing cases exist because the legacy comparison was case-insensitive and a REST caller, unlike the
+    /// grid, chooses its own spelling.
+    /// </remarks>
+    /// <returns>A task representing the assertion.</returns>
+    [Theory]
+    [InlineData("FirstName")]
+    [InlineData("LastName")]
+    [InlineData("TimeZone")]
+    [InlineData("PreferredLocale")]
+    [InlineData("firstname")]
+    [InlineData("PREFERREDLOCALE")]
+    public async Task DeleteProfilePropertyDefinition_RefusesAReservedDeclaration(string propertyName)
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupDefinition = Definition(StreetPropertyId, propertyName);
+
+        Result outcome = await harness.Service
+            .DeleteProfilePropertyDefinitionAsync(
+                PortalId,
+                StreetPropertyId,
+                cancellationToken: CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(ProfileDefinitionProtectedCode);
+        outcome.Reason.Message.Should().Contain(propertyName, "the refusal names which declaration it means");
+
+        harness.DeletedDefinitionIds.Should().BeEmpty("nothing may be staged for a reserved declaration");
+        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never());
+    }
+
+    /// <summary>
+    /// ⚠ CONSENT DOES NOT UNLOCK A RESERVED DECLARATION. The two protections are independent, and the
+    /// reserved-name refusal is terminal.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// Worth its own case because the two guards sit next to each other in one method: an ordering mistake that
+    /// evaluated consent first would make the reserved rule bypassable by any caller who simply set the flag,
+    /// and no other test in this group would notice.
+    /// </remarks>
+    [Fact]
+    public async Task DeleteProfilePropertyDefinition_RefusesAReservedDeclarationEvenWithConsent()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupDefinition = Definition(StreetPropertyId, "FirstName");
+
+        Result outcome = await harness.Service
+            .DeleteProfilePropertyDefinitionAsync(
+                PortalId,
+                StreetPropertyId,
+                confirmValueDeletion: true,
+                cancellationToken: CancellationToken.None);
+
+        outcome.Reason!.Code.Should().Be(
+            ProfileDefinitionProtectedCode,
+            "consent addresses the cascade, not the reservation");
+        harness.DeletedDefinitionIds.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// A declaration accounts have answered is refused until the caller consents, and the refusal reports how
+    /// many answers are at stake.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// This is Area of Concern A1 directly: one authenticated request removed a declaration and the store's
+    /// cascade took every recorded answer with it, irreversibly, with nothing in the request indicating the
+    /// scale of the loss. The count in the message is what makes the second attempt an informed decision, so it
+    /// is asserted rather than merely the code.
+    /// </remarks>
+    [Fact]
+    public async Task DeleteProfilePropertyDefinition_RefusesACascadeUntilItIsConsentedTo()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupDefinition = Definition(StreetPropertyId, "Street");
+        harness.Profiles
+            .Setup(p => p.CountProfileValuesForDefinitionAsync(
+                StreetPropertyId,
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(6);
+
+        Result refused = await harness.Service
+            .DeleteProfilePropertyDefinitionAsync(
+                PortalId,
+                StreetPropertyId,
+                cancellationToken: CancellationToken.None);
+
+        refused.IsFailure.Should().BeTrue();
+        refused.Reason!.Code.Should().Be(ProfileDefinitionValueCascadeCode);
+        refused.Reason.Message.Should().Contain(
+            "6",
+            "the number of answers at stake is the one fact that makes the consent informed");
+        refused.Reason.Message.Should().Contain(
+            "cannot be undone",
+            "the operator is told the loss is irreversible, not merely that something will be deleted");
+        refused.Reason.Message.Should().Contain(
+            "confirmValueDeletion",
+            "and the refusal names the parameter that performs it, so it is actionable from the response alone");
+
+        harness.DeletedDefinitionIds.Should().BeEmpty("the first attempt must change nothing");
+        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never());
+    }
+
+    /// <summary>The same removal proceeds once consent is given.</summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task DeleteProfilePropertyDefinition_ProceedsOnceTheCascadeIsConsentedTo()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupDefinition = Definition(StreetPropertyId, "Street");
+        harness.Profiles
+            .Setup(p => p.CountProfileValuesForDefinitionAsync(
+                StreetPropertyId,
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(6);
+
+        Result outcome = await harness.Service
+            .DeleteProfilePropertyDefinitionAsync(
+                PortalId,
+                StreetPropertyId,
+                confirmValueDeletion: true,
+                cancellationToken: CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue(
+            "the protection is a confirmation, not a prohibition - an administrator who means it may proceed");
+        harness.DeletedDefinitionIds.Should().Contain(StreetPropertyId);
+        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once());
+    }
+
+    /// <summary>
+    /// A declaration nobody has answered needs no consent, because there is nothing to consent to.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The protection must not become ceremony on the ordinary case. A declaration created and then removed
+    /// without ever being filled in is the common shape, and requiring a second request for it would train
+    /// operators to send the flag reflexively - which would defeat the protection on the case that needs it.
+    /// </remarks>
+    [Fact]
+    public async Task DeleteProfilePropertyDefinition_NeedsNoConsentWhenNothingWouldBeDestroyed()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupDefinition = Definition(StreetPropertyId, "Street");
+        harness.Profiles
+            .Setup(p => p.CountProfileValuesForDefinitionAsync(
+                StreetPropertyId,
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync(0);
+
+        Result outcome = await harness.Service
+            .DeleteProfilePropertyDefinitionAsync(
+                PortalId,
+                StreetPropertyId,
+                cancellationToken: CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.DeletedDefinitionIds.Should().Contain(StreetPropertyId);
+    }
+
     [Fact]
     public async Task DeleteProfilePropertyDefinition_RefusesTheUnknownTheForeignAndTheWithdrawn()
     {
@@ -6693,7 +7373,10 @@ public class UserServiceTests
         harness.LookupDefinition = null;
 
         Result unknown = await harness.Service
-            .DeleteProfilePropertyDefinitionAsync(PortalId, StreetPropertyId, CancellationToken.None);
+            .DeleteProfilePropertyDefinitionAsync(
+                PortalId,
+                StreetPropertyId,
+                cancellationToken: CancellationToken.None);
         unknown.IsFailure.Should().BeTrue();
         unknown.Reason!.Code.Should().Be(ProfileDefinitionNotFoundCode);
 
@@ -6701,7 +7384,10 @@ public class UserServiceTests
         harness.LookupDefinition.PortalId = OtherPortalId;
 
         Result foreign = await harness.Service
-            .DeleteProfilePropertyDefinitionAsync(PortalId, StreetPropertyId, CancellationToken.None);
+            .DeleteProfilePropertyDefinitionAsync(
+                PortalId,
+                StreetPropertyId,
+                cancellationToken: CancellationToken.None);
         foreign.Reason!.Code.Should().Be(ProfileDefinitionNotFoundCode);
         harness.DeletedDefinitionIds.Should().BeEmpty();
 
@@ -6711,7 +7397,10 @@ public class UserServiceTests
         harness.LookupDefinition = withdrawnDefinition;
 
         Result withdrawn = await harness.Service
-            .DeleteProfilePropertyDefinitionAsync(PortalId, StreetPropertyId, CancellationToken.None);
+            .DeleteProfilePropertyDefinitionAsync(
+                PortalId,
+                StreetPropertyId,
+                cancellationToken: CancellationToken.None);
 
         withdrawn.IsFailure.Should().BeTrue(
             "a declaration the read path reports as absent must not be removable through this one");
@@ -6740,7 +7429,10 @@ public class UserServiceTests
         harness.LookupDefinition = definition;
 
         Result outcome = await harness.Service
-            .DeleteProfilePropertyDefinitionAsync(PortalId, StreetPropertyId, CancellationToken.None);
+            .DeleteProfilePropertyDefinitionAsync(
+                PortalId,
+                StreetPropertyId,
+                cancellationToken: CancellationToken.None);
 
         outcome.IsSuccess.Should().BeTrue();
 

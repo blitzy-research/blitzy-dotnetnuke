@@ -33,11 +33,15 @@ public sealed class CreateRoleGroupRequestValidator : AbstractValidator<CreateRo
         RuleFor(request => request.RoleGroupName)
             .NotEmpty()
             .WithMessage(RoleGroupTermsRules.RoleGroupNameRequiredMessage)
-            .MaximumLength(RoleGroupTermsRules.RoleGroupNameMaximumLength);
+            .MaximumLength(RoleGroupTermsRules.RoleGroupNameMaximumLength)
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage);
 
         // No validator was declared on the description, so only the column width is asserted. The
         // rule is inert for an absent value: a length check passes a null.
         RuleFor(request => request.Description)
-            .MaximumLength(RoleGroupTermsRules.DescriptionMaximumLength);
+            .MaximumLength(RoleGroupTermsRules.DescriptionMaximumLength)
+            .Must(TextIntegrityRules.IsMultiLineSafe)
+            .WithMessage(TextIntegrityRules.MultiLineMessage);
     }
 }

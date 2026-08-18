@@ -149,6 +149,25 @@ public interface IUserProfileRepository
         ProfilePropertyDefinition definition,
         CancellationToken cancellationToken = default);
 
+    /// <summary>Counts the recorded answers that withdrawing one declaration would destroy.</summary>
+    /// <param name="propertyDefinitionId">Identifier of the declaration whose answers are counted.</param>
+    /// <param name="cancellationToken">Abandons the read.</param>
+    /// <returns>The number of <c>UserProfile</c> rows referencing the declaration; zero when it has none.</returns>
+    /// <remarks>
+    /// <para>
+    /// Exists so a caller can state the SIZE of a cascade before performing it. Removing a declaration takes
+    /// its answers with it - see <see cref="DeleteDefinitionAsync"/> - and that consequence is invisible from
+    /// the declaration alone, so the count is the one fact an operator needs in order to consent to it.
+    /// </para>
+    /// <para>
+    /// Counted in the store rather than by loading the rows: the answer is a number, the rows can span every
+    /// account in the tenant, and nothing here needs their content.
+    /// </para>
+    /// </remarks>
+    Task<int> CountProfileValuesForDefinitionAsync(
+        int propertyDefinitionId,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Stages a profile property declaration for removal.</summary>
     /// <param name="propertyDefinitionId">Identifier of the declaration to withdraw.</param>
     /// <param name="cancellationToken">Token observed while the write is staged.</param>

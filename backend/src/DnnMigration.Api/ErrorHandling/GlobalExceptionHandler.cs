@@ -213,13 +213,42 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
         bool callerHasGoneAway =
             cancellationToken.IsCancellationRequested || httpContext.RequestAborted.IsCancellationRequested;
 
-        if (exception is OperationCanceledException && callerHasGoneAway)
+        if (callerHasGoneAway)
         {
-            _logger.LogInformation(
+            // ⚠ THE TEST IS NO LONGER `exception is OperationCanceledException`, AND THE NARROWER TEST WAS A
+            // DEFECT. Cancelling work that has already reached the database client does not always surface as
+            // that type: the client can report the abandonment in its own exception type, and the mapper then
+            // wraps whatever it was handed. Such a chain fell straight through this branch to the general arm
+            // and was recorded as an UNHANDLED SERVER FAULT with a 500 - a server-fault log entry for a
+            // caller who had simply navigated away, and a status code nobody was left to receive. Measured
+            // twice in production logs.
+            //
+            // Whether the abandonment is recognised as a cancellation decides the LOG LEVEL, not the
+            // response: no response can be written to a caller who has gone, so this branch returns false
+            // either way.
+            if (_storeFailures.IsCallerCancellation(exception))
+            {
+                _logger.LogInformation(
+                    ClientDisconnectedEvent,
+                    "Request {RequestMethod} {RouteTemplate} was abandoned because the client disconnected; no response was written. Failure {Failure}. Correlation identifier {CorrelationId}.",
+                    httpContext.Request.Method,
+                    routeTemplate,
+                    failure,
+                    correlationId);
+
+                return false;
+            }
+
+            // A failure that is NOT a cancellation, observed while the caller was going away. It is not
+            // silenced - a store outage must stay visible even if the one caller who would have seen the 503
+            // has left - but it is not an unhandled server fault either, because nothing was left to serve
+            // and no status was chosen. Warning is the honest level: worth reading, not worth paging.
+            _logger.LogWarning(
                 ClientDisconnectedEvent,
-                "Request {RequestMethod} {RouteTemplate} was abandoned because the client disconnected; no response was written. Failure {Failure}. Correlation identifier {CorrelationId}.",
+                "Request {RequestMethod} {RouteTemplate} failed while the client was disconnecting; no response was written. Store availability condition {StoreUnavailable}. Failure {Failure}. Correlation identifier {CorrelationId}.",
                 httpContext.Request.Method,
                 routeTemplate,
+                _storeFailures.IsStoreUnavailable(exception),
                 failure,
                 correlationId);
 
@@ -324,11 +353,14 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
         {
             // A broken invariant means the request asked the model to enter a state it must never occupy,
             // so the request is what is at fault and 400 is what the caller needs to hear.
+            // The opt-in caller-safe detail is redacted on the way out for the same reason the expected-failure
+            // edge redacts one: it is authored text, so it may legitimately name the tenant the request
+            // resolved to, and the tenant discriminator is not the caller's to know.
             DomainException domainException => (
                 StatusCodes.Status400BadRequest,
                 string.IsNullOrWhiteSpace(domainException.PublicDetail)
                     ? InvalidRequestDetail
-                    : domainException.PublicDetail),
+                    : PublishedDetail.Redact(domainException.PublicDetail)),
 
             // Authentication is settled long before this point, because an unauthenticated caller is
             // challenged by the authentication handler and never arrives here. This is a caller who is

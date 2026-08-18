@@ -499,8 +499,8 @@ export const API_ENDPOINTS = {
   },
 
   /**
-   * Profile property definitions — the fields an account's profile may carry. ordering is a FIELD, set
-   * through `PUT` on one definition.
+   * Profile property definitions — the fields an account's profile may carry. Ordering has a route of its
+   * own, because a move exchanges TWO stored positions and the two are only correct together.
    */
   profileDefinitions: {
     /** Definitions of the tenant the API resolves from the request. The only public family. */
@@ -511,6 +511,14 @@ export const API_ENDPOINTS = {
       /** `GET`, `PUT` or `DELETE` one definition. */
       byId: (propertyDefinitionId: number): string =>
         apiUrl(`${SEGMENT.profileDefinitions}/${propertyDefinitionId}`),
+
+      /**
+       * `PUT` several positions, written as one unit of work.
+       *
+       * ⚠ A LITERAL SEGMENT, NOT AN IDENTIFIER, and it cannot collide with {@link byId}: that route
+       * constrains its segment to an integer, and `order` is not one.
+       */
+      order: (): string => apiUrl(`${SEGMENT.profileDefinitions}/order`),
     },
   },
 

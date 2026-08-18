@@ -43,7 +43,9 @@ public sealed class CreateProfilePropertyDefinitionRequestValidator
         RuleFor(request => request.PropertyCategory)
             .NotEmpty().WithMessage(ProfileDefinitionTermsRules.PropertyCategoryRequiredMessage)
             .MaximumLength(ProfileDefinitionTermsRules.PropertyCategoryMaximumLength)
-                .WithMessage(ProfileDefinitionTermsRules.PropertyCategoryTooLongMessage);
+                .WithMessage(ProfileDefinitionTermsRules.PropertyCategoryTooLongMessage)
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage);
 
         // No legacy validator, but a NULLABLE column with a terminal width: an over-long expression would
         // be truncated or refused by the store rather than reported to the caller.

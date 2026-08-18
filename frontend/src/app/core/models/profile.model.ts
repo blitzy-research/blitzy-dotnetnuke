@@ -191,6 +191,26 @@ export interface CreateProfilePropertyDefinitionRequest
 export type UpdateProfilePropertyDefinitionRequest = ProfilePropertyDefinitionWriteMembers;
 
 /**
+ * One declaration's requested position, as `PUT /api/v1/profile-definitions/order` carries it.
+ *
+ * ⚠ A PAIR, NOT A WHOLE DECLARATION, and deliberately so: an ordering request writes exactly one column,
+ * and carrying the whole declaration would let a Move Up rename a property or change its data type as a
+ * side effect.
+ */
+export interface ProfilePropertyDefinitionPosition {
+  /** The declaration being positioned. */
+  readonly propertyDefinitionId: number;
+
+  /**
+   * The declaration's new position.
+   *
+   * A sort key, not an index. The legacy grid EXCHANGED the stored values of two neighbours rather than
+   * renumbering the list, so positions are expected to be sparse and the server never re-sequences them.
+   */
+  readonly viewOrder: number;
+}
+
+/**
  * Decodes one profile property declaration. `visibility` and `dataType` are decoded as plain integers
  * rather than closed code tables.
  */

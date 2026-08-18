@@ -164,7 +164,9 @@ public class CreateUserRequestValidator : AbstractValidator<CreateUserRequest>
         // GetUserCreateStatus L619-L620 onto a dedicated message.
         RuleFor(request => request.Username)
             .NotEmpty().WithMessage(UsernameRequiredMessage)
-            .MaximumLength(UsernameMaximumLength).WithMessage(InvalidUserNameMessage);
+            .MaximumLength(UsernameMaximumLength).WithMessage(InvalidUserNameMessage)
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage);
 
         // The family name is REQUIRED. The baseline script declared the column nullable at 01.00.00:L100,
         // but the 01.00.05 rebuild re-declared it NOT NULL at 01.00.05:L18 and the 01.00.06 rebuild
@@ -172,14 +174,20 @@ public class CreateUserRequestValidator : AbstractValidator<CreateUserRequest>
         // violation to write time.
         RuleFor(request => request.FirstName)
             .NotEmpty().WithMessage(FirstNameRequiredMessage)
-            .MaximumLength(PersonNameMaximumLength).WithMessage(InvalidUserNameMessage);
+            .MaximumLength(PersonNameMaximumLength).WithMessage(InvalidUserNameMessage)
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage);
 
         RuleFor(request => request.LastName)
             .NotEmpty().WithMessage(LastNameRequiredMessage)
-            .MaximumLength(PersonNameMaximumLength).WithMessage(InvalidUserNameMessage);
+            .MaximumLength(PersonNameMaximumLength).WithMessage(InvalidUserNameMessage)
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage);
 
         RuleFor(request => request.DisplayName)
             .MaximumLength(DisplayNameMaximumLength).WithMessage(InvalidDisplayNameMessage)
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage)
             .When(request => !string.IsNullOrEmpty(request.DisplayName));
 
         RuleFor(request => request.Email)

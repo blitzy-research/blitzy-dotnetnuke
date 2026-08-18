@@ -241,6 +241,13 @@ export class AuthStore {
   /** The withdrawal drain currently running, or null when none is. */
   private revocationRetryInFlight: Observable<void> | null = null;
 
+  /**
+   * The obligation re-read currently running, or null when none is. A second single-flight slot, for the
+   * same reason the renewal has one: a screen that fires several reads at once is refused several times at
+   * once, and one refusal is enough to learn what the session now owes.
+   */
+  private remediationProbeInFlight: Observable<CurrentUser> | null = null;
+
   private phaseTicket = 0;
 
   /** The problem document from the last failed command, or null. The STRUCTURED document, kept whole. */
@@ -979,6 +986,57 @@ export class AuthStore {
   }
 
   /**
+   * Records that the server refused a request because the session carries an outstanding obligation, and
+   * re-reads the caller's own identity so the application learns which one.
+   *
+   * ⚠ WHY A REFUSAL HAS TO TRIGGER A READ AT ALL. The obligations on the held session came from the sign-in
+   * or renewal response, and an obligation created AFTER that — an administrator forcing a password change,
+   * or marking a profile property required, while the account is signed in — appears in neither. The server
+   * then refuses every ordinary endpoint with an actionable sentence, but nothing in the client knows the
+   * session is restricted, so the navigation gate admits screen after screen that cannot load. This is the
+   * one moment the client is told something changed, so it is the moment to ask.
+   *
+   * ⚠ AND WHY IT IS SILENT AND UNCONDITIONALLY SAFE. It writes nothing but the caller's own identity, it is
+   * COALESCED so a burst of refusals produces one read, it is SKIPPED once the obligation is already known,
+   * and its own failure is swallowed — the refusal that prompted it is already being reported by whoever
+   * issued the request, and a second announcement about a read the operator did not ask for would only
+   * bury the first. Nothing here decides anything: the server remains the authority and refuses
+   * independently.
+   */
+  noteRemediationRefused(): void {
+    // Already known, so there is nothing to learn. This is also what stops a screen whose every read is
+    // refused from re-asking after each one.
+    if (this.sessionRestricted()) {
+      return;
+    }
+
+    if (!this.tokenStorage.isAuthenticated()) {
+      return;
+    }
+
+    if (this.remediationProbeInFlight !== null) {
+      return;
+    }
+
+    const probe: Observable<CurrentUser> = this.loadCurrentUser().pipe(
+      finalize(() => {
+        if (this.remediationProbeInFlight === probe) {
+          this.remediationProbeInFlight = null;
+        }
+      }),
+    );
+
+    this.remediationProbeInFlight = probe;
+
+    // Deliberately fire-and-forget with a swallowing handler. An unhandled rejection here would be reported
+    // as an application fault for a read nobody asked for, and the failure that matters — the refusal — is
+    // already on its way to the operator.
+    probe.subscribe({
+      error: () => undefined,
+    });
+  }
+
+  /**
    * Discards the recorded failure without touching the session or the ladder. For a consumer dismissing a
    * banner.
    */
@@ -1157,6 +1215,16 @@ export class AuthStore {
    * @param user The identity to publish.
    */
   private stampIdentity(user: CurrentUser): void {
+    // ⚠ THE HELD SESSION IS UPDATED FIRST, AND THE ORDER IS NOT ARBITRARY. The custodian folds the
+    // identity's two BLOCKING obligations onto the session without moving the auth epoch, so the stamp taken
+    // on the next line still describes the epoch this identity belongs to. Doing it the other way round
+    // would be harmless today and wrong the moment the fold ever did move the epoch.
+    //
+    // ⚠ AND IT IS WHAT MAKES A MID-SESSION OBLIGATION VISIBLE AT ALL. `sessionRestricted` reads the session,
+    // not this stamp, and the session's obligations come from the sign-in or renewal response — which cannot
+    // know about an obligation created afterwards. The describe-caller read is the only response that can,
+    // and this is where it lands.
+    this.tokenStorage.refreshIdentity(user);
     this._identity.set({ user, generation: this.tokenStorage.generation() });
   }
 }

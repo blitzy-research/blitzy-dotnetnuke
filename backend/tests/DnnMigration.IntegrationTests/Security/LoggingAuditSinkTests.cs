@@ -67,6 +67,92 @@ public sealed class LoggingAuditSinkTests
         health.FailureCount.Should().Be(0);
     }
 
+    /// <summary>
+    /// ⚠ A SUCCESSFUL OUTCOME CARRIES NO FAILURE CODE, and must not be stamped with one.
+    /// </summary>
+    /// <remarks>
+    /// The defect this pins: the absent case and the not-safe-to-write case shared one substitute, so an event
+    /// whose FailureCode was legitimately null - which is how every producer spells a success, as
+    /// <c>Outcome == Succeeded ? null : code</c> - was published as <c>failure="rejected"</c>. A QA run measured
+    /// it on 218 of 218 successful outcomes, which means a reader filtering the audit log for refusals matched
+    /// every single success. The field is worthless unless absence survives.
+    /// </remarks>
+    [Fact]
+    public void Record_LeavesTheFailureCodeAbsentOnASuccess()
+    {
+        var logger = new CapturingLogger<LoggingAuditSink>();
+        var diagnostics = new Mock<ISecurityDiagnostics>(MockBehavior.Strict);
+        var health = new AuditPipelineHealth();
+        var sink = new LoggingAuditSink(logger, diagnostics.Object, health);
+
+        sink.Record(new AuditEvent(AuditEventNames.PortalCreated)
+        {
+            PortalId = -1,
+            ActorUserId = 7,
+            Outcome = AuditOutcome.Succeeded,
+            FailureCode = null,
+        });
+
+        logger.Properties["AuditFailureCode"].Should().BeNull(
+            "a success has no failure code, and \"rejected\" would say the opposite of what happened");
+        logger.Message.Should().NotContain(
+            "failure=rejected",
+            "the rendered line is what an operator actually reads, so the absence has to hold there too");
+    }
+
+    /// <summary>A genuine refusal still publishes the code its producer chose.</summary>
+    /// <remarks>
+    /// The companion to the case above, and the reason the fix could not simply drop the substitute: the field
+    /// still has to carry a refusal's own discriminator, or correcting the false positives would have removed
+    /// the signal altogether.
+    /// </remarks>
+    [Fact]
+    public void Record_PublishesTheFailureCodeOnARefusal()
+    {
+        var logger = new CapturingLogger<LoggingAuditSink>();
+        var diagnostics = new Mock<ISecurityDiagnostics>(MockBehavior.Strict);
+        var health = new AuditPipelineHealth();
+        var sink = new LoggingAuditSink(logger, diagnostics.Object, health);
+
+        sink.Record(new AuditEvent(AuditEventNames.SessionRefused)
+        {
+            PortalId = -1,
+            Outcome = AuditOutcome.Denied,
+            FailureCode = "auth.locked_out",
+        });
+
+        logger.Properties["AuditFailureCode"].Should().Be("auth.locked_out");
+    }
+
+    /// <summary>
+    /// A failure code that cannot be written safely is still marked, rather than passing as a success.
+    /// </summary>
+    /// <remarks>
+    /// This is the case that keeps the fix honest. Making absence null must not make an UNSAFE value null too -
+    /// that would turn a refusal whose code arrived malformed into something indistinguishable from a success,
+    /// trading one silent misreport for another. The substitute is retained for exactly this shape.
+    /// </remarks>
+    [Fact]
+    public void Record_MarksAFailureCodeThatCannotBeWrittenSafely()
+    {
+        var logger = new CapturingLogger<LoggingAuditSink>();
+        var diagnostics = new Mock<ISecurityDiagnostics>(MockBehavior.Strict);
+        var health = new AuditPipelineHealth();
+        var sink = new LoggingAuditSink(logger, diagnostics.Object, health);
+
+        sink.Record(new AuditEvent(AuditEventNames.SessionRefused)
+        {
+            PortalId = -1,
+            Outcome = AuditOutcome.Denied,
+            FailureCode = "auth.locked_out;Forged=True\r\nsecond-line",
+        });
+
+        logger.Properties["AuditFailureCode"].Should().Be(
+            "rejected",
+            "a supplied value that cannot be written must leave a mark, because a refusal happened");
+        logger.Message.Should().NotContain("second-line");
+    }
+
     /// <summary>Even allowlisted metadata cannot expand one record beyond the fixed per-event ceiling.</summary>
     [Fact]
     public void Record_CapsTheNumberOfStructuredMetadataProperties()

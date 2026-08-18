@@ -327,6 +327,54 @@ export const USER_LOCKED_OUT_MESSAGE =
 export const EMAIL_CONFLICT_MESSAGE =
   'This portal requires a unique Email Address.  The Email Address you entered has already been used.';
 
+/** The failure code the API publishes when the account changed between this screen's read and its write. */
+const CONCURRENCY_CONFLICT_CODE = 'user.concurrency_conflict';
+
+/**
+ * Shown when an address the operator has typed satisfies the address GRAMMAR but not this tenant's own
+ * stored `Security_EmailValidation` expression.
+ *
+ * ## Why there are two rules at all, and why this one is an advisory rather than a validator
+ *
+ * Two independent rules govern an address, and both are legitimate:
+ *
+ * - the SHAPE rule, `Domain/ValueObjects/EmailAddress`, mirrored on this side by `EMAIL_PATTERN`. It says
+ *   what an address may look like at all, and it is not configurable.
+ * - the ADMISSION rule, the tenant's stored expression, which an operator may set to anything.
+ *
+ * ⚠ THIS MUST NOT BLOCK SUBMISSION, and making it a validator would recreate the very defect the server
+ * side of this pair was fixed for. DotNetNuke's own default expression ends in `[a-zA-Z]{2,4}`, so a stored
+ * address whose final label is longer - `.local`, `.museum`, `.info` - does not satisfy it. The server now
+ * admits such an address when it is UNCHANGED, because it is already in the column and no submission could
+ * have satisfied the rule short of altering data the caller never came to touch. A blocking client rule
+ * would refuse the same edit before it was ever sent.
+ *
+ * So this warns, and only about an address the operator is actually CHANGING.
+ */
+export const TENANT_EMAIL_ADVISORY =
+  'This site requires email addresses to match its own configured pattern, and the address you have '
+  + 'entered does not. You can still save it, but the site may refuse it.';
+
+/**
+ * Shown when a save is refused because someone else changed the account first. MIGRATION: NET-NEW, because
+ * the situation itself is net-new — the legacy update carried no revision marker, so a conflict could not be
+ * detected and was not reported; the later save simply overwrote the earlier one.
+ */
+export const CONCURRENCY_CONFLICT_MESSAGE =
+  'This account was changed by someone else after you opened it, so nothing was saved.';
+
+/**
+ * The recovery sentence beside the reload command. ⚠ THE COST OF RELOADING IS STATED, not glossed.
+ * Re-reading the account replaces every value on screen with the stored one, so unsaved edits are lost — and
+ * a person needs to know that BEFORE pressing the button, not after.
+ */
+export const CONCURRENCY_RECOVERY_MESSAGE =
+  'Read the account again to see the stored values, then apply your change to them. ' +
+  'Anything you have typed here and not saved will be replaced.';
+
+/** Wording of the recovery command. */
+export const CONCURRENCY_RELOAD_LABEL = 'Read this account again';
+
 /**
  * `ExceededUserQuota.Text` — the tenant's account allowance is reached. Surfaced only when the server
  * refuses.
@@ -757,6 +805,31 @@ export class UserFormComponent {
   protected readonly isEditMode: Signal<boolean> = computed<boolean>(() => !this.isCreateMode());
 
   /**
+   * The tenant's own address expression, compiled once per value rather than per keystroke, or `null` when
+   * the tenant publishes none or publishes one this browser cannot compile.
+   *
+   * ⚠ COMPILED INSIDE A GUARD. The value is operator-authored text from the database, so it can be any
+   * string at all; an uncompilable one must leave the advisory silent rather than throw inside a computed
+   * and take the whole form down with it. .NET and ECMAScript regular-expression syntax also differ, so an
+   * expression the server compiles happily can still fail here - which is another reason the outcome of
+   * this projection may never gate a submission.
+   */
+  private readonly tenantEmailExpression: Signal<RegExp | null> = computed<RegExp | null>(() => {
+    const published: string | undefined = this.store.membershipSettings()?.securityEmailValidation;
+
+    if (published === undefined || published.trim() === '') {
+      return null;
+    }
+
+    try {
+      return new RegExp(published);
+    } catch {
+      return null;
+    }
+  });
+
+
+  /**
    * Whether the tenant composes display names itself, in which case the operator does not choose one.
    *
    * ⚠ THE TEST IS "STORED AND NON-EMPTY", NOT "PRESENT". `UserEditorCreated` (`User.ascx.vb` L397-L406)
@@ -953,6 +1026,39 @@ export class UserFormComponent {
 
   /** Set while an update is in flight. */
   private readonly updateSubmitted = signal(false);
+
+  /**
+   * Whether the last save was refused because the account had been changed by someone else.
+   *
+   * ⚠ WITHOUT THIS A CONFLICT IS A DEAD END. The revision marker sent with an update comes from the account
+   * this screen READ; a refusal does not change that account, so pressing Update again sends the same
+   * refused marker and is refused again, indefinitely. The flag is what puts a way out on the screen.
+   */
+  private readonly staleRead = signal(false);
+
+  /**
+   * Whether the last save was refused as a stale read, which is what offers the recovery command.
+   *
+   * ⚠ DECLARED AFTER {@link staleRead} AND NOT BEFORE IT. Field initialisers run in declaration order, so
+   * reading the signal from a member declared above it is a use-before-initialisation error.
+   */
+  protected readonly conflicted: Signal<boolean> = this.staleRead.asReadonly();
+
+  /**
+   * What happened, stated in the conflict block itself.
+   *
+   * ⚠ STATED HERE RATHER THAN LEFT TO THE BANNER. The shared banner publishes the server's own `detail`,
+   * which describes the REQUEST ("the account was changed by another request") rather than what it means for
+   * the person reading it. The measured sentence and the recovery sentence belong together, so the block
+   * carries both: what happened, then what to do about it.
+   */
+  protected readonly conflictMessage = CONCURRENCY_CONFLICT_MESSAGE;
+
+  /** The recovery sentence shown beside the reload command. */
+  protected readonly conflictRecoveryMessage = CONCURRENCY_RECOVERY_MESSAGE;
+
+  /** Wording of the recovery command. */
+  protected readonly conflictReloadLabel = CONCURRENCY_RELOAD_LABEL;
 
   /** Set while a removal is in flight. */
   private readonly deleteSubmitted = signal(false);
@@ -1538,11 +1644,18 @@ export class UserFormComponent {
         // Disowned before failure-tested, for the reason set out on `writeDisowned`: after a session
         // boundary a null failure slot is the teardown's work, not the server's.
         if (this.writeDisowned() || failure !== null) {
+          // A stale read is the one refusal this form cannot be corrected out of, so it is recorded rather
+          // than merely announced - the recovery command depends on it.
+          if (failure !== null && failure.code === CONCURRENCY_CONFLICT_CODE) {
+            this.staleRead.set(true);
+          }
+
           return;
         }
 
         this.submitAttempted.set(false);
         this.form.markAsPristine();
+        this.staleRead.set(false);
         this.notifications.success(USER_UPDATED_MESSAGE);
       });
     });
@@ -2044,6 +2157,34 @@ export class UserFormComponent {
   }
 
   /**
+   * Reads the account again after a refused save, so the screen can hold a current revision.
+   *
+   * ⚠ WITHOUT THIS COMMAND A CONFLICT IS A DEAD END, for the reason recorded on {@link staleRead}: the
+   * marker sent with an update comes from the account this screen read, and a refusal does not change that
+   * account.
+   */
+  protected onReloadAfterConflict(): void {
+    const id: number | undefined = this.resolvedUserId();
+
+    if (id === undefined) {
+      return;
+    }
+
+    this.staleRead.set(false);
+
+    // Cleared so the hydration guard fires again: it is keyed on the identifier, and re-reading the SAME
+    // account would otherwise leave the form holding the edits the server has just declined.
+    this.hydratedUserId = undefined;
+
+    // ⚠ THE UNGUARDED READ, NOT `selectUser`. That method is idempotent for an account already held, so that
+    // three screens selecting the same account from their own route effects cannot double the detail read -
+    // and this account IS already held, which is precisely why it must be read again. Routing recovery
+    // through the guarded method makes the control do nothing at all: the guard returns, no request is sent,
+    // and the operator is left with the refused marker, a retry that did not retry, and no way forward.
+    this.store.rereadUser(id);
+  }
+
+  /**
    * Builds and issues the update request. the update contract is deliberately narrow — the given name,
    * the family name, the display name and the address, and nothing else.
    */
@@ -2069,6 +2210,16 @@ export class UserFormComponent {
       lastName: raw.lastName,
       displayName: raw.displayName,
       email: raw.email,
+
+      // ⚠ THE REVISION THIS SUBMISSION WAS COMPOSED AGAINST, ROUND-TRIPPED VERBATIM, and the one member
+      // here that is not an editable field. Without it the update is last-write-wins: two operators editing
+      // one account both save and the second silently replaces the first, with nothing in either response
+      // saying so. Echoing it lets the server answer `409` instead of quietly discarding a colleague's work.
+      //
+      // Null when no account has been loaded, which asks the server to write unconditionally. That is the
+      // honest value: a submission composed against nothing is not claiming to have read anything, and the
+      // form cannot be submitted in update mode without a loaded account in any case.
+      concurrencyToken: this.selectedUser()?.concurrencyToken ?? null,
     };
 
     this.claimWriteGeneration();
@@ -2293,6 +2444,48 @@ export class UserFormComponent {
   }
 
   /**
+   * The advisory for an address that satisfies the grammar but not THIS TENANT'S configured expression, or
+   * `null` when there is nothing to say.
+   *
+   * A METHOD rather than a computed signal, following the convention on the sibling forms: nothing here
+   * bridges `valueChanges` into a signal, and introducing a subscription for one notice would put a second,
+   * independently-updated copy of the control's text beside the control itself.
+   *
+   * ⚠ SILENT FOR AN UNCHANGED ADDRESS, WHICH MIRRORS THE SERVER. The server admits an address that is
+   * already in the column without putting it to the tenant's expression, because no submission could have
+   * satisfied the rule short of altering data the caller never came to touch. Warning about it here would
+   * tell an operator their surname edit was about to be refused when it was not.
+   *
+   * @returns The advisory sentence, or `null`.
+   */
+  protected tenantEmailAdvisory(): string | null {
+    const expression: RegExp | null = this.tenantEmailExpression();
+
+    if (expression === null) {
+      return null;
+    }
+
+    const typed: string = this.form.controls.email.value.trim();
+
+    if (typed === '') {
+      return null;
+    }
+
+    // The address already in the column, when there is one. Compared case-insensitively because the store
+    // matches an address that way: two spellings differing only in case name one account.
+    const stored: string | undefined = this.selectedUser()?.email;
+
+    if (stored !== undefined && stored.toLowerCase() === typed.toLowerCase()) {
+      return null;
+    }
+
+    // ⚠ `test` RATHER THAN AN ANCHORED MATCH, deliberately. The legacy expression is `\b`-delimited rather
+    // than `^…$`-anchored, so it was always applied with substring semantics; anchoring it here would refuse
+    // addresses the server admits and put the two surfaces back into disagreement.
+    return expression.test(typed) ? null : TENANT_EMAIL_ADVISORY;
+  }
+
+  /**
    * The measured refusal wording this screen can offer, exposed for the template. the four guard outcomes
    * the legacy worded are recorded as constants and are shown only when the SERVER refuses, because the
    * server owns every one of the decisions behind them.
@@ -2321,7 +2514,12 @@ export class UserFormComponent {
       case NOT_FOUND_STATUS:
         return NO_USER_MESSAGE;
       case CONFLICT_STATUS:
-        return EMAIL_CONFLICT_MESSAGE;
+        // ⚠ THE TWO `409`s ARE NOT THE SAME FAILURE and must not share a sentence. A duplicate address is
+        // corrected in a field; a stale read cannot be corrected in the form at all, because every
+        // subsequent save carries the same refused marker until the account is read again.
+        return failure.code === CONCURRENCY_CONFLICT_CODE
+          ? CONCURRENCY_CONFLICT_MESSAGE
+          : EMAIL_CONFLICT_MESSAGE;
       default:
         // Exhaustive by construction: the status is a plain number, so a default is required and returning
         // the empty string keeps the member total.

@@ -45,10 +45,19 @@ public sealed class PermissionApiTests
     /// <param name="fixture">The shared host, database and seed.</param>
     public PermissionApiTests(ApiTestFixture fixture) => _fixture = fixture;
 
-    /// <summary>The key listing answers <c>200 OK</c> with the seeded scope's keys.</summary>
+    /// <summary>
+    /// The catalogue listing answers <c>200 OK</c> with DEFINITIONS, each carrying the identifier the detail
+    /// read is addressed by.
+    /// </summary>
     /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// The identifier assertion is the point of this test. The listing used to publish bare key spellings,
+    /// so a client that listed the catalogue held nothing it could pass to
+    /// <c>GET /api/v1/permissions/{permissionId}</c> - the two reads shared no handle and list-to-detail
+    /// navigation was impossible from the API alone.
+    /// </remarks>
     [Fact]
-    public async Task ListPermissionKeys_ReturnsOkWithTheCatalogueKeys()
+    public async Task ListPermissionCatalogue_ReturnsOkWithDefinitionsCarryingTheirIdentifiers()
     {
         using HttpClient client = await _fixture.CreateHostClientAsync();
 
@@ -57,18 +66,41 @@ public sealed class PermissionApiTests
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        CollectionEnvelope<string>? envelope = await response.Content
-            .ReadFromJsonAsync<CollectionEnvelope<string>>(ApiTestFixture.Json);
+        CollectionEnvelope<PermissionDto>? envelope = await response.Content
+            .ReadFromJsonAsync<CollectionEnvelope<PermissionDto>>(ApiTestFixture.Json);
 
         envelope.Should().NotBeNull();
         envelope!.Data.Should().NotBeNull();
-        envelope.Data!.Should().Contain("VIEW").And.Contain("EDIT");
+        envelope.Data!.Select(definition => definition.PermissionKey)
+            .Should().Contain("VIEW").And.Contain("EDIT");
+
+        envelope.Data.Should().OnlyContain(
+            definition => definition.PermissionId > 0,
+            "every entry must carry the identifier its detail read is addressed by");
+        envelope.Data.Should().OnlyContain(
+            definition => !string.IsNullOrWhiteSpace(definition.PermissionCode),
+            "an entry names the scope it belongs to, which a bare key never did");
+
+        envelope.Data.Select(definition => definition.PermissionId).Should().BeInAscendingOrder()
+            .And.OnlyHaveUniqueItems("one row per definition, in a stable order");
+
+        // The handle the listing published resolves through the detail read, which is the navigation the
+        // bare-key listing made impossible.
+        int firstId = envelope.Data[0].PermissionId;
+
+        using HttpResponseMessage detail = await client.GetAsync(new Uri(
+            "/api/v1/permissions/" + firstId.ToString(CultureInfo.InvariantCulture),
+            UriKind.Relative));
+
+        detail.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "an identifier the listing published must address a definition the detail read can return");
     }
 
-    /// <summary>A key filter narrows the listing to that one key.</summary>
+    /// <summary>A key filter narrows the listing to the definitions declaring that key.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task ListPermissionKeys_WithAKeyFilter_NarrowsToThatKey()
+    public async Task ListPermissionCatalogue_WithAKeyFilter_NarrowsToThatKey()
     {
         using HttpClient client = await _fixture.CreateHostClientAsync();
 
@@ -77,18 +109,99 @@ public sealed class PermissionApiTests
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        CollectionEnvelope<string>? envelope = await response.Content
-            .ReadFromJsonAsync<CollectionEnvelope<string>>(ApiTestFixture.Json);
+        CollectionEnvelope<PermissionDto>? envelope = await response.Content
+            .ReadFromJsonAsync<CollectionEnvelope<PermissionDto>>(ApiTestFixture.Json);
 
         envelope.Should().NotBeNull();
         envelope!.Data.Should().NotBeNull();
-        envelope.Data!.Should().Equal("EDIT");
+        envelope.Data!.Should().NotBeEmpty("the seeded catalogue declares this key");
+        envelope.Data.Should().OnlyContain(
+            definition => string.Equals(definition.PermissionKey, "EDIT", StringComparison.OrdinalIgnoreCase),
+            "the filter narrows the catalogue rather than being echoed back");
+    }
+
+    /// <summary>
+    /// A key a module package registered appears in the catalogue listing, with its identifier, exactly as
+    /// stored.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// THIS IS THE MEASURED REGRESSION. The unscoped listing used to be assembled from the four
+    /// <c>PermissionKey</c> members this solution names rather than read from <c>dbo.Permission</c>, so a key
+    /// registered by a module package at install time was absent from it while the module permission matrix
+    /// on the same screen displayed and evaluated that very key. One installation cannot hold two
+    /// catalogues.
+    /// </para>
+    /// <para>
+    /// The row is planted by direct statement for the reason recorded on the detail-read test below: no API
+    /// path creates catalogue definitions, and a real installation acquires one when a package calls
+    /// <c>AddPermission</c>.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ListPermissionCatalogue_IncludesAKeyThisSolutionDoesNotName()
+    {
+        const string storedKey = "QA_CUSTOM";
+        string permissionCode = "QA_MODULE_" + Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture)[..8];
+        int permissionId = await InsertCataloguePermissionAsync(
+            permissionCode,
+            _fixture.Seed.ModuleDefinitionId,
+            storedKey);
+
+        try
+        {
+            using HttpClient client = await _fixture.CreateHostClientAsync();
+
+            using HttpResponseMessage response = await client.GetAsync(
+                new Uri("/api/v1/permissions", UriKind.Relative));
+
+            response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+            CollectionEnvelope<PermissionDto>? envelope = await response.Content
+                .ReadFromJsonAsync<CollectionEnvelope<PermissionDto>>(ApiTestFixture.Json);
+
+            envelope.Should().NotBeNull();
+            envelope!.Data.Should().NotBeNull();
+
+            PermissionDto? planted = envelope.Data!
+                .FirstOrDefault(definition => definition.PermissionId == permissionId);
+
+            planted.Should().NotBeNull(
+                "the listing reports the catalogue the installation declares, not the vocabulary this "
+                + "solution happens to enumerate");
+            planted!.PermissionKey.Should().Be(
+                storedKey,
+                "the key travels verbatim, neither re-cased nor folded onto a named member");
+            planted.PermissionCode.Should().Be(permissionCode);
+
+            // Narrowing by the row's own scope code finds it too, so the code filter reads the store rather
+            // than probing the enumeration one member at a time.
+            using HttpResponseMessage scoped = await client.GetAsync(new Uri(
+                "/api/v1/permissions?permissionCode=" + permissionCode,
+                UriKind.Relative));
+
+            scoped.StatusCode.Should().Be(HttpStatusCode.OK);
+
+            CollectionEnvelope<PermissionDto>? scopedEnvelope = await scoped.Content
+                .ReadFromJsonAsync<CollectionEnvelope<PermissionDto>>(ApiTestFixture.Json);
+
+            scopedEnvelope.Should().NotBeNull();
+            scopedEnvelope!.Data.Should().NotBeNull();
+            scopedEnvelope.Data!.Select(definition => definition.PermissionKey).Should().Equal(
+                new[] { storedKey },
+                "the scope holds exactly the planted row, and its unnamed key is reported");
+        }
+        finally
+        {
+            await DeleteCataloguePermissionAsync(permissionId);
+        }
     }
 
     /// <summary>An unrecognised key spelling is refused by model binding.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task ListPermissionKeys_WithAnUnrecognisedKey_ReturnsBadRequest()
+    public async Task ListPermissionCatalogue_WithAnUnrecognisedKey_ReturnsBadRequest()
     {
         using HttpClient client = await _fixture.CreateHostClientAsync();
 

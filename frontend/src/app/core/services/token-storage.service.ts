@@ -93,6 +93,44 @@ export class TokenStorageService {
     this.advanceGeneration();
   }
 
+  /**
+   * Folds a freshly read identity onto the held session: the identity itself, and the two BLOCKING
+   * obligations it publishes.
+   *
+   * ⚠ THE GENERATION IS DELIBERATELY NOT ADVANCED, AND THAT IS THE WHOLE REASON THIS MEMBER EXISTS RATHER
+   * THAN A CALL TO {@link store}. The generation is the AUTH EPOCH: everything asynchronous in the
+   * authentication path captures it before it starts and discards its own result if it has moved. Neither
+   * the credentials nor the account has changed here — the same tokens remain valid for the same account —
+   * so advancing it would abort every request already in the air, including a renewal, for a read that
+   * changed nothing about who the caller is.
+   *
+   * ⚠ AND WHY THE OBLIGATIONS ARE FOLDED AT ALL. They are read from the session rather than from the
+   * fetched identity, because a completed remediation clears them locally the moment the operator finishes
+   * it. That local clear must be able to happen, and the server must still be able to reimpose them: an
+   * obligation created while the account is signed in exists only on the server, and the describe-caller
+   * read is the one response that can carry it. Folding here is what lets a mid-session obligation reach the
+   * navigation gate at all.
+   *
+   * Ignored when no session is held. Nothing is stored for a signed-out account, and a late-arriving read
+   * must not resurrect one.
+   *
+   * @param user The identity the server described, carrying its own obligations.
+   */
+  refreshIdentity(user: CurrentUser): void {
+    const held: AuthSession | null = this._session();
+
+    if (held === null) {
+      return;
+    }
+
+    this._session.set({
+      ...held,
+      user,
+      mustChangePassword: user.mustChangePassword,
+      mustUpdateProfile: user.mustUpdateProfile,
+    });
+  }
+
   /** Discards the held session. Idempotent, so a sign-out racing an expiry does not need to test first. */
   clear(): void {
     this._session.set(null);

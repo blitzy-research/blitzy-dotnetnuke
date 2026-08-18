@@ -181,6 +181,8 @@ const USER_DETAIL: UserDetail = {
   lastPasswordChangeDate: null,
   roles: ['Administrators'],
   canDelete: true,
+  // Opaque and never interpreted here: a fixture only has to carry one for the round trip to close.
+  concurrencyToken: 'user-revision-token',
 };
 
 const USER_PAGE: PagedUserList = {
@@ -210,6 +212,8 @@ const UPDATE_USER_REQUEST: UpdateUserRequest = {
   lastName: '',
   displayName: '',
   email: 'renamed.operator@example.test',
+  // The revision the submission was composed against, echoed back verbatim.
+  concurrencyToken: 'user-revision-token',
 };
 
 /**
@@ -2433,6 +2437,7 @@ describe('UserService', () => {
       'listProfileDefinitions',
       'passwordReset',
       'redeemServiceCode',
+      'reorderProfileDefinitions',
       'requirePasswordChange',
       'setApproval',
       'startServiceTrial',
@@ -2444,16 +2449,22 @@ describe('UserService', () => {
       'updateProfileDefinition',
     ];
 
-    it('exposes exactly twenty-six methods and not one more', () => {
+    it('exposes exactly twenty-seven methods and not one more', () => {
       // ⚠ TWENTY-FIVE BECAME TWENTY-SIX WHEN THE MEMBER-SERVICES CATALOGUE WAS BOUNDED. The endpoint now
       // answers one page at a time, so the page reader is a member of the surface in its own right and the
       // whole-catalogue reader is expressed in terms of it. Both are specified above.
+      //
+      // ⚠ TWENTY-SIX BECAME TWENTY-SEVEN WHEN ORDERING STOPPED BEING A SEQUENCE OF REPLACEMENTS. A move
+      // EXCHANGES the stored positions of two declarations, so the two writes are only correct together:
+      // land one and lose the other and both rows claim the same position. That is not expressible through
+      // a per-declaration replacement however carefully the caller sequences them, so the exchange has a
+      // route of its own that the server commits as one unit of work. Specified above.
       const actual: readonly string[] = Object.getOwnPropertyNames(UserService.prototype).sort();
 
       expect(actual)
         .withContext('a method added without a specification fails here first')
         .toEqual([...PROTOTYPE_MEMBERS]);
-      expect(actual.filter((name) => name !== 'constructor').length).toBe(26);
+      expect(actual.filter((name) => name !== 'constructor').length).toBe(27);
     });
 
     it('reads an account picker through its own method, not through a mode of the listing', () => {
@@ -2470,10 +2481,24 @@ describe('UserService', () => {
       }
     });
 
-    it('exposes no reordering helper, because a position is a field on a replacement', () => {
-      for (const forbidden of ['moveUp', 'moveDown', 'reorder', 'swapOrder', 'renumber']) {
+    it('writes ordering as ONE SET, and exposes no per-nudge helper', () => {
+      // MIGRATION: THIS TEST USED TO REQUIRE THE OPPOSITE, and it was wrong. It asserted that no ordering
+      // member existed at all, on the reasoning that a position is a field on a replacement — which is true
+      // of the DATA and false of the OPERATION. Moving a declaration EXCHANGES the stored positions of two
+      // of them, so the two writes are only correct together: land one and lose the other and both rows
+      // claim the same position, which is neither the order the operator started from nor the one they
+      // asked for. A sequence of replacements cannot express that however precisely it reports which row
+      // failed, so the exchange is submitted as one request the server commits as one unit of work.
+      expect(PROTOTYPE_MEMBERS)
+        .withContext('an exchange of positions must be submitted as one set, not as two replacements')
+        .toContain('reorderProfileDefinitions');
+
+      // The per-NUDGE helpers remain forbidden, and for the reason that has not changed: "up" and "down"
+      // are grid affordances, not transport operations, and a client that sent one per keystroke would be
+      // back to writing an exchange as two independent requests under a different name.
+      for (const forbidden of ['moveUp', 'moveDown', 'swapOrder', 'renumber']) {
         expect(PROTOTYPE_MEMBERS)
-          .withContext(`${forbidden} must not exist; position is written by the replacement`)
+          .withContext(`${forbidden} must not exist; a move is submitted as a position set`)
           .not.toContain(forbidden);
       }
     });

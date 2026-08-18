@@ -137,6 +137,8 @@ function currentUser(overrides: Partial<CurrentUser> = {}): CurrentUser {
     email: 'admin@example.test',
     isSuperUser: false,
     isPortalAdministrator: false,
+    mustChangePassword: false,
+    mustUpdateProfile: false,
     roles: ['Administrators'],
     permissions: ['VIEW'],
     ...overrides,
@@ -159,16 +161,33 @@ function credentials(overrides: Partial<LoginRequest> = {}): LoginRequest {
 function credentialPayload(
   overrides: Partial<LoginResponse> = {},
 ): SuccessEnvelope<LoginResponse> {
+  const data: LoginResponse = {
+    accessToken: FAKE_ACCESS_TOKEN,
+    expiresAtUtc: EXPIRES_AT_UTC,
+    refreshToken: FAKE_RENEWAL_TOKEN,
+    mustChangePassword: false,
+    passwordExpiring: false,
+    mustUpdateProfile: false,
+    user: currentUser(),
+    ...overrides,
+  };
+
+  // ⚠ THE EMBEDDED IDENTITY IS HELD IN STEP WITH THE TOP-LEVEL OBLIGATIONS, AND A FIXTURE THAT LET THEM
+  // DISAGREE WOULD BE DESCRIBING A SERVER THAT CANNOT EXIST. The API evaluates the two blocking obligations
+  // ONCE per request and writes the same values to both places, precisely so no single response can
+  // contradict itself; and the identity is now published on the describe-caller read as well, which is what
+  // lets the client learn an obligation imposed after sign-in. A fixture that said "the credential must be
+  // changed" at the top level while the identity beside it said nothing was owed would make an expectation
+  // about which of the two the client believed — a question the contract does not pose. The non-blocking
+  // expiry advisory is deliberately NOT synchronised: the identity publishes no opinion about it.
   return {
     data: {
-      accessToken: FAKE_ACCESS_TOKEN,
-      expiresAtUtc: EXPIRES_AT_UTC,
-      refreshToken: FAKE_RENEWAL_TOKEN,
-      mustChangePassword: false,
-      passwordExpiring: false,
-      mustUpdateProfile: false,
-      user: currentUser(),
-      ...overrides,
+      ...data,
+      user: {
+        ...data.user,
+        mustChangePassword: data.mustChangePassword,
+        mustUpdateProfile: data.mustUpdateProfile,
+      },
     },
     meta: null,
   };
@@ -1517,9 +1536,57 @@ describe('AuthStore', () => {
 
       expect(store.roles()).toEqual(['Administrators', 'Editors']);
       expect(store.permissions()).toEqual(['VIEW', 'EDIT']);
+      // ⚠ REVERSED DELIBERATELY. This used to require the stored snapshot to be UNTOUCHED, on the reasoning
+      // that only the projection had moved on. That left the two descriptions of one session permanently
+      // disagreeing, and the disagreement was not academic: the navigation gate reads the SESSION's blocking
+      // obligations, so an obligation imposed after sign-in — which only the describe-caller read can carry
+      // — reached the projection and never reached the gate. The read now folds onto the session, WITHOUT
+      // advancing the auth epoch, so both agree and the gate can act.
       expect(tokenStorage.currentUser()?.roles)
-        .withContext('the snapshot is untouched; only the projection moved on')
-        .toEqual(['Administrators']);
+        .withContext('the freshly read identity is folded onto the session, so the two agree')
+        .toEqual(['Administrators', 'Editors']);
+    });
+
+    it('folds the identity onto the session without advancing the auth epoch', async () => {
+      await signIn();
+
+      const epoch = tokenStorage.generation();
+      const inFlight = firstValueFrom(store.loadCurrentUser());
+
+      httpMock.expectOne(ME_URL).flush(identityPayload(currentUser({ userId: 7, roles: ['Editors'] })));
+
+      await expectAsync(inFlight).toBeResolved();
+
+      // Work already in flight — a renewal above all — captured this number before it started and discards
+      // its own result if it has moved. An identity read changes neither credential nor account, so it must
+      // not move.
+      expect(tokenStorage.generation()).withContext('auth epoch').toBe(epoch);
+      expect(store.currentUser()?.roles)
+        .withContext('the projection still resolves, so the stamp still matches the epoch')
+        .toEqual(['Editors']);
+    });
+
+    it('publishes an obligation imposed after the session began, so the gate can act on it', async () => {
+      await signIn();
+
+      expect(store.sessionRestricted())
+        .withContext('nothing was owed when the session began')
+        .toBeFalse();
+
+      const inFlight = firstValueFrom(store.loadCurrentUser());
+
+      httpMock
+        .expectOne(ME_URL)
+        .flush(identityPayload(currentUser({ mustUpdateProfile: true })));
+
+      await expectAsync(inFlight).toBeResolved();
+
+      expect(store.mustUpdateProfile())
+        .withContext('the describe-caller read is the only response that can carry a later obligation')
+        .toBeTrue();
+      expect(store.sessionRestricted())
+        .withContext('the value the navigation gate reads')
+        .toBeTrue();
     });
 
     it('exposes no member that decides an authorisation question', () => {
@@ -1877,6 +1944,8 @@ describe('AuthStore', () => {
           user: currentUser({
             isSuperUser: false,
             isPortalAdministrator: true,
+            mustChangePassword: false,
+            mustUpdateProfile: false,
             roles: ['Site Managers'],
           }),
         }),
@@ -1894,6 +1963,8 @@ describe('AuthStore', () => {
           user: currentUser({
             isSuperUser: false,
             isPortalAdministrator: false,
+            mustChangePassword: false,
+            mustUpdateProfile: false,
             roles: ['Administrators'],
           }),
         }),
@@ -1915,6 +1986,8 @@ describe('AuthStore', () => {
           user: currentUser({
             isSuperUser: true,
             isPortalAdministrator: false,
+            mustChangePassword: false,
+            mustUpdateProfile: false,
             roles: [],
           }),
         }),
@@ -2541,6 +2614,95 @@ describe('AuthStore', () => {
       expect(store.roles()).toEqual([]);
       expect(store.permissions()).toEqual([]);
       expect(store.phase()).toBe('idle');
+    });
+  });
+
+  describe('learning an obligation from a refusal', () => {
+    it('re-reads the caller so a mid-session obligation reaches the navigation gate', async () => {
+      await signIn();
+
+      expect(store.sessionRestricted()).withContext('nothing owed at sign-in').toBeFalse();
+
+      store.noteRemediationRefused();
+
+      httpMock
+        .expectOne(ME_URL)
+        .flush(identityPayload(currentUser({ mustUpdateProfile: true })));
+
+      expect(store.mustUpdateProfile()).withContext('the obligation is now known').toBeTrue();
+      expect(store.sessionRestricted())
+        .withContext('the single value the route gate reads')
+        .toBeTrue();
+    });
+
+    it('coalesces a burst of refusals into ONE read', async () => {
+      await signIn();
+
+      // A screen firing several reads at once is refused several times at once, and one refusal is all the
+      // evidence needed. `expectOne` is the assertion: a second request fails it here.
+      store.noteRemediationRefused();
+      store.noteRemediationRefused();
+      store.noteRemediationRefused();
+
+      httpMock
+        .expectOne(ME_URL)
+        .flush(identityPayload(currentUser({ mustUpdateProfile: true })));
+
+      expect(store.sessionRestricted()).toBeTrue();
+    });
+
+    it('asks nothing once the obligation is already known', async () => {
+      await signIn();
+
+      store.noteRemediationRefused();
+      httpMock
+        .expectOne(ME_URL)
+        .flush(identityPayload(currentUser({ mustUpdateProfile: true })));
+
+      // Every subsequent read on the restricted screen is refused too, and re-asking after each one would
+      // put the API under one identity read per refused request for no new information. `verify()` in
+      // `afterEach` is what proves nothing was issued.
+      store.noteRemediationRefused();
+    });
+
+    it('asks nothing while nobody is signed in', () => {
+      store.noteRemediationRefused();
+
+      expect(store.sessionRestricted()).toBeFalse();
+    });
+
+    it('frees its slot when the read settles, so a later refusal asks again', async () => {
+      await signIn();
+
+      store.noteRemediationRefused();
+      // Answered with NO obligation, which is what a refusal that was really about a permission looks like.
+      httpMock.expectOne(ME_URL).flush(identityPayload(currentUser()));
+
+      expect(store.sessionRestricted()).toBeFalse();
+
+      store.noteRemediationRefused();
+      httpMock
+        .expectOne(ME_URL)
+        .flush(identityPayload(currentUser({ mustChangePassword: true })));
+
+      expect(store.mustChangePassword()).toBeTrue();
+    });
+
+    it('swallows its own failure rather than reporting a read nobody asked for', async () => {
+      await signIn();
+
+      store.noteRemediationRefused();
+
+      // The refusal that prompted this is already being reported by whoever issued the request. A second
+      // announcement about an unrequested read would bury the first. The absence of an unhandled rejection
+      // is the assertion; the store's own failure slot is allowed to record it.
+      httpMock
+        .expectOne(ME_URL)
+        .flush({ title: 'Unavailable' }, { status: 503, statusText: 'Service Unavailable' });
+
+      expect(store.sessionRestricted())
+        .withContext('an unreadable answer leaves the client no worse informed than before')
+        .toBeFalse();
     });
   });
 

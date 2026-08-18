@@ -28,6 +28,15 @@ function definitionUrl(propertyDefinitionId: number): string {
   return `${DEFINITIONS_URL}/${propertyDefinitionId}`;
 }
 
+/**
+ * Where an ORDERING change is submitted.
+ *
+ * ⚠ NOT A DECLARATION ROUTE. A move EXCHANGES the stored positions of two declarations, so the two writes
+ * are only correct together — land one and lose the other and both rows claim the same position. The set is
+ * therefore submitted here and committed as one unit of work.
+ */
+const ORDER_URL = `${DEFINITIONS_URL}/order`;
+
 // The wording this screen publishes
 
 const PAGE_TITLE = 'Manage Profile Properties';
@@ -559,6 +568,28 @@ describe('ProfileDefinitionListComponent', () => {
       }
     });
 
+    // ⚠ A PROPERTY NAME IS ONE TOKEN, AND THIS GRID GIVES EVERY COLUMN THE SAME NARROW SHARE. No percentage is
+    // declared anywhere here and the four command columns ask for `min-content`, which wins nothing under a
+    // fixed table layout - so all twelve tracks collapse to an even one-twelfth, 80px at a 768 viewport.
+    // Measured before this: `PostalCode` painted `PostalCod` + `e`. The nine-character names survived; the
+    // ten-character one did not.
+    it('keeps the property name whole instead of breaking it mid-word', () => {
+      arrive();
+
+      const headers: readonly HTMLTableCellElement[] = query<HTMLTableCellElement>('thead th');
+
+      expect(headers[4]?.getAttribute('data-atomic'))
+        .withContext('a property name is one token')
+        .toBe('true');
+
+      // ⚠ THE COUNTERPART. The category beside it is a short controlled word that never fractured, and the
+      // columns after it hold values a reader may want wrapped rather than shortened, so the flag is applied
+      // to the name alone rather than across the grid.
+      expect(headers[5]?.getAttribute('data-atomic'))
+        .withContext('the category was measured clean and is left to wrap')
+        .toBeNull();
+    });
+
     it('declares twelve columns, four of them commands whose heading the legacy left empty', () => {
       arrive();
 
@@ -732,35 +763,54 @@ describe('ProfileDefinitionListComponent', () => {
       httpMock.expectNone(() => true);
     });
 
-    it('stages two rows for one move, and applies them as two replaces IN TURN', () => {
+    it('stages two rows for one move, and applies them as ONE atomic position write', () => {
+      // MIGRATION: THIS TEST USED TO REQUIRE TWO INDEPENDENT REPLACES, and requiring them was the defect.
+      // A move EXCHANGES the stored positions of two declarations, so the two writes are only correct
+      // together: land the first and lose the second and both rows claim position 1, which is neither the
+      // order the operator started from nor the one they asked for. The exchange is now submitted as one
+      // request the server commits as one unit of work.
       arrive();
 
       buttonsNamed('Move Down').at(0)?.click();
       fixture.detectChanges();
 
+      // The operator still changed TWO declarations, and the count speaks their terms rather than the
+      // wire's: one request does not make it one change.
       expect(text()).toContain('2 unapplied change(s)');
 
       press(APPLY_LABEL);
 
-      const bodies = new Map<string, unknown>();
+      const inFlight: readonly TestRequest[] = pendingWrites('PUT');
 
-      const written = settleBatch(2, (write) => {
-        bodies.set(write.request.url, write.request.body);
-        write.flush(envelope(definition()));
+      expect(inFlight.length)
+        .withContext('a move is ONE request, not one per moved declaration')
+        .toBe(1);
+      expect(inFlight[0].request.url)
+        .withContext('and it addresses the ordering route, not either declaration')
+        .toBe(ORDER_URL);
+      expect(inFlight[0].request.body).toEqual({
+        positions: [
+          { propertyDefinitionId: 11, viewOrder: 1 },
+          { propertyDefinitionId: 12, viewOrder: 0 },
+        ],
       });
 
-      expect(written).toEqual([definitionUrl(11), definitionUrl(12)]);
-      expect(bodies.get(definitionUrl(11))).toEqual(
-        jasmine.objectContaining({ propertyName: 'Nickname', viewOrder: 1 }),
-      );
-      expect(bodies.get(definitionUrl(12))).toEqual(
-        jasmine.objectContaining({ propertyName: 'Website', viewOrder: 0 }),
-      );
+      inFlight[0].flush(envelope(catalogue()));
+      fixture.detectChanges();
+
+      expect(pendingWrites('PUT').length)
+        .withContext('and no per-declaration replace follows it')
+        .toBe(0);
 
       settleReReads();
     });
 
-    it('carries all nine writable members on a move, because the verb replaces', () => {
+    it('carries POSITIONS ONLY on a move, so ordering cannot alter anything else', () => {
+      // MIGRATION: THIS TEST USED TO REQUIRE ALL NINE WRITABLE MEMBERS, on the reasoning that the verb
+      // replaces. The verb no longer replaces: an ordering request writes exactly one column, and carrying
+      // the whole declaration would let a Move Down rename a property, change its data type or drop its
+      // validation expression as a side effect of a keystroke — from a body the screen assembled out of
+      // whatever it last read rather than out of anything the operator touched.
       arrive([
         definition({
           propertyDefinitionId: 91,
@@ -781,28 +831,24 @@ describe('ProfileDefinitionListComponent', () => {
       fixture.detectChanges();
       press(APPLY_LABEL);
 
-      let firstBody: unknown = null;
+      const inFlight: readonly TestRequest[] = pendingWrites('PUT');
 
-      settleBatch(2, (write, step) => {
-        if (step === 0) {
-          expect(write.request.url).toBe(definitionUrl(91));
-          firstBody = write.request.body;
-        }
+      expect(inFlight.length).toBe(1);
+      expect(inFlight[0].request.url).toBe(ORDER_URL);
 
-        write.flush(envelope(definition()));
+      // Two pairs and nothing else. No property name, no data type, no validation expression.
+      expect(inFlight[0].request.body).toEqual({
+        positions: [
+          { propertyDefinitionId: 91, viewOrder: 1 },
+          { propertyDefinitionId: 92, viewOrder: 0 },
+        ],
       });
 
-      expect(firstBody).toEqual({
-        propertyName: 'Alpha',
-        propertyCategory: 'Group',
-        dataType: 350,
-        defaultValue: 'x',
-        length: 40,
-        required: true,
-        validationExpression: '^a$',
-        viewOrder: 1,
-        visible: true,
-      });
+      inFlight[0].flush(envelope([
+        definition({ propertyDefinitionId: 92, propertyName: 'Beta', viewOrder: 0 }),
+        definition({ propertyDefinitionId: 91, propertyName: 'Alpha', viewOrder: 1 }),
+      ]));
+      fixture.detectChanges();
 
       settleReReads();
     });
@@ -1299,12 +1345,21 @@ describe('ProfileDefinitionListComponent', () => {
       httpMock.expectNone(() => true);
     });
 
-    it('opens with the legacy field initialisers, including visible false', () => {
+    it('opens with the legacy field initialisers, except the data type, which opens empty', () => {
       arrive();
       press(ADD_LABEL);
 
       expect(control('profile-definition-name').value).toBe('');
-      expect(control('profile-definition-data-type').value).toBe('-1');
+      // ⚠ THIS EXPECTATION MOVED, AND THE OLD ONE WAS THE DEFECT IT ASSERTED - QA-10. It required the box to
+      // open holding the literal text "-1" - the legacy `Null.NullInteger` field initialiser rendered into a
+      // `type="number"` input. That presented a REQUIRED field already containing a real-looking number that
+      // the form's own `notNullInteger` validator then refused, so the field both offered and rejected the
+      // same value. -1 means "nothing chosen yet", and an empty box is what that looks like. Nothing
+      // downstream moved: -1 was never submittable, and `apply()` already refused a null data type before
+      // composing a request, so the sentinel reached the wire under neither spelling.
+      expect(control('profile-definition-data-type').value)
+        .withContext('nothing is chosen yet, and the box says so instead of offering -1')
+        .toBe('');
       expect(control('profile-definition-view-order').value).toBe('0');
 
       const visible = control('profile-definition-visible');
@@ -1754,7 +1809,12 @@ describe('ProfileDefinitionListComponent', () => {
       );
     });
 
-    it('reports a declaration in use distinctly from one that is already gone', () => {
+    // MIGRATION: THIS ASSERTION USED TO ENCODE A SENTENCE THAT WAS SIMPLY WRONG. A bare 409 on a removal was
+    // reported as the property being "in use", telling the operator to "remove the recorded values first" -
+    // advice for a condition the screen was guessing at, naming no way to carry it out. The API issues two
+    // specific refusals here, each recognised by its own code and each reporting what the server said, so a
+    // 409 carrying NEITHER code is a concurrent writer. The expectation now states that.
+    it('reports an unrecognised conflict as a concurrent change rather than guessing at a cause', () => {
       confirmRemoval();
 
       expectRequest('DELETE', definitionUrl(11)).flush(problem(409), {
@@ -1765,7 +1825,116 @@ describe('ProfileDefinitionListComponent', () => {
 
       expect(notify).toHaveBeenCalledWith(
         'error',
-        'That profile property is in use, so it was not deleted. Remove the recorded values first.',
+        'That profile property was changed by someone else, so it was not deleted. Read the list again and retry.',
+        null,
+      );
+    });
+
+    // ---- The cascade consent, added for Area of Concern A1 ------------------------------------------
+    //
+    // Removing a profile property takes every answer the portal's accounts recorded against it. The API
+    // refuses the first attempt so the operator can be shown HOW MANY, and only a second call carrying
+    // consent performs it. These cases prove the screen asks, carries the server's own count while asking,
+    // sends the flag only when told to, and leaves the declaration alone when the operator declines.
+
+    /** The refusal the API issues for a removal that would cascade, carrying its count. */
+    const CASCADE_DETAIL =
+      'Withdrawing "Nickname" will permanently delete 6 recorded profile answer(s) held by this '
+      + "portal's accounts, and that cannot be undone. Back up the UserProfile table first, then repeat "
+      + 'this request with confirmValueDeletion=true to proceed.';
+
+    /** Drives a first removal to the cascade refusal, proving the first attempt carries no consent. */
+    function refuseWithCascade(): void {
+      confirmRemoval();
+
+      const first = expectRequest('DELETE', definitionUrl(11), 'the unconsented removal');
+
+      // ⚠ THE WHOLE PROTECTION RESTS ON THIS. If the screen ever sent consent on a first attempt, the API
+      // would delete the answers without anyone being shown the count, and every other case in this group
+      // would still pass.
+      expect(first.request.params.has('confirmValueDeletion')).toBeFalse();
+      expect(first.request.urlWithParams).toBe(definitionUrl(11));
+
+      first.flush(
+        {
+          type: 'urn:dnnmigration:error:profile-definition.value-deletion-unacknowledged',
+          title: 'Conflict',
+          status: 409,
+          detail: CASCADE_DETAIL,
+        },
+        { status: 409, statusText: 'Conflict' },
+      );
+      fixture.detectChanges();
+    }
+
+    it('asks again, quoting the server\'s own count, when removal would destroy recorded answers', () => {
+      refuseWithCascade();
+
+      // The dialog is REOPENED rather than the refusal being announced and left, because the refusal is a
+      // question the operator can answer.
+      expect(query('app-confirm-dialog').length).toBe(1);
+      expect(text()).toContain('6 recorded profile answer(s)');
+      expect(text()).toContain('Back up the UserProfile table first');
+
+      // ⚠ AND IT IS NOT ALSO ANNOUNCED. The dialog is modal and holds focus, so notifying the same sentence
+      // would state one event twice in two places.
+      expect(notify).not.toHaveBeenCalled();
+    });
+
+    it('sends the consent flag only on the second attempt', () => {
+      refuseWithCascade();
+
+      pressDialog('Delete permanently');
+
+      // The retry addresses the SAME resource, with consent carried as a query parameter. The parameter is
+      // asserted separately from the path because the harness matches on the path alone - which is what makes
+      // the pair of assertions meaningful: the first attempt above matched this same path and must NOT have
+      // carried the flag, and this one must.
+      const retry = expectRequest('DELETE', definitionUrl(11), 'the consented removal');
+
+      expect(retry.request.params.get('confirmValueDeletion')).toBe('true');
+      expect(retry.request.urlWithParams).toBe(`${definitionUrl(11)}?confirmValueDeletion=true`);
+
+      retry.flush(null, { status: 204, statusText: 'No Content' });
+      settleReReads();
+
+      expect(notify).toHaveBeenCalledWith(
+        'success',
+        'Profile property "Nickname" was deleted.',
+      );
+    });
+
+    it('leaves the declaration alone when the operator declines the cascade', () => {
+      refuseWithCascade();
+
+      pressDialog('Cancel');
+
+      expect(query('app-confirm-dialog').length).toBe(0);
+
+      // Nothing further is sent, so declining is the same outcome as never having asked.
+      httpMock.expectNone(() => true);
+    });
+
+    it('reports a reserved property as refused outright, with no second ask', () => {
+      confirmRemoval();
+
+      expectRequest('DELETE', definitionUrl(11)).flush(
+        {
+          type: 'urn:dnnmigration:error:profile-definition.protected',
+          title: 'Conflict',
+          status: 409,
+          detail:
+            '"FirstName" is one of the profile properties this platform reserves, so it cannot be withdrawn.',
+        },
+        { status: 409, statusText: 'Conflict' },
+      );
+      fixture.detectChanges();
+
+      // Terminal: there is no parameter that performs it, so no dialog reopens and the reason is announced.
+      expect(query('app-confirm-dialog').length).toBe(0);
+      expect(notify).toHaveBeenCalledWith(
+        'error',
+        '"FirstName" is one of the profile properties this platform reserves, so it cannot be withdrawn.',
         null,
       );
     });
@@ -2826,13 +2995,22 @@ describe('ProfileDefinitionListComponent', () => {
   describe('the batch, the banner and who owns a refusal', () => {
     it('reports every refused row, each naming its own property', () => {
       // Two rows edited, both refused. Two messages, and each says which property it is about.
+      //
+      // MIGRATION: DRIVEN BY FLAG EDITS RATHER THAN BY A MOVE, and the difference is the point of the
+      // split. A flag is a fact about ONE declaration and holds or fails on its own, so it stays one write
+      // per row and per-row attribution is exactly what is wanted. Positions are not: a move exchanges two
+      // of them, so they are written as one unit of work and a refusal there belongs to the set — which is
+      // covered by its own case below.
       arrive([
-        definition({ propertyDefinitionId: 11, propertyName: 'Nickname', viewOrder: 0 }),
-        definition({ propertyDefinitionId: 12, propertyName: 'Website', viewOrder: 1 }),
+        definition({
+          propertyDefinitionId: 11, propertyName: 'Nickname', viewOrder: 0, required: false,
+        }),
+        definition({
+          propertyDefinitionId: 12, propertyName: 'Website', viewOrder: 1, required: false,
+        }),
       ]);
 
-      buttonsNamed('Move Down').at(0)?.click();
-      fixture.detectChanges();
+      toggle(bulkToggles().at(0));
       press(APPLY_LABEL);
 
       const writes = driveBatch((write) =>
@@ -2856,13 +3034,19 @@ describe('ProfileDefinitionListComponent', () => {
       // ⚠ THE CASE THE AGGREGATE FLAG COULD NOT EXPRESS. The successful row settles first; under the old
       // mechanism that lowered the flag and the screen treated the batch as finished, so the refusal
       // arriving afterwards had nothing left to attribute itself to.
+      //
+      // MIGRATION: DRIVEN BY FLAG EDITS RATHER THAN BY A MOVE, for the reason recorded on the case above:
+      // the field dimension of the batch is per-row and this property is about the field dimension.
       arrive([
-        definition({ propertyDefinitionId: 11, propertyName: 'Nickname', viewOrder: 0 }),
-        definition({ propertyDefinitionId: 12, propertyName: 'Website', viewOrder: 1 }),
+        definition({
+          propertyDefinitionId: 11, propertyName: 'Nickname', viewOrder: 0, required: false,
+        }),
+        definition({
+          propertyDefinitionId: 12, propertyName: 'Website', viewOrder: 1, required: false,
+        }),
       ]);
 
-      buttonsNamed('Move Down').at(0)?.click();
-      fixture.detectChanges();
+      toggle(bulkToggles().at(0));
       press(APPLY_LABEL);
 
       // The batch is written in the order the declarations were READ, which is the order the store holds
@@ -2899,9 +3083,71 @@ describe('ProfileDefinitionListComponent', () => {
       fixture.detectChanges();
       press(APPLY_LABEL);
 
-      driveBatch((write) => write.flush(envelope(definition())));
+      // The ordering route answers with the whole catalogue in its new order, so the answer is a LIST
+      // envelope. Answering it with a single declaration would fail the response contract and be reported
+      // as a refusal, which is the opposite of what this case is about.
+      driveBatch((write) => write.flush(envelope(catalogue())));
 
       expect(notify).withContext('a working apply says nothing').not.toHaveBeenCalled();
+    });
+
+    it('attributes an ORDER refusal to the order, not to either declaration, and applies no flag', () => {
+      // ⚠ THE CASE THE SPLIT EXISTS FOR. A move exchanges two positions and is written as one unit of
+      // work, so a refusal there is neither declaration's fault — naming one would tell the operator that
+      // row was at fault when neither was, and would imply the other row's move landed. It did not.
+      arrive([
+        definition({
+          propertyDefinitionId: 11, propertyName: 'Nickname', viewOrder: 0, required: false,
+        }),
+        definition({
+          propertyDefinitionId: 12, propertyName: 'Website', viewOrder: 1, required: false,
+        }),
+      ]);
+
+      // BOTH dimensions staged: the first row moves down AND every row's required flag is set.
+      buttonsNamed('Move Down').at(0)?.click();
+      fixture.detectChanges();
+      toggle(bulkToggles().at(0));
+      press(APPLY_LABEL);
+
+      const order: readonly TestRequest[] = pendingWrites('PUT');
+
+      expect(order.length).withContext('the order write goes first, alone').toBe(1);
+      expect(order[0].request.url).toBe(ORDER_URL);
+
+      order[0].flush(problem(409), { status: 409, statusText: 'Conflict' });
+      fixture.detectChanges();
+
+      // ⚠ NO FIELD WRITE FOLLOWS A REFUSED ORDER. Applying flags over an order the server has just
+      // declined would leave the screen reporting a partial success it did not have.
+      expect(pendingWrites('PUT').length)
+        .withContext('a refused order abandons the field writes behind it')
+        .toBe(0);
+
+      const announced: readonly string[] = notify.calls
+        .allArgs()
+        .map((args: readonly unknown[]) => String(args[1]));
+
+      expect(announced.length).withContext('one message, for the order').toBe(1);
+      expect(announced[0]).toContain('Display order:');
+      expect(announced[0])
+        .withContext('and it says plainly that nothing at all was applied')
+        .toContain('No display order was changed, and no other change was applied.');
+      expect(announced.some((message) => message.startsWith('Nickname:')))
+        .withContext('neither declaration is blamed for the set')
+        .toBeFalse();
+      expect(announced.some((message) => message.startsWith('Website:'))).toBeFalse();
+
+      // The catalogue is re-read on BOTH outcomes — legacy parity, and it is also what puts the screen back
+      // on the stored order after a refused move.
+      settleReReads([
+        definition({
+          propertyDefinitionId: 11, propertyName: 'Nickname', viewOrder: 0, required: false,
+        }),
+        definition({
+          propertyDefinitionId: 12, propertyName: 'Website', viewOrder: 1, required: false,
+        }),
+      ]);
     });
 
     it('keeps a batch refusal out of the banner, which is one surface too many', () => {

@@ -413,20 +413,19 @@ public sealed class PermissionService : IPermissionService
     /// <inheritdoc />
     /// <remarks>
     /// <para>
-    /// The two filters compose conjunctively, so supplying neither returns the whole catalogue. The scope
+    /// The three filters compose conjunctively, so supplying none returns the whole catalogue. The scope
     /// code is deliberately matched as free text rather than against an enumeration, because the column it
     /// lives in is free text and an installation carrying a code this codebase has never seen must still
     /// round-trip intact.
     /// </para>
     /// <para>
-    /// The KEY column is free text on exactly the same footing, and naming a module definition is how a
-    /// caller reaches a key outside the four this solution enumerates: that path reads the catalogue and
-    /// reports the stored spellings verbatim. The key FILTER remains typed, so a spelling outside the
-    /// enumeration is refused at the boundary with a bad request rather than silently matching nothing - see
-    /// <c>AllPermissionKeys</c> for why the unnamed-definition paths can only probe a candidate list.
+    /// The KEY column is free text on exactly the same footing, and every filter shape now reports the
+    /// stored spellings verbatim rather than only the definition-scoped one. The key FILTER remains typed,
+    /// so a spelling outside the enumeration is refused at the boundary with a bad request rather than
+    /// silently matching nothing.
     /// </para>
     /// </remarks>
-    public async Task<Result<IReadOnlyList<string>>> GetPermissionKeysAsync(
+    public async Task<Result<IReadOnlyList<PermissionDto>>> GetPermissionCatalogueAsync(
         string? permissionCode = null,
         int? moduleDefinitionId = null,
         PermissionKey? permissionKey = null,
@@ -437,7 +436,7 @@ public sealed class PermissionService : IPermissionService
         // an empty one asks for the codes that are blank, and there are none.
         if (permissionCode is not null && string.IsNullOrWhiteSpace(permissionCode))
         {
-            return Result<IReadOnlyList<string>>.Failure(
+            return Result<IReadOnlyList<PermissionDto>>.Failure(
                 FilterInvalidCode,
                 "The permission code filter must not be blank; omit it to place no restriction.");
         }
@@ -445,7 +444,7 @@ public sealed class PermissionService : IPermissionService
         // WHAT THIS GUARD IS AND IS NOT. It is NOT the HTTP boundary's defence.
         if (permissionKey is PermissionKey wantedKeyFilter && !Enum.IsDefined(wantedKeyFilter))
         {
-            return Result<IReadOnlyList<string>>.Failure(
+            return Result<IReadOnlyList<PermissionDto>>.Failure(
                 KeyInvalidCode,
                 FormattableString.Invariant(
                     $"Permission key {(int)wantedKeyFilter} is not defined; omit the filter to place no restriction."));
@@ -453,18 +452,17 @@ public sealed class PermissionService : IPermissionService
 
         if (moduleDefinitionId is int definitionId && definitionId < LowestModuleDefinitionId)
         {
-            return Result<IReadOnlyList<string>>.Failure(
+            return Result<IReadOnlyList<PermissionDto>>.Failure(
                 FilterInvalidCode,
                 FormattableString.Invariant(
                     $"Module definition {definitionId} cannot name a row; identifiers start at {LowestModuleDefinitionId}."));
         }
 
-        // Nothing is lost by reading through.
-        IReadOnlyList<string> catalogueKeys = Normalise(
-            await ReadCatalogueKeysAsync(permissionCode, moduleDefinitionId, permissionKey, cancellationToken)
+        IReadOnlyList<PermissionDto> definitions = Project(
+            await ReadCatalogueAsync(permissionCode, moduleDefinitionId, permissionKey, cancellationToken)
                 .ConfigureAwait(false));
 
-        return Result<IReadOnlyList<string>>.Success(catalogueKeys);
+        return Result<IReadOnlyList<PermissionDto>>.Success(definitions);
     }
 
     /// <inheritdoc />
@@ -744,6 +742,45 @@ public sealed class PermissionService : IPermissionService
             return Result<bool>.Success(true);
         }
 
+        // ⚠ TENANT ADMINISTRATION IS ASKED BEFORE ANY GRANT ROW, AND ITS ABSENCE HERE WAS MEASURED AS A
+        // DEFECT. Legacy `PortalSecurity.HasNecessaryPermission` -
+        // `Library/Components/Security/PortalSecurity.vb:L519-L548` - read `isAdmin = IsInRole(PortalSettings.
+        // AdministratorRoleName)` and admitted the View, Edit AND Admin access levels on that alone,
+        // IRRESPECTIVE of any permission row: a tenant's administrator administers its pages whether or not
+        // a grant row happens to name their role. This member went straight to the row-based evaluator, so
+        // an administrator of a portal whose page grants were never populated - the ordinary state of a
+        // freshly created page - was refused both the read and the update of their own page, while the two
+        // page-LISTING members beside it (`HasAnyTabPermissionInPortalAsync` and
+        // `ListTabsWithPermissionAsync`) already asked this question first and answered correctly. One
+        // installation therefore reported that the administrator may act on a page in the listing and then
+        // refused the page itself.
+        //
+        // The already-resolved role names are reused rather than re-reading the account and its assignments:
+        // `ResolveCallerAsync` above resolved them AS OF NOW, so an assignment whose validity window has
+        // closed is already absent, and the name comparison is the same one the legacy test performed. This
+        // is the identical arm the module EDIT path uses, for the identical reason.
+        //
+        // ⚠ THE AUTHORITY IS OVER THE TENANT'S OWN PAGES, AND `BelongsToPortal` ABOVE IS DELIBERATELY WIDER
+        // THAN THAT. That test admits a page bearing NO tenant, because a host-level page is in scope for
+        // every portal - which is what makes the host administration pages addressable from inside one. But
+        // a page belonging to no tenant is not a page this tenant's administrator administers, and the
+        // suite records that as a deliberate divergence from the legacy ownership test, which accepted
+        // `Tabs.PortalId is null` unconditionally. So the ownership required HERE is exact equality, and a
+        // host-level page falls through to the grant rows exactly as before.
+        //
+        // AN ANONYMOUS CALLER IS EXCLUDED BEFORE THE NAME COMPARISON IS EVEN REACHED. Its resolved names are
+        // the two pseudo-roles rather than assignments, so the comparison could only ever match through an
+        // installation that had renamed its administrators role to a pseudo-role's wording - and admitting
+        // an unauthenticated caller on a naming coincidence is not a risk worth carrying for two reads this
+        // branch does not need.
+        if (userId is not null
+            && tab.PortalId == portalId
+            && await HoldsPortalAdministratorRoleAsync(portalId, caller.RoleNames, cancellationToken)
+                .ConfigureAwait(false))
+        {
+            return Result<bool>.Success(true);
+        }
+
         Result<bool> granted = await _evaluator
             .HasTabPermissionAsync(tabId, permissionKey, userId, caller.RoleNames, cancellationToken)
             .ConfigureAwait(false);
@@ -882,8 +919,8 @@ public sealed class PermissionService : IPermissionService
     }
 
     /// <summary>
-    /// Reads the catalogue keys matching an optional scope code, an optional module definition and an
-    /// optional key.
+    /// Reads the catalogue definitions matching an optional scope code, an optional module definition and
+    /// an optional key.
     /// </summary>
     /// <param name="permissionCode">The scope code filter, or <see langword="null"/> for no restriction.</param>
     /// <param name="moduleDefinitionId">
@@ -891,8 +928,28 @@ public sealed class PermissionService : IPermissionService
     /// </param>
     /// <param name="permissionKey">The key filter, or <see langword="null"/> for no restriction.</param>
     /// <param name="cancellationToken">Token observed for cancellation.</param>
-    /// <returns>The keys the catalogue reports for that combination, unnormalised.</returns>
-    private async Task<IReadOnlyList<string>> ReadCatalogueKeysAsync(
+    /// <returns>
+    /// The rows the catalogue reports for that combination, unprojected; the caller applies distinctness and
+    /// ordering.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// <b>ONE READ PER SHAPE, AND EVERY SHAPE READS THE STORE.</b> Naming a module definition still takes
+    /// the definition-scoped reader, because that is the narrowest read that answers it and the store should
+    /// do the narrowing it can. Every other shape takes the catalogue-wide reader and narrows in memory
+    /// over a table of bounded reference data.
+    /// </para>
+    /// <para>
+    /// <b>What this replaced, and why.</b> The unscoped shape used to be answered from
+    /// <see cref="PermissionKey"/> itself with no store read at all, and the code-scoped shape used to probe
+    /// the code-and-key reader once per enumeration member. Both were bounded by this solution's vocabulary
+    /// rather than by the data, so a definition registered under any other spelling was invisible to them
+    /// while remaining perfectly visible to the definition-scoped shape, to the module permission matrices
+    /// and to the evaluator. Two answers to one question is not a narrowing, it is a contradiction, and the
+    /// probe additionally cost four round trips to answer less than one does.
+    /// </para>
+    /// </remarks>
+    private async Task<IReadOnlyList<Permission>> ReadCatalogueAsync(
         string? permissionCode,
         int? moduleDefinitionId,
         PermissionKey? permissionKey,
@@ -900,66 +957,38 @@ public sealed class PermissionService : IPermissionService
     {
         string? wantedCode = permissionCode?.Trim();
 
-        if (moduleDefinitionId is int definitionId)
-        {
-            IReadOnlyList<Permission> declared = await _permissions
+        IReadOnlyList<Permission> rows = moduleDefinitionId is int definitionId
+            ? await _permissions
                 .GetByModuleDefinitionIdAsync(definitionId, cancellationToken)
+                .ConfigureAwait(false)
+            : await _permissions
+                .GetCatalogueAsync(cancellationToken)
                 .ConfigureAwait(false);
 
-            IEnumerable<Permission> matching = wantedCode is null
-                ? declared
-                : declared.Where(entry => string.Equals(
-                    entry.PermissionCode,
-                    wantedCode,
-                    StringComparison.OrdinalIgnoreCase));
-
-            if (permissionKey is PermissionKey wantedWithinDefinition)
-            {
-                string wantedSpelling = wantedWithinDefinition.ToString();
-
-                matching = matching.Where(entry => string.Equals(
-                    entry.PermissionKey,
-                    wantedSpelling,
-                    StringComparison.OrdinalIgnoreCase));
-            }
-
-            // The STORED spellings, not enumeration members: this branch reads the catalogue itself, so a
-            // definition declaring a key this solution does not name reports that key rather than omitting
-            // it. Normalisation of the returned sequence is the caller's, and is applied uniformly there.
-            return matching.Select(entry => entry.PermissionKey).ToList();
-        }
+        IEnumerable<Permission> matching = rows;
 
         if (wantedCode is not null)
         {
-            // Naming the code AND the key is GetPermissionByCodeAndKey exactly - one store read asking
-            // whether that key is declared within that scope.
-            IReadOnlyList<PermissionKey> candidates = permissionKey is PermissionKey wantedKey
-                ? [wantedKey]
-                : AllPermissionKeys;
-
-            var present = new List<string>(candidates.Count);
-
-            foreach (PermissionKey candidate in candidates)
-            {
-                IReadOnlyList<Permission> entries = await _permissions
-                    .GetByCodeAndKeyAsync(wantedCode, candidate, cancellationToken)
-                    .ConfigureAwait(false);
-
-                if (entries.Count > 0)
-                {
-                    present.Add(candidate.ToString());
-                }
-            }
-
-            return present;
+            matching = matching.Where(entry => string.Equals(
+                entry.PermissionCode,
+                wantedCode,
+                StringComparison.OrdinalIgnoreCase));
         }
 
-        if (permissionKey is PermissionKey only)
+        if (permissionKey is PermissionKey wantedKey)
         {
-            return [only.ToString()];
+            // The FILTER is a named member, but the comparison is against the STORED spelling and is
+            // case-insensitive, so a row holding "edit" is matched by a filter of EDIT. It is the same
+            // comparison the evaluator applies when it decides whether a grant names a key.
+            string wantedSpelling = wantedKey.ToString();
+
+            matching = matching.Where(entry => string.Equals(
+                entry.PermissionKey,
+                wantedSpelling,
+                StringComparison.OrdinalIgnoreCase));
         }
 
-        return AllPermissionKeys.Select(key => key.ToString()).ToList();
+        return matching.ToList();
     }
 
     /// <summary>Decides whether the two forms of addressing a module placement contradict each other.</summary>
@@ -1389,7 +1418,12 @@ public sealed class PermissionService : IPermissionService
             .GetByIdAsync(moduleId, cancellationToken)
             .ConfigureAwait(false);
 
-        if (module is null || !BelongsToPortal(module.PortalId, portalId))
+        // ⚠ A RECYCLED MODULE IS ABSENT HERE, AND ADMITTING ONE WAS A MEASURED INCONSISTENCY. The detail and
+        // settings reads select a module through a live placement, so they report a recycled module as absent;
+        // this read resolves the row directly and so used to answer 200 for the same identifier - one module,
+        // two contradictory answers about whether it exists. One existence rule is used everywhere: a module
+        // is addressable while it lives in this tenant and is not recycled.
+        if (module is null || !BelongsToPortal(module.PortalId, portalId) || module.IsDeleted)
         {
             return Result<ModulePermissionsDto>.Failure(
                 ModuleNotFoundCode,
@@ -1497,7 +1531,9 @@ public sealed class PermissionService : IPermissionService
             .GetByIdAsync(moduleId, cancellationToken)
             .ConfigureAwait(false);
 
-        if (module is null || !BelongsToPortal(module.PortalId, portalId))
+        // Recycled is absent, for the reason recorded on the read above: one existence rule, applied by every
+        // endpoint addressing a module.
+        if (module is null || !BelongsToPortal(module.PortalId, portalId) || module.IsDeleted)
         {
             return Result.Failure(
                 ModuleNotFoundCode,

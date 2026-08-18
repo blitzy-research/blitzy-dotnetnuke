@@ -314,6 +314,30 @@ const FIELD_LABEL = Object.freeze({
  * parenthesised note; both are reproduced exactly, the second because it is the ONLY place the "zero
  * means unlimited" rule is stated — the input itself shows the stored number, including zero.
  */
+/*
+ * ─────────────────────────────────────────────────────────────────────────────────────────────────
+ * DELIBERATELY NOT DONE: restating the metadata character allowance in this screen's help text - QA-9.
+ *
+ * The register asked for the silent `maxlength` truncation to be disclosed, and a sentence was written,
+ * shipped and MEASURED - after which it was removed, because the measurement showed the disclosure already
+ * existed. The shared field component authors the bound sentence itself, once, for every bounded field in
+ * the application: "At most 475 characters." rendered from the control's own `maxlength`. The added sentence
+ * therefore appeared directly beside it, saying the same number in different words, and the shared
+ * component's own comment gives the reason that is wrong - the sentence is authored once precisely "so
+ * every bounded field in the application states its bound the same way".
+ *
+ * WHAT THE MEASUREMENT DID FIND, and what is NOT a portal concern: the bound is only PAINTED once the
+ * "ⓘ Help" disclosure is expanded; while collapsed it exists solely as a 1×1px visually-hidden paragraph, so
+ * a sighted operator sees no allowance hint at all until they open Help. That affects every bounded field on
+ * every screen, so it belongs to the shared field component, not to a per-screen string.
+ *
+ * The two numbers themselves - 475 here, 500 on the create screen, for the same nvarchar(500) columns - are
+ * a legacy inconsistency preserved on purpose under AAP 0.9.1: `sitesettings.ascx` declares MaxLength="475"
+ * and `signup.ascx` declares maxlength="500". Each screen states the bound it actually enforces, which was
+ * verified at runtime on all four fields.
+ * ─────────────────────────────────────────────────────────────────────────────────────────────────
+ */
+
 const FIELD_HELP = Object.freeze({
   portalName:
     'This is the Title for your portal.  The text you enter will show up in the Title Bar.',

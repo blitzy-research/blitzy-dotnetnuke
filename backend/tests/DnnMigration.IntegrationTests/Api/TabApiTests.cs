@@ -1217,6 +1217,103 @@ public sealed class TabApiTests
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
+    /// <summary>
+    /// A tenant administrator reads AND writes a page of their own tenant that NO permission row names at
+    /// all.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THIS IS THE CASE THAT WAS MEASURED FAILING, AND BOTH VERBS ARE ASSERTED IN ONE CASE BECAUSE EITHER
+    /// ALONE WOULD MISREPRESENT IT. The administrator of the seeded tenant was answered <c>403</c> on both
+    /// <c>GET</c> and <c>PUT /api/v1/tabs/{id}</c> whenever no <c>TabPermission</c> row named the designated
+    /// administrators role; adding a VIEW and an EDIT row flipped both to <c>200</c>, and removing them
+    /// flipped both back. Legacy <c>PortalSecurity.HasNecessaryPermission</c> -
+    /// <c>Library/Components/Security/PortalSecurity.vb:L519-L548</c> - admitted View, Edit and Admin on
+    /// <c>IsInRole(AdministratorRoleName)</c> alone, consulting no row, and the two page-LISTING members of
+    /// this same API already did so; the single-page question did not, so one installation reported that the
+    /// administrator may act on a page and then refused the page itself.
+    /// </para>
+    /// <para>
+    /// EVERY ROW FOR THE PAGE IS DELETED FIRST rather than assumed absent, because these suites share one
+    /// database with no ordering guarantee, and because page creation is entitled to seed grants of its own.
+    /// A case whose outcome depends on stored grant rows establishes its own precondition.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task GetAndUpdateTab_AsATenantAdministratorWithNoGrantRowAtAll_ReturnOk()
+    {
+        string name = "IAdminAuthority" + Suffix();
+        int tabId = await CreateTabAsync(name);
+        await ClearEveryGrantAsync(tabId);
+
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
+
+        using HttpResponseMessage read = await administrator.GetAsync(TabRoute(tabId));
+
+        read.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "a tenant's administrator administers its pages whether or not a grant row names their role");
+
+        TabDetailDto detail = await ReadDetailAsync(read);
+        detail.TabId.Should().Be(tabId);
+
+        string renamed = "IAdminAuthorityEdited" + Suffix();
+
+        using HttpResponseMessage written = await administrator.PutAsJsonAsync(
+            TabRoute(tabId),
+            NewUpdateRequest(renamed),
+            ApiTestFixture.Json);
+
+        written.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "the legacy admitted the Edit access level on administration alone, with no row consulted");
+
+        TabDetailDto updated = await ReadDetailAsync(written);
+        updated.TabName.Should().Be(renamed);
+    }
+
+    /// <summary>
+    /// The authority is over the tenant's OWN pages: a page belonging to NO tenant is still refused to a
+    /// tenant administrator, with no grant row present.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ ASSERTED BESIDE THE CASE ABOVE BECAUSE THAT CASE WIDENS AN AUTHORITY, AND A WIDENED AUTHORITY HAS
+    /// TO BE SHOWN WHERE IT STOPS. The ownership test the read path applies before any authority question -
+    /// which admits a page bearing no tenant, so that host-level pages are addressable from inside every
+    /// portal - is deliberately WIDER than the authority itself. The sibling read case records the narrower
+    /// rule as a documented divergence from the legacy ownership check, which accepted
+    /// <c>Tabs.PortalId is null</c> unconditionally; a host-level page must therefore still fall through to
+    /// the grant rows, which name nothing here.
+    /// </para>
+    /// <para>
+    /// The cross-TENANT boundary is measured by the sibling read case that creates an isolated tenant, and
+    /// by the service-level facts. This case deliberately creates no tenant of its own: portal identifiers
+    /// come from an <c>IDENTITY(-1, 1)</c> column whose next value in a freshly seeded database is zero, and
+    /// a sibling case in this file asserts that zero names no tenant.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task UpdateTab_ForAPageWithNoTenant_RefusesATenantAdministrator()
+    {
+        string name = "IHostPageWrite" + Suffix();
+        int hostTabId = await CreateTenantlessTabAsync(name);
+        await ClearEveryGrantAsync(hostTabId);
+
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
+
+        using HttpResponseMessage response = await administrator.PutAsJsonAsync(
+            TabRoute(hostTabId),
+            NewUpdateRequest(name),
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(
+            HttpStatusCode.Forbidden,
+            "administering one tenant must not confer a write on a page that belongs to no tenant");
+    }
+
     /// <summary>The same caller writes once an edit grant reaches a role it holds.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
@@ -2375,6 +2472,27 @@ public sealed class TabApiTests
             {
                 ["portalId"] = _fixture.Seed.PortalId,
                 ["permissionId"] = _fixture.Seed.TabEditPermissionId,
+            });
+    }
+
+    /// <summary>Removes every grant recorded against ONE page, whatever its key, role or account.</summary>
+    /// <param name="tabId">The page whose grants are removed.</param>
+    /// <returns>A task representing the write.</returns>
+    /// <remarks>
+    /// The narrower <see cref="ClearEditGrantsAsync"/> removes one key across a whole tenant, which is what
+    /// a tenant-wide capability question needs. A case about ONE page's authority needs the opposite shape:
+    /// every key, every principal, this page alone - so that "no row names this caller" is a fact the case
+    /// established rather than one it inherited from whichever case ran before it.
+    /// </remarks>
+    private async Task ClearEveryGrantAsync(int tabId)
+    {
+        await _fixture.Database.ExecuteAsync(
+            """
+            DELETE FROM [dbo].[TabPermission] WHERE [TabID] = @tabId;
+            """,
+            new Dictionary<string, object?>
+            {
+                ["tabId"] = tabId,
             });
     }
 

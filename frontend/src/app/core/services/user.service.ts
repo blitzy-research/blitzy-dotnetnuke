@@ -25,6 +25,7 @@ import type { PagedRequestParams } from '../utils/http-params.util';
 import type {
   CreateProfilePropertyDefinitionRequest,
   ProfilePropertyDefinition,
+  ProfilePropertyDefinitionPosition,
   UpdateProfilePropertyDefinitionRequest,
   UserProfile,
   UserProfileSubmission,
@@ -425,16 +426,57 @@ export class UserService {
   }
 
   /**
+   * Writes several profile-declaration positions as ONE request, which the server commits as one unit of
+   * work.
+   *
+   * ⚠ USE THIS, NOT A SEQUENCE OF {@link updateProfileDefinition} CALLS, TO REORDER. A move EXCHANGES two
+   * stored positions, so the two writes are only correct together: land one and lose the other and two
+   * declarations claim the same position, which is neither the order the operator started from nor the one
+   * they asked for. A per-declaration sequence cannot express that however precisely it reports which row
+   * failed, which is why this route exists.
+   *
+   * @param positions The declarations to reposition, each paired with its new position.
+   * @returns The tenant's whole catalogue in its new order, so a caller rebinds from this response rather
+   * than following it with a read that could observe another writer's work.
+   */
+  reorderProfileDefinitions(
+    positions: readonly ProfilePropertyDefinitionPosition[],
+  ): Observable<readonly ProfilePropertyDefinition[]> {
+    return this.http
+      .put<unknown>(
+        API_ENDPOINTS.profileDefinitions.forCurrentPortal.order(),
+        { positions },
+        { context: presentedInContext() },
+      )
+      .pipe(map((body) => decodeResponse(PROFILE_DEFINITION_LIST_RESPONSE, body)));
+  }
+
+  /**
    * Removes one profile declaration. Answers with no body.
    *
+   * Withdrawing a declaration takes every answer accounts have recorded against it, because the store
+   * cascades them. The API therefore refuses the first attempt on a declaration that HAS answers, with
+   * `profile-definition.value-deletion-unacknowledged` and a detail reporting how many are at stake; the
+   * same request repeated with `confirmValueDeletion` performs it. That two-step is deliberate and is the
+   * whole protection, so this method does not set the flag on its own initiative — a caller must pass it,
+   * which means an operator has been shown the count and agreed to it.
+   *
    * @param propertyDefinitionId The declaration to remove.
+   * @param confirmValueDeletion Consent to destroying the recorded answers. Omitted on a first attempt.
    * @returns Completion. No payload.
    */
-  deleteProfileDefinition(propertyDefinitionId: number): Observable<void> {
-    return this.http.delete<void>(
-      API_ENDPOINTS.profileDefinitions.forCurrentPortal.byId(propertyDefinitionId),
-      { context: presentedInContext() },
-    );
+  deleteProfileDefinition(
+    propertyDefinitionId: number,
+    confirmValueDeletion = false,
+  ): Observable<void> {
+    const url = API_ENDPOINTS.profileDefinitions.forCurrentPortal.byId(propertyDefinitionId);
+
+    return this.http.delete<void>(url, {
+      context: presentedInContext(),
+      // Sent only when consent was given. An absent parameter and `false` mean the same thing to the API, and
+      // omitting it keeps a first attempt's URL exactly as it was before this protection existed.
+      ...(confirmValueDeletion ? { params: { confirmValueDeletion: true } } : {}),
+    });
   }
 
   // -------------------------------------------------------------------------

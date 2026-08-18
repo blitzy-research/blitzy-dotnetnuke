@@ -39,6 +39,31 @@
 <app-error-banner [problem]="problem()" />
 
 <!--
+  ⚠ THE ONE REFUSAL THIS FORM CANNOT BE CORRECTED OUT OF. The revision marker an update carries comes from
+  the account this screen READ, and a refusal does not change that account - so pressing Update again sends
+  the same refused marker and is refused again, indefinitely. Without a way to re-read, a conflict is a dead
+  end.
+
+  MIGRATION: NET-NEW, in both the situation and the affordance. The legacy update carried no revision
+  marker, so a conflict could not be detected and was not reported - the later save simply overwrote the
+  earlier one in full.
+-->
+@if (conflicted()) {
+  <div class="user-form__conflict" role="status">
+    <p class="user-form__conflict-statement">{{ conflictMessage }}</p>
+    <p class="user-form__conflict-message">{{ conflictRecoveryMessage }}</p>
+    <button
+      type="button"
+      class="user-form__conflict-reload"
+      (click)="onReloadAfterConflict()"
+      [disabled]="loading()"
+    >
+      {{ conflictReloadLabel }}
+    </button>
+  </div>
+}
+
+<!--
   ⚠ THE RECOVERY SURFACE FOR A FAILED ACCOUNT READ, WHICH DID NOT EXIST. A read that failed for anything
   other than `403`/`404` left this screen showing the PREVIOUS read's values with Update, Delete,
   UnAuthorize and Force Password Change all live, and offered no way to re-read and no way forward - the
@@ -232,10 +257,33 @@
                 autocomplete="email"
                 [attr.aria-required]="true"
                 [attr.aria-invalid]="messageFor('email') ? 'true' : null"
+                [attr.aria-describedby]="tenantEmailAdvisory() ? 'user-form-email-tenant-advisory' : null"
                 [attr.maxlength]="maxLengths.email"
                 formControlName="email"
               />
             </app-form-field>
+
+            <!--
+              ⚠ AN ADVISORY, NOT AN ERROR, AND NOT A VALIDATOR. This site's own configured address
+              expression is a SECOND rule beside the address grammar the field already enforces, and the two
+              can disagree: DotNetNuke's default expression ends in `[a-zA-Z]{2,4}`, so a perfectly ordinary
+              `.local` or `.museum` address satisfies the grammar and not the expression.
+
+              The server admits an address that is ALREADY STORED without putting it to that expression -
+              nothing a caller could submit would satisfy it short of altering data they never came to
+              change - so this notice is silent for an unchanged address and never blocks a save. It exists
+              so the reader hears about the mismatch while the box is in front of them.
+            -->
+            @if (tenantEmailAdvisory(); as tenantAdvisory) {
+              <p
+                id="user-form-email-tenant-advisory"
+                class="user-form__tenant-advisory"
+                role="status"
+                aria-live="polite"
+              >
+                {{ tenantAdvisory }}
+              </p>
+            }
           </div>
         }
       </fieldset>

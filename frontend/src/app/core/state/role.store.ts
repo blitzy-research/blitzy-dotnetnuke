@@ -54,6 +54,13 @@ export type RoleGroupFilter =
    */
   | { readonly kind: 'Group'; readonly roleGroupId: number };
 
+/**
+ * The code the server answers with when a listing names a role group it does not have. Stated once, because
+ * the listing reads it to recognise a narrowing that has gone stale and heal itself rather than reporting a
+ * failure whose request it is about to withdraw.
+ */
+const MISSING_ROLE_GROUP_CODE = 'role_group.not_found';
+
 export const DEFAULT_ROLE_GROUP_FILTER: RoleGroupFilter = Object.freeze({
   kind: 'GlobalRoles',
 });
@@ -444,6 +451,19 @@ export class RoleStore implements OnDestroy {
   private readonly _rolesSettled = signal<boolean>(false);
 
   /**
+   * Whether a GROUP read has settled at least once.
+   *
+   * ⚠ THE SAME "NOT ASKED YET" VERSUS "ASKED AND EMPTY" DISTINCTION {@link RoleStore._rolesSettled} EXISTS
+   * FOR, and needed for the same class of reason. A screen validating an addressed group narrowing against
+   * this set cannot act on an empty one until it knows the set was actually read: dropping a narrowing
+   * because the groups have not arrived yet would discard every legitimate bookmarked narrowing, and
+   * honouring one against a set that IS genuinely empty re-issues a read the server can only refuse.
+   *
+   * Set on BOTH the success and the failure path, because a failure has also settled whether a read happened.
+   */
+  private readonly _roleGroupsSettled = signal<boolean>(false);
+
+  /**
    * The roles ONE ACCOUNT holds, when the listing has been narrowed to an account. ⚠ HELD APART FROM
    * {@link RoleStore._roles}, NOT WRITTEN OVER IT. The browsable listing is paged, ordered and filterable
    * and a screen may be showing it; this is an unpaged answer to a different question.
@@ -529,6 +549,12 @@ export class RoleStore implements OnDestroy {
    * an empty one. See {@link RoleStore._rolesSettled} for why this is published.
    */
   readonly listSettled = this._rolesSettled.asReadonly();
+
+  /**
+   * Whether a role-group read has settled at least once, so a screen can tell an un-asked group set from an
+   * empty one. See {@link RoleStore._roleGroupsSettled} for why this is published.
+   */
+  readonly roleGroupsSettled = this._roleGroupsSettled.asReadonly();
 
   /** The roles one account holds, or `null` when no account is the subject. */
   readonly rolesHeldByUser = this._rolesHeldByUser.asReadonly();
@@ -856,6 +882,7 @@ export class RoleStore implements OnDestroy {
         tap((response) => {
           this._roleGroups.set(response.data);
           this._roleGroupsLoading.set(false);
+          this._roleGroupsSettled.set(true);
           this.applyNoGroupsFallback(response.data);
         }),
         switchMap(() =>
@@ -873,6 +900,19 @@ export class RoleStore implements OnDestroy {
         },
         error: (error: unknown) => {
           this._rolesSettled.set(true);
+          this._roleGroupsSettled.set(true);
+
+          // ⚠ THE ARRIVAL PATH NEEDS THE SAME HEAL AS THE PAGING PATH, and it is the one that matters most:
+          // this is the read a BOOKMARK, a shared link or a browser Back issues, which is precisely how an
+          // operator meets a narrowing naming a group that was deleted in some other session. Without this
+          // the screen reports a failure the operator can do nothing about, over an empty grid.
+          //
+          // `true` because the group set arrived successfully moments ago in this very chain, so it is fresh
+          // and re-reading it would spend a second request to learn what is already known.
+          if (this.healNarrowingIfGroupIsGone(error, true)) {
+            return;
+          }
+
           this.recordFailure(this._roleGroups().length === 0 ? 'loadRoleGroups' : 'loadRoles', error);
         },
       });
@@ -944,9 +984,77 @@ export class RoleStore implements OnDestroy {
         error: (error: unknown) => {
           this._rolesLoading.set(false);
           this._rolesSettled.set(true);
+
+          // ⚠ A NARROWING THE SERVER NO LONGER RECOGNISES HEALS ITSELF HERE, AND WITHOUT THIS THE LISTING
+          // COULD NOT BE RECOVERED AT ALL. Narrowing to a group puts that group's key in the address, and
+          // the address is what issues the read - so once the group is gone, every read asks for a key the
+          // server answers 404 `role_group.not_found` to. The screen then reported failure, omitted rows it
+          // had successfully created, and its own Try again re-sent the identical dead key: the retry could
+          // not succeed, because the request was not what had failed. Only leaving the screen recovered it.
+          //
+          // Dropping the narrowing and re-reading ONCE is the correction, and it is placed on the read
+          // rather than on the delete deliberately. The delete is only ONE way to arrive here - a bookmarked
+          // address, a browser Back, a second administrator removing the group in another session and a
+          // shared link all reach the same dead end - so healing where the dead key is USED covers every
+          // route into it, including the ones no handler could know about.
+          // The group set is re-read alongside, because reaching here means this client's idea of it is
+          // stale - it still offered the key the server has just denied.
+          if (this.healNarrowingIfGroupIsGone(error, false)) {
+            return;
+          }
+
           this.recordFailure('loadRoles', error);
         },
       });
+  }
+
+  /**
+   * Whether a listing failure says the group this store is narrowed to does not exist. Both halves are
+   * required: the code alone would also match a failure raised while no narrowing is in force, where
+   * discarding the narrowing would change nothing and re-reading would simply repeat the same failure.
+   *
+   * @param error Whatever the read's failure path delivered.
+   * @returns `true` when a specific group narrowing named a group the server does not have.
+   */
+  /**
+   * Discards a narrowing the server has just denied and re-reads under the default, reporting whether it
+   * did so.
+   *
+   * ⚠ THE WITHDRAWN FAILURE IS DELIBERATELY NOT RECORDED. It describes a request this store has already
+   * replaced, so surfacing it would name a problem the operator can neither see nor act on - and it was the
+   * banner, not the empty grid, that made the original defect read as data loss. The page is reset with the
+   * narrowing because landing on page four of a listing that now has one page answers empty and reads as
+   * data loss a second time.
+   *
+   * @param error The failure the listing read reported.
+   * @param groupsAreFresh Whether the group set has just been read successfully, in which case re-reading it
+   * would spend a request to learn what is already known.
+   * @returns `true` when the narrowing was discarded and a replacement read issued; `false` when the failure
+   * is the caller's to report.
+   */
+  private healNarrowingIfGroupIsGone(error: unknown, groupsAreFresh: boolean): boolean {
+    if (!this.narrowedToAMissingGroup(error)) {
+      return false;
+    }
+
+    this._groupFilter.set(DEFAULT_ROLE_GROUP_FILTER);
+    this._rolesPage.update((coordinate) => ({ ...coordinate, pageIndex: 0 }));
+
+    if (!groupsAreFresh) {
+      this.loadRoleGroups();
+    }
+
+    this.dispatchRoles(false);
+
+    return true;
+  }
+
+  private narrowedToAMissingGroup(error: unknown): boolean {
+    if (this._groupFilter().kind !== 'Group') {
+      return false;
+    }
+
+    return failureCode(readProblem(error)) === MISSING_ROLE_GROUP_CODE;
   }
 
   loadRoleGroups(): void {
@@ -973,9 +1081,11 @@ export class RoleStore implements OnDestroy {
       .subscribe({
         next: (response) => {
           this._roleGroups.set(response.data);
+          this._roleGroupsSettled.set(true);
           this.applyNoGroupsFallback(response.data);
         },
         error: (error: unknown) => {
+          this._roleGroupsSettled.set(true);
           this.recordFailure('loadRoleGroups', error);
         },
       });
@@ -1290,9 +1400,10 @@ export class RoleStore implements OnDestroy {
     pageIndex: number,
     sortBy: string | null = null,
     sortDir: SortDirection | null = null,
+    query: string | null = null,
   ): void {
     this._groupFilter.set(filter);
-    this._rolesPage.update((coordinate) => ({ ...coordinate, pageIndex, sortBy, sortDir }));
+    this._rolesPage.update((coordinate) => ({ ...coordinate, pageIndex, sortBy, sortDir, query }));
   }
 
   /**
@@ -1690,6 +1801,8 @@ export class RoleStore implements OnDestroy {
     // it described has just been emptied - so a latch left standing would tell the next session's first
     // arrival that a listing is in hand when none is, which is the very state it exists to distinguish.
     this._rolesSettled.set(false);
+    // The same reasoning, for the group set that has just been emptied alongside it.
+    this._roleGroupsSettled.set(false);
     this._roleGroupsLoading.set(false);
     this._selectedRoleLoading.set(false);
     this._assignmentsLoading.set(false);

@@ -181,37 +181,47 @@ public sealed class PermissionEvaluatorTests
         .Select(key => key.ToString())
         .ToList();
 
-    /// <summary>The catalogue is projected upper-cased, without duplicates, and in ordinal order.</summary>
+    /// <summary>
+    /// The listing is distinct by identifier, ordered by it, and reports each stored key spelling verbatim.
+    /// </summary>
     /// <remarks>
-    /// MIGRATION: the upper-casing is now structural rather than defensive.
+    /// The three properties are asserted together because they are one contract: a client rendering the
+    /// catalogue needs a stable sequence, one row per definition, and the spelling the store holds. The
+    /// duplicate identifier in the fixture is what the widest read behind this projection can genuinely
+    /// produce - it is a UNION whose arms can both match one definition - so collapsing it is required
+    /// rather than defensive.
     /// </remarks>
     [Fact]
-    public async Task Catalogue_IsUpperCasedDistinctAndOrdinallySorted()
+    public async Task Catalogue_IsDistinctByIdentifierOrderedByItAndReportsStoredSpellingsVerbatim()
     {
         Harness harness = Harness.Ready();
         harness.Catalogue =
         [
-            Entry(PermissionKey.VIEW),
-            Entry(PermissionKey.EDIT),
-            Entry(PermissionKey.WRITE),
-            Entry(PermissionKey.READ),
-            Entry(PermissionKey.VIEW),
+            CatalogueEntry(4, nameof(PermissionKey.READ), "SYSTEM_MODULE_DEFINITION"),
+            CatalogueEntry(1, nameof(PermissionKey.VIEW), "SYSTEM_MODULE_DEFINITION"),
+            CatalogueEntry(3, "QA_CUSTOM", "SYSTEM_MODULE_DEFINITION"),
+            CatalogueEntry(2, "edit", "SYSTEM_MODULE_DEFINITION"),
+            CatalogueEntry(1, nameof(PermissionKey.VIEW), "SYSTEM_MODULE_DEFINITION"),
         ];
 
-        Result<IReadOnlyList<string>> result = await harness.Service.GetPermissionKeysAsync(
-            cancellationToken: CancellationToken.None);
+        Result<IReadOnlyList<PermissionDto>> result = await harness.Service
+            .GetPermissionCatalogueAsync(cancellationToken: CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
-        result.Value.Should().Equal(
-            new[] { "EDIT", "READ", "VIEW", "WRITE" },
-            "the catalogue holds one row per key per scope per definition, so the same key arrives "
-            + "repeatedly, and a caller comparing keys must not have to de-duplicate or sort them");
+        result.Value.Select(definition => definition.PermissionId).Should().Equal(
+            new[] { 1, 2, 3, 4 },
+            "one row per definition, ascending, so a client never has to de-duplicate or sort them");
+        result.Value.Select(definition => definition.PermissionKey).Should().Equal(
+            new[] { nameof(PermissionKey.VIEW), "edit", "QA_CUSTOM", nameof(PermissionKey.READ) },
+            "the key column is free text and travels exactly as stored, neither re-cased nor filtered "
+            + "against the enumeration this solution happens to name");
     }
 
     /// <summary>A grant naming no usable key contributes nothing.</summary>
     /// <param name="stored">The stored key text.</param>
     /// <remarks>
-    /// MIGRATION: this covers what <see cref="Catalogue_IsUpperCasedDistinctAndOrdinallySorted"/> no longer
+    /// MIGRATION: this covers what
+    /// <see cref="Catalogue_IsDistinctByIdentifierOrderedByItAndReportsStoredSpellingsVerbatim"/> no longer
     /// can. The effective-key reads answer with the text the grant rows actually carried, which the closed
     /// enumeration never filters, so a blank or whitespace-only key remains reachable on this path and must
     /// still be dropped rather than surfaced as an empty permission.
@@ -258,8 +268,8 @@ public sealed class PermissionEvaluatorTests
             },
         ];
 
-        Result<IReadOnlyList<string>> result = await harness.Service
-            .GetPermissionKeysAsync(
+        Result<IReadOnlyList<PermissionDto>> result = await harness.Service
+            .GetPermissionCatalogueAsync(
                 "SYSTEM_MODULE_DEFINITION",
                 42,
                 permissionKey: null,
@@ -271,8 +281,16 @@ public sealed class PermissionEvaluatorTests
                 It.IsAny<CancellationToken>()),
             Times.Once());
 
+        // Naming a definition takes the NARROWEST read that answers the question, so the catalogue-wide
+        // read is not reached: the store does the narrowing it is able to do.
+        harness.Permissions.Verify(
+            permissions => permissions.GetCatalogueAsync(It.IsAny<CancellationToken>()),
+            Times.Never());
+
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
-        result.Value.Should().Equal(new[] { "VIEW" }, "the entry under the other code is filtered away");
+        result.Value.Select(definition => definition.PermissionKey).Should().Equal(
+            new[] { "VIEW" },
+            "the entry under the other code is filtered away");
     }
 
     /// <summary>Omitting the code filter places no restriction, whereas supplying a blank one is a mistake.</summary>
@@ -284,7 +302,7 @@ public sealed class PermissionEvaluatorTests
     {
         Harness harness = Harness.Ready();
 
-        Result<IReadOnlyList<string>> result = await harness.Service.GetPermissionKeysAsync(
+        Result<IReadOnlyList<PermissionDto>> result = await harness.Service.GetPermissionCatalogueAsync(
             supplied,
             cancellationToken: CancellationToken.None);
 
@@ -296,55 +314,63 @@ public sealed class PermissionEvaluatorTests
                 It.IsAny<int>(),
                 It.IsAny<CancellationToken>()),
             Times.Never());
+
+        // A refused filter reads NOTHING. The guard runs before either read, so a mistake costs no round
+        // trip.
+        harness.Permissions.Verify(
+            permissions => permissions.GetCatalogueAsync(It.IsAny<CancellationToken>()),
+            Times.Never());
+    }
+
+    /// <summary>
+    /// A code filter on its own is answered from the store in ONE read, and it reports a stored key this
+    /// solution does not name.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// MIGRATION - THIS TEST PINS A CORRECTED ANSWER. The shape it replaces probed the code-and-key reader
+    /// once per member of the closed <see cref="PermissionKey"/> enumeration, four reads whose union could
+    /// only ever contain those four spellings. A definition registered by a module package under any other
+    /// spelling was therefore absent from this answer while remaining visible to the definition-scoped
+    /// answer, to the module permission matrices and to the evaluator - one installation reporting two
+    /// different catalogues depending on which filter a caller happened to use.
+    /// </para>
+    /// <para>
+    /// The <c>QA_CUSTOM</c> row in this fixture is the measured case, and the assertion that it appears is
+    /// the whole point of the test. Answering from one catalogue read also costs three fewer round trips
+    /// than the probe it replaces.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Catalogue_AnswersACodeFilterFromOneStoreReadIncludingAKeyThisSolutionDoesNotName()
+    {
+        Harness harness = Harness.Ready();
+        harness.Catalogue =
+        [
+            CatalogueEntry(1, nameof(PermissionKey.VIEW), "SYSTEM_TAB", -1),
+            CatalogueEntry(2, nameof(PermissionKey.EDIT), "SYSTEM_TAB", -1),
+            CatalogueEntry(3, "QA_CUSTOM", "SYSTEM_TAB", -1),
+            CatalogueEntry(4, nameof(PermissionKey.VIEW), "SYSTEM_MODULE_DEFINITION", -1),
+        ];
+
+        Result<IReadOnlyList<PermissionDto>> result = await harness.Service
+            .GetPermissionCatalogueAsync("SYSTEM_TAB", null, permissionKey: null, CancellationToken.None);
+
+        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
+        result.Value.Select(definition => definition.PermissionKey).Should().Equal(
+            new[] { nameof(PermissionKey.VIEW), nameof(PermissionKey.EDIT), "QA_CUSTOM" },
+            "every row under the named code is reported, in identifier order, whether or not this solution "
+            + "names its key; the row under the other code is filtered away");
+
+        harness.Permissions.Verify(
+            permissions => permissions.GetCatalogueAsync(It.IsAny<CancellationToken>()),
+            Times.Once());
         harness.Permissions.Verify(
             permissions => permissions.GetByCodeAndKeyAsync(
                 It.IsAny<string>(),
                 It.IsAny<PermissionKey>(),
                 It.IsAny<CancellationToken>()),
             Times.Never());
-    }
-
-    /// <summary>A code filter on its own is answered by asking the store once per key in the closed set.</summary>
-    /// <remarks>
-    /// "which keys exist under this code" is exactly the question the legacy code-and-key reader answered,
-    /// one key at a time, so the service asks it once per member of the closed PermissionKey enumeration -
-    /// four reads, bounded by the schema rather than by the data. Only the keys the store actually reported
-    /// are returned, which is what distinguishes this answer from the unfiltered one below.
-    /// </remarks>
-    [Fact]
-    public async Task Catalogue_AnswersACodeFilterFromTheCodeAndKeyRead()
-    {
-        Harness harness = Harness.Ready();
-        harness.Catalogue =
-        [
-            new Permission
-            {
-                PermissionId = 1,
-                PermissionCode = "SYSTEM_TAB",
-                ModuleDefinitionId = -1,
-                PermissionKey = nameof(PermissionKey.VIEW),
-            },
-            new Permission
-            {
-                PermissionId = 2,
-                PermissionCode = "SYSTEM_TAB",
-                ModuleDefinitionId = -1,
-                PermissionKey = nameof(PermissionKey.EDIT),
-            },
-        ];
-
-        Result<IReadOnlyList<string>> result = await harness.Service
-            .GetPermissionKeysAsync("SYSTEM_TAB", null, permissionKey: null, CancellationToken.None);
-
-        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
-        result.Value.Should().Equal(new[] { "EDIT", "VIEW" }, "the answer is ordinally ordered");
-
-        harness.Permissions.Verify(
-            permissions => permissions.GetByCodeAndKeyAsync(
-                "SYSTEM_TAB",
-                It.IsAny<PermissionKey>(),
-                It.IsAny<CancellationToken>()),
-            Times.Exactly(Enum.GetValues<PermissionKey>().Length));
         harness.Permissions.Verify(
             permissions => permissions.GetByModuleDefinitionIdAsync(
                 It.IsAny<int>(),
@@ -353,31 +379,46 @@ public sealed class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// Omitting both filters is accepted and answered from the closed key set without a store read.
+    /// Omitting every filter reads the catalogue, so the answer is what the installation declares rather
+    /// than what this solution names.
     /// </summary>
     /// <remarks>
-    /// The legacy reader answered this by passing a null in both arguments, which its body treated as a
-    /// wildcard over the whole table. The repository contract takes no wildcard and neither did the legacy
-    /// provider surface, which declares readers by identifier, by module definition, by module, by folder
-    /// path, by scope-code-and-key and by page and nothing else - so with no scope named there is no row set
-    /// to read, and the answer is the set of keys THIS SOLUTION names. That is a statement about the target's
-    /// own vocabulary, not a claim that the free-text column cannot hold another spelling: naming a module
-    /// definition takes the store-backed path, which reports whatever the rows actually carry.
+    /// <para>
+    /// MIGRATION - THIS TEST PINS A CORRECTED ANSWER, and the answer it replaces is the reason the
+    /// catalogue-wide read exists. That shape returned the four <see cref="PermissionKey"/> members with no
+    /// store read at all, on the reasoning that the legacy provider surface declared no wildcard reader and
+    /// so there was no row set to read. The reasoning held for the legacy application because nothing in it
+    /// ever listed the catalogue; it stopped holding the moment an endpoint published one. A caller reading
+    /// the listing saw four keys while the table held five, and the fifth was displayed two panels away.
+    /// </para>
+    /// <para>
+    /// The fixture deliberately holds ONE row and it is not a member of the enumeration, so an answer
+    /// assembled from the enumeration cannot pass this test by coincidence.
+    /// </para>
     /// </remarks>
     [Fact]
-    public async Task Catalogue_AnswersAnAbsentFilterFromTheClosedKeySet()
+    public async Task Catalogue_AnswersAnAbsentFilterFromTheStoreRatherThanTheClosedKeySet()
     {
         Harness harness = Harness.Ready();
+        harness.Catalogue = [CatalogueEntry(7, "QA_CUSTOM", "SYSTEM_MODULE_DEFINITION")];
 
-        Result<IReadOnlyList<string>> result = await harness.Service.GetPermissionKeysAsync(
+        Result<IReadOnlyList<PermissionDto>> result = await harness.Service.GetPermissionCatalogueAsync(
             null,
             null,
             permissionKey: null,
             CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
-        result.Value.Should().Equal(new[] { "EDIT", "READ", "VIEW", "WRITE" });
+        result.Value.Should().ContainSingle(
+            "the unfiltered listing is the catalogue itself, and this catalogue holds one definition");
+        result.Value[0].PermissionId.Should().Be(
+            7,
+            "the identifier is what lets a client move from this listing to the detail read");
+        result.Value[0].PermissionKey.Should().Be("QA_CUSTOM");
 
+        harness.Permissions.Verify(
+            permissions => permissions.GetCatalogueAsync(It.IsAny<CancellationToken>()),
+            Times.Once());
         harness.Permissions.Verify(
             permissions => permissions.GetByModuleDefinitionIdAsync(
                 It.IsAny<int>(),
@@ -401,7 +442,7 @@ public sealed class PermissionEvaluatorTests
     {
         Harness harness = Harness.Ready();
 
-        Result<IReadOnlyList<string>> result = await harness.Service.GetPermissionKeysAsync(
+        Result<IReadOnlyList<PermissionDto>> result = await harness.Service.GetPermissionCatalogueAsync(
             null,
             supplied,
             permissionKey: null,
@@ -437,14 +478,16 @@ public sealed class PermissionEvaluatorTests
             },
         ];
 
-        Result<IReadOnlyList<string>> result = await harness.Service.GetPermissionKeysAsync(
+        Result<IReadOnlyList<PermissionDto>> result = await harness.Service.GetPermissionCatalogueAsync(
             null,
             EntryModuleDefinitionId,
             PermissionKey.EDIT,
             CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
-        result.Value.Should().Equal("EDIT");
+        result.Value.Should().ContainSingle();
+        result.Value[0].PermissionId.Should().Be(2);
+        result.Value[0].PermissionKey.Should().Be("EDIT");
     }
 
     /// <summary>
@@ -465,7 +508,7 @@ public sealed class PermissionEvaluatorTests
     {
         Harness harness = Harness.Ready();
 
-        Result<IReadOnlyList<string>> result = await harness.Service.GetPermissionKeysAsync(
+        Result<IReadOnlyList<PermissionDto>> result = await harness.Service.GetPermissionCatalogueAsync(
             null,
             null,
             (PermissionKey)undefinedKey,
@@ -483,10 +526,7 @@ public sealed class PermissionEvaluatorTests
                 It.IsAny<CancellationToken>()),
             Times.Never);
         harness.Permissions.Verify(
-            permissions => permissions.GetByCodeAndKeyAsync(
-                It.IsAny<string>(),
-                It.IsAny<PermissionKey>(),
-                It.IsAny<CancellationToken>()),
+            permissions => permissions.GetCatalogueAsync(It.IsAny<CancellationToken>()),
             Times.Never);
     }
 
@@ -498,20 +538,22 @@ public sealed class PermissionEvaluatorTests
     {
         Harness harness = Harness.Ready();
 
-        Result<IReadOnlyList<string>> withinDefinition = await harness.Service.GetPermissionKeysAsync(
-            null,
-            EntryModuleDefinitionId,
-            (PermissionKey)99,
-            CancellationToken.None);
+        Result<IReadOnlyList<PermissionDto>> withinDefinition = await harness.Service
+            .GetPermissionCatalogueAsync(
+                null,
+                EntryModuleDefinitionId,
+                (PermissionKey)99,
+                CancellationToken.None);
 
         withinDefinition.IsFailure.Should().BeTrue();
         withinDefinition.Reason!.Code.Should().Be(KeyInvalidCode);
 
-        Result<IReadOnlyList<string>> withinCode = await harness.Service.GetPermissionKeysAsync(
-            "SYSTEM_MODULE_DEFINITION",
-            null,
-            (PermissionKey)99,
-            CancellationToken.None);
+        Result<IReadOnlyList<PermissionDto>> withinCode = await harness.Service
+            .GetPermissionCatalogueAsync(
+                "SYSTEM_MODULE_DEFINITION",
+                null,
+                (PermissionKey)99,
+                CancellationToken.None);
 
         withinCode.IsFailure.Should().BeTrue();
         withinCode.Reason!.Code.Should().Be(KeyInvalidCode);
@@ -531,33 +573,60 @@ public sealed class PermissionEvaluatorTests
     {
         Harness harness = Harness.Ready();
 
-        Result<IReadOnlyList<string>> result = await harness.Service.GetPermissionKeysAsync(
+        // One stored row per member, so whichever member is filtered on has exactly one row to match and
+        // the test measures the filter rather than the fixture.
+        harness.Catalogue = Enum.GetValues<PermissionKey>()
+            .Select((key, index) => CatalogueEntry(index + 1, key, "SYSTEM_MODULE_DEFINITION"))
+            .ToList();
+
+        Result<IReadOnlyList<PermissionDto>> result = await harness.Service.GetPermissionCatalogueAsync(
             null,
             null,
             definedKey,
             CancellationToken.None);
 
         result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
-        result.Value.Should().Equal(definedKey.ToString());
+        result.Value.Select(definition => definition.PermissionKey).Should().Equal(definedKey.ToString());
     }
 
     /// <summary>
-    /// A key filter supplied with no other filter is answered from the closed enumeration without touching
-    /// the store at all.
+    /// A key filter supplied with no other filter narrows the catalogue rather than echoing the filter back.
     /// </summary>
+    /// <remarks>
+    /// MIGRATION - THIS TEST PINS A CORRECTED ANSWER. The shape it replaces returned the filter itself
+    /// without reading anything, so a caller asking "is WRITE declared here" was told yes by an
+    /// installation that declares no WRITE row at all. The filter now selects from what exists, which means
+    /// a filter matching nothing answers with nothing.
+    /// </remarks>
     [Fact]
-    public async Task Catalogue_AnswersALoneKeyFilterFromTheClosedKeySet()
+    public async Task Catalogue_AnswersALoneKeyFilterFromTheStoreRatherThanEchoingIt()
     {
         Harness harness = Harness.Ready();
+        harness.Catalogue =
+        [
+            CatalogueEntry(1, nameof(PermissionKey.VIEW), "SYSTEM_MODULE_DEFINITION"),
+            CatalogueEntry(2, nameof(PermissionKey.EDIT), "SYSTEM_MODULE_DEFINITION"),
+        ];
 
-        Result<IReadOnlyList<string>> result = await harness.Service.GetPermissionKeysAsync(
+        Result<IReadOnlyList<PermissionDto>> matched = await harness.Service.GetPermissionCatalogueAsync(
             null,
             null,
             PermissionKey.VIEW,
             CancellationToken.None);
 
-        result.IsSuccess.Should().BeTrue(result.Reason?.ToString());
-        result.Value.Should().Equal("VIEW");
+        matched.IsSuccess.Should().BeTrue(matched.Reason?.ToString());
+        matched.Value.Select(definition => definition.PermissionKey).Should().Equal("VIEW");
+
+        Result<IReadOnlyList<PermissionDto>> unmatched = await harness.Service.GetPermissionCatalogueAsync(
+            null,
+            null,
+            PermissionKey.WRITE,
+            CancellationToken.None);
+
+        unmatched.IsSuccess.Should().BeTrue(unmatched.Reason?.ToString());
+        unmatched.Value.Should().BeEmpty(
+            "the catalogue declares no such row, and a defined member that nothing declares is an empty "
+            + "answer rather than a refusal");
 
         harness.Permissions.Verify(
             permissions => permissions.GetByModuleDefinitionIdAsync(
@@ -2994,8 +3063,8 @@ public sealed class PermissionEvaluatorTests
     }
 
     /// <summary>
-    /// The filtered key listing reaches the store on every call and takes no cache entry, so two filter
-    /// shapes can never answer one another's question.
+    /// The catalogue listing reaches the store on every call and takes no cache entry, so two filter shapes
+    /// can never answer one another's question.
     /// </summary>
     [Fact]
     public async Task CatalogueRead_IsUncachedSoFilterShapesCannotServeEachOther()
@@ -3006,20 +3075,21 @@ public sealed class PermissionEvaluatorTests
         harness.CachingOptions.PerformanceMultiplier = 3;
         harness.Catalogue = [Entry(PermissionKey.VIEW)];
 
-        // The unfiltered shape is the closed enumeration itself, and the code-scoped shape asks the store
-        // which keys are declared under a code.
-        Result<IReadOnlyList<string>> unfiltered = await harness.Service.GetPermissionKeysAsync(
-            cancellationToken: CancellationToken.None);
-        Result<IReadOnlyList<string>> filteredOnTheOldToken = await harness.Service.GetPermissionKeysAsync(
-            permissionCode: "*",
-            cancellationToken: CancellationToken.None);
+        // Both shapes now read the catalogue; what differs is the narrowing applied to it. The wildcard is a
+        // legacy token that is not a stored code, so it must match nothing.
+        Result<IReadOnlyList<PermissionDto>> unfiltered = await harness.Service
+            .GetPermissionCatalogueAsync(cancellationToken: CancellationToken.None);
+        Result<IReadOnlyList<PermissionDto>> filteredOnTheOldToken = await harness.Service
+            .GetPermissionCatalogueAsync(
+                permissionCode: "*",
+                cancellationToken: CancellationToken.None);
 
         unfiltered.IsSuccess.Should().BeTrue(unfiltered.Reason?.ToString());
         filteredOnTheOldToken.IsSuccess.Should().BeTrue(filteredOnTheOldToken.Reason?.ToString());
 
-        unfiltered.Value.Should().BeEquivalentTo(
-            AllKeyNames,
-            "the unfiltered catalogue of keys is the closed enumeration");
+        unfiltered.Value.Select(definition => definition.PermissionKey).Should().Equal(
+            new[] { nameof(PermissionKey.VIEW) },
+            "the unfiltered listing is the catalogue this installation declares");
         filteredOnTheOldToken.Value.Should().BeEmpty(
             "no catalogue entry carries that scope code, and the answer must be its own rather than the "
             + "unfiltered one");
@@ -3034,14 +3104,11 @@ public sealed class PermissionEvaluatorTests
                 It.IsAny<CancellationToken>()),
             Times.Never());
 
-        // The store is still reached, once per candidate key, so withdrawing the entry withdrew a cache and
-        // not an answer.
+        // The store is reached ONCE PER CALL, so withdrawing the cache entry withdrew a cache and not an
+        // answer - and two calls means two reads rather than one read serving both filter shapes.
         harness.Permissions.Verify(
-            permissions => permissions.GetByCodeAndKeyAsync(
-                "*",
-                It.IsAny<PermissionKey>(),
-                It.IsAny<CancellationToken>()),
-            Times.Exactly(AllKeyNames.Count));
+            permissions => permissions.GetCatalogueAsync(It.IsAny<CancellationToken>()),
+            Times.Exactly(2));
     }
 
     /// <summary>A multiplier of zero bypasses the cache rather than writing an entry that expires at once.</summary>
@@ -5877,6 +5944,13 @@ public sealed class PermissionEvaluatorTests
                 .Setup(permissions => permissions.GetByModuleDefinitionIdAsync(
                     It.IsAny<int>(),
                     It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => harness.Catalogue);
+
+            // The catalogue-wide read, which the listing takes whenever no module definition is named. It
+            // returns the SAME rows as the definition-scoped read above, so a test that cares which read was
+            // taken must assert it with Verify rather than infer it from the answer.
+            harness.Permissions
+                .Setup(permissions => permissions.GetCatalogueAsync(It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.Catalogue);
 
             harness.Permissions

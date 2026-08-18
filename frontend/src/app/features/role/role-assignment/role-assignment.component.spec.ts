@@ -219,6 +219,18 @@ const SENTINEL_DATE_MISRENDERED = '01/01/0001';
 /** What an unparseable instant must never render as either. */
 const INVALID_DATE_TEXT = 'Invalid Date';
 
+/**
+ * What a membership bound with nothing recorded now reads as, painted mark plus clipped words.
+ *
+ * ⚠ THIS REPLACED A BARE EMPTY CELL, AND THE CLAIM EVERY CASE BELOW MAKES IS UNCHANGED. The legacy
+ * formatter returned the empty string, and this listing was the last of five still reproducing it - the roles,
+ * accounts, tenants and modules grids all draw the shared mark and announce what it means, because an empty
+ * cell cannot be told apart from a cell that failed to draw. What each case still pins is WHICH bounds count as
+ * unrecorded (both absences and the legacy sentinel, by the date part alone) and that such a bound never
+ * acquires a lifecycle word; only the rendering of the absence itself has moved.
+ */
+const ABSENT_BOUND_CELL = '\u2014not recorded';
+
 const BACKDATED_EXPIRY_DATE = '2024-02-29';
 
 /** {@link BACKDATED_EXPIRY_DATE} as the pinned locale renders it. */
@@ -3268,13 +3280,13 @@ describe('RoleAssignmentComponent', () => {
      * `:L222-L224` compares `objDate.Date.Equals(NullDate.Date)` — THE DATE PART ALONE, with `GetNull`
      * noting at `:L183-L187` that this "avoids subtle time differences".
      */
-    it('renders the date sentinel as an empty cell', () => {
+    it('renders the date sentinel as unrecorded', () => {
       arrive(0, [membership({ effectiveDate: SENTINEL_DATE, expiryDate: SENTINEL_DATE })]);
 
       const cells = cellsOf(rows()[0]);
 
-      expect(cells[2]).withContext('the effective bound').toBe('');
-      expect(cells[3]).withContext('the expiry bound').toBe('');
+      expect(cells[2]).withContext('the effective bound').toBe(ABSENT_BOUND_CELL);
+      expect(cells[3]).withContext('the expiry bound').toBe(ABSENT_BOUND_CELL);
       // Stated as prohibitions too, because these are the two things a permissive parser produces.
       expect(cells.join('|')).not.toContain(SENTINEL_DATE_MISRENDERED);
       expect(cells.join('|')).not.toContain(INVALID_DATE_TEXT);
@@ -3306,7 +3318,7 @@ describe('RoleAssignmentComponent', () => {
         'Expired',
       );
       expect(cells[3]).withContext('and the date itself survives').toMatch(/\d/);
-      expect(cells[2]).withContext('the effective bound claims nothing').toBe('');
+      expect(cells[2]).withContext('the effective bound claims nothing').toBe(ABSENT_BOUND_CELL);
     });
 
     it('qualifies a membership whose effective bound has not yet arrived', () => {
@@ -3317,7 +3329,7 @@ describe('RoleAssignmentComponent', () => {
       const cells = cellsOf(rows()[0]);
 
       expect(cells[2]).toContain('Pending');
-      expect(cells[3]).withContext('the expiry bound claims nothing').toBe('');
+      expect(cells[3]).withContext('the expiry bound claims nothing').toBe(ABSENT_BOUND_CELL);
     });
 
     /**
@@ -3446,7 +3458,7 @@ describe('RoleAssignmentComponent', () => {
 
       const cells = cellsOf(rows()[0]);
 
-      expect(cells[3]).toBe('');
+      expect(cells[3]).toBe(ABSENT_BOUND_CELL);
       expect(cells.join('|')).not.toContain('Active');
     });
 
@@ -3462,8 +3474,8 @@ describe('RoleAssignmentComponent', () => {
 
       const cells = cellsOf(rows()[0]);
 
-      expect(cells[2]).toBe('');
-      expect(cells[3]).toBe('');
+      expect(cells[2]).toBe(ABSENT_BOUND_CELL);
+      expect(cells[3]).toBe(ABSENT_BOUND_CELL);
       expect(cells.join('|')).not.toContain('Expired');
       expect(cells.join('|')).not.toContain('Pending');
     });
@@ -3478,8 +3490,8 @@ describe('RoleAssignmentComponent', () => {
 
       // The date-part-only rule, which is what stops a stored time of day turning an unset bound into
       // a visible one.
-      expect(cells[2]).toBe('');
-      expect(cells[3]).toBe('');
+      expect(cells[2]).toBe(ABSENT_BOUND_CELL);
+      expect(cells[3]).toBe(ABSENT_BOUND_CELL);
       expect(cells.join('|')).not.toContain(SENTINEL_DATE_MISRENDERED);
       expect(cells.join('|')).not.toContain(INVALID_DATE_TEXT);
     });
@@ -3491,8 +3503,13 @@ describe('RoleAssignmentComponent', () => {
 
       // Two different absences on the wire and one rendering, because to a person they mean the same
       // thing. The wire still distinguishes them; the erasure is confined to the display layer.
-      expect(cells[2]).toBe('');
-      expect(cells[3]).toBe('');
+      expect(cells[2]).toBe(ABSENT_BOUND_CELL);
+      expect(cells[3]).toBe(ABSENT_BOUND_CELL);
+      // And it is the SHARED rendering, not a local imitation of it — the same element every sibling
+      // listing uses, so the mark, its colour and its words cannot drift apart from theirs.
+      expect(rows()[0].querySelectorAll('app-absent-value').length)
+        .withContext('one shared mark in each of the two bound cells')
+        .toBe(2);
     });
 
     /**
@@ -4256,6 +4273,304 @@ describe('RoleAssignmentComponent', () => {
 
       second.flush(pageOf([], 0, 0, 10));
       fixture.detectChanges();
+    });
+  });
+
+  /**
+   * WHY THE ACTION IS UNAVAILABLE — the register recorded this form blocking two independent conditions with
+   * nothing but a dead button: no field error, no banner, no toast, and no way to tell which condition was in
+   * force.
+   */
+  describe('why the action is unavailable', () => {
+    /** The statement rendered beside the action, or the empty string when none is. */
+    function blockedText(): string {
+      return textIn(query('.role-assignment__blocked')).trim();
+    }
+
+    /** The date bound's own input element. */
+    function dateField(which: 'effectiveDate' | 'expiryDate'): HTMLInputElement | null {
+      const control: HTMLInputElement | null = query<HTMLInputElement>(
+        `input[formcontrolname="${which}"]`,
+      );
+
+      expect(control).withContext(`the ${which} bound is offered`).not.toBeNull();
+
+      return control;
+    }
+
+    /** Types a value into one of the two date bounds and marks it touched. */
+    function setDate(which: 'effectiveDate' | 'expiryDate', value: string): void {
+      const control: HTMLInputElement | null = dateField(which);
+
+      if (control !== null) {
+        control.value = value;
+        control.dispatchEvent(new Event('input'));
+        control.dispatchEvent(new Event('blur'));
+      }
+
+      fixture.detectChanges();
+    }
+
+    /**
+     * Types a value into one of the two date bounds and leaves it UNTOUCHED.
+     *
+     * ⚠ THE ABSENCE OF THE BLUR IS THE WHOLE POINT. Reaching a genuinely one-bound-touched state is the only
+     * way to exercise the case where the field message is withheld and the statement beside the action has to
+     * carry the rule on its own. Blurring both bounds and relying on a stale snapshot to imitate that state
+     * tests the staleness rather than the behaviour.
+     */
+    function setDateWithoutLeaving(which: 'effectiveDate' | 'expiryDate', value: string): void {
+      const control: HTMLInputElement | null = dateField(which);
+
+      if (control !== null) {
+        control.value = value;
+        control.dispatchEvent(new Event('input'));
+      }
+
+      fixture.detectChanges();
+    }
+
+    /** Chooses the one account the lookup offers, which is the precondition for any date to matter. */
+    function chooseTheOfferedAccount(): void {
+      lookUp('ada');
+      answerLookup([account()]);
+      chooseAccount('Ada Lovelace');
+    }
+
+    it('names the missing account rather than only disabling the action', () => {
+      arrive();
+
+      expect(button('Add User to Role')?.disabled).withContext('the action is unavailable').toBeTrue();
+      expect(blockedText())
+        .withContext('and the reason is stated')
+        .toBe('Choose an account before adding it to this role.');
+    });
+
+    it('stops explaining once an account is chosen', () => {
+      arrive(0, []);
+      lookUp('ada');
+      answerLookup([account()]);
+      chooseAccount('Ada Lovelace');
+
+      expect(blockedText()).withContext('nothing is blocked, so nothing is said').toBe('');
+      expect(button('Add User to Role')?.disabled).withContext('and the action is available').toBeFalse();
+    });
+
+    /**
+     * ⚠ THE DATE RULE IS STATED HERE EVEN WHERE THE FIELD MESSAGE IS NOT. The field message waits for BOTH
+     * bounds to be touched; the button does not. That gap is exactly the silent refusal the register found, so
+     * this case leaves the second bound UNTOUCHED deliberately - `setDateWithoutLeaving` withholds the blur -
+     * which is the only honest way to reach the state where nothing else can carry the rule.
+     */
+    it('names an out-of-order expiry while the second bound is still untouched', () => {
+      arrive(0, []);
+      chooseTheOfferedAccount();
+
+      setDate('expiryDate', '2026-01-01');
+      setDateWithoutLeaving('effectiveDate', '2026-06-01');
+
+      expect(fieldErrors().join(' '))
+        .withContext('the field withholds the rule, because one bound has not been reached')
+        .not.toContain('Greater than');
+      expect(button('Add User to Role')?.disabled).withContext('the action is unavailable').toBeTrue();
+      expect(blockedText())
+        .withContext('the rule is stated, with no leading markup from the legacy wording')
+        .toBe('Expiry Date must be Greater than Effective Date');
+      expect(blockedText()).withContext('the legacy break tag is stripped').not.toContain('<br>');
+    });
+
+    /**
+     * ⚠ ONE SENTENCE, SAID ONCE. Once both bounds are touched the expiry FIELD carries the rule, marked with
+     * `aria-invalid` and its own error container. Repeating the identical sentence beside the action put it in
+     * front of a reader twice - once assertively from the field and again politely from this line. The line
+     * points at the marked field instead.
+     */
+    it('stops repeating the rule once the field itself is carrying it', () => {
+      arrive(0, []);
+      chooseTheOfferedAccount();
+
+      setDate('expiryDate', '2026-01-01');
+      setDate('effectiveDate', '2026-06-01');
+
+      expect(fieldErrors().join(' '))
+        .withContext('the field carries the rule now that both bounds have been reached')
+        .toContain('Expiry Date must be Greater than Effective Date');
+      expect(blockedText())
+        .withContext('so the statement beside the action points at the field rather than repeating it')
+        .toBe('Correct the highlighted dates before saving.');
+      expect(blockedText())
+        .withContext('and the sentence is not said twice')
+        .not.toContain('Greater than');
+    });
+
+    /**
+     * ⚠ THE SECOND BLUR MUST NOT BE INVISIBLE. `AbstractControl.events` reports a touched change only for the
+     * control whose OWN touched state changed. Blurring the first bound flips the group and is reported;
+     * blurring the second flips only the child, leaves the already-touched group alone, and was reported
+     * nowhere - so the snapshot stayed one blur behind and the expiry field withheld its message, its
+     * `aria-invalid` and its error container for the ordinary fill-then-blur path. This case reaches the fault
+     * with the SECOND bound's blur as the last thing that happens, with no later value event to mask it.
+     */
+    it('marks the expiry field when the fault is completed by a blur alone', () => {
+      arrive(0, []);
+      chooseTheOfferedAccount();
+
+      // Values first, neither bound left. Nothing is touched, so nothing is marked yet.
+      setDateWithoutLeaving('effectiveDate', '2026-06-01');
+      setDateWithoutLeaving('expiryDate', '2026-01-01');
+
+      expect(attributeIn(dateField('expiryDate'), 'aria-invalid'))
+        .withContext('untouched, so the field accuses the operator of nothing')
+        .not.toBe('true');
+
+      // The first blur flips the group as well as the child, so this one was always reported.
+      dateField('effectiveDate')?.dispatchEvent(new Event('blur'));
+      fixture.detectChanges();
+
+      // The second blur flips ONLY the child. This is the event that used to go unnoticed.
+      dateField('expiryDate')?.dispatchEvent(new Event('blur'));
+      fixture.detectChanges();
+
+      expect(attributeIn(dateField('expiryDate'), 'aria-invalid'))
+        .withContext('the bound the fault belongs to is marked invalid')
+        .toBe('true');
+      expect(attributeIn(dateField('expiryDate'), 'aria-describedby'))
+        .withContext('and it points at its own error container')
+        .toContain('role-assignment-expiry-date-error');
+      expect(query('#role-assignment-expiry-date-error'))
+        .withContext('which exists to be pointed at')
+        .not.toBeNull();
+      expect(fieldErrors().join(' '))
+        .withContext('and states the rule')
+        .toContain('Expiry Date must be Greater than Effective Date');
+    });
+
+    /**
+     * ⚠ AN UNFINISHED STEP IS NOT A FAULT. Both were painted the same muted grey, so arriving with nothing
+     * chosen looked exactly like entering an expiry that precedes its effective bound. The fault carries the
+     * validation colour; the unfinished step does not.
+     */
+    it('paints a fault as one, and an unfinished step as not one', () => {
+      arrive(0, []);
+
+      expect(blockedText())
+        .withContext('nothing is chosen yet, which is a step rather than a mistake')
+        .toBe('Choose an account before adding it to this role.');
+      expect(query('.role-assignment__blocked')?.classList.contains('role-assignment__blocked--invalid'))
+        .withContext('so it is not painted as a fault')
+        .toBeFalse();
+
+      chooseTheOfferedAccount();
+      setDate('expiryDate', '2026-01-01');
+      setDate('effectiveDate', '2026-06-01');
+
+      expect(query('.role-assignment__blocked')?.classList.contains('role-assignment__blocked--invalid'))
+        .withContext('but an out-of-order pair is a fault')
+        .toBeTrue();
+    });
+
+    /**
+     * ⚠ THE REGION IS IN THE DOCUMENT EVEN WHEN IT IS SILENT. A live region has to exist before its text
+     * changes for that change to be announced reliably, and a region that comes and goes takes the row's
+     * height with it. Both reasons require the element to be present with an empty reading.
+     */
+    it('keeps the live region in the document while it has nothing to say', () => {
+      arrive(0, []);
+      chooseTheOfferedAccount();
+
+      expect(blockedText()).withContext('nothing is blocked, so nothing is said').toBe('');
+
+      const region: Element | null = query('.role-assignment__blocked');
+
+      expect(region).withContext('but the region itself is still here').not.toBeNull();
+      expect(attributeIn(region, 'role')).withContext('as a status region').toBe('status');
+      expect(attributeIn(region, 'aria-live')).withContext('announced politely').toBe('polite');
+    });
+
+    /**
+     * ⚠ ROOM FOR THE STATEMENT IS RESERVED WHETHER OR NOT IT SPEAKS. The register recorded this form jumping
+     * when a message appeared, and a statement that shifts the action out from under the pointer as the
+     * operator reaches for it is worse than no statement at all.
+     */
+    it('reserves the row height, so appearing and disappearing moves nothing', () => {
+      arrive(0, []);
+
+      const commands: HTMLElement | null = query<HTMLElement>('.role-assignment__commands');
+      const withMessage: number = commands?.getBoundingClientRect().height ?? 0;
+
+      expect(blockedText()).withContext('a statement is in force to begin with').not.toBe('');
+
+      lookUp('ada');
+      answerLookup([account()]);
+      chooseAccount('Ada Lovelace');
+
+      expect(blockedText()).withContext('and now there is none').toBe('');
+
+      const withoutMessage: number =
+        query<HTMLElement>('.role-assignment__commands')?.getBoundingClientRect().height ?? 0;
+
+      expect(withoutMessage)
+        .withContext(`the row does not change height: ${withMessage} then ${withoutMessage}`)
+        .toBe(withMessage);
+    });
+
+    /**
+     * ⚠ THE WIDE CASE PASSES FOR THE WRONG REASON, SO THE NARROW CASE HAS TO BE MEASURED TOO. Given room, the
+     * sentence shares the action's line and the row is as tall as the action either way - so the case above
+     * held even while the row was demonstrably jumping on a phone. The row wraps when it runs out of inline
+     * room, and an empty sentence measures nought wide, so it was the WRAP that moved: present, the row was two
+     * lines; absent, one. This case starves the row of inline room so the wrapped arrangement is the one under
+     * test, and asserts the height across all three states rather than two.
+     *
+     * It fails if the sentence ever stops claiming a whole line of its own, which is the single property that
+     * makes the wrap decision independent of the text.
+     */
+    it('reserves the row height even where the row has to wrap', async () => {
+      arrive(0, []);
+
+      // Starved deliberately: narrow enough that the action and the sentence cannot share a line.
+      host().style.inlineSize = '360px';
+      fixture.detectChanges();
+      await fixture.whenStable();
+
+      function rowHeight(): number {
+        return query<HTMLElement>('.role-assignment__commands')?.getBoundingClientRect().height ?? 0;
+      }
+
+      const blocked: HTMLElement | null = query<HTMLElement>('.role-assignment__blocked');
+
+      expect(blocked?.getBoundingClientRect().width)
+        .withContext('the sentence claims a line of its own, rather than queueing beside the action')
+        .toBeGreaterThan(query<HTMLElement>('.role-assignment__submit')?.getBoundingClientRect().width ?? 0);
+
+      const withStep: number = rowHeight();
+
+      expect(blockedText()).withContext('a statement is in force to begin with').not.toBe('');
+
+      chooseTheOfferedAccount();
+      host().style.inlineSize = '360px';
+      fixture.detectChanges();
+
+      const withNothing: number = rowHeight();
+
+      expect(blockedText()).withContext('and now there is none').toBe('');
+
+      setDate('expiryDate', '2026-01-01');
+      setDate('effectiveDate', '2026-06-01');
+      host().style.inlineSize = '360px';
+      fixture.detectChanges();
+
+      const withFault: number = rowHeight();
+
+      expect(blockedText()).withContext('and now a different one is').not.toBe('');
+      expect(withNothing)
+        .withContext(`silent must not shrink the row: ${withStep} then ${withNothing}`)
+        .toBe(withStep);
+      expect(withFault)
+        .withContext(`nor must a fault grow it: ${withStep} then ${withFault}`)
+        .toBe(withStep);
+
+      host().style.inlineSize = '';
     });
   });
 });

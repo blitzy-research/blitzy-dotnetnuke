@@ -30,6 +30,8 @@ import type { UserOperation } from '../../../core/state/user.store';
 import { UserStore } from '../../../core/state/user.store';
 import { fieldErrorMessage } from '../../../core/utils/form-errors.util';
 import { buildPageChoices, type PageOption } from '../../../core/utils/page-options.util';
+import { UserService } from '../../../core/services/user.service';
+import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialog/confirm-dialog.component';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
 import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
 import { LoadingSpinnerComponent } from '../../../shared/components/loading-spinner/loading-spinner.component';
@@ -211,6 +213,46 @@ export const MEMBERSHIP_SETTINGS_TEXT = Object.freeze({
    * tenant-wide rename is a gap rather than parity worth keeping.
    */
   savedWithRewriteMessage: 'User settings saved. {count} {accounts} renamed to match the new display name format.',
+
+  /** Affirmative wording of the rewrite confirmation. Names the act, because "OK" names nothing. */
+  rewriteConfirmLabel: 'Save and rename',
+
+  /**
+   * The rewrite confirmation's heading - QA-9.
+   *
+   * ⚠ SUPPLIED EXPLICITLY, AND THAT IS NOT OPTIONAL. The shared confirm dialogue was written for deletions
+   * and defaults its heading to "Confirm Delete" whenever a caller passes none. Measured at runtime: this
+   * dialogue rendered "Confirm Delete" over a body about renaming accounts, so the heading contradicted the
+   * only sentence on the screen that mattered, on the one dialogue whose whole purpose is warning about a
+   * mass rename. Passing the heading is the whole fix.
+   */
+  rewriteTitle: 'Confirm Rename',
+
+  /**
+   * The rewrite confirmation, before anything is written. `{0}` is replaced by a sentence naming the number
+   * of accounts, or omitted entirely when that number could not be read.
+   */
+  rewriteWarning:
+    'Changing the display name format renames accounts across this site, replacing any display name an '
+    + 'operator has typed by hand.{0} There is no undo, so export the current names first if you may need '
+    + 'them back.',
+
+  /**
+   * The count sentence inside {@link rewriteWarning}, for a site with accounts in it.
+   *
+   * ⚠ "UP TO" IS LOAD-BEARING, NOT HEDGING - QA-9. The number is the count of accounts the sweep REACHES,
+   * which is every account this tenant holds. The number it CHANGES is smaller, because an account whose
+   * display name already matches the new format is left as it is: measured at runtime, a dialogue that
+   * predicted 18 was followed by a server report of 8 actually rewritten. The earlier wording, "18 accounts
+   * in this site will be renamed", was therefore simply untrue, and over-stating a destructive act teaches
+   * an operator to discount the warning. Establishing the exact figure in advance would need the server to
+   * evaluate the format against all 18 accounts before agreeing to anything, which is the write itself; so
+   * the honest statement is the bound, and the confirmation afterwards reports what actually happened.
+   */
+  rewriteCount: ' Up to {count} {accounts} in this site will be renamed.',
+
+  /** The count sentence when the tenant holds no accounts at all, so nothing will actually be renamed. */
+  rewriteNoAccounts: ' This site has no accounts, so nothing will be renamed.',
 
   /**
    * Shown when the display-name format changed but no account's name changed with it. ⚠ DISTINCT FROM
@@ -638,6 +680,7 @@ function displayNameFormatRules(control: AbstractControl): ValidationErrors | nu
     SubmitGuardDirective,
     ReactiveFormsModule,
     RouterLink,
+    ConfirmDialogComponent,
     ErrorBannerComponent,
     FormFieldComponent,
     LoadingSpinnerComponent,
@@ -699,6 +742,14 @@ export class MembershipSettingsComponent implements OnInit {
   private readonly pages = inject(TabService);
 
   private readonly router = inject(Router);
+
+  /**
+   * The account transport, injected for ONE purpose: counting the accounts a display-name rewrite would
+   * touch, when the confirmation for that rewrite opens. Read through the transport rather than the store
+   * because the store's account listing is the paged view a DIFFERENT screen is looking at, and borrowing it
+   * to answer a one-off question here would replace that screen's page with a single row.
+   */
+  private readonly accounts = inject(UserService);
 
   /**
    * This screen's own element, used for exactly one thing: finding the outcome surface to reveal. Scoped
@@ -988,6 +1039,57 @@ export class MembershipSettingsComponent implements OnInit {
    * still holds the seated defaults, and submitting those would overwrite a live policy with values
    * nobody chose.
    */
+  /**
+   * Whether the display-name rewrite confirmation is standing. Written only by {@link submit} and the two
+   * outcome handlers, so the dialog cannot be opened from anywhere the write is not about to happen.
+   */
+  private readonly rewritePending = signal<boolean>(false);
+
+  /**
+   * How many accounts the pending rewrite would rename, or `null` while that is unknown - either because no
+   * confirmation is standing, or because the count was asked for and has not arrived, or because it could not
+   * be read at all. The three are deliberately indistinguishable: in every one of them the confirmation states
+   * the consequence without a figure rather than guessing one, and a figure that cannot be read must never
+   * block a save the operator is entitled to make.
+   */
+  private readonly rewriteAccountCount = signal<number | null>(null);
+
+  /** Whether to render the rewrite confirmation. */
+  protected readonly rewriteConfirmationOpen: Signal<boolean> = this.rewritePending.asReadonly();
+
+  /** Affirmative wording of the rewrite confirmation. */
+  protected readonly rewriteConfirmLabel = MEMBERSHIP_SETTINGS_TEXT.rewriteConfirmLabel;
+
+  /** The rewrite confirmation's heading, supplied so the shared dialogue's delete default cannot leak. */
+  protected readonly rewriteTitle = MEMBERSHIP_SETTINGS_TEXT.rewriteTitle;
+
+  /**
+   * What the rewrite confirmation says. The consequence first, because that is what the operator is being
+   * asked to accept; then the number of records it reaches, once known; then what to do about the absence of
+   * an undo, because naming a risk without naming a remedy leaves an operator no better off.
+   */
+  protected readonly rewriteWarning: Signal<string> = computed<string>(() => {
+    const affected: number | null = this.rewriteAccountCount();
+
+    if (affected === null) {
+      return MEMBERSHIP_SETTINGS_TEXT.rewriteWarning.replace('{0}', '');
+    }
+
+    if (affected === 0) {
+      return MEMBERSHIP_SETTINGS_TEXT.rewriteWarning.replace(
+        '{0}',
+        MEMBERSHIP_SETTINGS_TEXT.rewriteNoAccounts,
+      );
+    }
+
+    // Verb agreement as well as noun: "1 accounts will be renamed" reads as a defect in the application.
+    const counted: string = MEMBERSHIP_SETTINGS_TEXT.rewriteCount
+      .replace('{count}', String(affected))
+      .replace('{accounts}', affected === 1 ? 'account' : 'accounts');
+
+    return MEMBERSHIP_SETTINGS_TEXT.rewriteWarning.replace('{0}', counted);
+  });
+
   protected readonly canSubmit: Signal<boolean> = computed(() => {
     if (this.loading() || this.saving()) {
       return false;
@@ -1317,8 +1419,76 @@ export class MembershipSettingsComponent implements OnInit {
       return;
     }
 
+    // ⚠ ONE FIELD ON THIS FORM REWRITES EVERY ACCOUNT IN THE SITE, AND IT DID SO WITHOUT ASKING. Saving a
+    // changed display-name format renames every account, replacing display names an operator typed by hand,
+    // and the only report of it arrived AFTERWARDS in the confirmation - by which point 19 accounts had been
+    // renamed and there was no undo. The legacy screen swept exactly the same way, so the sweep itself is
+    // preserved; what is added is being told before it happens, and how many records it reaches. Every other
+    // field on the form saves straight through, because none of them touches a record other than this policy.
+    if (this.displayNameFormatIsChanging()) {
+      this.openRewriteConfirmation();
+
+      return;
+    }
+
+    this.write();
+  }
+
+  /** Issues the write. Reached directly, or from the rewrite confirmation once it is accepted. */
+  private write(): void {
     this.pendingSubmit = true;
     this.store.saveMembershipSettings(this.buildRequest());
+  }
+
+  /**
+   * Whether this submission would change the stored display-name format, and therefore rename accounts.
+   *
+   * Compared against the POLICY AS THE SERVER SENT IT rather than against the form's pristine state: a form
+   * can be dirty because some other field was touched, and a format typed over and then typed back is not a
+   * change. An unread policy answers `false` - there is nothing to compare against, and a confirmation
+   * naming a rewrite that may not happen is worse than none.
+   */
+  private displayNameFormatIsChanging(): boolean {
+    const stored = this.store.membershipSettings();
+
+    if (stored === null) {
+      return false;
+    }
+
+    return this.asText(stored.securityDisplayNameFormat) !== this.form.controls.securityDisplayNameFormat.value;
+  }
+
+  /** Opens the rewrite confirmation and asks how many accounts it would reach. */
+  private openRewriteConfirmation(): void {
+    this.rewriteAccountCount.set(null);
+    this.rewritePending.set(true);
+
+    // ONE record is asked for and only the TOTAL is used, so the answer is as small as the contract allows -
+    // the same shape the role-removal cascade count uses. A count that cannot be read leaves the confirmation
+    // standing without a figure rather than blocking the save or raising an alarm about it.
+    this.accounts
+      .list({ pageIndex: 0, pageSize: 1 })
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (page) => {
+          if (this.rewritePending()) {
+            this.rewriteAccountCount.set(page.meta.totalCount);
+          }
+        },
+        error: () => undefined,
+      });
+  }
+
+  /** Writes the policy the operator has now been warned about. */
+  protected onRewriteConfirmed(): void {
+    this.rewritePending.set(false);
+    this.write();
+  }
+
+  /** Abandons the write, leaving every control exactly as the operator left it. */
+  protected onRewriteCancelled(): void {
+    this.rewritePending.set(false);
+    this.rewriteAccountCount.set(null);
   }
 
   /**

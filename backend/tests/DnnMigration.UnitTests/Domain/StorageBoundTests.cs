@@ -1,3 +1,5 @@
+using System.Globalization;
+
 using DnnMigration.Domain.Common;
 using FluentAssertions;
 using Xunit;
@@ -83,6 +85,67 @@ public class StorageBoundTests
     [Fact]
     public void CanStore_DoesNotRefuseAnAmountFinerThanTheColumnsScale()
         => SqlServerRange.CanStore(1.23456789m).Should().BeTrue();
+
+    /// <summary>
+    /// An amount converted for storage comes back carrying the column's four fractional digits, whatever
+    /// scale it arrived with.
+    /// </summary>
+    /// <remarks>
+    /// ⚠ THIS IS A TEST ABOUT TEXT, NOT ABOUT VALUE, AND `Should().Be(...)` CANNOT SEE THE DIFFERENCE.
+    /// <see cref="decimal"/> equality ignores scale, so <c>4.5m</c> and <c>4.5000m</c> compare equal while
+    /// serialising as <c>4.5</c> and <c>4.5000</c>. Rounding alone leaves the submitted scale in place, so one
+    /// stored amount was published with two spellings - the shorter one in the response to a write, because
+    /// that projects the amount as the caller sent it, and the longer one on every later read, because that
+    /// projects it as the column handed it back. The assertion is therefore made on the rendered string, which
+    /// is the only form in which the defect is visible.
+    /// </remarks>
+    /// <param name="submitted">The amount as a caller might submit it.</param>
+    /// <param name="published">How it must be rendered once converted for storage.</param>
+    [Theory]
+    [InlineData(4.5, "4.5000")]
+    [InlineData(19.99, "19.9900")]
+    [InlineData(0, "0.0000")]
+    [InlineData(12, "12.0000")]
+    [InlineData(-3.5, "-3.5000")]
+    public void ToStoredMoney_CarriesTheColumnsScaleWhateverScaleArrived(double submitted, string published)
+    {
+        decimal amount = (decimal)submitted;
+
+        SqlServerRange.ToStoredMoney(amount)
+            .ToString(CultureInfo.InvariantCulture)
+            .Should()
+            .Be(published);
+
+        SqlServerRange.ToStoredMoney((decimal?)amount)!
+            .Value.ToString(CultureInfo.InvariantCulture)
+            .Should()
+            .Be(published, "the nullable overload must not take a different path");
+    }
+
+    /// <summary>Rounding to the column's scale still happens, and still rounds away from zero.</summary>
+    /// <remarks>
+    /// Imposing the scale must not have replaced the rounding: an amount finer than the column can hold is
+    /// still reduced to what it will actually store, and the half-way case still rounds away from zero rather
+    /// than to even. Both halves are asserted on the rendered string for the reason above.
+    /// </remarks>
+    [Fact]
+    public void ToStoredMoney_StillRoundsAnAmountFinerThanTheColumnHolds()
+    {
+        SqlServerRange.ToStoredMoney(1.234_567_89m)
+            .ToString(CultureInfo.InvariantCulture)
+            .Should()
+            .Be("1.2346");
+
+        SqlServerRange.ToStoredMoney(0.000_05m)
+            .ToString(CultureInfo.InvariantCulture)
+            .Should()
+            .Be("0.0001", "the half-way case rounds away from zero, as it did before the scale was imposed");
+    }
+
+    /// <summary>There is no amount at all when there was none to begin with.</summary>
+    [Fact]
+    public void ToStoredMoney_LeavesAnAbsentAmountAbsent()
+        => SqlServerRange.ToStoredMoney((decimal?)null).Should().BeNull();
 
     /// <summary>The calendar bounds begin where the stored column begins, not where the CLR type does.</summary>
     [Fact]

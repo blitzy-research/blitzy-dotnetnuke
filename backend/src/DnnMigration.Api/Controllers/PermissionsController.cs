@@ -50,7 +50,7 @@ public sealed class PermissionsController : ControllerBase
         _permissions = permissions ?? throw new ArgumentNullException(nameof(permissions));
     }
 
-    /// <summary>Lists the permission keys this installation defines.</summary>
+    /// <summary>Lists the permission definitions this installation declares.</summary>
     /// <param name="permissionCode">
     /// Restricts the result to one permission code - the scope a definition belongs to, matched exactly and
     /// case-insensitively - or omitted to place no restriction.
@@ -61,28 +61,38 @@ public sealed class PermissionsController : ControllerBase
     /// </param>
     /// <param name="permissionKey">Optional.</param>
     /// <param name="cancellationToken">Abandons the read when the caller disconnects.</param>
-    /// <returns>The distinct keys the catalogue defines, in a stable order.</returns>
+    /// <returns>The definitions the catalogue declares, distinct by identifier and ordered by it.</returns>
     /// <remarks>
+    /// <para>
     /// Paging is deliberately absent. The catalogue is small, bounded reference data seeded by the upgrade
     /// scripts, so the whole sequence is returned rather than a page of it.
+    /// </para>
+    /// <para>
+    /// <b>EACH ENTRY CARRIES ITS IDENTIFIER, AND THAT IS THE POINT.</b> This action used to answer with bare
+    /// key spellings, which left a client no handle to reach <c>GET /api/v1/permissions/{permissionId}</c>
+    /// with - the listing and the detail read shared nothing - and, because its unscoped answer was
+    /// assembled from the key enumeration rather than read from the store, it omitted keys registered by
+    /// module packages that the module permission matrices displayed on the same screen. Both were one
+    /// defect: the listing was not reading the catalogue it claimed to list.
+    /// </para>
     /// </remarks>
     [TenantOptional(
         "The unscoped permission catalogue is installation-wide reference data keyed by module definition; "
         + "no tenant resource is read.")]
     [HttpGet]
-    [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<string>>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResponse<IReadOnlyList<PermissionDto>>), StatusCodes.Status200OK)]
     // BASE ProblemDetails, not ValidationProblemDetails.
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
-    public async Task<ActionResult<ApiResponse<IReadOnlyList<string>>>> ListAsync(
+    public async Task<ActionResult<ApiResponse<IReadOnlyList<PermissionDto>>>> ListAsync(
         [FromQuery] string? permissionCode,
         [FromQuery] int? moduleDefinitionId,
         [FromQuery] PermissionKey? permissionKey,
         CancellationToken cancellationToken)
     {
-        Result<IReadOnlyList<string>> outcome = await _permissions
-            .GetPermissionKeysAsync(permissionCode, moduleDefinitionId, permissionKey, cancellationToken)
+        Result<IReadOnlyList<PermissionDto>> outcome = await _permissions
+            .GetPermissionCatalogueAsync(permissionCode, moduleDefinitionId, permissionKey, cancellationToken)
             .ConfigureAwait(false);
 
         // Complete tests the outcome before reading its value, so a failed outcome never has its value

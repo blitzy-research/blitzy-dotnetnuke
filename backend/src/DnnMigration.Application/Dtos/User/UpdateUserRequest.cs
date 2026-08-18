@@ -49,4 +49,21 @@ public class UpdateUserRequest
     /// column permits an absent address), maximum length 256, and not unique.
     /// </remarks>
     public string Email { get; set; } = string.Empty;
+
+    /// <summary>
+    /// The optimistic-concurrency token the caller received when it read this account, or <see
+    /// langword="null"/> to apply the update unconditionally.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// OPTIONAL, and permissive when omitted, so a caller that predates the token still works exactly as it
+    /// did. When supplied and no longer current, the write is refused with
+    /// <c>user.concurrency_conflict</c> and nothing is written.
+    /// </para>
+    /// <para>
+    /// Read from <c>UserDetailDto.ConcurrencyToken</c> and sent back unmodified. It is compared for
+    /// equality, never written, so it needs neither a column nor a validator.
+    /// </para>
+    /// </remarks>
+    public string? ConcurrencyToken { get; set; }
 }

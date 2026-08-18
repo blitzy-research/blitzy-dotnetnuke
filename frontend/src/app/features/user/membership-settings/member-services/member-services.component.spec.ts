@@ -211,6 +211,8 @@ describe('MemberServicesComponent', () => {
         email: 'caller@example.test',
         isSuperUser: false,
         isPortalAdministrator: false,
+        mustChangePassword: false,
+        mustUpdateProfile: false,
         roles: ['Registered Users'],
         permissions: [],
       },

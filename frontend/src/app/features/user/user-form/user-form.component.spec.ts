@@ -234,6 +234,8 @@ describe('UserFormComponent', () => {
       lastPasswordChangeDate: '2024-02-01T10:00:00Z',
       roles: ['Registered Users'],
       canDelete: true,
+      // Opaque and never interpreted here: a fixture only has to carry one for the round trip to close.
+      concurrencyToken: 'account-revision-token',
       ...overrides,
     };
   }
@@ -362,6 +364,8 @@ describe('UserFormComponent', () => {
         email: 'caller@example.test',
         isSuperUser: false,
         isPortalAdministrator: false,
+        mustChangePassword: false,
+        mustUpdateProfile: false,
         roles: ['Registered Users'],
         permissions: [],
       },
@@ -1473,10 +1477,15 @@ describe('UserFormComponent', () => {
       const write = expectRequest('PUT', userUrl(7), 'the update');
       const body = write.request.body as UpdateUserRequest;
 
-      // ⚠ FOUR MEMBERS AND NO MORE. No sign-in name, because there is no rename path; no authorisation
-      // flag, no lockout flag and no credential, because each has its own endpoint — which is what stops a
-      // details edit from carrying an authorisation change.
+      // ⚠ FOUR EDITABLE MEMBERS AND NO MORE, PLUS THE REVISION MARKER. No sign-in name, because there is
+      // no rename path; no authorisation flag, no lockout flag and no credential, because each has its own
+      // endpoint — which is what stops a details edit from carrying an authorisation change.
+      //
+      // The fifth member is not a field. `concurrencyToken` is the revision the submission was composed
+      // against, echoed back verbatim so the server can answer `409` rather than silently overwriting a
+      // colleague's concurrent edit, which is what this screen used to do.
       expect(Object.keys(body as unknown as Record<string, unknown>).sort()).toEqual([
+        'concurrencyToken',
         'displayName',
         'email',
         'firstName',
@@ -1487,6 +1496,7 @@ describe('UserFormComponent', () => {
         lastName: 'King',
         displayName: 'Augusta King',
         email: 'augusta@example.test',
+        concurrencyToken: 'account-revision-token',
       });
 
       write.flush(envelope(account(7, { firstName: 'Augusta' })));
@@ -3371,6 +3381,195 @@ describe('UserFormComponent', () => {
   // =========================================================================
   // A TENANT THAT COMPOSES DISPLAY NAMES ITSELF
   // =========================================================================
+
+  // ---------------------------------------------------------------------------------------------------
+  // THE REVISION MARKER, AND THE TWO `409`s THAT ARE NOT THE SAME FAILURE
+  // ---------------------------------------------------------------------------------------------------
+
+  describe('the revision marker on a save', () => {
+    it('echoes the token the account read published, verbatim', () => {
+      arriveEditing(account(7, { concurrencyToken: 'revision-from-the-server' }));
+
+      type(CONTROL_ID.firstName, 'Augusta');
+      press(UPDATE_SUBMIT_LABEL);
+
+      const body = expectRequest('PUT', userUrl(7), 'the update').request.body as UpdateUserRequest;
+
+      expect(body.concurrencyToken)
+        .withContext('the marker is the server\'s and is round-tripped unread')
+        .toBe('revision-from-the-server');
+    });
+
+    it('reports a stale read as staleness and offers a way out of it', () => {
+      // ⚠ WITHOUT THE WAY OUT THIS IS A DEAD END. The marker comes from the account this screen READ, and a
+      // refusal does not change that account - so pressing Update again sends the same refused marker.
+      arriveEditing(account(7));
+
+      type(CONTROL_ID.firstName, 'Augusta');
+      press(UPDATE_SUBMIT_LABEL);
+
+      expectRequest('PUT', userUrl(7), 'the update').flush(
+        problem('user.concurrency_conflict', 409, 'The account was changed by another request.'),
+        { status: 409, statusText: 'Conflict' },
+      );
+      fixture.detectChanges();
+
+      const text: string = host().textContent ?? '';
+
+      expect(text)
+        .withContext('the stale read is worded as staleness, not as a duplicate address')
+        .toContain('This account was changed by someone else after you opened it');
+      expect(text).not.toContain('requires a unique Email Address');
+      expect(text).toContain('Read this account again');
+    });
+
+    it('re-reads the account on the recovery command, replacing the refused edits', () => {
+      arriveEditing(account(7, { firstName: 'Ada' }));
+
+      type(CONTROL_ID.firstName, 'Augusta');
+      press(UPDATE_SUBMIT_LABEL);
+
+      expectRequest('PUT', userUrl(7), 'the update').flush(
+        problem('user.concurrency_conflict', 409, 'The account was changed by another request.'),
+        { status: 409, statusText: 'Conflict' },
+      );
+      fixture.detectChanges();
+
+      press('Read this account again');
+
+      // The re-read is what puts a CURRENT marker in the screen's hands; without it every later save
+      // carries the refused one.
+      expectRequest('GET', userUrl(7), 'the re-read').flush(
+        envelope(account(7, { firstName: 'Grace', concurrencyToken: 'a-newer-revision' })),
+      );
+      fixture.detectChanges();
+
+      expect(field<HTMLInputElement>(CONTROL_ID.firstName).value)
+        .withContext('the stored values replace what was typed, which the recovery wording says plainly')
+        .toBe('Grace');
+
+      type(CONTROL_ID.firstName, 'Augusta');
+      press(UPDATE_SUBMIT_LABEL);
+
+      const retried = expectRequest('PUT', userUrl(7), 'the retry').request.body as UpdateUserRequest;
+
+      expect(retried.concurrencyToken)
+        .withContext('the retry carries the NEWER marker, which is what makes the recovery a recovery')
+        .toBe('a-newer-revision');
+    });
+
+    it('does not treat a duplicate-address 409 as a stale read', () => {
+      // ⚠ THE TWO `409`s ARE NOT THE SAME FAILURE. A duplicate address is corrected in a field and the
+      // submission can be retried as it stands; a stale read cannot be corrected in the form at all, because
+      // every later save carries the same refused marker. Only the second earns the recovery affordance.
+      arriveEditing(account(7));
+
+      type(CONTROL_ID.email, 'taken@example.test');
+      press(UPDATE_SUBMIT_LABEL);
+
+      expectRequest('PUT', userUrl(7), 'the update').flush(
+        problem('user.update.duplicate_email', 409, 'That address is already used.'),
+        { status: 409, statusText: 'Conflict' },
+      );
+      fixture.detectChanges();
+
+      const text: string = host().textContent ?? '';
+
+      // The shared banner states it, which is the application's one assertive owner for a refusal.
+      expect(text).toContain('That address is already used.');
+      expect(text).not.toContain('This account was changed by someone else');
+      expect(text)
+        .withContext('a duplicate address is not a dead end, so no re-read command is offered')
+        .not.toContain('Read this account again');
+    });
+  });
+
+  // ---------------------------------------------------------------------------------------------------
+  // THE TENANT'S OWN ADDRESS EXPRESSION — A SECOND RULE, SURFACED AS AN ADVISORY
+  // ---------------------------------------------------------------------------------------------------
+
+  describe("the tenant's own address expression", () => {
+    /** DotNetNuke's own default, verbatim: a final label of two to four letters. */
+    const LEGACY_DEFAULT = {
+      securityEmailValidation: "\\b[a-zA-Z0-9._%\\-+']+@[a-zA-Z0-9.\\-]+\\.[a-zA-Z]{2,4}\\b",
+    };
+
+    const ADVISORY = 'This site requires email addresses to match its own configured pattern';
+
+    /** Mounts in edit mode with the tenant's legacy-default expression in force. */
+    function arriveEditingUnderLegacyDefault(held: UserDetail): void {
+      create(String(held.userId), LEGACY_DEFAULT);
+      expectRequest('GET', userUrl(held.userId), 'the account read').flush(envelope(held));
+      fixture.detectChanges();
+    }
+
+    it('says nothing about an address that is already stored, however the expression judges it', () => {
+      // ⚠ THE CLIENT MIRRORS THE SERVER'S GRANDFATHERING. `.local` has a five-letter final label, so the
+      // tenant's expression refuses it - but it is already in the column, and no submission could satisfy
+      // the rule short of altering data the operator never came to change. Warning here would tell them a
+      // surname edit was about to be refused when it was not.
+      arriveEditingUnderLegacyDefault(account(7, { email: 'member@setup.local' }));
+
+      expect(host().textContent ?? '')
+        .withContext('an unchanged address is admitted by being there')
+        .not.toContain(ADVISORY);
+
+      type(CONTROL_ID.firstName, 'Augusta');
+
+      expect(host().textContent ?? '')
+        .withContext('and editing an unrelated field does not change that')
+        .not.toContain(ADVISORY);
+    });
+
+    it('warns about a NEW address the expression refuses, without blocking the save', () => {
+      arriveEditingUnderLegacyDefault(account(7, { email: 'member@setup.local' }));
+
+      type(CONTROL_ID.email, 'someone.else@setup.local');
+
+      expect(host().textContent ?? '')
+        .withContext('a changed address is put to the tenant rule, and a mismatch is said out loud')
+        .toContain(ADVISORY);
+
+      // ⚠ AN ADVISORY, NOT A VALIDATOR. Blocking here would recreate the very refusal the server side of
+      // this pair was fixed for.
+      expect(button(UPDATE_SUBMIT_LABEL)?.disabled)
+        .withContext('the operator may still save; the server decides')
+        .toBeFalse();
+
+      press(UPDATE_SUBMIT_LABEL);
+      expectRequest('PUT', userUrl(7), 'the update should still be issued');
+    });
+
+    it('says nothing about a new address the expression accepts', () => {
+      arriveEditingUnderLegacyDefault(account(7, { email: 'member@setup.local' }));
+
+      type(CONTROL_ID.email, 'someone.else@example.com');
+
+      expect(host().textContent ?? '').not.toContain(ADVISORY);
+    });
+
+    it('stays silent when the tenant publishes an expression this browser cannot compile', () => {
+      // Operator-authored text from the database can be any string at all, and .NET and ECMAScript
+      // regular-expression syntax differ - so an uncompilable value must leave the notice silent rather
+      // than throw inside a projection and take the form down with it.
+      create('7', { securityEmailValidation: '([unclosed' });
+      expectRequest('GET', userUrl(7), 'the account read').flush(envelope(account(7)));
+      fixture.detectChanges();
+
+      type(CONTROL_ID.email, 'anything@example.test');
+
+      expect(host().textContent ?? '').not.toContain(ADVISORY);
+      expect(button(UPDATE_SUBMIT_LABEL)?.disabled).toBeFalse();
+    });
+
+    it('stays silent when the tenant publishes no expression at all', () => {
+      arriveEditing(account(7, { email: 'member@setup.local' }));
+
+      type(CONTROL_ID.email, 'other@setup.local');
+
+      expect(host().textContent ?? '').not.toContain(ADVISORY);
+    });
+  });
 
   describe('a tenant that composes display names itself', () => {
     // ⚠ THE LEGACY RULE HAS TWO ARMS AND THEY DIFFER. `UserEditorCreated` (`User.ascx.vb` L397-L406):

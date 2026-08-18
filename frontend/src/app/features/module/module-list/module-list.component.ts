@@ -90,7 +90,11 @@ const SEARCH_PLACEHOLDER = 'Search modules';
  * by a filter rather than absent. The user listing already discloses its filter in these words, and one
  * wording across two listings is the point.
  */
-const FILTER_DISCLOSURE_TEMPLATE = 'Filtered: module title or name contains \u201c{text}\u201d.';
+// ⚠ THE WORDING NAMES ONE FIELD BECAUSE THE SERVER MATCHES ONE FIELD. It said "module title or name",
+// which promised a search this endpoint does not perform: `ModuleRepository` filters on
+// `placement.Module.ModuleTitle` alone, so a term that appears only in a module's DEFINITION name matched
+// nothing and the empty result looked like a fault in the filter rather than an accurate answer.
+const FILTER_DISCLOSURE_TEMPLATE = 'Filtered: module title contains \u201c{text}\u201d.';
 
 /** What is said when the text entered carries nothing to match on. @see FILTER_DISCLOSURE_TEMPLATE */
 const IGNORED_TERM_NOTICE =
@@ -148,6 +152,32 @@ function describeModule(row: ModuleListItem): string {
 }
 
 const REMOVE_CONFIRM_MESSAGE = 'Are You Sure You Wish To Delete This Module ?';
+
+/**
+ * What the removal actually REACHES, appended to the legacy question - QA-10.
+ *
+ * The command is PLACEMENT-scoped, not module-scoped, and the legacy sentence says "Delete This Module",
+ * which is the opposite of what happens when the module sits on more than one page. Two sentences rather
+ * than one, because the two cases have genuinely different consequences and an operator needs to know which
+ * one they are in BEFORE pressing a destructive button:
+ *
+ *  - a module placed on EVERY page is removed from this page only, and its other placements survive, so
+ *    clearing it everywhere takes one removal per page;
+ *  - a module placed on ONE page loses its last placement, and the module itself is then recycled.
+ *
+ * The second sentence is the consequence of the placement-delete rule this migration corrected: removing the
+ * final placement no longer strands a live module with nowhere to appear, it recycles it. That correction is
+ * exactly why the wording had to change - before it, "delete this module" and "delete this placement" led to
+ * the same visible outcome often enough that the loose sentence went unnoticed.
+ */
+const REMOVE_SCOPE_ON_EVERY_PAGE =
+  'This module appears on every page, and this removes it from this page only. Its other placements are '
+  + 'left as they are.';
+
+/** @see REMOVE_SCOPE_ON_EVERY_PAGE */
+const REMOVE_SCOPE_LAST_PLACEMENT =
+  'This is the module\u2019s placement on this page. Removing it leaves the module with no placement, so the '
+  + 'module is recycled too.';
 
 /**
  * Column headings. MEASURED from `Website/admin/Modules/App_LocalResources/ModuleSettings.ascx.resx`,
@@ -746,9 +776,14 @@ export class ModuleListComponent implements OnInit {
   protected readonly removeConfirmMessage: Signal<string> = computed<string>(() => {
     const target: ModuleListItem | null = this.removalTarget();
 
-    return target === null
-      ? REMOVE_CONFIRM_MESSAGE
-      : `${REMOVE_CONFIRM_MESSAGE} ${describeModule(target)}`;
+    if (target === null) {
+      return REMOVE_CONFIRM_MESSAGE;
+    }
+
+    // The scope sentence follows the identity, so the question reads: what, which one, and how far it goes.
+    const scope: string = target.allTabs ? REMOVE_SCOPE_ON_EVERY_PAGE : REMOVE_SCOPE_LAST_PLACEMENT;
+
+    return `${REMOVE_CONFIRM_MESSAGE} ${describeModule(target)} ${scope}`;
   });
 
   /** Address of the create screen, for the primary page action. */
@@ -1250,6 +1285,20 @@ export class ModuleListComponent implements OnInit {
       // 4. The DEFINITION's display name - the legacy `'Module:'` label.
       {
         key: 'friendlyName',
+        // ⚠ ATOMIC BECAUSE A MODULE TYPE'S NAME IS NOT A PHRASE, AND WRAPPING ONE FRACTURES IT. The shared stylesheet
+        // lets any cell break inside a word so a narrow column can never overflow, which is right for prose
+        // and wrong for a value read as a single token. Measured before this line: `Announcements` painted as `Announcem` + `ents` at a 1280
+        // viewport and `Announce` + `ments` at 768, and `Text/HTML` as `Text/HTM` + `L` - the break falling after
+        // the `M`, not at the slash. This is the one column on this grid that declares no width, so it absorbs
+        // the leftover after the others claim 77% and the commands column takes a fixed 144px: about 9.1% of the
+        // table, 94.81px at 1280 and 76.83px at 768. It is the NARROWEST non-atomic column here, not the widest,
+        // and it is a `<th>` row header so it also renders two pixels larger than the body cells beside it.
+        // Marked atomic the value stays on one line and a column too narrow to hold it ellipsises instead, so
+        // what shows is a recognisable prefix rather than two fragments that read as corruption. The whole
+        // value stays in the accessibility tree and in the DOM either way, so this shortens what is painted
+        // and hides nothing. No width changes - see the note on the width above for why rebalancing is not
+        // the remedy here.
+        atomic: true,
         rowHeader: true,
         label: COLUMN_LABEL.friendlyName,
         headerAlign: 'center',
@@ -1269,6 +1318,17 @@ export class ModuleListComponent implements OnInit {
       {
         key: 'moduleName',
         width: '13%',
+        // ⚠ ATOMIC BECAUSE A PACKAGE NAME IS NOT A PHRASE, AND WRAPPING ONE FRACTURES IT. The shared stylesheet
+        // lets any cell break inside a word so a narrow column can never overflow, which is right for prose
+        // and wrong for a value read as a single token. Measured before this line: `QA_Announcements` painted as `QA_Announcement` + `s` at a 768
+        // viewport, orphaning a single letter on its own line. It misses by 3.39px - 120.19px of glyphs in a
+        // 116.80px content box - which is why it holds at 1280 and only fails at the narrower step.
+        // Marked atomic the value stays on one line and a column too narrow to hold it ellipsises instead, so
+        // what shows is a recognisable prefix rather than two fragments that read as corruption. The whole
+        // value stays in the accessibility tree and in the DOM either way, so this shortens what is painted
+        // and hides nothing. No width changes - see the note on the width above for why rebalancing is not
+        // the remedy here.
+        atomic: true,
         label: COLUMN_LABEL.moduleName,
         headerAlign: 'center',
         bodyAlign: 'start',

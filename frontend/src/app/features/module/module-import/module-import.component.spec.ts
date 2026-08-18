@@ -2653,6 +2653,8 @@ describe('MODULE_ROUTES — the delegated ordering regression proof', () => {
       email: 'admin@example.invalid',
       isSuperUser: true,
       isPortalAdministrator: true,
+      mustChangePassword: false,
+      mustUpdateProfile: false,
       roles: ['Administrators'],
       permissions: [],
     };

@@ -109,6 +109,8 @@ function userWith(
     // Follows the host flag, matching what the server reports: a host account administers every
     // tenant. The directive reads neither member, which these cases rely on.
     isPortalAdministrator: isSuperUser,
+    mustChangePassword: false,
+    mustUpdateProfile: false,
     roles: ['Administrators'],
     permissions,
   };

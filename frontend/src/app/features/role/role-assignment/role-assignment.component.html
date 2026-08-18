@@ -210,6 +210,26 @@
         [disabled]="!canSubmit()"
           [attr.aria-busy]="saving() ? 'true' : null"
       >{{ actionLabel() }}</button>
+
+      <!--
+        ⚠ WHY THE ACTION IS UNAVAILABLE, NOT MERELY THAT IT IS. A disabled control states that something is
+        wrong and never what, and this form has two independent blockers - no account chosen, and an expiry
+        bound that does not follow its effective bound - which an operator had no way to tell apart. A polite
+        live region, so a reader hears the condition change as they correct it.
+
+        ⚠ THE REGION IS ALWAYS HERE, EMPTY OR NOT, FOR TWO INDEPENDENT REASONS. A live region has to be in the
+        document BEFORE its text changes for that change to be announced reliably; a region that arrives
+        already carrying its sentence is announced inconsistently. And a region that comes and goes takes the
+        row's height with it - measured on this form as the action moving out from under the pointer as the
+        operator reached for it. The shell's own banner and notification regions sit empty in the document for
+        the same reason, so this follows the pattern already established rather than inventing one.
+      -->
+      <p
+        class="role-assignment__blocked"
+        [class.role-assignment__blocked--invalid]="submitBlockedByFailure()"
+        role="status"
+        aria-live="polite"
+      >{{ submitBlockedReason() }}</p>
     </div>
   </form>
 
@@ -342,20 +362,20 @@
   accompanied by its own WORD, so the distinction never rests on colour alone.
 -->
 <ng-template #roleAssignmentEffectiveDateCell let-row="row"
-  >{{ row.effectiveDate | dateDisplay
+  >@if (isBoundAbsent(row.effectiveDate)) {<app-absent-value />} @else {{{ row.effectiveDate | dateDisplay
   }}@if (membershipState(row) === 'pending') {&nbsp;<span class="role-assignment__lifecycle role-assignment__lifecycle--pending">{{
       text.pending
     }}</span>
-  }</ng-template
+  }}</ng-template
 >
 
 <ng-template #roleAssignmentExpiryDateCell let-row="row"
-  >{{ row.expiryDate | dateDisplay
+  >@if (isBoundAbsent(row.expiryDate)) {<app-absent-value />} @else {{{ row.expiryDate | dateDisplay
   }}@if (membershipState(row) === 'expired') {&nbsp;<span class="role-assignment__lifecycle role-assignment__lifecycle--expired">{{
       text.expired
     }}</span>
   } @else if (showsInForceQualifier(row)) {&nbsp;<span class="role-assignment__lifecycle role-assignment__lifecycle--current">{{
       text.current
     }}</span>
-  }</ng-template
+  }}</ng-template
 >

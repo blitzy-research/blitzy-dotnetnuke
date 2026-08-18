@@ -93,6 +93,17 @@ public sealed class RoleService : IRoleService
     private const string RoleProtectedCode = "role.protected";
 
     /// <summary>
+    /// Reported when an update tries to REPLACE an invitation code with one too easily guessed.
+    /// </summary>
+    /// <remarks>
+    /// SEC: the strength rule is a rule about authoring, so it is applied to the value being written and not
+    /// to the value already stored. An update that submits the stored code back unchanged authors nothing and
+    /// is admitted, which is what keeps a role whose code predates the rule editable; an update that supplies
+    /// a DIFFERENT weak code is authoring one and is refused here exactly as creation refuses it.
+    /// </remarks>
+    private const string RsvpCodeTooWeakCode = "role.rsvp_code_too_weak";
+
+    /// <summary>
     /// Informational reason carried by a successful removal that expired an assignment instead of deleting
     /// it, so that a caller which must report the difference can.
     /// </summary>
@@ -534,6 +545,25 @@ public sealed class RoleService : IRoleService
             request.TrialFee,
             request.TrialPeriod,
             request.TrialFrequency);
+
+        // ⚠ THE INVITATION-CODE STRENGTH RULE LIVES HERE RATHER THAN IN THE VALIDATOR, because deciding it
+        // needs the stored value and a validator cannot see one. Held against every update it made a role
+        // carrying a code from before the rule permanently un-editable, while leaving that code in place - so
+        // it is held against the value being WRITTEN instead. Submitting the stored code back unchanged
+        // authors nothing and passes; supplying a different weak one is authoring and is refused, on the same
+        // terms creation refuses it.
+        //
+        // It is judged AFTER the shape guard above deliberately. Strength and well-formedness are different
+        // questions, and the more basic one must answer first: an over-long or multi-line code carries only
+        // one character class, so judging strength first would report every malformed value as "too weak"
+        // and hide the defect the caller actually has to fix.
+        if (!RsvpCodeIsUnchanged(role.RsvpCode, request.RsvpCode)
+            && !RoleTermsRules.IsStrongAuthoredRsvpCode(request.RsvpCode))
+        {
+            return Result<RoleDetailDto>.Failure(
+                RsvpCodeTooWeakCode,
+                RoleTermsRules.RsvpCodeTooWeakMessage);
+        }
 
         if (request.RoleGroupId is int requestedGroupId)
         {
@@ -1329,6 +1359,24 @@ public sealed class RoleService : IRoleService
         return offsetBase.AddMonths((int)months);
     }
 
+    /// <summary>
+    /// Determines whether an update leaves the stored invitation code exactly as it is.
+    /// </summary>
+    /// <param name="stored">The code currently held against the role, which may be <see langword="null"/>.</param>
+    /// <param name="submitted">The code the request carries, which may be <see langword="null"/>.</param>
+    /// <returns>
+    /// <see langword="true"/> when the request authors no new code; otherwise <see langword="false"/>.
+    /// </returns>
+    /// <remarks>
+    /// Absent and empty are treated as the SAME state, because they are indistinguishable to an operator and
+    /// the column stores both: a screen that renders a null code as an empty box and posts the empty box back
+    /// has changed nothing, and reading that as a change would refuse the update it is meant to admit.
+    /// The comparison is ordinal and case-SENSITIVE, because the stored value is a shared secret rather than a
+    /// name - altering only its casing produces a different secret and is therefore authoring a new code.
+    /// </remarks>
+    private static bool RsvpCodeIsUnchanged(string? stored, string? submitted)
+        => string.Equals(stored ?? string.Empty, submitted ?? string.Empty, StringComparison.Ordinal);
+
     /// <summary>Refuses a role whose submitted shape breaks a rule the legacy edit screen enforced.</summary>
     /// <param name="roleName">Submitted role name.</param>
     /// <param name="description">Submitted description.</param>
@@ -1347,6 +1395,7 @@ public sealed class RoleService : IRoleService
     /// asymmetry is genuine and is preserved: a fee may be zero, because a free role is legitimate, while a
     /// period may not WHERE A CYCLE IS DECLARED, because a cycle of zero units cannot advance an expiry.
     /// </remarks>
+
     private static void EnsureRoleShapeIsValid(
         string roleName,
         string? description,

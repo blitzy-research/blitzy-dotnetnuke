@@ -158,6 +158,30 @@ client versions against: the three health views `/health`, `/health/live` and
 `/health/ready`, and `/swagger`, the generated OpenAPI console. Both are described in
 [§4](#4-backend), including which endpoints answer without a bearer token.
 
+### One capability the API exposes and the console does not
+
+**`GET /api/v1/tabs/{tabId}` and `PUT /api/v1/tabs/{tabId}` are API-only in this release.**
+They are implemented, authorised, validated and covered by integration tests, but **no screen
+in the administration console calls them**, and there is no `/tabs` route. This is a scope
+decision, recorded here so that nobody reads it as an unfinished screen or as dead code.
+
+What the console *does* use is the collection — `GET /api/v1/portals/{portalId}/tabs` — as a
+**lookup**: the module screens read a portal's pages to say which page a placement sits on,
+and `frontend/src/app/core/services/tab.service.ts` is how they ask. Its class comment says
+so in as many words, and the two by-identifier methods on it carry a note explaining that they
+are the typed client for a capability the console does not surface.
+
+The migration plan is explicit on all three counts, which is why adding a page-management
+screen would be a change of scope rather than a bug fix: it enumerates the console's routes
+exhaustively and none of them addresses a page; it lists the console's in-scope feature areas
+as portal, module, user, role and authentication only; and it describes the page transport as a
+lookup that exists *even though there is no page feature folder*. A page administration area
+therefore belongs to a later release. If one is added, it should reach these two endpoints
+through the existing transport rather than opening a second path to them — and it will need no
+backend work, because the endpoints already enforce the same tenant, permission and
+text-integrity rules a screen would have relied on. `MIGRATION_NOTES.md` carries the same
+decision alongside the other deliberate divergences.
+
 ---
 
 ## 3. Prerequisites

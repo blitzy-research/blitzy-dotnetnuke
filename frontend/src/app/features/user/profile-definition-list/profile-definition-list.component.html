@@ -69,6 +69,13 @@
 </app-data-table>
 
 <!--
+  THE DATA TYPE COLUMN NOTE. Stated once for the column rather than once per row: eight rows each
+  carrying "reference 349, name unavailable" reads as eight faults, whereas one sentence naming the
+  reason reads as the scope decision it actually is. See DATA_TYPE_COLUMN_NOTE for the AAP grounds.
+-->
+<p class="profile-definitions__grid-note">{{ dataTypeColumnNote }}</p>
+
+<!--
   THE GRID ACTION ROW — `cmdApply` then `cmdRefresh`, in the legacy's own order, separated by a real gap
   rather than by the literal non-breaking space the legacy used.
 -->
@@ -304,6 +311,25 @@
     [danger]="true"
     (confirm)="confirmRemoval()"
     (cancel)="cancelRemoval()"
+  />
+}
+
+<!--
+  THE SECOND ASK, AND THE ONLY ONE IN THIS APPLICATION. Removing a profile property takes every answer the
+  portal's accounts have recorded against it, and the API refuses the first attempt precisely so that this
+  dialog can happen: its message is the SERVER'S sentence, which reports how many answers would be destroyed,
+  that the loss is permanent, and to back the table up first.
+
+  No `title` is bound, for the reason given on the dialog above. The confirm label is its own, because
+  "Delete" is what the operator already pressed - this control is the one that means it.
+-->
+@if (cascadeTarget(); as cascade) {
+  <app-confirm-dialog
+    [message]="cascade.message"
+    [confirmLabel]="deletePermanentlyLabel"
+    [danger]="true"
+    (confirm)="confirmCascade()"
+    (cancel)="cancelCascade()"
   />
 }
 

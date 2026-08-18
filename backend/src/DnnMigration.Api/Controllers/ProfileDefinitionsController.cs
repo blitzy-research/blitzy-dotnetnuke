@@ -193,26 +193,37 @@ public sealed class ProfileDefinitionsController : ControllerBase
         return this.Complete(outcome);
     }
 
-    /// <summary>Removes a profile property definition from a portal.</summary>
-    /// <param name="propertyDefinitionId">Identifier of the definition to remove.</param>
+    /// <summary>
+    /// Repositions several profile property definitions in the display order as ONE unit of work.
+    /// </summary>
+    /// <param name="request">The definitions to reposition, each paired with its new position.</param>
     /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
-    /// <returns><c>204 No Content</c> once the definition has been removed.</returns>
+    /// <returns>The portal's whole catalogue in its new order.</returns>
     /// <remarks>
-    /// Removal discards the values accounts hold against the definition in the same unit of work, so no
-    /// value is left referencing a definition that no longer exists. That cascade is the contract's
-    /// responsibility and is deliberately not staged from here as a sequence of calls, which could leave
-    /// the two halves apart if the second failed.
+    /// <para>
+    /// Reordering is expressible through the per-definition update beside this action — position is one of
+    /// its members — and this action exists because expressing it that way is not safe. Moving a definition
+    /// EXCHANGES two stored positions, so a caller must send two writes that are only correct together: land
+    /// one and lose the other and two definitions claim the same position, which is neither the order the
+    /// operator started from nor the one they asked for. This action takes the exchange as a single request
+    /// and commits it once.
+    /// </para>
+    /// <para>
+    /// The route segment is a literal, so it can never be confused with the sibling
+    /// <c>{propertyDefinitionId:int}</c> route: an integer constraint does not match <c>order</c>, and
+    /// <c>order</c> is not an integer.
+    /// </para>
     /// </remarks>
-    [HttpDelete("{propertyDefinitionId:int}")]
-    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [HttpPut("order")]
+    [ProducesResponseType(
+        typeof(ApiResponse<IReadOnlyList<ProfilePropertyDefinitionDto>>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ValidationProblemDetails), StatusCodes.Status400BadRequest)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
-    // The guarded commit in the application contract returns persistence.conflict when a concurrent request
-    // changed or removed the definition first, and the shared translator answers that code as 409.
     [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
-    public async Task<ActionResult> DeleteAsync(
-        int propertyDefinitionId,
+    public async Task<ActionResult<ApiResponse<IReadOnlyList<ProfilePropertyDefinitionDto>>>> ReorderAsync(
+        [FromBody] ReorderProfilePropertyDefinitionsRequest request,
         CancellationToken cancellationToken)
     {
         if (ResolvePortalId() is not { } scopedPortalId)
@@ -220,8 +231,64 @@ public sealed class ProfileDefinitionsController : ControllerBase
             return this.ForbiddenProblem(TenantUnresolvedCode);
         }
 
+        Result<IReadOnlyList<ProfilePropertyDefinitionDto>> outcome = await _users
+            .ReorderProfilePropertyDefinitionsAsync(scopedPortalId, request, cancellationToken)
+            .ConfigureAwait(false);
+
+        return this.Complete(outcome);
+    }
+
+    /// <summary>Removes a profile property definition from a portal.</summary>
+    /// <param name="propertyDefinitionId">Identifier of the definition to remove.</param>
+    /// <param name="cancellationToken">Abandons the request when the caller disconnects.</param>
+    /// <param name="confirmValueDeletion">
+    /// Consent to destroying the profile answers accounts hold for this definition. Omit it for a definition
+    /// nobody has answered; set it for one that has, after reading how many the refusal reports.
+    /// </param>
+    /// <returns><c>204 No Content</c> once the definition has been removed.</returns>
+    /// <remarks>
+    /// <para>
+    /// Removal discards the values accounts hold against the definition in the same unit of work, so no
+    /// value is left referencing a definition that no longer exists. That cascade is the contract's
+    /// responsibility and is deliberately not staged from here as a sequence of calls, which could leave
+    /// the two halves apart if the second failed.
+    /// </para>
+    /// <para>
+    /// <strong>THAT CASCADE IS ALSO WHY THIS IS THE ONE REMOVAL IN THE API THAT ASKS TWICE.</strong> A single
+    /// authenticated request could otherwise destroy every answer a portal's accounts hold for a property, with
+    /// nothing in the request to indicate how much was at stake. The first attempt is refused with the count,
+    /// and repeating it with <paramref name="confirmValueDeletion"/> set performs it - so the operation stays
+    /// available to an administrator who means it, and unavailable by accident.
+    /// </para>
+    /// </remarks>
+    [HttpDelete("{propertyDefinitionId:int}")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status403Forbidden)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status404NotFound)]
+    // The guarded commit in the application contract returns persistence.conflict when a concurrent request
+    // changed or removed the definition first, and the shared translator answers that code as 409. The two
+    // protections on this operation answer 409 through the same translator: profile-definition.protected for
+    // one of the four reserved names, and profile-definition.value-deletion-unacknowledged when the cascade
+    // would destroy recorded answers the caller has not consented to losing. Both are stated in the detail,
+    // and the second reports how many answers are at stake and names `confirmValueDeletion`.
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status409Conflict)]
+    public async Task<ActionResult> DeleteAsync(
+        int propertyDefinitionId,
+        CancellationToken cancellationToken,
+        [FromQuery] bool confirmValueDeletion = false)
+    {
+        if (ResolvePortalId() is not { } scopedPortalId)
+        {
+            return this.ForbiddenProblem(TenantUnresolvedCode);
+        }
+
         Result outcome = await _users
-            .DeleteProfilePropertyDefinitionAsync(scopedPortalId, propertyDefinitionId, cancellationToken)
+            .DeleteProfilePropertyDefinitionAsync(
+                scopedPortalId,
+                propertyDefinitionId,
+                confirmValueDeletion,
+                cancellationToken)
             .ConfigureAwait(false);
 
         // The valueless overload answers 204 on success, which is the documented contract for a removal: the

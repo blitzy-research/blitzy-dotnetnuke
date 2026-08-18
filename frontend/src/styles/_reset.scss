@@ -60,6 +60,10 @@ html {
 body {
   margin: 0;
   background-color: var(--color-background);
+  // Declared so the application's default text colour has a NAME - QA-11. The value is the black the user
+  // agent was already resolving in the absence of any declaration, and which the legacy `.Normal` class also
+  // fell back to, so this is zero visual change and is stated in full on the token itself.
+  color: var(--color-text);
   font-family: var(--font-family-base);
   font-size: var(--font-size-base);
   line-height: var(--line-height-base);

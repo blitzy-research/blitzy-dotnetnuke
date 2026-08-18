@@ -91,6 +91,9 @@ public class AuthServiceApplicationTests
     private const string InsecureHostPasswordCode = "auth.insecure_host_password";
     private const string TokenStoreUnavailableCode = "TOKEN_STORE_UNAVAILABLE";
 
+    /// <summary>The refusal every path reports when the blocking remediation state cannot be evaluated.</summary>
+    private const string RemediationStoreUnavailableCode = "auth.remediation.store_unavailable";
+
     /// <summary>The account name the product was distributed with for the tenant administrator.</summary>
     private const string ShippedAdministratorName = "admin";
 
@@ -1583,6 +1586,122 @@ public class AuthServiceApplicationTests
     }
 
     /// <summary>
+    /// The caller snapshot publishes both blocking remediation obligations, including one imposed AFTER the
+    /// session began.
+    /// </summary>
+    /// <returns>A task representing the assertions.</returns>
+    /// <remarks>
+    /// ⚠ THIS IS THE CASE WHOSE ABSENCE WAS MEASURED AS A DEFECT. A tenant administrator marking a profile
+    /// property required while an account is signed in imposes an obligation the sign-in response could not
+    /// possibly have carried, and this endpoint is DELIBERATELY open during remediation - it is therefore
+    /// the only response the confined caller can still read, and the only place the client can learn what
+    /// it now owes. With the members absent, the client rendered the ordinary console while every ordinary
+    /// endpoint refused it, and the caller was never sent to the screen that clears the obligation.
+    /// </remarks>
+    [Fact]
+    public async Task GetCurrentUserAsync_PublishesBothBlockingRemediationObligations()
+    {
+        // Neither obligation stands: the members are DATA rather than omissions, so false must travel.
+        SignInHarness unencumbered = SignInHarness.Ready();
+        unencumbered.CallerIsSignedIn = true;
+
+        Result<CurrentUserDto?> clear =
+            await unencumbered.Service.GetCurrentUserAsync(CancellationToken.None);
+
+        clear.IsSuccess.Should().BeTrue();
+        clear.Value!.MustChangePassword.Should().BeFalse();
+        clear.Value.MustUpdateProfile.Should().BeFalse();
+
+        // The profile obligation alone, as an administrator marking a property required produces it.
+        SignInHarness profileOwed = SignInHarness.Ready();
+        profileOwed.CallerIsSignedIn = true;
+        profileOwed.ProfileCompletionOutcome = Result<bool>.Success(true);
+
+        Result<CurrentUserDto?> owed = await profileOwed.Service.GetCurrentUserAsync(CancellationToken.None);
+
+        owed.IsSuccess.Should().BeTrue();
+        owed.Value!.MustUpdateProfile.Should().BeTrue();
+        owed.Value.MustChangePassword.Should().BeFalse();
+
+        // The credential obligation alone, from the account row's own forced-change flag.
+        SignInHarness credentialOwed = SignInHarness.Ready();
+        credentialOwed.CallerIsSignedIn = true;
+        credentialOwed.Account.UpdatePassword = true;
+
+        Result<CurrentUserDto?> forced =
+            await credentialOwed.Service.GetCurrentUserAsync(CancellationToken.None);
+
+        forced.IsSuccess.Should().BeTrue();
+        forced.Value!.MustChangePassword.Should().BeTrue();
+        forced.Value.MustUpdateProfile.Should().BeFalse();
+
+        // BOTH AT ONCE, which the legacy single-valued status enumeration could not report and this
+        // contract must: a caller who has just changed their credential still owes the profile.
+        SignInHarness both = SignInHarness.Ready();
+        both.CallerIsSignedIn = true;
+        both.Account.UpdatePassword = true;
+        both.ProfileCompletionOutcome = Result<bool>.Success(true);
+
+        Result<CurrentUserDto?> encumbered = await both.Service.GetCurrentUserAsync(CancellationToken.None);
+
+        encumbered.IsSuccess.Should().BeTrue();
+        encumbered.Value!.MustChangePassword.Should().BeTrue();
+        encumbered.Value.MustUpdateProfile.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// A remediation state that cannot be read refuses the description rather than reporting that no
+    /// obligation stands.
+    /// </summary>
+    /// <returns>A task representing the assertions.</returns>
+    /// <remarks>
+    /// FAILS CLOSED, exactly as the rotation and the restricted-session pipeline stage do. Answering with a
+    /// snapshot reporting no obligation would put the client in the one state it cannot recover from -
+    /// rendering the ordinary console while every ordinary endpoint refuses it - and the refusal code is
+    /// the store-unavailable one, so the edge answers 503 rather than describing the caller wrongly.
+    /// </remarks>
+    [Fact]
+    public async Task GetCurrentUserAsync_WhenTheRemediationStateCannotBeRead_RefusesRatherThanReportingNone()
+    {
+        SignInHarness harness = SignInHarness.Ready();
+        harness.CallerIsSignedIn = true;
+        harness.ProfileCompletionOutcome = Result<bool>.Failure(
+            "user.profile.store_unavailable",
+            "The profile store could not be read.");
+
+        Result<CurrentUserDto?> outcome = await harness.Service.GetCurrentUserAsync(CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be(RemediationStoreUnavailableCode);
+    }
+
+    /// <summary>
+    /// The sign-in response's top-level obligations and the identity it embeds carry the SAME values, so no
+    /// single response can contradict itself.
+    /// </summary>
+    /// <returns>A task representing the assertions.</returns>
+    /// <remarks>
+    /// The client reads the obligations from one place or the other depending on which endpoint answered;
+    /// two members computed independently would eventually disagree, and the disagreement would present as
+    /// an intermittent routing fault rather than as a contract defect.
+    /// </remarks>
+    [Fact]
+    public async Task SignIn_EmbedsTheSameObligationsItPublishesAtTheTopLevel()
+    {
+        SignInHarness harness = SignInHarness.Ready();
+        harness.Account.UpdatePassword = true;
+        harness.ProfileCompletionOutcome = Result<bool>.Success(true);
+
+        Result<LoginResponse> outcome = await harness.LoginAsync();
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value.MustChangePassword.Should().BeTrue();
+        outcome.Value.MustUpdateProfile.Should().BeTrue();
+        outcome.Value.User.MustChangePassword.Should().Be(outcome.Value.MustChangePassword);
+        outcome.Value.User.MustUpdateProfile.Should().Be(outcome.Value.MustUpdateProfile);
+    }
+
+    /// <summary>
     /// A caller whose account has since been removed is told so, rather than being described as an account
     /// that no longer exists.
     /// </summary>
@@ -1893,6 +2012,13 @@ public class AuthServiceApplicationTests
         /// <summary>Whether the request already carries an authenticated caller.</summary>
         public bool CallerIsSignedIn { get; set; }
 
+        /// <summary>
+        /// What the account-administration vertical answers when asked whether the account leaves a
+        /// required profile property empty. A FAILED outcome models a store that cannot be read, which the
+        /// remediation decision treats as blocking rather than as "no obligation".
+        /// </summary>
+        public Result<bool> ProfileCompletionOutcome { get; set; } = Result<bool>.Success(false);
+
         /// <summary>Whether that caller is an installation-wide account.</summary>
         public bool SignedInCallerIsSuperUser { get; set; }
 
@@ -2075,7 +2201,7 @@ public class AuthServiceApplicationTests
                     It.IsAny<int>(),
                     It.IsAny<int>(),
                     It.IsAny<CancellationToken>()))
-                .ReturnsAsync(Result<bool>.Success(false));
+                .ReturnsAsync(() => harness.ProfileCompletionOutcome);
 
             // Nothing is configured installation-wide, which is the shipped state: the credential-expiry
             // window then defaults to zero and disables itself, and the automatic-unlock window falls back

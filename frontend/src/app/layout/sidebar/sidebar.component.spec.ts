@@ -1229,6 +1229,36 @@ describe('SidebarComponent', () => {
       expect(present(region(), 'a collapsible region').hidden).toBeFalse();
     });
 
+    it('re-derives after a press that only restated the arrangement it was made in', () => {
+      // ⚠ REGRESSION GUARD FOR A STRANDED RAIL. Above the content the rail opens collapsed, so a reader who
+      // expands it, follows a link and shuts it again has pressed the control twice and asked for nothing the
+      // layout was not already doing. That second press was stored all the same, and a stored value outranks
+      // the derivation in EVERY arrangement - so widening the window produced a rail beside the content with
+      // all eight links measuring 0x0 and no way back to them but a disclosure control the desktop layout
+      // gives a reader no reason to look for. Only the redundant press is dropped; the case directly above
+      // proves a press that genuinely contradicts the default still outlives a resize.
+      setArrangement(false);
+      expect(component.collapsed()).toBeTrue();
+
+      const control = present(toggle(), 'a disclosure control');
+
+      control.click();
+      fixture.detectChanges();
+      expect(component.collapsed()).withContext('expanded by the first press').toBeFalse();
+
+      control.click();
+      fixture.detectChanges();
+      expect(component.collapsed()).withContext('shut again, back to this arrangement default').toBeTrue();
+
+      setArrangement(true);
+
+      expect(component.collapsed())
+        .withContext('beside the content the rail is a column, not a shut disclosure')
+        .toBeFalse();
+      expect(present(region(), 'a collapsible region').hidden).toBeFalse();
+      expect(present(landmark(), 'a navigation landmark').classList.contains(COLLAPSED_CLASS)).toBeFalse();
+    });
+
     it('reverses what the operator can see on the FIRST press in either arrangement', () => {
       // ⚠ REGRESSION GUARD. The writable slot opens as "not yet chosen", so a transition derived by
       // negating that slot rather than the EFFECTIVE state would resolve to the same value twice above the

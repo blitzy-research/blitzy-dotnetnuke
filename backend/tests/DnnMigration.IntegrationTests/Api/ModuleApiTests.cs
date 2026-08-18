@@ -194,25 +194,26 @@ public sealed class ModuleApiTests
     }
 
     /// <summary>
-    /// A package identifier naming nothing answers <c>200 OK</c> with an empty array, never <c>404</c>.
+    /// A package identifier naming nothing answers <c>404</c>, so it is distinguishable from an installed
+    /// package that declares nothing here.
     /// </summary>
     /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// This case previously answered <c>200 OK</c> with an empty array, which told a caller holding a stale
+    /// or mistyped identifier that the package exists and is empty. An installed package declaring nothing
+    /// still answers <c>200</c> with an empty array - that is the sibling case above, which reads the seeded
+    /// package - so the empty answer now means one thing only.
+    /// </remarks>
     [Fact]
-    public async Task ListDesktopModuleDefinitions_WhenPackageUnknown_ReturnsOkWithAnEmptyArray()
+    public async Task ListDesktopModuleDefinitions_WhenPackageUnknown_ReturnsNotFound()
     {
         using HttpClient client = await _fixture.CreateHostClientAsync();
 
         using HttpResponseMessage response = await client.GetAsync(
             new Uri("/api/v1/module-definitions/desktop-modules/987654", UriKind.Relative));
 
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
-
-        CollectionEnvelope<ModuleDefinitionDto>? envelope = await response.Content
-            .ReadFromJsonAsync<CollectionEnvelope<ModuleDefinitionDto>>(ApiTestFixture.Json);
-
-        envelope.Should().NotBeNull();
-        envelope!.Data.Should().NotBeNull();
-        envelope.Data!.Should().BeEmpty();
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        response.Content.Headers.ContentType?.MediaType.Should().Be("application/problem+json");
     }
 
     /// <summary>Every definition read is refused to a caller who may place a module NOWHERE in the tenant.</summary>
@@ -2618,11 +2619,68 @@ public sealed class ModuleApiTests
 
     /// <summary>
     /// A delete addressed at a placement removes that placement outright rather than marking the module,
-    /// because withdrawing a module from one page is not the same act as removing the module.
+    /// because withdrawing a module from one page is not the same act as removing the module - while the
+    /// module still occupies another page.
     /// </summary>
     /// <returns>A task representing the test.</returns>
     [Fact]
-    public async Task DeleteModulePlacement_ReturnsNoContentAndRemovesOnlyThePlacement()
+    public async Task DeleteModulePlacement_WhenAnotherPlacementSurvives_RemovesOnlyThePlacement()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        // CREATED ON EVERY PAGE, so the delete below is not the last placement. Without a surviving
+        // placement the module would be recycled with it, which the sibling test asserts.
+        CreateModuleRequest everywhere = NewModuleRequest(_fixture.Seed.RootTabId);
+        everywhere.AllTabs = true;
+
+        using HttpResponseMessage createResponse = await client.PostAsJsonAsync(
+            ModulesRoute(_fixture.Seed.PortalId),
+            everywhere,
+            ApiTestFixture.Json);
+
+        createResponse.StatusCode.Should().Be(HttpStatusCode.Created);
+        ModuleDetailDto created = await ReadDetailAsync(createResponse);
+
+        int before = await _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[TabModules] WHERE [ModuleID] = @moduleId;",
+            new Dictionary<string, object?> { ["moduleId"] = created.ModuleId });
+
+        before.Should().BeGreaterThan(1, "the fan-out must have produced more than one placement");
+
+        using HttpResponseMessage response = await client.DeleteAsync(new Uri(
+            $"/api/v1/modules/{Route(created.ModuleId)}"
+                + $"?tabModuleId={Route(created.TabModuleId)}",
+            UriKind.Relative));
+
+        response.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        int placements = await _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[TabModules] WHERE [ModuleID] = @moduleId;",
+            new Dictionary<string, object?> { ["moduleId"] = created.ModuleId });
+
+        placements.Should().Be(before - 1);
+
+        int deletedModules = await _fixture.Database.ScalarAsync<int>(
+            "SELECT COUNT(*) FROM [dbo].[Modules] WHERE [ModuleID] = @moduleId AND [IsDeleted] = 1;",
+            new Dictionary<string, object?> { ["moduleId"] = created.ModuleId });
+
+        deletedModules.Should().Be(0);
+    }
+
+    /// <summary>
+    /// A delete addressed at the LAST placement removes the placement AND recycles the module, so no live
+    /// module is left standing on no page.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// This is the path the listing's own delete command uses, and it used to leave <c>Modules.IsDeleted</c>
+    /// at zero with no <c>dbo.TabModules</c> row: the module vanished from the listing, the detail and
+    /// settings reads answered 404 because both select through a placement, and the permission read answered
+    /// 200 because it does not. Legacy <c>ModuleController.vb</c> <c>DeleteTabModule</c> L847-L855 soft-deleted
+    /// the module in exactly this case.
+    /// </remarks>
+    [Fact]
+    public async Task DeleteModulePlacement_WhenItIsTheLastPlacement_RecyclesTheModuleToo()
     {
         using HttpClient client = await _fixture.CreateHostClientAsync();
         ModuleDetailDto created = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
@@ -2640,11 +2698,11 @@ public sealed class ModuleApiTests
 
         placements.Should().Be(0);
 
-        int deletedModules = await _fixture.Database.ScalarAsync<int>(
+        int recycled = await _fixture.Database.ScalarAsync<int>(
             "SELECT COUNT(*) FROM [dbo].[Modules] WHERE [ModuleID] = @moduleId AND [IsDeleted] = 1;",
             new Dictionary<string, object?> { ["moduleId"] = created.ModuleId });
 
-        deletedModules.Should().Be(0);
+        recycled.Should().Be(1, "a module on no page must not remain live");
     }
 
     /// <summary>A delete addressing a placement of another module is refused.</summary>

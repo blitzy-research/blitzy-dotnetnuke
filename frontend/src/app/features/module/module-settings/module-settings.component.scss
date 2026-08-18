@@ -108,6 +108,20 @@ h3 > .module-settings__toggle {
 .module-settings__slot {
   display: grid;
   gap: var(--space-3);
+
+  // ⚠ NOTHING ZEROES THE AUTOMATIC MINIMUM HERE, AND THAT IS DELIBERATE - IT WAS TRIED AND IT WAS THE WRONG
+  // LAYER. The permission matrix below declares `min-inline-size: max-content` so it keeps its natural width
+  // and scrolls, and that ~787px minimum used to propagate back up this chain: each of these three is a grid
+  // ITEM as well as a grid container, so each in turn refused to be narrower than the table, and the
+  // scroller's own `overflow-x: auto` never engaged because it was never asked to be smaller than its
+  // content. The document measured 827px wide at a 375px viewport and 1012px at 768px.
+  //
+  // Adding `min-inline-size: 0` to these three recovered 21px of that and no more, because the box actually
+  // holding the line was one further down and outside this stylesheet's naming - a flex item of the shared
+  // form field. The matrix's scroller now states `contain: ... inline-size` instead, which makes its
+  // intrinsic contribution zero AT SOURCE, so no ancestor is ever told about the table's width and there is
+  // nothing left up here to zero. Re-adding it would be inert, and would read as though this chain still
+  // carried the constraint.
 }
 
 // THE FIELD SYSTEM THIS FILE NO LONGER OWNS
@@ -353,7 +367,12 @@ h3 > .module-settings__toggle {
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
-.module-settings__stored-empty {
+// The two ZERO-RESULT sentences on this form - no stored settings, and no roles to grant to - are the same
+// thing said about different collections, so they are one rule. They were declared separately with
+// byte-for-byte identical bodies, which is the same duplication the three vertical stacks above were
+// consolidated out of.
+.module-settings__stored-empty,
+.module-settings__permission-grid-empty {
   margin: var(--space-2) 0 0;
   color: var(--color-text-muted);
   line-height: var(--line-height-base);
@@ -375,6 +394,65 @@ h3 > .module-settings__toggle {
   overflow-x: auto;
   max-inline-size: var(--size-full);
   margin-block-start: var(--space-2);
+
+  // ⚠ THIS DECLARATION IS WHAT MAKES THE SCROLLING ABOVE ACTUALLY HAPPEN, and without it none of the rest of
+  // this rule does anything at all.
+  //
+  // The problem it solves is that `overflow-x: auto` is inert on a box that is never asked to be smaller than
+  // its contents, and this box was not. The grant grid declares `min-inline-size: max-content` - correctly, so
+  // it keeps its natural ~766px width - and that intrinsic minimum propagates OUT of here and up the ancestor
+  // chain. Every flex or grid item on the way up has an automatic minimum of `auto`, meaning it refuses to be
+  // narrower than its own content's minimum, so each in turn was held open at 766px. This wrapper's
+  // `max-inline-size: 100%` then resolved against an ancestor that was itself 766px wide, so 100% WAS 766px
+  // and the scroller had nothing to scroll. Measured: the document was 806px wide at a 375px viewport and
+  // 991px at 768px, the wrapper's `scrollLeft` was pinned at 0, and the rightmost permission column could be
+  // reached only by scrolling the whole page - at which point the role-name column left the screen and an
+  // administrator could no longer tell which role they were granting.
+  //
+  // Inline-size containment makes this box's intrinsic sizes resolve as though it had no contents, so the
+  // table's 766px stops being visible to anything outside this element. Every ancestor's automatic minimum
+  // then sees zero and is free to shrink, this box takes its width from its containing block, and the table
+  // overflows it - which is precisely the condition `overflow-x: auto` exists to answer.
+  //
+  // ⚠ IT IS DELIBERATELY STATED HERE RATHER THAN AS `min-inline-size: 0` ON EACH ANCESTOR, and that is the
+  // whole point. Zeroing minimums up the chain works only for as long as the chain is known: this wrapper sits
+  // fourteen boxes deep, behind a shared form-field component, and an earlier attempt that patched the three
+  // stacks above recovered 21px of gutter and left the real 431px overflow untouched because one box in the
+  // middle - the declared-permissions region, a flex item of the form field's control - had been missed.
+  // Containment is a property of THIS element, so no future wrapper, reorder or shared-component change can
+  // reintroduce the fault from outside.
+  //
+  // ⚠ ALL THREE KEYWORDS ARE LOAD-BEARING, AND `inline-size` ALONE WAS MEASURABLY NOT ENOUGH. With only
+  // inline-size containment the table was correctly clipped and the scroller correctly engaged - and the
+  // document was STILL 621px wide at a 375px viewport. The remaining offenders were the fifty-one visually
+  // hidden `<label>` elements that carry each checkbox's accessible name: the shared hidden-text utility
+  // positions them absolutely, inline-size containment does NOT make an element a containing block for
+  // absolutely-positioned descendants, and their nearest positioned ancestor was the shell's `<main>` - far
+  // outside this scroller. So they kept the offsets they would have had inside the 766px table, escaped the
+  // clip entirely, and `documentElement.scrollWidth` came to exactly the right edge of the last one.
+  //
+  // `layout` supplies the containing block those labels were missing, so they are now positioned against this
+  // box and land inside its scrollable region; `paint` clips anything that still reaches past the padding box;
+  // `inline-size` is what stops the table's intrinsic width escaping in the first place. Nothing here is
+  // defensive - each keyword answers a failure that was measured with the other two already in place.
+  contain: layout paint inline-size;
+}
+
+// ⚠ THE REGION MUST TAKE THE ROW WIDTH IT IS OFFERED, BECAUSE CONTAINING THE GRID ABOVE LEFT IT SIZING ITSELF
+// FROM A CAPTION. This box is a flex item of the form field's control track and declared nothing, so it took
+// the default `flex: 0 1 auto` and sized to its own max-content. Once the scroller above stopped contributing
+// an intrinsic width, the only child still contributing one was the "Permissions defined for this module type"
+// sentence - so the whole matrix was pinned to that sentence's 452.3px, identically at 768, 1280, 1920 and
+// wider, no matter how much room the row actually had. Measured consequence at 1280: of the four column
+// headings only "Role" was fully readable, "View Module" showed 66.9 of its 120.0px, and the remaining two
+// were entirely off-screen until the operator scrolled a scroller they had no reason to expect.
+//
+// Growing cannot reintroduce the overflow just fixed: `flex-grow` only ever distributes space the row already
+// has spare, and the scroller's own contribution stays at zero under size containment, so the table still
+// scrolls internally whenever it genuinely does not fit - which is what continues to happen at 375, where the
+// row is narrower than this box and it shrinks instead.
+.module-settings__declared-permissions-region {
+  flex-grow: 1;
 }
 
 .module-settings__permission-grid {
@@ -397,12 +475,6 @@ h3 > .module-settings__toggle {
   // screen it sits in.
   min-inline-size: var(--target-size-compact);
   min-block-size: var(--target-size-compact);
-}
-
-.module-settings__permission-grid-empty {
-  margin: var(--space-2) 0 0;
-  color: var(--color-text-muted);
-  line-height: var(--line-height-base);
 }
 
 .module-settings__permission-column-note,

@@ -161,4 +161,26 @@ public sealed class UserDetailDto
     /// the second clause.
     /// </remarks>
     public bool CanDelete { get; set; }
+
+    /// <summary>
+    /// The optimistic-concurrency token for this record: send it back on an update to be refused rather
+    /// than to silently overwrite an edit someone else committed in the meantime.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Derived from the record's own current values rather than stored in a column, because the legacy
+    /// schema is immutable under the migration's Rule T4 and <c>dbo.Users</c> carries no version column. The
+    /// derivation lives in <c>UserMappings.ConcurrencyTokenFor</c> and is used by both the read that
+    /// publishes the token and the write that verifies it, so the two can never disagree about what the
+    /// token covers.
+    /// </para>
+    /// <para>
+    /// ⚠ IT COVERS THE FOUR MEMBERS AN UPDATE REPLACES AND NOTHING ELSE - given name, family name, display
+    /// name and address. That boundary is deliberate: an account's approval state, its lock state and its
+    /// last-login moment all change through paths of their own, and several of them change without any
+    /// operator acting at all. A token that moved when a member simply signed in would refuse an
+    /// administrator's edit for a reason that has nothing to do with the edit.
+    /// </para>
+    /// </remarks>
+    public string ConcurrencyToken { get; set; } = string.Empty;
 }

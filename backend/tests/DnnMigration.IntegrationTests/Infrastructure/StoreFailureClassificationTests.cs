@@ -293,6 +293,167 @@ public class StoreFailureClassificationTests
             new OperationCanceledException("the caller went away"),
         };
 
+    // ---- Caller cancellation, added for M12 -----------------------------------------------------------
+    //
+    // The condition these cover is the one the QA run caught: a request the caller abandoned surfaced as a
+    // provider exception, was not recognised as an abandonment, and was logged and answered as an unhandled
+    // 500. Every case below is about IsCallerCancellation, which is the test the exception handler consults
+    // before it faults anything.
+
+    /// <summary>The ordinary abandonment shape is recognised.</summary>
+    /// <remarks>
+    /// <see cref="TaskCanceledException"/> is included because it derives from
+    /// <see cref="OperationCanceledException"/> and is what an awaited provider call actually throws - if the
+    /// rule tested the base type by name rather than by assignability, this case is where it would show.
+    /// </remarks>
+    [Fact]
+    public void AnAbandonedOperation_IsRecognisedAsCallerCancellation()
+    {
+        IStoreFailureClassifier classifier = new SqlStoreFailureClassifier();
+
+        classifier.IsCallerCancellation(new OperationCanceledException("the caller went away"))
+            .Should().BeTrue("this is the shape a cancelled token produces directly");
+
+        classifier.IsCallerCancellation(new TaskCanceledException("the awaited call was abandoned"))
+            .Should().BeTrue("TaskCanceledException derives from OperationCanceledException");
+    }
+
+    /// <summary>A cancellation wrapped by the provider or by the task machinery is still found.</summary>
+    [Fact]
+    public void ACancellationBeneathAWrapper_IsStillFound()
+    {
+        IStoreFailureClassifier classifier = new SqlStoreFailureClassifier();
+
+        var wrapped = new DbUpdateException(
+            "An error occurred while saving",
+            new OperationCanceledException("the caller went away"));
+
+        classifier.IsCallerCancellation(wrapped).Should().BeTrue(
+            "the walk follows inner exceptions, because the provider wraps what it catches");
+
+        var aggregated = new AggregateException(
+            new InvalidOperationException("an unrelated link"),
+            new OperationCanceledException("the caller went away"));
+
+        classifier.IsCallerCancellation(aggregated).Should().BeTrue(
+            "an aggregate is flattened and every branch examined, not just the first");
+    }
+
+    /// <summary>
+    /// The provider's own client-raised error, carrying no server error, is recognised as an abandonment.
+    /// </summary>
+    /// <remarks>
+    /// This is the arm that matters for the finding: a command torn down mid-flight can surface as a
+    /// <see cref="SqlException"/> rather than an <see cref="OperationCanceledException"/>, and that shape is
+    /// exactly what went out as a 500. Note the collection carries ONE error numbered 0 - the real shape -
+    /// rather than none, which is what an earlier spelling of this rule incorrectly required.
+    /// </remarks>
+    [Fact]
+    public void AClientRaisedErrorWithNoServerError_IsRecognisedAsCallerCancellation()
+    {
+        IStoreFailureClassifier classifier = new SqlStoreFailureClassifier();
+
+        SqlException cancelled = Fabricate(
+            RefusalSeverity,
+            (Number: 0, Message: "Operation cancelled by user."));
+
+        classifier.IsCallerCancellation(cancelled).Should().BeTrue(
+            "number 0 with no server error accompanying it is the client tearing its own command down");
+    }
+
+    /// <summary>An aborted batch is recognised as an abandonment.</summary>
+    [Fact]
+    public void AnAbortedBatch_IsRecognisedAsCallerCancellation()
+    {
+        IStoreFailureClassifier classifier = new SqlStoreFailureClassifier();
+
+        SqlException aborted = Fabricate(
+            RefusalSeverity,
+            (Number: 3980, Message: "The request failed to run because the batch is aborted"));
+
+        classifier.IsCallerCancellation(aborted).Should().BeTrue(
+            "a batch abandoned mid-flight is the caller's doing, not the store failing to serve");
+    }
+
+    /// <summary>
+    /// ⚠ A COMMAND TIMEOUT IS NOT A CANCELLATION, and this is the most important case in the group.
+    /// </summary>
+    /// <remarks>
+    /// The two look alike - both end a statement early, and both can arrive numbered -2 - but they differ in
+    /// the only way that matters here: the caller who timed out is STILL WAITING and is owed an answer, so
+    /// classifying it as an abandonment would swallow a real outage and answer nothing at all. The exclusion is
+    /// tested both as the exception's own number and as an error inside the collection, because the rule has to
+    /// hold whichever way the provider reports it.
+    /// </remarks>
+    [Fact]
+    public void ACommandTimeout_IsNotTreatedAsCallerCancellation()
+    {
+        IStoreFailureClassifier classifier = new SqlStoreFailureClassifier();
+
+        SqlException timedOut = Fabricate(
+            RefusalSeverity,
+            (Number: -2, Message: "Execution Timeout Expired."));
+
+        classifier.IsCallerCancellation(timedOut).Should().BeFalse(
+            "the caller is still waiting for an answer, so this must not be recorded as an abandonment");
+
+        SqlException timedOutBehindAnotherError = Fabricate(
+            RefusalSeverity,
+            (Number: 0, Message: "a client-raised entry"),
+            (Number: -2, Message: "Execution Timeout Expired."));
+
+        classifier.IsCallerCancellation(timedOutBehindAnotherError).Should().BeFalse(
+            "the timeout is excluded wherever in the collection it appears, not only when it is first");
+    }
+
+    /// <summary>A genuine store failure is not reclassified as an abandonment.</summary>
+    /// <remarks>
+    /// The guarantee this protects is that the new test took nothing away from the existing one: an outage must
+    /// still be an outage, so it is asserted here to be a cancellation of nothing AND an availability failure.
+    /// </remarks>
+    [Fact]
+    public void AGenuineOutage_IsNotReclassifiedAsCallerCancellation()
+    {
+        IStoreFailureClassifier classifier = new SqlStoreFailureClassifier();
+
+        SqlException outage = Fabricate(
+            FatalSeverity,
+            (Number: 10054, Message: "network-related or instance-specific error"));
+
+        classifier.IsCallerCancellation(outage).Should().BeFalse(
+            "a fatal severity is a connection condition, which the availability test owns");
+
+        classifier.IsStoreUnavailable(outage).Should().BeTrue(
+            "and it must still be answered 503 exactly as before this rule was added");
+    }
+
+    /// <summary>An ordinary refusal by the store is neither a cancellation nor an outage.</summary>
+    [Fact]
+    public void AnOrdinaryStoreRefusal_IsNeitherCancellationNorOutage()
+    {
+        IStoreFailureClassifier classifier = new SqlStoreFailureClassifier();
+
+        SqlException refusal = Fabricate(
+            RefusalSeverity,
+            (Number: 2627, Message: "Violation of PRIMARY KEY constraint"));
+
+        classifier.IsCallerCancellation(refusal).Should().BeFalse(
+            "a constraint violation names a server error, so it is not the client tearing a command down");
+
+        classifier.IsStoreUnavailable(refusal).Should().BeFalse(
+            "and a refusal the store issued deliberately is not the store being unavailable");
+    }
+
+    /// <summary>Nothing at all is not a cancellation.</summary>
+    [Fact]
+    public void NoException_IsNotACancellation()
+    {
+        IStoreFailureClassifier classifier = new SqlStoreFailureClassifier();
+
+        classifier.IsCallerCancellation(null).Should().BeFalse(
+            "the member is total, so the absent case answers rather than throwing");
+    }
+
     /// <summary>Builds a <see cref="SqlException"/> carrying a chosen severity and error numbers.</summary>
     /// <param name="severity">The severity class every fabricated error carries.</param>
     /// <param name="errors">The error numbers and messages to attach.</param>

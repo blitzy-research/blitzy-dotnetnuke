@@ -1908,6 +1908,101 @@ public class UserServiceApplicationTests
         outcome.Value.HasNextPage.Should().BeFalse();
     }
 
+    /// <summary>
+    /// Proves the account listing honours a hidden column by DECLINING THE READ IT WOULD HAVE NEEDED, and
+    /// never by emptying a value it already holds.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THE DEFECT THIS PINS. The listing used to run every account column through the tenant's grid
+    /// settings and blank whatever those settings hid: a stored electronic-mail address became the empty
+    /// string, a first and last name became empty strings, a creation instant and a last-login instant
+    /// became absent, and - worst of the seven - an APPROVED account was reported as unapproved. A caller
+    /// reading that row could not tell a member who had never been approved from one whose tenant simply
+    /// does not put the column in its grid, and nothing in the response said which it was looking at.
+    /// </para>
+    /// <para>
+    /// The legacy grid did no such thing. It honoured a hidden column by not rendering it, at
+    /// <c>UserModuleBase.vb:L98-L115</c>, and the value stayed in the row it came from. A rendering setting
+    /// decides what is DISPLAYED; it does not decide what the account IS.
+    /// </para>
+    /// <para>
+    /// The two profile members are different in kind and are treated differently on purpose. Address and
+    /// telephone are not account columns at all - they are profile ANSWERS the listing composes from a
+    /// second, batched read - so a tenant that hides them saves that read entirely, and their absence in the
+    /// projection means "not requested" rather than "not held". That is a genuine minimisation, and it is
+    /// asserted here alongside the columns that must survive.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task ListUsers_SuppressesTheProfileReadsAndKeepsTheAccountColumnsAsStored()
+    {
+        Subject subject = Subject.Ready();
+        WithAccountsModule(subject);
+
+        // Every account column this tenant CAN hide is hidden, and both profile columns are hidden too, so
+        // the case exercises the whole surface rather than whichever member happens to default to off.
+        subject.StoredSettings =
+        [
+            new ModuleSetting { ModuleId = 300, SettingName = "Column_FirstName", SettingValue = "False" },
+            new ModuleSetting { ModuleId = 300, SettingName = "Column_LastName", SettingValue = "False" },
+            new ModuleSetting { ModuleId = 300, SettingName = "Column_DisplayName", SettingValue = "False" },
+            new ModuleSetting { ModuleId = 300, SettingName = "Column_Email", SettingValue = "False" },
+            new ModuleSetting { ModuleId = 300, SettingName = "Column_CreatedDate", SettingValue = "False" },
+            new ModuleSetting { ModuleId = 300, SettingName = "Column_LastLogin", SettingValue = "False" },
+            new ModuleSetting { ModuleId = 300, SettingName = "Column_Authorized", SettingValue = "False" },
+            new ModuleSetting { ModuleId = 300, SettingName = "Column_Address", SettingValue = "False" },
+            new ModuleSetting { ModuleId = 300, SettingName = "Column_Telephone", SettingValue = "False" },
+        ];
+
+        User stored = Subject.StoredRow();
+        stored.LastLoginDate = Subject.Instant;
+        subject.AccountPage = PagedResult<User>.Create(
+            [stored],
+            totalCount: 1,
+            pageIndex: 0,
+            pageSize: 25);
+
+        Result<PagedResult<UserListItemDto>> outcome = await subject.Service.ListUsersAsync(
+            SeedPortalId,
+            new PagedRequest { PageIndex = 0, PageSize = 25 },
+            cancellationToken: CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+
+        UserListItemDto listed = outcome.Value.Items.Should().ContainSingle().Subject;
+
+        // THE ACCOUNT COLUMNS ARE AS STORED. Not one of the seven is emptied, nulled or reversed.
+        listed.Username.Should().Be(stored.Username);
+        listed.FirstName.Should().Be(
+            stored.FirstName,
+            "a hidden column is not rendered by a grid; it is not erased from a payload");
+        listed.LastName.Should().Be(stored.LastName);
+        listed.DisplayName.Should().Be(stored.DisplayName);
+        listed.Email.Should().Be(
+            stored.Email,
+            "an electronic-mail address the store holds is not the empty string because a grid hides it");
+        listed.CreatedDate.Should().Be(
+            stored.CreatedDate,
+            "a creation instant is a fact about the account, not a rendering choice");
+        listed.LastLoginDate.Should().Be(stored.LastLoginDate);
+        listed.IsApproved.Should().BeTrue(
+            "⚠ THE WORST OF THE SEVEN: an approved account reported as unapproved is a presentation setting "
+            + "changing a membership fact");
+
+        // THE PROFILE ANSWERS ARE NOT READ AT ALL, which is what a hidden profile column actually saves.
+        listed.Address.Should().BeNull("a profile answer that was never requested is absent, not empty");
+        listed.Telephone.Should().BeNull();
+
+        subject.Profiles.Verify(
+            profiles => profiles.GetProfileValuesAsync(
+                It.IsAny<int?>(),
+                It.IsAny<IReadOnlyCollection<int>>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never,
+            "a tenant that renders neither profile column pays for neither profile read");
+    }
+
     // ---------------------------------------------------------------------------------------------
     // Membership settings: the one Hashtable becomes a typed contract, and the cache is not reproduced.
     // ---------------------------------------------------------------------------------------------

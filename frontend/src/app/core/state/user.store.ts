@@ -1,5 +1,18 @@
 import { Injectable, type OnDestroy, computed, inject, signal } from '@angular/core';
-import { Subscription, catchError, concatMap, finalize, from, of, tap, type Observable } from 'rxjs';
+import {
+  EMPTY,
+  Subscription,
+  catchError,
+  concat,
+  concatMap,
+  defer,
+  finalize,
+  from,
+  ignoreElements,
+  of,
+  tap,
+  type Observable,
+} from 'rxjs';
 
 import {
   DEFAULT_PAGE_SIZE,
@@ -12,6 +25,7 @@ import { isProblemDetails, type ProblemDetails } from '../models/problem-details
 import type {
   CreateProfilePropertyDefinitionRequest,
   ProfilePropertyDefinition,
+  ProfilePropertyDefinitionPosition,
   UpdateProfilePropertyDefinitionRequest,
   UserProfile,
   UserProfileSubmission,
@@ -176,8 +190,15 @@ export interface ProfileDefinitionEdit {
  * and an operator told only "something was refused" cannot tell which of five declarations to correct.
  */
 export interface ProfileDefinitionBatchRefusal {
-  /** The declaration whose write was refused. */
-  readonly propertyDefinitionId: number;
+  /**
+   * The declaration whose write was refused, or `null` when the refusal belongs to the batch's ATOMIC
+   * POSITION WRITE rather than to any one declaration.
+   *
+   * ⚠ NULLABLE FOR A REASON. Positions are written as one unit of work because a move exchanges two of
+   * them, so a refusal there is the set's and naming one of the declarations in it would misattribute the
+   * refusal to a row that is no more responsible than its neighbour.
+   */
+  readonly propertyDefinitionId: number | null;
 
   /** The refusal, described but never published into the store's one shared failure slot. */
   readonly failure: UserFailure;
@@ -1666,18 +1687,40 @@ export class UserStore implements OnDestroy {
   }
 
   /**
-   * Writes a batch of staged declaration replacements, ONE AT A TIME, then re-reads the catalogue ONCE.
-   * Legacy: `Website/admin/Users/ProfileDefinitions.ascx.vb` L446-L448 — the Apply handler called
+   * Writes a batch of staged declaration edits, then re-reads the catalogue ONCE. Legacy:
+   * `Website/admin/Users/ProfileDefinitions.ascx.vb` L446-L448 — the Apply handler called
    * `UpdateProperties()` and then `RefreshGrid()`.
    *
-   * @param edits The staged replacements, applied in the order supplied.
+   * ## The two dimensions are written differently, and deliberately
+   *
+   * **Positions go first, together, as ONE request.** A move EXCHANGES two stored positions, so the two
+   * writes are only correct together: land one and lose the other and two declarations claim the same
+   * position, which is neither the order the operator started from nor the one they asked for. That is not
+   * something a per-row transport can express however precisely it reports which row failed, so the whole
+   * position set is sent to the endpoint that commits it as one unit of work, and a refusal there abandons
+   * the batch without attempting the field writes.
+   *
+   * **Field edits stay one request per declaration.** A required or visible flag is a fact about ONE
+   * declaration and holds or fails on its own, so a refused row simply keeps the flag it had — there is no
+   * relation between rows to corrupt. Keeping them per-row is what lets a five-row apply report which
+   * three declarations were refused instead of reporting only that "something" was.
+   *
+   * @param edits The staged field replacements, applied in the order supplied.
+   * @param positions The staged positions, written as one unit of work BEFORE any field replacement, or
+   * empty when nothing moved.
    */
-  applyProfileDefinitionEdits(edits: readonly ProfileDefinitionEdit[]): number {
-    if (edits.length === 0 || this._profileDefinitionBatchRemaining() > 0) {
+  applyProfileDefinitionEdits(
+    edits: readonly ProfileDefinitionEdit[],
+    positions: readonly ProfilePropertyDefinitionPosition[] = [],
+  ): number {
+    if ((edits.length === 0 && positions.length === 0)
+      || this._profileDefinitionBatchRemaining() > 0) {
       return 0;
     }
 
-    this._profileDefinitionBatchRemaining.set(edits.length);
+    // The position write counts as one step of the batch, so the screen's progress reflects the work
+    // actually in flight rather than only the part of it that happens to be per-row.
+    this._profileDefinitionBatchRemaining.set(edits.length + (positions.length > 0 ? 1 : 0));
     this._profileDefinitionBatchRefusals.set([]);
 
     // ⚠ THE BATCH IS ONE WRITE AS FAR AS THE STORE IS CONCERNED, and it is opened through the same
@@ -1690,45 +1733,60 @@ export class UserStore implements OnDestroy {
     let refused = false;
     let batchFailure: UserFailure | null = null;
 
+    // Whether the atomic position write was refused, which ABANDONS the field writes behind it: applying
+    // flags over an order the server has just declined would leave the screen reporting a partial success
+    // it did not have.
+    let orderRefused = false;
+
+    // The atomic position step, or nothing at all when nothing moved. Its refusal is recorded exactly as a
+    // per-row refusal is, but WITHOUT a declaration identifier — the refusal belongs to the set, not to any
+    // one row, and naming a row would misattribute it.
+    const positionStep: Observable<ProfileDefinitionEdit> = positions.length === 0
+      ? EMPTY
+      : this.transport.reorderProfileDefinitions(positions).pipe(
+        tap(() => {
+          this._profileDefinitionBatchRemaining.update((remaining) => remaining - 1);
+        }),
+        catchError((cause: unknown) => {
+          refused = true;
+          firstRefusal = cause;
+          orderRefused = true;
+
+          this._profileDefinitionBatchRefusals.update((refusals) => [
+            ...refusals,
+            {
+              propertyDefinitionId: null,
+              failure: this.describeFailure('applyProfileDefinitionEdits', cause),
+            },
+          ]);
+
+          return EMPTY;
+        }),
+        // ⚠ THE ORDER WRITE CONTRIBUTES COMPLETION, NEVER A VALUE, and dropping this operator is a real
+        // defect rather than a tidiness question: the endpoint answers with the reordered CATALOGUE, and an
+        // emission left in the stream reaches the per-declaration writer below, which would read a staged
+        // edit's members off a list of declarations and issue a replace against `.../undefined`. Measured.
+        ignoreElements(),
+      );
+
     this.track(
-      from(edits)
+      concat(
+        positionStep,
+        // ⚠ DEFERRED, so whether the field writes run is decided AFTER the position step settles rather
+        // than when this pipeline is assembled.
+        defer((): Observable<ProfileDefinitionEdit> => (orderRefused ? EMPTY : from(edits))),
+      )
         .pipe(
-          concatMap((edit: ProfileDefinitionEdit) =>
-            this.transport.updateProfileDefinition(edit.propertyDefinitionId, edit.request).pipe(
-              tap((written: ProfilePropertyDefinition) => {
-                if (this._selectedPropertyDefinitionId() === edit.propertyDefinitionId) {
-                  this._selectedProfileDefinition.set(written);
-                }
-              }),
-              // A refused row is CAUGHT rather than allowed to end the batch, and the rows behind
-              // it are still attempted.
-              catchError((cause: unknown) => {
-                if (!refused) {
-                  refused = true;
-                  firstRefusal = cause;
-                }
-
-                // ⚠ EVERY REFUSED ROW IS KEPT, NOT ONLY THE FIRST, AND IT IS KEPT WITH ITS ROW. The rows
-                // are independent and the batch is not a transaction, so a five-row apply can come back
-                // with three refusals and an operator told only that "something" was refused cannot tell
-                // which declarations to correct.
-                this._profileDefinitionBatchRefusals.update((refusals) => [
-                  ...refusals,
-                  {
-                    propertyDefinitionId: edit.propertyDefinitionId,
-                    failure: this.describeFailure('applyProfileDefinitionEdits', cause),
-                  },
-                ]);
-
-                return of(null);
-              }),
-              tap(() => {
-                this._profileDefinitionBatchRemaining.update((remaining) => remaining - 1);
-              }),
-            ),
-          ),
+          concatMap((edit: ProfileDefinitionEdit) => this.writeStagedDefinitionEdit(
+            edit,
+            (cause: unknown) => {
+              if (!refused) {
+                refused = true;
+                firstRefusal = cause;
+              }
+            },
+          )),
         )
-        // ⚠ SETTLED FROM `finalize`, NOT FROM `complete`.
         .pipe(
           finalize(() => {
             // ⚠ THE REFUSAL LIST IS NOT CLEARED HERE, AND MUST NOT BE. It is what the screen reads to
@@ -1761,18 +1819,69 @@ export class UserStore implements OnDestroy {
   }
 
   /**
-   * Removes one profile declaration. A declaration that cannot be removed — because values are recorded
-   * against it, or because the tenant requires it — is refused with a status and a problem document,
-   * which reaches the failure slot rather than leaving a silently unchanged list.
+   * Writes ONE staged field replacement within a batch, catching its refusal so the declarations behind it
+   * are still attempted.
+   *
+   * @param edit The staged replacement.
+   * @param noteFirstRefusal Records this refusal as the batch's first when none has been recorded yet, so
+   * the refusal the operator is shown is the first one rather than whichever row answered last.
+   * @returns The declaration as written, or null when the write was refused.
+   */
+  private writeStagedDefinitionEdit(
+    edit: ProfileDefinitionEdit,
+    noteFirstRefusal: (cause: unknown) => void,
+  ): Observable<ProfilePropertyDefinition | null> {
+    return this.transport.updateProfileDefinition(edit.propertyDefinitionId, edit.request).pipe(
+      tap((written: ProfilePropertyDefinition) => {
+        if (this._selectedPropertyDefinitionId() === edit.propertyDefinitionId) {
+          this._selectedProfileDefinition.set(written);
+        }
+      }),
+      // A refused row is CAUGHT rather than allowed to end the batch, and the rows behind it are still
+      // attempted.
+      catchError((cause: unknown) => {
+        noteFirstRefusal(cause);
+
+        // ⚠ EVERY REFUSED ROW IS KEPT, NOT ONLY THE FIRST, AND IT IS KEPT WITH ITS ROW. The rows are
+        // independent and the field dimension of the batch is not a transaction, so a five-row apply can
+        // come back with three refusals and an operator told only that "something" was refused cannot tell
+        // which declarations to correct.
+        this._profileDefinitionBatchRefusals.update((refusals) => [
+          ...refusals,
+          {
+            propertyDefinitionId: edit.propertyDefinitionId,
+            failure: this.describeFailure('applyProfileDefinitionEdits', cause),
+          },
+        ]);
+
+        return of(null);
+      }),
+      tap(() => {
+        this._profileDefinitionBatchRemaining.update((remaining) => remaining - 1);
+      }),
+    );
+  }
+
+  /**
+   * Removes one profile declaration. A declaration that cannot be removed — because it is one of the four
+   * the platform reserves, because accounts hold answers against it that have not been consented to losing,
+   * or because a concurrent writer changed it — is refused with a status and a problem document, which
+   * reaches the failure slot rather than leaving a silently unchanged list.
+   *
+   * The second of those refusals is RECOVERABLE and is the only one a caller can act on: its detail reports
+   * how many recorded answers the removal would destroy, and repeating the call with
+   * `confirmValueDeletion` performs it. The flag is passed through rather than decided here, because the
+   * consent it carries belongs to the operator who read that count.
    *
    * @param propertyDefinitionId The declaration to remove.
+   * @param confirmValueDeletion Consent to destroying the answers recorded against it.
    */
-  deleteProfileDefinition(propertyDefinitionId: number): number {
+  deleteProfileDefinition(propertyDefinitionId: number, confirmValueDeletion = false): number {
     const mutationId = this.beginWrite();
     let failure: UserFailure | null = null;
 
     this.track(
-      this.transport.deleteProfileDefinition(propertyDefinitionId)
+      this.transport.deleteProfileDefinition(propertyDefinitionId, confirmValueDeletion)
         .pipe(finalize(() => this.settleWrite(mutationId, 'deleteProfileDefinition', failure)))
         .subscribe({
           next: () => {

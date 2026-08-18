@@ -16,6 +16,7 @@ import {
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import {
   MEMBERSHIP_SETTINGS_ROUTE,
+  ROLE_LIST_GROUP_PARAM,
   ROLE_LIST_ROUTE,
 } from '../../../core/config/app-routes.config';
 import { ListReturnStore } from '../../../core/state/list-return.store';
@@ -24,6 +25,7 @@ import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 
 import type { ParamMap, Params } from '@angular/router';
 
+import { QUERY_MAX_LENGTH } from '../../../core/models/paged-result.model';
 import type { SortDirection } from '../../../core/models/paged-result.model';
 
 import {
@@ -39,8 +41,10 @@ import {
 } from '../../../core/utils/list-query.util';
 
 import { AuthStore } from '../../../core/state/auth.store';
+import { PortalStore } from '../../../core/state/portal.store';
 import { DEFAULT_ROLE_GROUP_FILTER, ROLES_PAGE_SIZE, RoleStore } from '../../../core/state/role.store';
 import { NotificationService } from '../../../core/services/notification.service';
+import { RoleService } from '../../../core/services/role.service';
 import { UserService } from '../../../core/services/user.service';
 import type { UserDetail } from '../../../core/models/user.model';
 import {
@@ -57,6 +61,7 @@ import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialo
 import { DataTableComponent } from '../../../shared/components/data-table/data-table.component';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
 import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
+import { SearchInputComponent } from '../../../shared/components/search-input/search-input.component';
 import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
 import { PaginationComponent } from '../../../shared/components/pagination/pagination.component';
 import { YesNoPipe } from '../../../shared/pipes/yes-no.pipe';
@@ -78,7 +83,7 @@ import { SubmitGuardDirective } from '../../../shared/directives/submit-guard.di
 
 // THE ADDRESS
 
-const GROUP_PARAM = 'group';
+const GROUP_PARAM = ROLE_LIST_GROUP_PARAM;
 
 const SORTABLE_COLUMN_KEYS: readonly string[] = Object.freeze([
   'roleName',
@@ -92,6 +97,19 @@ const SORTABLE_COLUMN_KEYS: readonly string[] = Object.freeze([
   'isPublic',
   'autoAssignment',
 ]);
+
+/**
+ * The address parameter carrying the free-text filter.
+ *
+ * ⚠ THE FILTER LIVES IN THE ADDRESS, like every other part of this listing's coordinate. The narrowing, the
+ * page and the ordering are all addressable here, and a filter that was not would be the one part of the
+ * state a reader could neither bookmark, share, nor return to through Back - and the screen would present
+ * rows that its own address does not describe.
+ */
+const SEARCH_PARAM = 'search';
+
+/** The longest filter the server accepts, so a longer address is truncated rather than refused with a 400. */
+const SEARCH_MAX_LENGTH = QUERY_MAX_LENGTH;
 
 /** The {@link GROUP_PARAM} value standing for every role in the portal, whatever its grouping. */
 const ALL_GROUPS_TOKEN = 'all';
@@ -119,6 +137,9 @@ interface RoleListQuery {
    * would refuse resolves to `null` and lists the default order rather than producing a `400`.
    */
   readonly sortBy: string | null;
+
+  /** The free-text filter to apply, or `null` for none. Matched by the server against the role NAME only. */
+  readonly search: string | null;
 
   /** The direction to order in, or `null`. Only ever set alongside {@link RoleListQuery.sortBy}. */
   readonly sortDir: SortDirection | null;
@@ -185,6 +206,7 @@ function parseRoleListQuery(address: ParamMap): RoleListQuery {
 
   return {
     groupFilter: parseAddressGroupFilter(address.get(GROUP_PARAM)),
+    search: parseAddressSearch(address.get(SEARCH_PARAM)),
     pageIndex: parsePageIndex(address.get(PAGE_PARAM)),
     sortBy,
     // A direction with no field to apply it to is DROPPED rather than kept, so the address can never carry
@@ -199,9 +221,35 @@ function parseRoleListQuery(address: ParamMap): RoleListQuery {
  * @param query The query in force.
  * @returns The parameters to merge into the address.
  */
+/**
+ * Reads the free-text filter out of an address.
+ *
+ * ⚠ A FILTER OF NOTHING BUT SPACES IS NOT A FILTER, and is resolved to absence rather than transmitted. It
+ * returned the whole listing in any case, and sending it made an unfiltered grid look like a filtered one.
+ * Over-long text is TRUNCATED rather than refused, because a hand-written or stale address is not worth a
+ * `400` when the intent is unambiguous.
+ *
+ * @param stated The value the address carries, or `null` when it states none.
+ * @returns The filter to apply, or `null` for none.
+ */
+function parseAddressSearch(stated: string | null): string | null {
+  if (stated === null) {
+    return null;
+  }
+
+  const tidied: string = stated.trim();
+
+  if (tidied.length === 0) {
+    return null;
+  }
+
+  return tidied.length > SEARCH_MAX_LENGTH ? tidied.slice(0, SEARCH_MAX_LENGTH) : tidied;
+}
+
 function serialiseRoleListQuery(query: RoleListQuery): Params {
   return {
     [GROUP_PARAM]: groupFilterParameter(query.groupFilter),
+    [SEARCH_PARAM]: query.search,
     [PAGE_PARAM]: firstPageParameter(query.pageIndex),
     [SORT_BY_PARAM]: query.sortBy,
     // Emitted only alongside a field, matching what the reader will accept back, so a round trip through
@@ -316,6 +364,16 @@ const EMPTY_GROUP_MESSAGE = 'No roles belong to the selected role group.';
 /** Why the listing is empty when nothing is narrowing it. */
 const EMPTY_LISTING_MESSAGE = 'No security roles have been defined for this site yet.';
 
+/**
+ * Why the listing is empty when a NAME FILTER matched nothing - QA-9.
+ *
+ * MEASURED FAULT IT ANSWERS: filtering by a name no role carries produced "No security roles have been
+ * defined for this site yet." over a tenant holding fifteen roles. The sentence was simply false, and it
+ * contradicted the `Filtered:` disclosure sitting directly above it, which correctly said a filter was in
+ * force. The group-narrowed path already got this right; only the search path did not.
+ */
+const EMPTY_SEARCH_MESSAGE = 'No role name matches this filter. Clear the filter to see every role.';
+
 /** `SharedResources.resx` L837 &rarr; `GlobalRoles.Text`, stored as `&lt; Global Roles &gt;`. */
 const GLOBAL_ROLES_OPTION_LABEL = '< Global Roles >';
 
@@ -417,6 +475,27 @@ const FREE_FEE_LABEL = 'Free';
 
 /** What {@link FREE_FEE_LABEL} stands for, announced with the amount it replaces so nothing is withheld. */
 const FREE_FEE_DESCRIPTION = 'no charge, amount ';
+
+/**
+ * What a recorded period count of ZERO means, announced beside the figure.
+ *
+ * ⚠ A ZERO PERIOD IS A STATE, AND IT WAS PAINTED AS AN AMOUNT. "Every 0 months" is not a recurrence, so a row
+ * carrying it has no working schedule at all - yet the count rendered in the same colour and weight as a
+ * genuine "2", while the fee column beside it already named its own recorded zero rather than pricing it. The
+ * figure is still painted verbatim, exactly as the legacy grid painted it; what is added is the state treatment
+ * the fee column established and a sentence saying what the state is.
+ */
+const ZERO_PERIOD_DESCRIPTION = 'no recurring period';
+
+/**
+ * What a period count whose RECORDED unit cannot be named means, announced beside the figure.
+ *
+ * ⚠ A COUNT WITHOUT A USABLE UNIT IS NOT A PERIOD. The frequency column already marks a stored code it cannot
+ * name; the count beside it said "2" in the ordinary treatment either way, so the two cells disagreed about the
+ * same row. A count is only meaningful with its unit, so where a recorded unit cannot be named the count says
+ * so too. An ABSENT unit is a different state and is not covered here - see `isPeriodUnitless`.
+ */
+const UNITLESS_PERIOD_DESCRIPTION = 'unit not recognised, so the period is unknown';
 
 /**
  * The word behind a negative amount, for the accessibility tree only — R3.
@@ -528,6 +607,7 @@ interface AwaitedGroupMutation {
 
   /** The subject's name at the moment the request was issued, for the outcome wording. */
   readonly subjectName: string;
+
 }
 
 /**
@@ -559,6 +639,9 @@ const PAGE_SUBTITLE =
     DataTableComponent,
     // The group-filter row and the two controls of the inline group editor.
     FormFieldComponent,
+    // The free-text filter. The shared control owns its own debounce, trimming and clear affordance, so this
+    // screen supplies only the prompt and consumes the term.
+    SearchInputComponent,
     // The group-removal confirmation. Its presence in the DOM is what "open" means.
     // The ONE rendering of an absent value, shared with every other listing.
     AbsentValueComponent,
@@ -593,8 +676,24 @@ export class RoleListComponent implements OnInit {
 
   private readonly listReturn = inject(ListReturnStore);
 
+  /**
+   * The tenant's protected role identifiers. ⚠ READ HERE FOR THE SAME REASON THE EDITOR READS THEM: the two
+   * roles the portal depends on cannot be renamed or destroyed, and a listing that offers those commands
+   * anyway sends the operator to a screen that refuses them - or, for removal, to a confirmation dialog for
+   * an act the server will not perform.
+   */
+  private readonly portals = inject(PortalStore);
+
   /** Ties the address subscription to this component's lifetime. */
   private readonly destroyRef = inject(DestroyRef);
+
+  /**
+   * Read directly for ONE purpose: the membership count the removal dialog discloses. Everything else on this
+   * screen goes through {@link RoleStore}, and this does not, because the count is a fact about a record the
+   * operator is about to destroy rather than a slice of listing state - putting it in the store would give it
+   * a lifetime beyond the dialog that owns it.
+   */
+  private readonly roleService = inject(RoleService);
 
   /** Carries the transient outcome of a reader-initiated mutation. */
   private readonly notifications = inject(NotificationService);
@@ -808,6 +907,65 @@ export class RoleListComponent implements OnInit {
   );
 
   protected readonly canRemoveSelectedGroup = this.store.canDeleteSelectedGroup;
+
+  /**
+   * Why the removal command is absent while a real group is chosen, or `null` when there is nothing to
+   * explain.
+   *
+   * ⚠ A HIDDEN COMMAND IS INDISTINGUISHABLE FROM A MISSING FEATURE. The server refuses to destroy a group
+   * that still has roles in it (`role_group.in_use`), and the screen withheld the command silently - so an
+   * operator looking for it concluded the application could not do it, rather than learning that the group
+   * has to be emptied first. The condition is stated instead, and it states the REMEDY rather than only the
+   * rule, because the remedy is what the operator has to act on.
+   *
+   * Returns `null` when no real group is chosen, because then no removal is expected and an explanation for
+   * an absence nobody noticed is just noise.
+   */
+  protected readonly groupRemovalWithheldReason = computed<string | null>(() => {
+    if (this.canRemoveSelectedGroup()) {
+      return null;
+    }
+
+    const chosen: RoleGroup | null = this.selectedRoleGroup();
+
+    if (chosen === null) {
+      return null;
+    }
+
+    return `${chosen.roleGroupName} still has roles in it, so it cannot be deleted. Move or delete its roles first.`;
+  });
+
+  /** The prompt in the filter box, naming what the server actually matches on. */
+  protected readonly searchPlaceholder = 'Filter by role name';
+
+  /**
+   * What the listing is filtered by, or `null` when nothing is.
+   *
+   * ⚠ IT NAMES THE ROLE NAME AND NOTHING ELSE, because that is all the server matches. `RoleRepository`
+   * filters on `role.RoleName.ToLower().Contains(...)` alone - not the description, not the group - and copy
+   * promising more would send an operator hunting for a role by a description that can never match.
+   */
+  protected readonly filterDisclosure = computed<string | null>(() => {
+    const inForce: string | null = this.store.rolesPage().query ?? null;
+
+    if (inForce === null || inForce.length === 0) {
+      return null;
+    }
+
+    return `Filtered: role name contains “${inForce}”.`;
+  });
+
+  /**
+   * Whether the default narrowing is hiding grouped roles, so the screen can say so.
+   *
+   * ⚠ THE DEFAULT NARROWS, AND SILENTLY. `< Global Roles >` lists only the roles belonging to no group at
+   * all - measured at eleven of this tenant's fifteen - so an operator who could not find a role they knew
+   * existed had no way to tell the listing was narrowed, because a default reads as "no filter". Stated only
+   * when the tenant actually HAS groups, since with none there is nothing being hidden.
+   */
+  protected readonly defaultNarrowingInForce = computed<boolean>(
+    () => this.store.groupFilter().kind === 'GlobalRoles' && this.store.hasRoleGroups(),
+  );
 
   /** Whether the inline role-group editor is showing. */
   protected readonly groupEditorOpen = this.editorOpen.asReadonly();
@@ -1120,6 +1278,34 @@ export class RoleListComponent implements OnInit {
    */
   protected readonly deleteRoleLabel = 'Delete';
 
+  /**
+   * Whether a row is one of the two roles the portal protects.
+   *
+   * ⚠ THE SAME RULE THE EDITOR APPLIES, READ FROM THE SAME SOURCE. `EditRoles.ascx.vb` called
+   * `ActivateControls(False)` for the administrator and registered-users roles and withheld the removal
+   * command entirely, and the server refuses both writes with `role.protected`. Offering the commands in the
+   * listing anyway meant an operator could press Delete on the administrators role, be asked to confirm the
+   * destruction of the role their own access depends on, and only then be refused - which reads as a fault
+   * in the application rather than as a rule.
+   *
+   * @param row The role being rendered.
+   * @returns Whether the portal protects it.
+   */
+  protected isProtectedRole(row: RoleListItem): boolean {
+    return row.roleId === this.portals.administratorRoleId()
+      || row.roleId === this.portals.registeredRoleId();
+  }
+
+  /**
+   * Why a protected role offers no editing or removal command, named for the row it belongs to.
+   *
+   * @param row The role being rendered.
+   * @returns The explanation an operator reads instead of a refusal.
+   */
+  protected protectedRoleReason(row: RoleListItem): string {
+    return `${row.roleName} is required by this site, so it cannot be edited or deleted.`;
+  }
+
   /** Header action: `AddContent.Action`. */
   protected readonly addRoleLabel = ADD_ROLE_LABEL;
 
@@ -1165,9 +1351,38 @@ export class RoleListComponent implements OnInit {
    * and naming a role group in the dialog that destroys a ROLE would have been worse than naming nothing at
    * all.
    */
-  protected readonly roleRemovalMessage: Signal<string> = computed<string>(() =>
-    nameRemoval(this.pendingRoleRemoval()?.roleName),
-  );
+  protected readonly roleRemovalMessage: Signal<string> = computed<string>(() => {
+    const named: string = nameRemoval(this.pendingRoleRemoval()?.roleName);
+    const held: number | null = this.pendingRoleMemberCount();
+
+    // ⚠ THE CASCADE IS DISCLOSED, AND ONLY ONCE IT IS KNOWN. Destroying a role also destroys every membership
+    // in it, which the server does silently and the dialog did not mention - so an operator confirming the
+    // removal of a role could not know they were also revoking it from everyone holding it. The count is read
+    // when the dialog opens rather than carried on every listing row, because a per-row count would put a
+    // correlated subquery on every read of the grid to answer a question almost no read asks.
+    if (held === null) {
+      return named;
+    }
+
+    if (held === 0) {
+      return `${named} No accounts hold this role.`;
+    }
+
+    // Verb agreement as well as noun: "1 account currently hold" reads as a defect in the application.
+    const subject: string = held === 1 ? 'account currently holds' : 'accounts currently hold';
+
+    return `${named} ${held} ${subject} this role and will lose it.`;
+  });
+
+  /**
+   * How many accounts hold the role awaiting confirmation, or `null` while that is unknown - either because
+   * no dialog is open, or because the count has been asked for and has not arrived.
+   *
+   * `null` is deliberately indistinguishable between "not asked" and "could not be read": in both cases the
+   * dialog states the removal without a count rather than guessing one, and a failure to read the count must
+   * never block the removal itself.
+   */
+  private readonly pendingRoleMemberCount = signal<number | null>(null);
 
   /** Affirmative button wording of the removal confirmation. */
   protected readonly removalConfirmLabel = DELETE_CONFIRMATION_LABEL;
@@ -1182,6 +1397,20 @@ export class RoleListComponent implements OnInit {
    * internally, so there is no completion callback to hang one on.
    */
   constructor() {
+    // ⚠ WITHOUT THIS THE PROTECTED ROLES ARE NEVER RECOGNISED. `administratorRoleId` and `registeredRoleId`
+    // are read from the tenant's own record, and nothing on this screen was asking for that record - so both
+    // signals stayed `null`, `isProtectedRole` answered false for every row, and the withheld commands
+    // rendered as ordinary ones. Runtime testing caught exactly this: the row corrected itself only on a
+    // screen that had already loaded the record for its own reasons.
+    //
+    // Read from the CALLER'S identity rather than from a route, matching the editor, and idempotent in the
+    // store - several screens asking on initialisation issue one request between them.
+    const tenantId: number | undefined = this.auth.currentUser()?.portalId;
+
+    if (tenantId !== undefined) {
+      this.portals.loadCurrentPortalContext(tenantId);
+    }
+
     effect(() => {
       const awaited: AwaitedGroupMutation | null = this.awaitedMutation();
       const inFlight: boolean = this.store.saving();
@@ -1195,6 +1424,69 @@ export class RoleListComponent implements OnInit {
         this.awaitedMutation.set(null);
         this.reportGroupOutcome(awaited, failure);
       });
+    });
+
+  }
+
+  /**
+   * Replaces a group narrowing that names a group the client's own group set does not contain, leaving every
+   * other part of the query alone.
+   *
+   * ⚠ AN UNREAD GROUP SET IS NOT AN EMPTY ONE, and the distinction is the whole guard - which is why it asks
+   * whether the read SETTLED rather than whether the set has members. Both states hold an empty array, and
+   * conflating them breaks the guard in both directions: treating unread as empty discards every legitimate
+   * bookmarked narrowing, while treating a genuinely empty set as unread keeps re-issuing a read the server
+   * can only refuse. Before the read settles the narrowing is left exactly as stated, and the first read of
+   * an arrival is covered by the store, which heals the narrowing when the server reports the group gone.
+   * Once settled, a key outside the set is dropped here so no refusable read is issued at all.
+   *
+   * @param query The query as the address states it.
+   * @returns The query to apply, with an unreadable narrowing replaced by the default.
+   */
+  private withReadableNarrowing(query: RoleListQuery): RoleListQuery {
+    const narrowing: RoleGroupFilter = query.groupFilter;
+
+    if (narrowing.kind !== 'Group') {
+      return query;
+    }
+
+    if (!this.store.roleGroupsSettled()) {
+      return query;
+    }
+
+    const groups: readonly RoleGroup[] = this.store.roleGroups();
+
+    if (groups.some((group: RoleGroup): boolean => group.roleGroupId === narrowing.roleGroupId)) {
+      return query;
+    }
+
+    return { ...query, groupFilter: DEFAULT_ROLE_GROUP_FILTER };
+  }
+
+  /**
+   * Applies the reader's free-text filter through the ADDRESS, which is what issues the read.
+   *
+   * The text is recorded exactly as the shared control emitted it - no wildcard is appended and no pattern
+   * syntax is introduced, because match semantics belong to the server. Writing the ADDRESS rather than the
+   * store keeps this listing's single source of truth intact: every other part of its coordinate travels the
+   * same way, and a filter written straight to the store would be overwritten by the next emission.
+   *
+   * @param term The text the shared search control emitted, already debounced and trimmed by it.
+   */
+  protected onSearch(term: string): void {
+    const wanted: string | null = term.trim().length === 0 ? null : term;
+
+    // Remembered so the reconciliation in `ngOnInit` can tell this request's own echo from a coordinate
+    // change arriving by another route, and leave live typing alone in the first case.
+    this.ownSearchRequest = wanted;
+
+    void this.router.navigate([], {
+      relativeTo: this.route,
+      // ⚠ THE PAGE IS DROPPED WITH THE FILTER. A filtered listing is shorter, so page four of the
+      // unfiltered set is routinely past the end of the filtered one and would answer an empty grid for a
+      // filter that matches plenty.
+      queryParams: { [SEARCH_PARAM]: wanted, [PAGE_PARAM]: null },
+      queryParamsHandling: 'merge',
     });
   }
 
@@ -1217,6 +1509,23 @@ export class RoleListComponent implements OnInit {
    * Fetches the role groups and then the roles. Reproduces `Roles.ascx.vb` L249-L261, where `Page_Load`
    * called `BindGroups`, which populated the selector and then called `BindData` at L133.
    */
+  /**
+   * The shared search control, so the box can be reconciled with the filter the ADDRESS actually holds.
+   * `static: true` because the reconciliation below runs from the address subscription in `ngOnInit`,
+   * which fires before the first change detection completes; a control resolved later would miss the
+   * filter this screen arrived with.
+   */
+  @ViewChild(SearchInputComponent, { static: true })
+  private searchBox?: SearchInputComponent;
+
+  /**
+   * The term this screen most recently ASKED the address for, or `undefined` when the last address change
+   * came from somewhere else. Distinguishes the echo of this screen's own request - where the box already
+   * holds the operator's text, possibly with more typed since - from a coordinate change arriving by any
+   * other route, where the box may be stale and must be corrected.
+   */
+  private ownSearchRequest: string | null | undefined = undefined;
+
   ngOnInit(): void {
     this.columnSet.set(this.buildColumns());
 
@@ -1226,7 +1535,15 @@ export class RoleListComponent implements OnInit {
     this.route.queryParamMap
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe((address: ParamMap): void => {
-        const query: RoleListQuery = parseRoleListQuery(address);
+        // ⚠ A NARROWING THE GROUP SET NO LONGER CONTAINS IS DROPPED BEFORE IT IS EVER STAGED, which is what
+        // stops the address re-issuing a read the server can only refuse. The address is what issues this
+        // read, so a group deleted in this session - or in somebody else's - leaves an address that asks for
+        // a group that is gone, and every later emission (a Back, a paging click, a sort) asked again and was
+        // refused again. Correcting the QUERY rather than navigating separately means the existing
+        // canonicalisation below carries the fix: the corrected query no longer matches the stated address,
+        // so that branch rewrites the address and returns, and the single read comes from the re-emission.
+        // Adding a second navigation source instead cost a duplicate listing read on every correction.
+        const query: RoleListQuery = this.withReadableNarrowing(parseRoleListQuery(address));
 
         if (!addressStatesQuery(address, serialiseRoleListQuery(query))) {
           void this.router.navigate([], {
@@ -1243,7 +1560,35 @@ export class RoleListComponent implements OnInit {
         // into a changed coordinate is covered without each handler having to say so.
         this.listReturn.remember(ROLE_LIST_ROUTE, serialiseRoleListQuery(query));
 
-        this.store.stageListQuery(query.groupFilter, query.pageIndex, query.sortBy, query.sortDir);
+        // ⚠ THE BOX IS RECONCILED WITH THE ADDRESS HERE, AND HERE ONLY - QA-9.
+        //
+        // MEASURED FAULT IT ANSWERS: emptying the box and then immediately changing the group left
+        // `search=` standing in the address while the box read empty, so the grid showed a narrowed - often
+        // EMPTY - listing with nothing on screen saying what it was narrowed by. The mechanism is that the
+        // box emits on a debounce, `cancelPendingSearch` DISCARDS a delay still in flight, and the group
+        // change merges the address it finds; so the empty term the operator asked for could be dropped
+        // before it was ever emitted while the group's own navigation carried the old term forward.
+        //
+        // Correcting it at the settled coordinate rather than inside `onGroupFilterChange` covers every
+        // route into a changed narrowing with one rule - the group selector, a Back, a sort, a paging click,
+        // and the group-deletion healing above - instead of leaving each handler to remember. The echo guard
+        // is what keeps this from overwriting live typing: when the term in force is the one this screen
+        // just asked for, the operator owns the box and it is left exactly as it is.
+        if (this.ownSearchRequest === query.search) {
+          this.ownSearchRequest = undefined;
+        } else {
+          this.ownSearchRequest = undefined;
+          // `''` rather than `null`, because the box holds a string and an absent filter is an empty box.
+          this.searchBox?.cancelPendingSearch(query.search ?? '');
+        }
+
+        this.store.stageListQuery(
+          query.groupFilter,
+          query.pageIndex,
+          query.sortBy,
+          query.sortDir,
+          query.search,
+        );
 
         if (this.hasReadAdministration) {
           this.store.loadRoles();
@@ -1421,6 +1766,15 @@ export class RoleListComponent implements OnInit {
       {
         key: 'roleName',
         width: '10.5%',
+        // ⚠ ATOMIC BECAUSE A ROLE NAME IS NOT A PHRASE, AND WRAPPING ONE FRACTURES IT. The shared stylesheet
+        // lets any cell break inside a word so a narrow column never overflows, which is right for prose and
+        // wrong for a value read as a single token: measured at a 768 viewport, this column rendered
+        // `Administrators` as `Administrator` + `s`, in a 100.80px track.
+        // Marked atomic the value stays on one line and a column too narrow to hold it ellipsises instead, so
+        // what is on screen is a recognisable prefix rather than two fragments that read as corruption. The
+        // whole value stays in the accessibility tree either way. No width changes - the grid's weights are
+        // derived as a set and still sum to the same total.
+        atomic: true,
         rowHeader: true,
         // Ordering: the key IS the endpoint's own sort name. See the sortability note on `columns`.
         sortable: true,
@@ -1727,7 +2081,27 @@ export class RoleListComponent implements OnInit {
    */
   protected requestRoleRemoval(role: RoleListItem): void {
     this.store.clearError();
+    this.pendingRoleMemberCount.set(null);
     this.pendingRoleDeletion.set(role);
+
+    // ONE record is asked for and only the TOTAL is used, so the answer is as small as the contract allows.
+    // The subscription is bounded by this component's lifetime; an operator who dismisses the dialog and
+    // leaves before the count lands simply never sees it, and the removal is unaffected either way.
+    this.roleService
+      .listUsers(role.roleId, { pageIndex: 0, pageSize: 1 })
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (page) => {
+          // Discarded if the operator has moved on to a different role in the meantime, so a slow answer for
+          // one record can never be attributed to another.
+          if (this.pendingRoleDeletion()?.roleId === role.roleId) {
+            this.pendingRoleMemberCount.set(page.meta.totalCount);
+          }
+        },
+        // A count that cannot be read leaves the dialog as it was. Reporting a failure for a figure the
+        // operator did not ask for would raise an alarm about the removal itself, which is still available.
+        error: () => undefined,
+      });
   }
 
   /**
@@ -1738,6 +2112,7 @@ export class RoleListComponent implements OnInit {
     const role: RoleListItem | null = this.pendingRoleDeletion();
 
     this.pendingRoleDeletion.set(null);
+    this.pendingRoleMemberCount.set(null);
 
     if (role === null || this.saving()) {
       return;
@@ -1750,6 +2125,7 @@ export class RoleListComponent implements OnInit {
   /** Dismisses the role confirmation without removing anything. */
   protected onRoleRemovalCancelled(): void {
     this.pendingRoleDeletion.set(null);
+    this.pendingRoleMemberCount.set(null);
   }
 
   /**
@@ -1811,6 +2187,12 @@ export class RoleListComponent implements OnInit {
   /** The clipped word behind a negative amount — R3. */
   protected readonly negativeFeeQualifier = NEGATIVE_FEE_QUALIFIER;
 
+  /** {@link ZERO_PERIOD_DESCRIPTION}, for the template. */
+  protected readonly zeroPeriodDescription = ZERO_PERIOD_DESCRIPTION;
+
+  /** {@link UNITLESS_PERIOD_DESCRIPTION}, for the template. */
+  protected readonly unitlessPeriodDescription = UNITLESS_PERIOD_DESCRIPTION;
+
   /** The wording of the return-to-first-page affordance — R5. */
   protected readonly firstPageLabel = FIRST_PAGE_LABEL;
 
@@ -1862,6 +2244,15 @@ export class RoleListComponent implements OnInit {
   protected readonly emptyMessage = computed<string>(() => {
     if (this.isPastEnd()) {
       return PAST_END_MESSAGE;
+    }
+
+    // ⚠ THE NAME FILTER IS TESTED BEFORE THE GROUP, because a filter the reader just typed is the narrowing
+    // they are holding in mind, and it is the one they can undo in a single action. Reusing
+    // `filterDisclosure` as the test rather than reading the term again keeps the two statements on screen
+    // from ever disagreeing: the sentence claiming a filter is in force and the sentence explaining the
+    // empty result are now driven by one value.
+    if (this.filterDisclosure() !== null) {
+      return EMPTY_SEARCH_MESSAGE;
     }
 
     return this.isNarrowedByGroup() ? EMPTY_GROUP_MESSAGE : EMPTY_LISTING_MESSAGE;
@@ -1947,6 +2338,51 @@ export class RoleListComponent implements OnInit {
    */
   protected periodText(role: RoleListItem, key: string): string {
     return this.formatPeriod(key === 'trialPeriod' ? role.trialPeriod : role.billingPeriod);
+  }
+
+  /**
+   * Whether a period column holds a recorded count of exactly nothing.
+   *
+   * ⚠ ZERO IS NOT A SHORTER PERIOD, IT IS THE ABSENCE OF ONE. "Every 0 months" describes no recurrence, so a
+   * row carrying it has no working schedule - and it was painted in the same colour and weight as a genuine
+   * count. This is the same question, and the same answer, that {@link isFeeFree} already gives for a recorded
+   * zero amount one column to the left. Absence is a different state again and {@link isPeriodAbsent} answers
+   * it before this is reached.
+   *
+   * @param role The row.
+   * @param key Which of the two period columns is being drawn.
+   * @returns True when the stored count is present and equal to zero.
+   */
+  protected isPeriodZero(role: RoleListItem, key: string): boolean {
+    const stored: number | null = key === 'trialPeriod' ? role.trialPeriod : role.billingPeriod;
+
+    return stored !== null && Number.isFinite(stored) && stored === 0;
+  }
+
+  /**
+   * Whether a period count is recorded but its unit cannot be named.
+   *
+   * ⚠ THE TWO CELLS DESCRIBED THE SAME ROW DIFFERENTLY. The frequency cell tells an absent unit and an
+   * unrecognised stored code apart from a nameable one and marks both; the count beside it was drawn the same
+   * way whichever of the three was in force. A count is only a period once its unit is known, so the count now
+   * carries the same doubt its unit does.
+   *
+   * @param role The row.
+   * @param key Which of the two period columns is being drawn.
+   * @returns True when a count is present and the frequency governing it cannot be named.
+   */
+  protected isPeriodUnitless(role: RoleListItem, key: string): boolean {
+    const frequencyKey: string = key === 'trialPeriod' ? 'trialFrequency' : 'billingFrequency';
+
+    // ⚠ RECORDED-BUT-UNNAMEABLE ONLY, AND AN ABSENT UNIT IS DELIBERATELY EXCLUDED. Reading an absent frequency
+    // as "not recognised" was wrong twice over: it states the wrong thing - nothing was recorded, so there is
+    // nothing to fail to recognise - and it is the ordinary state of every role with no paid membership at all,
+    // so it would have hung a doubt on the commonest row on the grid. That state is already told correctly by
+    // the frequency cell's own absence mark, and the count beside it stays exactly as the legacy grid drew it.
+    return (
+      this.isFrequencyAbsent(role, frequencyKey) === false &&
+      this.isNameableFrequency(role, frequencyKey) === false
+    );
   }
 
   /**
@@ -2177,6 +2613,29 @@ export class RoleListComponent implements OnInit {
       failure.summary.supportReference,
     );
   }
+
+  // ─────────────────────────────────────────────────────────────────────────────────────────────────
+  // DELIBERATELY NOT DONE: rewriting the ADDRESS when the selected group is deleted - QA-9.
+  //
+  // OBSERVED: deleting the group the listing is narrowed to leaves `?group=<id>` standing in the address
+  // for a group that no longer exists. The LISTING recovers correctly - the selector falls back to the
+  // default and the right roles are shown - but the address string keeps the dead key.
+  //
+  // A correction was written, measured, and REMOVED, and the measurement is the reason. Navigating to drop
+  // the key supplies a second navigation source, and the address subscription above issues the listing read
+  // on every emission - so the correction bought a tidier URL at the price of a DUPLICATE listing read on
+  // every group deletion, on top of the re-read the delete already performs. Its own spec proved it: adding
+  // the navigation turned one green test red with "Cannot flush a cancelled request", because the extra
+  // navigation cancelled the read already in flight. The comment on that subscription had recorded this
+  // exact cost in advance.
+  //
+  // Leaving it is safe because the dead key is already healed on every route back INTO the screen, by two
+  // layers that are both tested: the store heals it when the server reports the group gone (the first read
+  // of an arrival, before the group set is known), and `withReadableNarrowing` drops it from every later
+  // emission once the set IS known. So a Back, a bookmark and a shared link all land on a populated
+  // listing. What survives is a momentarily inaccurate URL string on a screen that is showing the correct
+  // rows - not a state anyone can act on wrongly, and not worth a duplicate read of the whole listing.
+  // ─────────────────────────────────────────────────────────────────────────────────────────────────
 
   /**
    * Wording for a settled, successful group mutation.

@@ -75,7 +75,19 @@ const ALIAS_MAX_LENGTH = 128;
 /** Portal title, 128 characters. */
 const TITLE_MAX_LENGTH = 128;
 
-/** Description and keywords, 500 characters each. */
+/**
+ * Description and keywords, 500 characters each - `signup.ascx`'s own `maxlength="500"`.
+ *
+ * DELIBERATELY DIFFERENT FROM THE EDITING SCREEN - QA-9. `sitesettings.ascx` declares `MaxLength="475"`
+ * for these same two columns, so the legacy has always allowed 25 more characters when a tenant is
+ * CREATED than when it is later edited, even though the database is `nvarchar(500)` for both. AAP 0.9.1
+ * requires identical inputs to behave identically, so neither number is moved to match the other.
+ *
+ * The bound is DISCLOSED rather than left silent, but not from here: the shared field component renders
+ * "At most 500 characters." from this very attribute, once, for every bounded field in the application.
+ * Verified at runtime on both fields of both screens - each states the bound it actually enforces.
+ * MIGRATION_NOTES.md records the two-number divergence.
+ */
 const METADATA_MAX_LENGTH = 500;
 
 /** Administrator given and family name, 50 characters. 50, NOT the markup's 100. */

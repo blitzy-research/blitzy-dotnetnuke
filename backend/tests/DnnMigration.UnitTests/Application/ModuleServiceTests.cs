@@ -58,6 +58,9 @@ public class ModuleServiceApplicationTests
     /// <summary>A second page carrying the same module.</summary>
     private const int SecondTabId = 6;
 
+    /// <summary>A content page the module does NOT sit on, used as a relocation destination.</summary>
+    private const int DestinationTabId = 8;
+
     /// <summary>The definition the module under test instantiates.</summary>
     private const int ModuleDefinitionId = 9;
 
@@ -1352,6 +1355,239 @@ public class ModuleServiceApplicationTests
     }
 
     /// <summary>
+    /// Removing the LAST placement recycles the module, so no live module is left standing on no page.
+    /// </summary>
+    /// <returns>A task that completes when the assertion has been made.</returns>
+    /// <remarks>
+    /// The legacy provider closed this gap in the same place: <c>ModuleController.vb</c> <c>DeleteTabModule</c>
+    /// L847-L855 removes the row and then, "check if all modules instances have been deleted", soft-deletes
+    /// the module when none remain. Without it the row was live on no page, and its own endpoints disagreed
+    /// about whether it existed.
+    /// </remarks>
+    [Fact]
+    public async Task DeleteModule_RemovingTheLastPlacement_RecyclesTheModule()
+    {
+        Harness harness = Harness.Ready();
+
+        // One placement only, so the removal below is the last one.
+        harness.Placements.RemoveAll(placement => placement.TabModuleId != TabModuleId);
+
+        Result outcome = await harness.Service.DeleteModuleAsync(
+            PortalId,
+            ModuleId,
+            TabModuleId,
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.Module.IsDeleted.Should().BeTrue();
+
+        // The row removal and the recycle flag are published by ONE commit, so no reader can observe a live
+        // module with no placement.
+        harness.UnitOfWork.Verify(
+            work => work.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        harness.Modules.Verify(
+            repository => repository.DeleteTabModuleAsync(TabId, ModuleId, It.IsAny<CancellationToken>()),
+            Times.Once);
+
+        // The recycle is recorded under the event name that means it, beside the placement entry.
+        harness.AuditTrail
+            .Select(entry => entry.EventName)
+            .Should()
+            .Contain("MODULE_DELETED");
+    }
+
+    /// <summary>
+    /// Removing one of several placements leaves the module live, because it still appears somewhere.
+    /// </summary>
+    /// <returns>A task that completes when the assertion has been made.</returns>
+    [Fact]
+    public async Task DeleteModule_RemovingOneOfSeveralPlacements_LeavesTheModuleLive()
+    {
+        Harness harness = Harness.Ready();
+
+        // The default harness carries two placements, so one survives this removal.
+        Result outcome = await harness.Service.DeleteModuleAsync(
+            PortalId,
+            ModuleId,
+            TabModuleId,
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.Module.IsDeleted.Should().BeFalse();
+
+        harness.AuditTrail
+            .Select(entry => entry.EventName)
+            .Should()
+            .NotContain("MODULE_DELETED");
+    }
+
+    /// <summary>
+    /// A module that is already recycled is not recycled a second time, and no second record is written for
+    /// a state that did not change.
+    /// </summary>
+    /// <returns>A task that completes when the assertion has been made.</returns>
+    [Fact]
+    public async Task DeleteModule_RemovingTheLastPlacementOfARecycledModule_WritesNoSecondRecycleRecord()
+    {
+        Harness harness = Harness.Ready();
+
+        harness.Placements.RemoveAll(placement => placement.TabModuleId != TabModuleId);
+        harness.Module.IsDeleted = true;
+
+        Result outcome = await harness.Service.DeleteModuleAsync(
+            PortalId,
+            ModuleId,
+            TabModuleId,
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.Module.IsDeleted.Should().BeTrue();
+
+        harness.AuditTrail
+            .Select(entry => entry.EventName)
+            .Should()
+            .NotContain("MODULE_DELETED");
+    }
+
+    /// <summary>
+    /// A move that names a position stores THAT position on the destination, rather than appending.
+    /// </summary>
+    /// <returns>A task that completes when the assertion has been made.</returns>
+    /// <remarks>
+    /// The update path applies the submitted position to the source row, which the relocation then deletes,
+    /// so a submitted position used to be discarded and the appended position stored in its place - measured
+    /// as a submitted 1 becoming a stored 11.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateModule_MovingWithANamedPosition_StoresThatPositionOnTheDestination()
+    {
+        Harness harness = Harness.Ready();
+        harness.EditGranted = true;
+        harness.AdministersPortal = true;
+
+        // The destination already carries an unrelated module low in the pane, so an append would produce a
+        // position well above the one being submitted.
+        harness.OtherPlacementsOnDestination =
+        [
+            new TabModule
+            {
+                TabModuleId = 90,
+                TabId = DestinationTabId,
+                ModuleId = SecondModuleId,
+                PaneName = PaneName,
+                ModuleOrder = 9,
+                Visibility = ModuleVisibility.Maximized,
+            },
+        ];
+
+        Result<ModuleDetailDto?> outcome = await harness.Service.UpdateModuleAsync(
+            PortalId,
+            ModuleId,
+            new UpdateModuleRequest
+            {
+                TabId = TabId,
+                ModuleTitle = "Welcome",
+                ModuleOrder = 1,
+                Visibility = ModuleVisibility.Maximized,
+                MoveToTabId = DestinationTabId,
+            },
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value.Should().NotBeNull();
+        outcome.Value!.ModuleOrder.Should().Be(1);
+
+        harness.AddedPlacements.Should().HaveCount(1);
+        harness.AddedPlacements[0].TabId.Should().Be(DestinationTabId);
+        harness.AddedPlacements[0].ModuleOrder.Should().Be(1);
+    }
+
+    /// <summary>
+    /// A move that submits the append instruction still appends, which is the legacy screen's own behaviour.
+    /// </summary>
+    /// <returns>A task that completes when the assertion has been made.</returns>
+    [Fact]
+    public async Task UpdateModule_MovingWithTheAppendInstruction_StillAppendsToTheDestinationPane()
+    {
+        Harness harness = Harness.Ready();
+        harness.EditGranted = true;
+        harness.AdministersPortal = true;
+
+        harness.OtherPlacementsOnDestination =
+        [
+            new TabModule
+            {
+                TabModuleId = 90,
+                TabId = DestinationTabId,
+                ModuleId = SecondModuleId,
+                PaneName = PaneName,
+                ModuleOrder = 9,
+                Visibility = ModuleVisibility.Maximized,
+            },
+        ];
+
+        Result<ModuleDetailDto?> outcome = await harness.Service.UpdateModuleAsync(
+            PortalId,
+            ModuleId,
+            new UpdateModuleRequest
+            {
+                TabId = TabId,
+                ModuleTitle = "Welcome",
+                ModuleOrder = -1,
+                Visibility = ModuleVisibility.Maximized,
+                MoveToTabId = DestinationTabId,
+            },
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+
+        harness.AddedPlacements.Should().HaveCount(1);
+
+        // The bottom of the destination pane: the highest position there plus the legacy renumbering step.
+        harness.AddedPlacements[0].ModuleOrder.Should().Be(11);
+    }
+
+    /// <summary>
+    /// Listing the definitions of a package that is not installed reports the package absent, rather than
+    /// answering with an empty collection that cannot be told apart from a package declaring nothing.
+    /// </summary>
+    /// <returns>A task that completes when the assertion has been made.</returns>
+    [Fact]
+    public async Task ListDesktopModuleDefinitions_ForAPackageThatIsNotInstalled_ReportsItAbsent()
+    {
+        Harness harness = Harness.Ready();
+        harness.PackageIsInstalled = false;
+
+        Result<IReadOnlyList<ModuleDefinitionDto>> outcome = await harness.Service
+            .ListDesktopModuleDefinitionsAsync(PortalId, 9999, CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Reason!.Code.Should().Be("module.package_not_found");
+    }
+
+    /// <summary>
+    /// An installed package that declares nothing this tenant may use still answers with an empty
+    /// collection, which is the case the absent answer above must not swallow.
+    /// </summary>
+    /// <returns>A task that completes when the assertion has been made.</returns>
+    [Fact]
+    public async Task ListDesktopModuleDefinitions_ForAnInstalledPackageDeclaringNothingHere_IsAnEmptyList()
+    {
+        Harness harness = Harness.Ready();
+
+        // The package exists; the identifier asked about is simply not the one its definitions name.
+        harness.Package.DesktopModuleId = 4242;
+
+        Result<IReadOnlyList<ModuleDefinitionDto>> outcome = await harness.Service
+            .ListDesktopModuleDefinitionsAsync(PortalId, 4242, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value.Should().BeEmpty();
+    }
+
+    /// <summary>
     /// The mocking surface for this suite: a <see cref="ModuleService"/> built entirely from stand-ins for
     /// Domain and Application abstractions, with every collaborator's answer settable per test.
     /// </summary>
@@ -1403,6 +1639,23 @@ public class ModuleServiceApplicationTests
                 SupportedFeatures = PortableCapability,
             };
 
+            // A content page the module does not occupy, so it is a legitimate relocation destination. The
+            // tenant names a different page as its administration page, so this one is not administrative.
+            this.DestinationTab = new Tab
+            {
+                TabId = DestinationTabId,
+                PortalId = PortalId,
+                TabName = "Secondary",
+                IsDeleted = false,
+            };
+
+            this.Portal = new Portal
+            {
+                PortalId = PortalId,
+                PortalName = "Test Portal",
+                AdminTabId = 99,
+            };
+
             this.ModuleScopeSettings = [];
             this.PlacementScopeSettings = [];
             this.AuditTrail = [];
@@ -1441,6 +1694,17 @@ public class ModuleServiceApplicationTests
         /// <summary>Gets the package declaring the definition, whose capability field drives the guards.</summary>
         public DesktopModule Package { get; }
 
+        /// <summary>
+        /// Gets or sets a value indicating whether the package is installed at all. Cleared to model an
+        /// address naming a <c>dbo.DesktopModules</c> row this installation does not have.
+        /// </summary>
+        public bool PackageIsInstalled { get; set; } = true;
+
+        /// <summary>
+        /// Gets or sets the tenant row, read by the relocation path to recognise the administrative band.
+        /// </summary>
+        public Portal? Portal { get; set; }
+
         /// <summary>Gets or sets the module-scoped settings the repository returns.</summary>
         public List<ModuleSetting> ModuleScopeSettings { get; set; }
 
@@ -1458,6 +1722,24 @@ public class ModuleServiceApplicationTests
 
         /// <summary>Gets or sets a value indicating whether the caller holds the edit grant.</summary>
         public bool EditGranted { get; set; }
+
+        /// <summary>
+        /// Gets or sets a value indicating whether the caller administers the tenant, which the wide-effect
+        /// fields - every page, propagate, and a relocation - are gated on.
+        /// </summary>
+        public bool AdministersPortal { get; set; }
+
+        /// <summary>
+        /// Gets or sets the placements already occupying the relocation destination's pane, which decide
+        /// what an append resolves to there.
+        /// </summary>
+        public List<TabModule> OtherPlacementsOnDestination { get; set; } = [];
+
+        /// <summary>Gets the placements the service asked the store to insert, in order.</summary>
+        public List<TabModule> AddedPlacements { get; } = [];
+
+        /// <summary>Gets or sets the relocation destination page, or null to model one that does not exist.</summary>
+        public Tab? DestinationTab { get; set; }
 
         /// <summary>Gets or sets the caller's identifier; null models an unattributed caller.</summary>
         public int? CallerId { get; set; }
@@ -1626,6 +1908,60 @@ public class ModuleServiceApplicationTests
                 .ReturnsAsync((int tabModuleId, CancellationToken _) =>
                     harness.Placements.Find(placement => placement.TabModuleId == tabModuleId));
 
+            // The pane a position is resolved against. Served from the destination world for the relocation
+            // destination and from the module's own placements otherwise, so an append resolves against the
+            // pane it is actually appending to.
+            harness.Modules
+                .Setup(repository => repository.GetTabModuleOrderAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<string>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int tabId, string paneName, CancellationToken _) =>
+                    harness.OtherPlacementsOnDestination
+                        .Concat(harness.Placements)
+                        .Where(placement => placement.TabId == tabId
+                            && string.Equals(placement.PaneName, paneName, StringComparison.Ordinal))
+                        .ToList());
+
+            harness.Modules
+                .Setup(repository => repository.AddTabModuleAsync(
+                    It.IsAny<TabModule>(),
+                    It.IsAny<CancellationToken>()))
+                .Callback<TabModule, CancellationToken>((placement, _) =>
+                    harness.AddedPlacements.Add(placement))
+                .Returns(Task.CompletedTask);
+
+            harness.Tabs
+                .Setup(repository => repository.GetPortalTabAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync((int _, int tabId, CancellationToken _) =>
+                    tabId == DestinationTabId ? harness.DestinationTab : null);
+
+            harness.Portals
+                .Setup(repository => repository.GetByIdAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<bool>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => harness.Portal);
+
+            harness.Permissions
+                .Setup(service => service.IsPortalAdministratorAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int?>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => Result<bool>.Success(harness.AdministersPortal));
+
+            harness.Permissions
+                .Setup(service => service.HasTabPermissionAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<int?>(),
+                    It.IsAny<int>(),
+                    It.IsAny<PermissionKey>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => Result<bool>.Success(harness.EditGranted));
+
             harness.Modules
                 .Setup(repository => repository.GetModuleSettingsAsync(
                     It.IsAny<int>(),
@@ -1666,7 +2002,7 @@ public class ModuleServiceApplicationTests
                 .Setup(repository => repository.GetDesktopModuleByIdAsync(
                     It.IsAny<int>(),
                     It.IsAny<CancellationToken>()))
-                .ReturnsAsync(() => harness.Package);
+                .ReturnsAsync(() => harness.PackageIsInstalled ? harness.Package : null);
 
             harness.Tabs
                 .Setup(repository => repository.GetTabModulesAsync(

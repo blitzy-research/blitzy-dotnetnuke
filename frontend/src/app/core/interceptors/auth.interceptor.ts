@@ -34,6 +34,14 @@ const HEALTH_PROBE_PATHS: readonly string[] = Object.freeze([
 ]);
 
 /**
+ * The problem type the API answers with when the SESSION carries an outstanding obligation, as opposed to
+ * the account lacking a right. Spelled here rather than derived, because it is part of the wire contract
+ * with the API: `Api/Middleware/RestrictedSessionMiddleware.cs` composes it from the reason code
+ * `auth.remediation_required`.
+ */
+const REMEDIATION_REQUIRED_TYPE = 'urn:dnnmigration:error:auth.remediation_required';
+
+/**
  * Attaches the stored bearer token to API requests and renews an expired session once when the API
  * answers 401.
  */
@@ -67,6 +75,17 @@ export const authInterceptor: HttpInterceptorFn = (req, next) => {
   // own, but a CLOSED one: it neither renews nor re-sends, so it cannot re-enter this recovery path.
   return next(withBearerToken(req, token)).pipe(
     catchError((error: unknown) => {
+      // ⚠ ONE 403 IS NOT LIKE THE OTHERS, AND RECOGNISING IT HERE IS THE ONLY WAY THE CLIENT EVER LEARNS.
+      // `auth.remediation_required` does not mean the account lacks a right; it means the SESSION owes
+      // something — a password change, or required profile fields — and the ordinary surface stays shut
+      // until it is done. The obligations the client holds came from sign-in or renewal, so one imposed
+      // afterwards appears in neither, and without this the navigation gate keeps admitting screens whose
+      // every read is refused. The store's own member decides whether to ask, coalesces a burst of refusals
+      // into one read, and stays silent about it.
+      if (isRemediationRequired(error)) {
+        authStore.noteRemediationRefused();
+      }
+
       // Only an expired or rejected token is recoverable. A 403 means the server knows who the caller is
       // and is refusing the operation, so renewing would change nothing; anything else is not an
       // authentication condition at all.
@@ -160,6 +179,37 @@ function withBearerToken<T>(req: HttpRequest<T>, token: string): HttpRequest<T> 
  */
 function isUnauthorized(error: unknown): boolean {
   return error instanceof HttpErrorResponse && error.status === 401;
+}
+
+/**
+ * Whether a caught value is the API's "this session owes something" refusal.
+ *
+ * Matched on the problem document's `type` rather than on the status alone, because a bare 403 is the
+ * ordinary "you may not do this" answer and must not be treated as an obligation. The body is read
+ * defensively: the transport hands it over parsed when the content type says JSON and as a string
+ * otherwise, and a proxy-composed refusal may carry neither.
+ *
+ * @param error The caught value.
+ * @returns True when the response is a 403 naming the outstanding-obligation reason code.
+ */
+function isRemediationRequired(error: unknown): boolean {
+  if (!(error instanceof HttpErrorResponse) || error.status !== 403) {
+    return false;
+  }
+
+  const body: unknown = error.error;
+
+  if (typeof body === 'string') {
+    return body.includes(REMEDIATION_REQUIRED_TYPE);
+  }
+
+  if (typeof body !== 'object' || body === null) {
+    return false;
+  }
+
+  const type: unknown = (body as { type?: unknown }).type;
+
+  return typeof type === 'string' && type === REMEDIATION_REQUIRED_TYPE;
 }
 
 /**

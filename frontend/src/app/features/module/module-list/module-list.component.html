@@ -31,7 +31,7 @@
     now in force rather than only the row count changing.
   -->
   @if (filterDisclosure(); as disclosure) {
-    <p class="module-list__filter-disclosure" role="status" aria-live="polite">{{ disclosure }}</p>
+    <p class="module-list__filter-disclosure" role="status" aria-live="polite" aria-atomic="true">{{ disclosure }}</p>
   }
 
   <!-- THE FAILURE SURFACE. -->

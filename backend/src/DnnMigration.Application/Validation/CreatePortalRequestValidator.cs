@@ -238,7 +238,9 @@ public class CreatePortalRequestValidator : AbstractValidator<CreatePortalReques
                 StringComparison.Ordinal);
 
         RuleFor(request => request.PortalName)
-            .MaximumLength(PortalNameMaximumLength);
+            .MaximumLength(PortalNameMaximumLength)
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage);
 
         RuleFor(request => request.PortalAlias)
             .NotEmpty().WithMessage(PortalAliasRequiredMessage)
@@ -251,10 +253,14 @@ public class CreatePortalRequestValidator : AbstractValidator<CreatePortalReques
         // The description and keywords fields carried no validator; only the
         // markup and column width constrain them, and the two agree.
         RuleFor(request => request.Description)
-            .MaximumLength(MetadataMaximumLength);
+            .MaximumLength(MetadataMaximumLength)
+            .Must(TextIntegrityRules.IsMultiLineSafe)
+            .WithMessage(TextIntegrityRules.MultiLineMessage);
 
         RuleFor(request => request.KeyWords)
-            .MaximumLength(MetadataMaximumLength);
+            .MaximumLength(MetadataMaximumLength)
+            .Must(TextIntegrityRules.IsMultiLineSafe)
+            .WithMessage(TextIntegrityRules.MultiLineMessage);
 
         // MIGRATION: what the legacy screen did NOT do, and what is added here. The screen's own
         // InvalidHomeFolder check resolved the submitted value to a physical path and reported failure only
@@ -262,18 +268,28 @@ public class CreatePortalRequestValidator : AbstractValidator<CreatePortalReques
         RuleFor(request => request.HomeDirectory)
             .MaximumLength(HomeDirectoryMaximumLength)
             .Must(IsSafeRelativeHomeDirectory)
-                .WithMessage(HomeDirectoryInvalidMessage);
+                .WithMessage(HomeDirectoryInvalidMessage)
+            // ORDER IS DELIBERATE. The containment predicate above already refuses a control character and
+            // words that refusal as the folder problem it is, so the shared rule is asked second and adds
+            // what containment does not consider: the zero-width and bidirectional characters that pass every
+            // path test and still leave a folder name no operator can retype.
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage);
 
         // ValTemplate is declared with InitialValue="-1", which made the drop-down's unselected state fail
         // its required check.
         RuleFor(request => request.TemplateFile)
             .NotEmpty().WithMessage(TemplateRequiredMessage)
-            .Must(IsBareFileName).WithMessage(TemplateFileNameOnlyMessage);
+            .Must(IsBareFileName).WithMessage(TemplateFileNameOnlyMessage)
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage);
 
         // 50, not the markup's 100.
         RuleFor(request => request.AdministratorFirstName)
             .NotEmpty().WithMessage(FirstNameRequiredMessage)
-            .MaximumLength(PersonNameMaximumLength);
+            .MaximumLength(PersonNameMaximumLength)
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage);
 
         // 50 here for the same reason, and requiredness is doubly grounded: the family-name column is
         // nullable in the baseline schema (01.00.00.SqlDataProvider:L100) and becomes NOT NULL in the
@@ -281,11 +297,15 @@ public class CreatePortalRequestValidator : AbstractValidator<CreatePortalReques
         // already declared.
         RuleFor(request => request.AdministratorLastName)
             .NotEmpty().WithMessage(LastNameRequiredMessage)
-            .MaximumLength(PersonNameMaximumLength);
+            .MaximumLength(PersonNameMaximumLength)
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage);
 
         RuleFor(request => request.AdministratorUsername)
             .NotEmpty().WithMessage(UsernameRequiredMessage)
-            .MaximumLength(UsernameMaximumLength);
+            .MaximumLength(UsernameMaximumLength)
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage);
 
         // MIGRATION: the markup also declares maxlength 20 on txtPassword, matching the plaintext Password
         // nvarchar(20) column of the baseline schema (01.00.00.SqlDataProvider:L106). That ceiling is

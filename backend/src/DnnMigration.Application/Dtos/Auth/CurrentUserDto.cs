@@ -3,7 +3,8 @@ namespace DnnMigration.Application.Dtos.Auth;
 /// <summary>
 /// The signed-in caller's own identity and interface-gating data, returned by <c>GET /api/v1/auth/me</c>:
 /// the user key, the portal identifier and its display name, the caller's names and address, the super-user
-/// flag, and the advisory role and permission lists.
+/// flag, the two BLOCKING remediation obligations the session carries, and the advisory role and permission
+/// lists.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -94,6 +95,44 @@ public sealed class CurrentUserDto
     public bool IsPortalAdministrator { get; set; }
 
     /// <summary>
+    /// Whether the caller must replace their credential before the ordinary application surface is open to
+    /// them. <see langword="false"/> means no such obligation stands.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠ EVERY IDENTITY HYDRATION PATH PUBLISHES THIS, AND THAT IS THE WHOLE POINT OF ITS BEING HERE. It is
+    /// the same decision the sign-in and refresh responses carry on their own top-level members, evaluated
+    /// from the same authoritative state through the same service member, so a client cannot receive two
+    /// disagreeing descriptions of one session depending on which endpoint it asked. Its absence from this
+    /// contract was measured as a defect: an obligation IMPOSED AFTER sign-in - a tenant administrator
+    /// marking a profile property required while the account is signed in - reached the client on no
+    /// hydration path at all, so the caller received a bare refusal on every ordinary endpoint and was
+    /// never sent to the one screen that could clear it.
+    /// </para>
+    /// <para>
+    /// SECURITY: this is not advisory in the sense <see cref="Roles"/> and <see cref="Permissions"/> are. A
+    /// client that ignores it, or tampers with it, gains nothing: the pipeline stage that confines a
+    /// restricted session and the authorisation handler that enforces the same rule both RE-EVALUATE the
+    /// stored state on every protected request and refuse independently. What the member buys the client is
+    /// the ability to state the actionable task and to land the caller on the screen that discharges it.
+    /// </para>
+    /// </remarks>
+    public bool MustChangePassword { get; set; }
+
+    /// <summary>
+    /// Whether the caller must complete or correct their required profile properties before the ordinary
+    /// application surface is open to them. <see langword="false"/> means no such obligation stands.
+    /// </summary>
+    /// <remarks>
+    /// The blocking counterpart of <see cref="MustChangePassword"/>, and the one the legacy flow sent to a
+    /// different step rather than to the credential interstitial. Both are published together because both
+    /// can stand at once - the legacy post-credential enumeration was single-valued and could report only
+    /// one - and a caller who has just changed their credential must be able to walk on to the profile
+    /// screen without being sent backwards.
+    /// </remarks>
+    public bool MustUpdateProfile { get; set; }
+
+    /// <summary>
     /// The names of the roles the caller holds in <see cref="PortalId"/>. Never <see langword="null"/>.
     /// </summary>
     /// <remarks>
@@ -117,7 +156,11 @@ public sealed class CurrentUserDto
     public IReadOnlyList<string> Permissions { get; set; } = Array.Empty<string>();
 
     // DELIBERATELY ABSENT, recorded so a later reader does not restore any of them believing it was
-    // overlooked: any credential or session artefact (see the security note on the type); the legacy
+    // overlooked: the NON-BLOCKING credential-expiry advisory that the sign-in and refresh responses carry,
+    // because it gates nothing and the authoritative remediation value this contract mirrors - the two
+    // members above - carries exactly the two obligations the API itself enforces, so publishing a third
+    // would put a value here that no server-side gate re-evaluates; any credential or session artefact
+    // (see the security note on the type); the legacy
     // profile and membership composites, which have their own contracts in the user DTO set and are fetched
     // deliberately so that this per-render response stays small; operation-status enumerations, because
     // expected failures are the service layer's outcome type rendered as an RFC 7807 payload at the API

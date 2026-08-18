@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.IdentityModel.Tokens.Jwt;
+using System.Reflection;
 using System.Security.Claims;
 using DnnMigration.Application.Abstractions;
 using DnnMigration.Application.Dtos.Auth;
@@ -313,14 +314,49 @@ public sealed class TokenServiceTests : IDisposable
         issued.MustUpdateProfile.Should().BeFalse();
 
         issued.User.Should().NotBeNull("the caller reads its own identity off the pair");
-        issued.User.GetType().GetProperties()
-            .Select(property => property.Name)
+
+        // ⚠ THE TEST IS "COULD THIS MEMBER CARRY A CREDENTIAL", NOT "IS THIS MEMBER NAMED AFTER ONE", AND THE
+        // DISTINCTION BECAME LOAD-BEARING RATHER THAN PEDANTIC. This asserted that no member's NAME mentioned
+        // a credential at all, which was a serviceable proxy until the projection gained the two BLOCKING
+        // remediation obligations - one of which is necessarily called `MustChangePassword`, is a boolean, and
+        // is the same decision this very case asserts on the response's own top-level member two lines above.
+        // A name heuristic cannot tell a boolean obligation from a stored secret, so the property is stated
+        // directly instead: NOTHING on this projection may be a member capable of holding credential
+        // material.
+        PropertyInfo[] members = issued.User.GetType().GetProperties();
+
+        members
+            .Where(member => CredentialWords.Any(word =>
+                member.Name.Contains(word, StringComparison.OrdinalIgnoreCase)))
+            .Should()
+            .OnlyContain(
+                member => member.PropertyType == typeof(bool),
+                "the projection is serialised straight to the caller, so any member whose subject is a "
+                + "credential must be a boolean statement ABOUT one and never a value capable of being one");
+
+        members
+            .Select(member => member.Name)
             .Should()
             .NotContain(
-                name => name.Contains("Password", StringComparison.OrdinalIgnoreCase),
-                "the projection is serialised to the caller, so a credential-shaped member on it would "
-                + "reach the wire");
+                name => SecretWords.Any(word => name.Contains(word, StringComparison.OrdinalIgnoreCase)),
+                "no member of the identity projection may name a secret, a stored representation or a "
+                + "session artefact at all, whatever its type");
     }
+
+    /// <summary>
+    /// Words whose presence in a member name means the member's SUBJECT is a credential. Such a member is
+    /// permitted only as a boolean statement about one.
+    /// </summary>
+    private static readonly string[] CredentialWords = { "password", "credential" };
+
+    /// <summary>
+    /// Words that may not appear in a member name of the identity projection at all, because no truthful
+    /// member of it has any of these as its subject.
+    /// </summary>
+    private static readonly string[] SecretWords =
+    {
+        "secret", "token", "hash", "salt", "key", "cookie",
+    };
 
     /// <summary>Refresh values are unguessable, distinct per issuance, and encode nothing about the caller.</summary>
     /// <returns>A task representing the test.</returns>

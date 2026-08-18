@@ -1,5 +1,6 @@
 using DnnMigration.Application.Common;
 using DnnMigration.Application.Dtos.Portal;
+using DnnMigration.Domain.Common;
 using DnnMigration.Domain.Entities;
 using DnnMigration.Domain.Enums;
 
@@ -332,7 +333,9 @@ public static class PortalMappings
             Currency = currency,
             ExpiryDate = expiryDate,
 
-            HostFee = hostFee,
+            // Carried at the column's own scale on this path too, and unclamped for the same reason — see the
+            // note on the update path below.
+            HostFee = SqlServerRange.ToStoredMoney(hostFee),
             HostSpace = hostSpace,
             PageQuota = pageQuota,
             UserQuota = userQuota,
@@ -366,7 +369,16 @@ public static class PortalMappings
         portal.BannerAdvertising = request.BannerAdvertising;
         portal.Currency = request.Currency;
         portal.AdministratorId = request.AdministratorId;
-        portal.HostFee = request.HostFee ?? 0m;
+        // Carried at the column's own scale, for the reason set out on `SqlServerRange.ToStoredMoney`: an
+        // amount assigned straight from a request keeps the scale the caller submitted, so the same stored fee
+        // was published as `0` in the response to a write and `0.0000` when read back afterwards.
+        //
+        // ⚠ SCALE ONLY - THIS AMOUNT IS DELIBERATELY NOT CLAMPED, AND CLAMPING IT BREAKS A GUARDED RULE. A
+        // negative hosting charge is stored on this path exactly as submitted; the flooring rule belongs to the
+        // ROLE fee, where the legacy screen itself floored it. `PortalApplyUpdate_StoresNegativeTermsVerbatim`
+        // fails the moment this is confused. Imposing the scale is safe here because it changes the spelling
+        // and not the value, negatives included.
+        portal.HostFee = SqlServerRange.ToStoredMoney(request.HostFee ?? 0m);
         portal.HostSpace = request.HostSpace ?? 0;
         portal.PageQuota = request.PageQuota ?? 0;
         portal.UserQuota = request.UserQuota ?? 0;

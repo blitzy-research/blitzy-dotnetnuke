@@ -139,6 +139,36 @@ export interface CurrentUser {
   readonly isPortalAdministrator: boolean;
 
   /**
+   * Whether the account must replace its password before the ordinary application surface is open to it.
+   * `false` means no such obligation stands.
+   *
+   * ⚠ PUBLISHED ON THIS SHAPE **AND** ON {@link LoginResponse}, AND ITS ABSENCE HERE WAS MEASURED AS A
+   * DEFECT. Sign-in and refresh carry the obligations on their own top-level members, so a session that
+   * begins encumbered is known from the moment it begins. An obligation imposed AFTER that — an
+   * administrator forcing a password change, or marking a profile property required, while the account is
+   * signed in — reaches the client only through the describe-caller read, because that read is the one
+   * endpoint the server deliberately leaves open while an obligation stands. Without these two members the
+   * client rendered the ordinary console while every ordinary endpoint answered
+   * `403 auth.remediation_required`.
+   *
+   * ⚠ THIS DECIDES NOTHING. The server re-evaluates both obligations from stored state on every protected
+   * request and refuses independently, so a client that ignores them gains nothing. What they buy the
+   * client is the ability to state the actionable task and land the caller on the screen that discharges
+   * it.
+   */
+  readonly mustChangePassword: boolean;
+
+  /**
+   * Whether the account must complete or correct its required profile properties before the ordinary
+   * application surface is open to it. `false` means no such obligation stands.
+   *
+   * The blocking counterpart of {@link CurrentUser.mustChangePassword}. Both can stand at once — the legacy
+   * post-credential status enumeration was single-valued and could report only one — so a caller who has
+   * just changed their password must be able to walk on to the profile screen rather than be sent back.
+   */
+  readonly mustUpdateProfile: boolean;
+
+  /**
    * The role names the account holds in the resolved tenant. Never null; an empty array means the caller
    * holds none.
    */
@@ -258,6 +288,12 @@ export const decodeCurrentUser: Decoder<CurrentUser> = objectOf<CurrentUser>({
   // assignments, so it is decoded rather than recomputed here. It is non-nullable: `false` travels as data
   // and must never be read as an absence, which is why `decodeBoolean` is used and no fallback is supplied.
   isPortalAdministrator: decodeBoolean,
+  // The two BLOCKING obligations. Required and non-nullable for the same reason as the member above: `false`
+  // travels as data and must never be read as an absence. A missing member here is a contract violation
+  // rather than "nothing owed" — silently defaulting it to `false` would reinstate exactly the defect these
+  // members were added to close, and would do so invisibly.
+  mustChangePassword: decodeBoolean,
+  mustUpdateProfile: decodeBoolean,
   roles: arrayOf(decodeString),
   permissions: arrayOf(decodeString),
 });

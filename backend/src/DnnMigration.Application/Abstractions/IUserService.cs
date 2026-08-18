@@ -228,10 +228,20 @@ public interface IUserService
     /// <param name="cancellationToken">Token observed while the lockout is cleared.</param>
     /// <returns>A successful result with no value.</returns>
     /// <remarks>
+    /// <para>
+    /// <b>IDEMPOTENT.</b> An account that is not locked is the state this operation exists to produce, so
+    /// asking for it again succeeds without a store write rather than refusing. It previously reported a
+    /// refusal for an already-unlocked account, which an operator saw as a failed action for work that had
+    /// in fact been done - and which made the operation unsafe to retry after an answer was lost in
+    /// transit. An account that does not exist, or that holds no credential at all, is still reported as
+    /// absent: neither is the requested end state.
+    /// </para>
+    /// <para>
     /// A caveat worth recording next to this member: the legacy sign-in path treated a locked account as
     /// authenticated, because it derived its verdict by testing the status against outright failure alone.
     /// That is a discovered defect in the sign-in path, annotated where it lives - on the sibling
     /// authentication contract - and deliberately not repaired here.
+    /// </para>
     /// </remarks>
     Task<Result> UnlockUserAsync(
         int portalId,
@@ -466,19 +476,69 @@ public interface IUserService
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Writes the display positions of several profile property definitions as ONE unit of work.
+    /// </summary>
+    /// <param name="portalId">Identifier of the tenant that declares the definitions.</param>
+    /// <param name="request">The declarations to reposition, each paired with its new position.</param>
+    /// <param name="cancellationToken">Token observed while the positions are written.</param>
+    /// <returns>
+    /// A successful result carrying the tenant's whole catalogue in its new order, which is what lets a
+    /// caller rebind from the response rather than issuing a follow-up read. The single documented failure
+    /// code is <c>profile-definition.not-found</c>, reported when the request names a definition the tenant
+    /// does not declare.
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// <b>Why a member of its own, when position is already a member of the update contract.</b> A position
+    /// is not a per-row fact. Moving a declaration one place EXCHANGES two stored positions, so the two
+    /// writes are only correct together — apply one and refuse the other and two declarations hold the same
+    /// position, which is neither the order the operator started from nor the one they asked for. Sending
+    /// the exchange as a sequence of independent updates cannot express that, however precisely it reports
+    /// which row failed.
+    /// </para>
+    /// <para>
+    /// <b>All or nothing.</b> Every named declaration is resolved before anything is staged, and the set is
+    /// committed once. A request naming a definition that does not exist, belongs to another tenant, or has
+    /// been withdrawn writes NOTHING and is answered with the absence.
+    /// </para>
+    /// <para>
+    /// MIGRATION: A WITHDRAWN DECLARATION READS AS ABSENT HERE TOO, matching every other member of this
+    /// contract.
+    /// </para>
+    /// </remarks>
+    Task<Result<IReadOnlyList<ProfilePropertyDefinitionDto>>> ReorderProfilePropertyDefinitionsAsync(
+        int portalId,
+        ReorderProfilePropertyDefinitionsRequest request,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Removes a profile property definition from a tenant, together with the values accounts hold for it.
     /// </summary>
     /// <param name="portalId">Identifier of the tenant that declares the definition.</param>
     /// <param name="propertyDefinitionId">Identifier of the definition to remove.</param>
+    /// <param name="confirmValueDeletion">
+    /// Consent to destroying the answers accounts hold for the declaration. Required whenever it has any;
+    /// ignored when it has none, because then there is nothing to consent to.
+    /// </param>
     /// <param name="cancellationToken">Token observed while the definition is removed.</param>
     /// <returns>A successful result with no value, which is what lets the API layer answer 204 No Content.</returns>
     /// <remarks>
+    /// <para>
     /// MIGRATION: A WITHDRAWN DECLARATION READS AS ABSENT HERE TOO, reported with the not-found code, so
     /// every member of this contract agrees on which declarations exist.
+    /// </para>
+    /// <para>
+    /// <strong>TWO PROTECTIONS GUARD THIS OPERATION, AND BOTH REFUSE RATHER THAN SOFTEN.</strong> The four
+    /// reserved property names are refused outright, restoring the protection the legacy screen provided by
+    /// hiding its delete command. Any other declaration that accounts have actually answered is refused until
+    /// the caller consents explicitly, because the store removes those answers with the declaration and the
+    /// loss is irreversible. The refusal reports HOW MANY answers are at stake, so the consent is informed.
+    /// </para>
     /// </remarks>
     Task<Result> DeleteProfilePropertyDefinitionAsync(
         int portalId,
         int propertyDefinitionId,
+        bool confirmValueDeletion = false,
         CancellationToken cancellationToken = default);
 
     /// <summary>

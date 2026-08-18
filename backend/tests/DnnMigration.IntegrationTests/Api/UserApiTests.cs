@@ -1517,10 +1517,20 @@ public sealed class UserApiTests
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
-    /// <summary>An unlock of an account that is not locked is refused rather than silently succeeding.</summary>
+    /// <summary>
+    /// An unlock of an account that is not locked answers <c>204 No Content</c>, and answers it again when
+    /// the same request is repeated.
+    /// </summary>
     /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// This case previously required a <c>400</c> carrying "is not locked", and that expectation encoded
+    /// the defect rather than the contract: the unlocked state is the state the operation exists to
+    /// produce, so an operator retrying after a lost answer - or a second administrator clearing the same
+    /// lockout - was shown a failure for work that was done. The request is issued TWICE here, because
+    /// idempotence is a property of the second call and asserting only the first would not measure it.
+    /// </remarks>
     [Fact]
-    public async Task Unlock_WhenAccountIsNotLocked_ReturnsBadRequest()
+    public async Task Unlock_WhenAccountIsNotLocked_ReturnsNoContentAndIsRepeatable()
     {
         using HttpClient client = await _fixture.CreateHostClientAsync();
         UserDetailDto created = await CreateUserAsync(client);
@@ -1529,10 +1539,13 @@ public sealed class UserApiTests
             UnlockRoute(_fixture.Seed.PortalId, created.UserId),
             content: null);
 
-        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        response.StatusCode.Should().Be(HttpStatusCode.NoContent);
 
-        string body = await response.Content.ReadAsStringAsync();
-        body.Should().Contain("is not locked");
+        using HttpResponseMessage repeated = await client.PostAsync(
+            UnlockRoute(_fixture.Seed.PortalId, created.UserId),
+            content: null);
+
+        repeated.StatusCode.Should().Be(HttpStatusCode.NoContent);
     }
 
     /// <summary>
@@ -2435,6 +2448,167 @@ public sealed class UserApiTests
 
         using HttpResponseMessage gone = await client.GetAsync(itemRoute);
         gone.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    /// <summary>
+    /// The ordering route writes an exchange of positions as ONE unit of work, and answers with the whole
+    /// catalogue in its new order.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// Position is a member of the per-declaration update contract, so reordering had no route of its own and
+    /// the screen exchanged two positions with two independent replacements. A position is not a per-row fact
+    /// though: land the first replacement and lose the second and BOTH declarations hold the same position,
+    /// an order that is neither the one the operator started from nor the one they asked for.
+    /// </remarks>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ReorderProfileDefinitions_WritesTheWholeExchangeAndAnswersWithTheNewOrder()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        ProfilePropertyDefinitionDto first = await CreateProfileDefinitionAsync(client, required: false);
+        ProfilePropertyDefinitionDto second = await CreateProfileDefinitionAsync(client, required: false);
+
+        try
+        {
+            // Distinct, known starting positions, set through the per-declaration route so the exchange below
+            // has something unambiguous to exchange.
+            await SetProfileDefinitionOrderAsync(client, first, 41);
+            await SetProfileDefinitionOrderAsync(client, second, 42);
+
+            using HttpResponseMessage reordered = await client.PutAsJsonAsync(
+                ProfileDefinitionOrderRoute,
+                new
+                {
+                    positions = new[]
+                    {
+                        new { propertyDefinitionId = first.PropertyDefinitionId, viewOrder = 42 },
+                        new { propertyDefinitionId = second.PropertyDefinitionId, viewOrder = 41 },
+                    },
+                },
+                ApiTestFixture.Json);
+
+            reordered.StatusCode.Should().Be(HttpStatusCode.OK);
+
+            CollectionEnvelope<ProfilePropertyDefinitionDto>? envelope = await reordered.Content
+                .ReadFromJsonAsync<CollectionEnvelope<ProfilePropertyDefinitionDto>>(ApiTestFixture.Json);
+
+            envelope.Should().NotBeNull();
+            IReadOnlyList<ProfilePropertyDefinitionDto> catalogue = envelope!.Data
+                .Should().NotBeNull().And.Subject.As<IReadOnlyList<ProfilePropertyDefinitionDto>>();
+
+            catalogue.Single(item => item.PropertyDefinitionId == first.PropertyDefinitionId)
+                .ViewOrder.Should().Be(42);
+            catalogue.Single(item => item.PropertyDefinitionId == second.PropertyDefinitionId)
+                .ViewOrder.Should().Be(41);
+
+            // The answer carries the WHOLE catalogue in order, so a caller rebinds from it rather than
+            // following it with a read that could observe another writer and appear to have lost the move.
+            catalogue.Select(item => item.ViewOrder).Should().BeInAscendingOrder();
+
+            // And the exchange is what the store now holds, read back independently of the answer.
+            using HttpResponseMessage readBack = await client.GetAsync(
+                ProfileDefinitionRoute(_fixture.Seed.PortalId, second.PropertyDefinitionId));
+
+            readBack.StatusCode.Should().Be(HttpStatusCode.OK);
+
+            ProfilePropertyDefinitionDto? storedSecond = await readBack.Content
+                .ReadEnvelopeAsync<ProfilePropertyDefinitionDto>();
+
+            storedSecond.Should().NotBeNull();
+            storedSecond!.ViewOrder.Should().Be(41);
+        }
+        finally
+        {
+            await DeleteProfileDefinitionAsync(client, first.PropertyDefinitionId);
+            await DeleteProfileDefinitionAsync(client, second.PropertyDefinitionId);
+        }
+    }
+
+    /// <summary>
+    /// A set naming one declaration the tenant does not hold writes NOTHING - not even the part of the order
+    /// the request could resolve.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ReorderProfileDefinitions_NamingAnUnknownDeclaration_WritesNothing()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        ProfilePropertyDefinitionDto held = await CreateProfileDefinitionAsync(client, required: false);
+
+        try
+        {
+            await SetProfileDefinitionOrderAsync(client, held, 53);
+
+            using HttpResponseMessage refused = await client.PutAsJsonAsync(
+                ProfileDefinitionOrderRoute,
+                new
+                {
+                    positions = new[]
+                    {
+                        // Resolvable, and deliberately FIRST: a member that staged as it resolved would have
+                        // written this one before discovering the second.
+                        new { propertyDefinitionId = held.PropertyDefinitionId, viewOrder = 9 },
+                        new { propertyDefinitionId = 987654, viewOrder = 0 },
+                    },
+                },
+                ApiTestFixture.Json);
+
+            refused.StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+            using HttpResponseMessage readBack = await client.GetAsync(
+                ProfileDefinitionRoute(_fixture.Seed.PortalId, held.PropertyDefinitionId));
+
+            readBack.StatusCode.Should().Be(HttpStatusCode.OK);
+
+            ProfilePropertyDefinitionDto? stored = await readBack.Content
+                .ReadEnvelopeAsync<ProfilePropertyDefinitionDto>();
+
+            stored.Should().NotBeNull();
+            stored!.ViewOrder.Should().Be(
+                53,
+                "the resolvable declaration keeps the position it held, because nothing is staged once any "
+                + "named declaration cannot be resolved");
+        }
+        finally
+        {
+            await DeleteProfileDefinitionAsync(client, held.PropertyDefinitionId);
+        }
+    }
+
+    /// <summary>An empty position set is refused at the boundary.</summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ReorderProfileDefinitions_WithNoPositions_ReturnsBadRequest()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            ProfileDefinitionOrderRoute,
+            new { positions = Array.Empty<object>() },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    /// <summary>Reordering requires the administrators role, not merely a token.</summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ReorderProfileDefinitions_AsPlainMember_ReturnsForbidden()
+    {
+        using HttpClient client = await _fixture.CreateUnprivilegedClientAsync();
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            ProfileDefinitionOrderRoute,
+            new { positions = new[] { new { propertyDefinitionId = 1, viewOrder = 0 } } },
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
     /// <summary>Creating a definition requires the administrators role, not merely a token.</summary>
@@ -3603,6 +3777,47 @@ public sealed class UserApiTests
         return created!;
     }
 
+    /// <summary>Where an ordering change is submitted.</summary>
+    /// <remarks>
+    /// A LITERAL segment, which cannot collide with the sibling <c>{propertyDefinitionId:int}</c> route
+    /// because an integer constraint does not match <c>order</c>.
+    /// </remarks>
+    private static Uri ProfileDefinitionOrderRoute { get; } =
+        new("/api/v1/profile-definitions/order", UriKind.Relative);
+
+    /// <summary>Gives one declaration a known position through the per-declaration route.</summary>
+    /// <param name="client">The privileged caller.</param>
+    /// <param name="definition">The declaration as created.</param>
+    /// <param name="viewOrder">The position to set.</param>
+    /// <returns>A task representing the write.</returns>
+    private async Task SetProfileDefinitionOrderAsync(
+        HttpClient client,
+        ProfilePropertyDefinitionDto definition,
+        int viewOrder)
+    {
+        UpdateProfilePropertyDefinitionRequest amendment = AmendmentFrom(definition);
+        amendment.ViewOrder = viewOrder;
+
+        using HttpResponseMessage response = await client.PutAsJsonAsync(
+            ProfileDefinitionRoute(_fixture.Seed.PortalId, definition.PropertyDefinitionId),
+            amendment,
+            ApiTestFixture.Json);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    /// <summary>Removes a declaration created for a test, tolerating one already gone.</summary>
+    /// <param name="client">The privileged caller.</param>
+    /// <param name="propertyDefinitionId">The declaration to remove.</param>
+    /// <returns>A task representing the removal.</returns>
+    private async Task DeleteProfileDefinitionAsync(HttpClient client, int propertyDefinitionId)
+    {
+        using HttpResponseMessage removed = await client.DeleteAsync(
+            ProfileDefinitionRoute(_fixture.Seed.PortalId, propertyDefinitionId));
+
+        removed.StatusCode.Should().BeOneOf(HttpStatusCode.NoContent, HttpStatusCode.NotFound);
+    }
+
     /// <summary>Inserts one profile value for test setup.</summary>
     private Task InsertProfileValueAsync(int userId, int propertyDefinitionId, string value) =>
         _fixture.Database.ExecuteAsync(
@@ -3917,50 +4132,20 @@ public sealed class UserApiTests
                 ? (await publishedSettings.Content.ReadEnvelopeAsync<MembershipSettingsDto>())!
                 : new MembershipSettingsDto();
 
-            // The listing composes these from the profile tables; the single read does not carry them, so
-            // they have no counterpart and are not compared.
+            // MIGRATION: THIS TEST USED TO ASSERT THE OPPOSITE, AND ASSERTING IT WAS THE DEFECT. It built a
+            // list of columns the tenant's grid settings hide, excluded them from the agreement comparison,
+            // and then required the listing to report each one EMPTIED - an approved account reported as
+            // unapproved, a stored electronic-mail address reported as the empty string. That is a
+            // presentation setting changing a membership FACT, and the legacy grid never did it: it honoured
+            // a hidden column by DECLINING TO RENDER it, leaving the value in the row it came from.
+            //
+            // The listing now projects every account column as stored, so the only members without a
+            // counterpart in the single read are the two the listing composes from the profile tables.
             var listingOnly = new List<string>
             {
                 nameof(UserListItemDto.Address),
                 nameof(UserListItemDto.Telephone),
             };
-
-            // A column the tenant withholds is asserted BELOW as withheld, so it is excluded from the
-            // agreement comparison rather than being expected to match the privileged read.
-            var withheld = new List<string>();
-
-            void Withholds(bool published, string member)
-            {
-                if (!published)
-                {
-                    withheld.Add(member);
-                    listingOnly.Add(member);
-                }
-            }
-
-            static void AssertProjectedText(bool published, string? projected, string? submitted, string member)
-            {
-                if (published)
-                {
-                    projected.Should().Be(
-                        submitted,
-                        FormattableString.Invariant($"{member} is published by this tenant"));
-                }
-                else
-                {
-                    projected.Should().BeEmpty(
-                        FormattableString.Invariant(
-                            $"{member} is withheld by this tenant and must not cross the API boundary"));
-                }
-            }
-
-            Withholds(visibility.ColumnFirstName, nameof(UserListItemDto.FirstName));
-            Withholds(visibility.ColumnLastName, nameof(UserListItemDto.LastName));
-            Withholds(visibility.ColumnDisplayName, nameof(UserListItemDto.DisplayName));
-            Withholds(visibility.ColumnEmail, nameof(UserListItemDto.Email));
-            Withholds(visibility.ColumnCreatedDate, nameof(UserListItemDto.CreatedDate));
-            Withholds(visibility.ColumnLastLogin, nameof(UserListItemDto.LastLoginDate));
-            Withholds(visibility.ColumnAuthorized, nameof(UserListItemDto.IsApproved));
 
             IReadOnlyList<PropertyInfo> detailProperties = typeof(UserDetailDto)
                 .GetProperties(BindingFlags.Public | BindingFlags.Instance);
@@ -3995,9 +4180,8 @@ public sealed class UserApiTests
                 compared.Add(listProperty.Name);
             }
 
-            // The comparison is only meaningful if it actually reached the members the drift emptied, so
-            // every one of the five is accounted for: either compared against the privileged read, or
-            // asserted as withheld by the tenant's own published setting. Neither list may simply omit it.
+            // Every account column must have been REACHED by the comparison. Neither list may quietly omit
+            // one, or the drift this test exists to catch could return unnoticed.
             foreach (string member in new[]
             {
                 nameof(UserListItemDto.Username),
@@ -4005,49 +4189,59 @@ public sealed class UserApiTests
                 nameof(UserListItemDto.LastName),
                 nameof(UserListItemDto.DisplayName),
                 nameof(UserListItemDto.Email),
+                nameof(UserListItemDto.CreatedDate),
+                nameof(UserListItemDto.LastLoginDate),
+                nameof(UserListItemDto.IsApproved),
             })
             {
-                (compared.Contains(member, StringComparer.Ordinal)
-                    || withheld.Contains(member, StringComparer.Ordinal))
-                    .Should().BeTrue(
-                        FormattableString.Invariant(
-                            $"{member} must be either compared with the single read or withheld by a setting"));
+                compared.Should().Contain(
+                    member,
+                    FormattableString.Invariant(
+                        $"{member} is an account column and must agree with the single read"));
             }
 
-            // Username carries no visibility flag at all, so it is always published and always agrees.
-            compared.Should().Contain(nameof(UserListItemDto.Username));
             listed.Username.Should().Be(request.Username);
 
-            // A published column must carry the submitted value rather than merely agree on emptiness; a
-            // withheld one must carry the contract's absent value rather than the stored PII.
-            AssertProjectedText(
-                visibility.ColumnFirstName, listed.FirstName, request.FirstName, nameof(UserListItemDto.FirstName));
-            AssertProjectedText(
-                visibility.ColumnLastName, listed.LastName, request.LastName, nameof(UserListItemDto.LastName));
-            AssertProjectedText(
-                visibility.ColumnDisplayName,
-                listed.DisplayName,
-                request.DisplayName,
-                nameof(UserListItemDto.DisplayName));
-            AssertProjectedText(
-                visibility.ColumnEmail, listed.Email, request.Email, nameof(UserListItemDto.Email));
+            // Each account column carries the SUBMITTED value, whatever the tenant's grid settings say. A
+            // setting decides whether a COLUMN IS RENDERED; it does not decide what the account is.
+            listed.FirstName.Should().Be(request.FirstName);
+            listed.LastName.Should().Be(request.LastName);
+            listed.DisplayName.Should().Be(request.DisplayName);
+            listed.Email.Should().Be(request.Email);
+            listed.CreatedDate.Should().NotBeNull(
+                "a created instant is a fact about the account, not a rendering choice");
 
-            if (!visibility.ColumnCreatedDate)
+            // ⚠ THE DECOUPLING IS EXERCISED, NOT MERELY PERMITTED. The seeded tenant hides at least one
+            // account column, and the point of this test is that the value survives anyway - so the hidden
+            // column is named and its value asserted present rather than the case passing on a tenant that
+            // happens to publish everything.
+            var hiddenAccountColumns = new List<string>();
+
+            void RecordHidden(bool published, string member)
             {
-                listed.CreatedDate.Should().BeNull(
-                    "a nullable instant the tenant withholds is projected as absent");
+                if (!published)
+                {
+                    hiddenAccountColumns.Add(member);
+                }
             }
 
-            if (!visibility.ColumnLastLogin)
-            {
-                listed.LastLoginDate.Should().BeNull(
-                    "a nullable instant the tenant withholds is projected as absent");
-            }
+            RecordHidden(visibility.ColumnFirstName, nameof(UserListItemDto.FirstName));
+            RecordHidden(visibility.ColumnLastName, nameof(UserListItemDto.LastName));
+            RecordHidden(visibility.ColumnDisplayName, nameof(UserListItemDto.DisplayName));
+            RecordHidden(visibility.ColumnEmail, nameof(UserListItemDto.Email));
+            RecordHidden(visibility.ColumnCreatedDate, nameof(UserListItemDto.CreatedDate));
+            RecordHidden(visibility.ColumnLastLogin, nameof(UserListItemDto.LastLoginDate));
+            RecordHidden(visibility.ColumnAuthorized, nameof(UserListItemDto.IsApproved));
 
-            // At least one column must actually be withheld under the tenant's settings, or this fact would
-            // pass without ever exercising the minimisation it exists to pin.
-            withheld.Should().NotBeEmpty(
-                "the minimisation must be exercised, not merely permitted");
+            hiddenAccountColumns.Should().NotBeEmpty(
+                "the tenant must hide at least one account column, or this case never exercises the "
+                + "decoupling between a rendering setting and a stored fact");
+
+            // The listing's approval flag is the ACCOUNT's, and it agrees with the single read above - which
+            // is the specific reversal that made a rendering setting look like a membership decision.
+            listed.IsApproved.Should().Be(
+                detail.IsApproved,
+                "an approval flag is a membership fact and cannot be forced false by a grid setting");
         }
         finally
         {
@@ -4989,11 +5183,19 @@ public sealed class UserApiTests
             .Subject;
         matched.Username.Should().Be(request.Username);
 
-        // The FILTER is server-side and the PROJECTION is minimised, and the two are independent.
+        // The FILTER is server-side, and the PROJECTION reports what was stored.
+        //
+        // MIGRATION: THIS USED TO REQUIRE THE ADDRESS TO COME BACK EMPTY, on the grounds that the tenant's
+        // grid settings hide the column. It no longer does, and the reversal is deliberate: a grid setting
+        // decides whether a COLUMN IS RENDERED, not what the account is, and the legacy grid honoured a
+        // hidden column by declining to render it while leaving the value in the row. Emptying it here was
+        // also self-defeating on this very endpoint - the caller had just filtered ON the address and got
+        // back rows that would not say what any of them was.
         matched.UserId.Should().Be(createdUser.UserId);
-        matched.Email.Should().BeEmpty(
-            "the tenant's default withholds the electronic-mail column, and a withheld column must not cross "
-            + "the API boundary even when it was the column filtered on");
+        matched.Email.Should().Be(
+            request.Email,
+            "the address the account was created with is the address the listing reports, and a caller that "
+            + "filtered on it must be able to see what matched");
 
         string fragment = localPart[3..];
         fragment.Should().NotBeNullOrEmpty("the seeded address must be long enough to yield a mid-string cut");

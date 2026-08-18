@@ -97,6 +97,8 @@ public class UpdateModuleRequestValidator : AbstractValidator<UpdateModuleReques
         // rule there is to impose.
         RuleFor(request => request.ModuleTitle)
             .MaximumLength(ModuleTitleMaximumLength)
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage)
             .When(request => !string.IsNullOrEmpty(request.ModuleTitle));
 
         // The icon is a STORED NAME OR PATH and nothing more - no upload, no location resolution and no
@@ -106,6 +108,8 @@ public class UpdateModuleRequestValidator : AbstractValidator<UpdateModuleReques
             .When(request => !string.IsNullOrEmpty(request.IconFile));
 
         RuleFor(request => request.IconFile)
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage)
             .Must(IconReferenceRules.IsContained)
             .WithMessage(IconReferenceRules.NotContainedMessage);
 

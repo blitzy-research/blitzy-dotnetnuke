@@ -20,6 +20,8 @@ describe('TokenStorageService', () => {
     // FALSE even though the held role is named for administration, which is the whole point of the
     // member existing: the name confers nothing, and only the tenant's own designation does.
     isPortalAdministrator: false,
+    mustChangePassword: false,
+    mustUpdateProfile: false,
     roles: ['Administrators'],
     permissions: ['VIEW', 'EDIT'],
   };
@@ -182,6 +184,8 @@ describe('TokenStorageService', () => {
         isSuperUser: true,
         // A host account administers every tenant, which is what the server reports for one.
         isPortalAdministrator: true,
+        mustChangePassword: false,
+        mustUpdateProfile: false,
         roles: ['Administrators', 'Hosts'],
         permissions: ['VIEW'],
       };
@@ -191,6 +195,99 @@ describe('TokenStorageService', () => {
 
       expect(service.currentUser()).withContext('identity').toBe(second);
       expect(service.permissions()).withContext('permissions follow the identity').toEqual(['VIEW']);
+    });
+  });
+
+  describe('refreshIdentity', () => {
+    /**
+     * An identity carrying both blocking obligations, which is the state a mid-session imposition produces
+     * and the state the sign-in response could not have described.
+     */
+    const ENCUMBERED: CurrentUser = {
+      ...USER,
+      mustChangePassword: true,
+      mustUpdateProfile: true,
+    };
+
+    it('folds a freshly read identity onto the held session', () => {
+      service.store(aSession());
+
+      service.refreshIdentity(ENCUMBERED);
+
+      expect(service.currentUser()).withContext('identity').toBe(ENCUMBERED);
+    });
+
+    it('adopts the obligations the identity publishes, which is how a mid-session one is learned', () => {
+      // The session began unencumbered, exactly as a sign-in before an administrator imposed anything.
+      service.store(aSession());
+
+      expect(service.mustUpdateProfile())
+        .withContext('nothing was owed when the session began')
+        .toBeFalse();
+
+      service.refreshIdentity(ENCUMBERED);
+
+      expect(service.mustUpdateProfile())
+        .withContext('the describe-caller read is the only response that can carry a later obligation')
+        .toBeTrue();
+      expect(service.session()?.mustChangePassword)
+        .withContext('its credential twin is folded by the same call')
+        .toBeTrue();
+    });
+
+    it('does NOT advance the generation, because neither the credentials nor the account changed', () => {
+      service.store(aSession());
+
+      const before = service.generation();
+
+      service.refreshIdentity(ENCUMBERED);
+
+      // ⚠ THE POINT OF THE MEMBER. Every asynchronous authentication path captures the generation before it
+      // starts and discards its own result if it has moved, so advancing it here would abort a renewal
+      // already in the air for a read that changed nothing about who the caller is.
+      expect(service.generation()).withContext('auth epoch').toBe(before);
+      expect(service.isCurrentGeneration(before))
+        .withContext('work already in flight still belongs to this session')
+        .toBeTrue();
+    });
+
+    it('leaves both credentials and the expiry exactly as they were', () => {
+      service.store(aSession());
+
+      service.refreshIdentity(ENCUMBERED);
+
+      expect(service.accessToken()).withContext('access token').toBe('fake-access-token');
+      expect(service.refreshToken()).withContext('refresh token').toBe('fake-refresh-token');
+      expect(service.accessTokenExpiresAt()).withContext('expiry').toBe(FAR_FUTURE);
+    });
+
+    it('is ignored when no session is held, so a late read cannot resurrect a signed-out account', () => {
+      service.refreshIdentity(ENCUMBERED);
+
+      expect(service.isAuthenticated()).withContext('still signed out').toBeFalse();
+      expect(service.currentUser()).withContext('no identity').toBeNull();
+      expect(service.mustUpdateProfile())
+        .withContext('a gate must read no obligation for an account that is not signed in')
+        .toBeFalse();
+    });
+
+    it('clears an obligation the server no longer reports, so a completed remediation is not re-imposed', () => {
+      service.store(aSession({ mustChangePassword: true, mustUpdateProfile: true }));
+
+      service.refreshIdentity(USER);
+
+      expect(service.mustUpdateProfile()).withContext('profile obligation').toBeFalse();
+      expect(service.session()?.mustChangePassword).withContext('credential obligation').toBeFalse();
+    });
+
+    it('leaves the non-blocking expiry advisory alone, which the identity does not publish', () => {
+      service.store(aSession({ passwordExpiring: true }));
+
+      service.refreshIdentity(ENCUMBERED);
+
+      expect(service.session()?.passwordExpiring)
+        .withContext('a member the identity carries no opinion about must not be overwritten')
+        .toBeTrue();
     });
   });
 

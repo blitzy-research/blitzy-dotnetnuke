@@ -28,15 +28,35 @@ public static class SqlServerRange
     /// <summary>The number of fractional digits a <c>money</c> column retains.</summary>
     public const int MoneyScale = 4;
 
+    /// <summary>
+    /// Zero carried at <see cref="MoneyScale"/>, which is how the scale is imposed. Adding two decimals
+    /// yields a result at the greater of the two scales, so adding this to a rounded amount leaves the
+    /// amount untouched and its scale at four. It is a named constant rather than a literal at the call
+    /// site because a bare <c>+ 0.0000m</c> reads as dead arithmetic and invites removal.
+    /// </summary>
+    private const decimal ZeroAtMoneyScale = 0.0000m;
+
     /// <summary>Returns the value a <c>money</c> column would hold for the supplied amount.</summary>
     /// <param name="amount">The amount as it stands in memory.</param>
-    /// <returns>The amount rounded to the column's four fractional digits.</returns>
+    /// <returns>The amount rounded to, and carried at, the column's four fractional digits.</returns>
     /// <remarks>
+    /// <para>
     /// WHY A DOMAIN CONCERN AND NOT AN INFRASTRUCTURE ONE. A <c>money</c> column cannot hold more than four
     /// fractional digits, so an aggregate carrying five is carrying a value the store will silently change.
+    /// </para>
+    /// <para>
+    /// ⚠ THE SCALE IS PART OF THE ANSWER, NOT A DETAIL OF IT. Rounding alone changes the value and leaves the
+    /// scale as submitted, and a <see cref="decimal"/> remembers its scale: <c>4.5m</c> rounded to four digits
+    /// is still <c>4.5m</c>, and serialises as <c>4.5</c>. A column that has actually stored it hands back
+    /// <c>4.5000m</c>, which serialises as <c>4.5000</c>. So one amount had two published spellings depending
+    /// on whether the caller was reading the response to their own write or reading the resource afterwards -
+    /// numerically equal, textually different, and different enough to defeat any client that compares or
+    /// digests the text. The scale the column retains is imposed here so that every projection of a stored
+    /// amount, from a creation response through to a listing row, spells it identically.
+    /// </para>
     /// </remarks>
     public static decimal ToStoredMoney(decimal amount)
-        => Math.Round(amount, MoneyScale, MidpointRounding.AwayFromZero);
+        => Math.Round(amount, MoneyScale, MidpointRounding.AwayFromZero) + ZeroAtMoneyScale;
 
     /// <summary>
     /// Returns the value a <c>money</c> column would hold for the supplied amount, or <see

@@ -301,7 +301,11 @@
             #billingPeriodField
             label="Billing Period (Every)"
             for="role-form-billing-period"
-            help="These two fields are used in conjunction to enter a Billing Period. e.g 2 weeks, or 1 month"
+            [help]="
+              'These two fields are used in conjunction to enter a Billing Period. e.g 2 weeks, or 1 month. ' +
+              'Leaving either box empty, or choosing no frequency, stores no billing terms: the fee is saved ' +
+              'as 0 and the period as 1. There is no way to save these as unknown.'
+            "
             [error]="messageFor('billingPeriod')"
             [class.form-field--disabled]="readOnly()"
           >
@@ -328,7 +332,6 @@
               />
               <select
                 id="role-form-billing-frequency"
-                [attr.aria-label]="billingFrequencyAccessibleName"
                 class="role-form__frequency"
                 formControlName="billingFrequency"
                 [attr.aria-labelledby]="
@@ -372,7 +375,11 @@
             #trialPeriodField
             label="Trial Period (Every)"
             for="role-form-trial-period"
-            help="These two fields are used in conjunction to enter a Trial Period. e.g 2 weeks, or 1 month"
+            [help]="
+              'These two fields are used in conjunction to enter a Trial Period. e.g 2 weeks, or 1 month. ' +
+              'Leaving either box empty, or choosing no frequency, stores no trial terms: the fee is saved as ' +
+              '0 and the period as 1. A trial is also only stored when a service fee is present.'
+            "
             [error]="messageFor('trialPeriod')"
             [class.form-field--disabled]="readOnly()"
           >
@@ -400,7 +407,6 @@
               />
               <select
                 id="role-form-trial-frequency"
-                [attr.aria-label]="trialFrequencyAccessibleName"
                 class="role-form__frequency"
                 formControlName="trialFrequency"
                 [attr.aria-labelledby]="
@@ -423,7 +429,10 @@
             for="role-form-rsvp-code"
             [help]="
               'Enter an RSVP Code for the role.  This code can be used to provide a convenient ' +
-              'method for users to subscribe to one or more roles.'
+              'method for users to subscribe to one or more roles.  A new code must be at least 12 ' +
+              'characters long and must mix letters with digits or punctuation, because anyone holding ' +
+              'the code can join the role.  A code already saved against this role keeps working as it ' +
+              'is, and only needs to meet the rule if you change it.'
             "
             [error]="messageFor('rsvpCode')"
             [class.form-field--disabled]="readOnly()"
@@ -436,6 +445,13 @@
               the ordinary control measure every other text field on the screen uses.
             -->
             <div class="role-form__control">
+            <!--
+              ⚠ NO NATIVE `minlength` OR `pattern` HERE, DELIBERATELY. Both are provenance-blind - they judge
+              the value in the box and cannot know whether it is the code already stored - so either would
+              refuse a legacy short code that this role is entitled to keep, which is the exact trap the
+              server fix removed. The strength rule is carried by `authoredRsvpCodeValidator` instead, which
+              compares against the stored value and fires only when a new code is actually being authored.
+            -->
               <input
                 id="role-form-rsvp-code"
                 type="text"

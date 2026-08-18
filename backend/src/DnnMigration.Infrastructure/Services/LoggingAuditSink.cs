@@ -152,10 +152,32 @@ internal sealed class LoggingAuditSink : IAuditSink
     /// <returns>A bounded state object carrying only allowlisted properties.</returns>
     private static AuditLogState BuildState(AuditEvent auditEvent)
     {
-        string eventName = SanitiseCode(auditEvent.EventName, "UNRECOGNISED_AUDIT_EVENT")!;
-        string? resourceType = SanitiseCode(auditEvent.ResourceType, null);
-        string? resourceId = SanitiseCode(auditEvent.ResourceId, null);
-        string? failureCode = SanitiseCode(auditEvent.FailureCode, RejectedMetadataValue);
+        // An event with no name is unusable to a reader, so both failure modes collapse to the same loud
+        // stand-in: there is no legitimate absent case here.
+        string eventName = SanitiseCode(
+            auditEvent.EventName,
+            absentValue: "UNRECOGNISED_AUDIT_EVENT",
+            unsafeValue: "UNRECOGNISED_AUDIT_EVENT")!;
+
+        // A resource attribution is genuinely optional - a session event names no resource - so absence is
+        // recorded as absence, while a supplied value that cannot be written still leaves its mark.
+        string? resourceType = SanitiseCode(
+            auditEvent.ResourceType,
+            absentValue: null,
+            unsafeValue: RejectedMetadataValue);
+        string? resourceId = SanitiseCode(
+            auditEvent.ResourceId,
+            absentValue: null,
+            unsafeValue: RejectedMetadataValue);
+
+        // ⚠ ABSENT MEANS SUCCEEDED, AND MUST NOT READ AS A REFUSAL. Every producer sets this to null when the
+        // outcome was accepted, so the absent case has to stay null for the field to mean anything: with the
+        // not-safe-to-write substitute here instead, all 218 successful outcomes in a QA run carried
+        // failure="rejected".
+        string? failureCode = SanitiseCode(
+            auditEvent.FailureCode,
+            absentValue: null,
+            unsafeValue: RejectedMetadataValue);
 
         List<KeyValuePair<string, object?>> properties =
         [
@@ -283,16 +305,38 @@ internal sealed class LoggingAuditSink : IAuditSink
     }
 
     /// <summary>Reduces an envelope value to a short machine-readable code.</summary>
-    private static string? SanitiseCode(string? value, string? rejectedValue)
+    /// <param name="value">The value to reduce, which may legitimately be absent.</param>
+    /// <param name="absentValue">What to record when the producer supplied nothing at all.</param>
+    /// <param name="unsafeValue">What to record when a value WAS supplied but cannot be written.</param>
+    /// <returns>The value, or one of the two substitutes.</returns>
+    /// <remarks>
+    /// <para>
+    /// <strong>ABSENT AND UNSAFE ARE DIFFERENT ANSWERS AND THE CALLER CHOOSES BOTH.</strong> These were one
+    /// parameter, and collapsing them was a reporting defect rather than a stylistic one: a successful outcome
+    /// carries no failure code by construction - every producer writes <c>Outcome == Succeeded ? null : code</c>
+    /// - so feeding the not-safe-to-write substitute in for an absent value stamped
+    /// <see cref="RejectedMetadataValue"/> onto the audit record of every success. A reader filtering the log
+    /// for refusals then matched all of them, which is the exact opposite of what the field is for.
+    /// </para>
+    /// <para>
+    /// Keeping the unsafe substitute separate is what stops the fix from trading one silent failure for
+    /// another. A value that arrives malformed must still leave a mark, because "the producer named a resource
+    /// and it could not be written" is evidence; folding that into absence would delete it.
+    /// </para>
+    /// </remarks>
+    private static string? SanitiseCode(string? value, string? absentValue, string? unsafeValue)
     {
+        // The producer supplied nothing. This is a legitimate state for a failure code on a success and for a
+        // resource attribution on an event that names no resource, so it is answered separately from the
+        // malformed cases below.
         if (string.IsNullOrEmpty(value))
         {
-            return rejectedValue;
+            return absentValue;
         }
 
         if (value.Length > 64)
         {
-            return rejectedValue;
+            return unsafeValue;
         }
 
         foreach (char character in value)
@@ -304,7 +348,7 @@ internal sealed class LoggingAuditSink : IAuditSink
 
             if (!permitted)
             {
-                return rejectedValue;
+                return unsafeValue;
             }
         }
 

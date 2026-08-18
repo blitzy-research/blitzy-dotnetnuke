@@ -96,6 +96,18 @@ export class TabService {
   /**
    * Retrieves one page in full. `GET /api/v1/tabs/{tabId}`, answering `200` with the detail shape.
    *
+   * ⚠ NO SCREEN CALLS THIS, AND THAT IS DELIBERATE - DO NOT DELETE IT AS DEAD CODE, AND DO NOT WIRE A ROUTE
+   * TO IT. The by-identifier page read and {@link update} are an API-ONLY capability in this release. The plan
+   * this migration is delivered against enumerates this application's routes exhaustively and none of them
+   * addresses a page; it lists the in-scope feature areas as portal, module, user, role and authentication
+   * only; and it names this transport explicitly as a lookup that exists even though there is no page feature
+   * folder. Adding a page-management screen would contradict all three, so it is a scope decision for a later
+   * release rather than a gap to be patched here.
+   *
+   * The method stays because this transport is the typed client for the page resource as the API actually
+   * publishes it, and because a later page-management area should reach the endpoint through this one place
+   * rather than opening a second path to it. It is covered by its own specification for the same reason.
+   *
    * @param tabId The page wanted.
    * @returns The page.
    */
@@ -106,6 +118,11 @@ export class TabService {
   }
 
   /**
+   * Replaces one page. `PUT /api/v1/tabs/{tabId}`.
+   *
+   * ⚠ API-ONLY in this release, on exactly the terms set out on {@link getById} - no screen calls it, that is
+   * a scope decision rather than an omission, and it is neither dead code nor an invitation to add a route.
+   *
    * @param tabId The page to replace.
    * @param request The complete editable state.
    * @returns The page as it now stands, so a caller can render the server's own result rather than the

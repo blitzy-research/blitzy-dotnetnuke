@@ -63,9 +63,27 @@ export const ACCESS_DENIED_MESSAGE =
   'Either you are not currently logged in, or you do not have access to this content.';
 
 /**
- * Announced after a successful creation. this sentence has no legacy antecedent - the legacy redirected
+ * Announced after a successful creation. This sentence has no legacy antecedent - the legacy redirected
  * without saying anything, and the screen's resource file declares no success key, so the redirect was
  * the only feedback the operator got.
+ *
+ * ⚠ "ADDED" RATHER THAN "CREATED" IS DELIBERATE, AND IT WAS RE-EXAMINED - QA-10. Measured against the other
+ * five confirmations on this feature, this sentence uses a different VERB from the role's own "The role was
+ * created." for what is the same kind of operation, and it was re-worded to match - then reverted, because
+ * {@link DUPLICATE_ROLE_GROUP_MESSAGE} immediately below is LEGACY VERBATIM and reads "...The new group was
+ * not added." Aligning the success sentence to a sibling SCREEN would therefore have made the success and
+ * failure sentences on THIS screen disagree with each other, and an operator sees one or the other of those
+ * two on the same screen, whereas they never see a role confirmation and a group confirmation together. The
+ * same-screen pair is the one that has to agree, and the legacy message is the half that cannot move. The
+ * loose entity label ("group" beside "role group") is the legacy's own: its single sentence uses both.
+ *
+ * ⚠ THE NAME-OMISSION IS NOT AN INCONSISTENCY EITHER, AND MUST NOT BE "FIXED". QA observed that create and
+ * update
+ * confirmations omit the record's name while delete confirmations quote it. That follows a rule rather than
+ * an oversight: a create or an update happens on the record's OWN FORM, where the subject is on screen and
+ * naming it again says nothing; a delete is invoked FROM A LIST, where the operator has to be told which of
+ * many records went. Every one of the six confirmations obeys that rule, including the group update, which
+ * is invoked from an inline panel on the listing and does quote the name.
  */
 export const ROLE_GROUP_CREATED_MESSAGE = 'The new group was added.';
 

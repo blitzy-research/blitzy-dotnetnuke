@@ -307,6 +307,8 @@ function callerAccount(overrides: Partial<CurrentUser> = {}): CurrentUser {
     email: 'caller@example.test',
     isSuperUser: false,
     isPortalAdministrator: true,
+    mustChangePassword: false,
+    mustUpdateProfile: false,
     roles: [],
     permissions: [],
     ...overrides,
@@ -3521,6 +3523,48 @@ describe('UserListComponent', () => {
 
         expect(track.style.inlineSize).withContext(`track ${index}`).toMatch(/%$/);
       });
+    });
+
+    // ⚠ A NAME IS ONE TOKEN, AND THE GRID USED TO SPLIT IT. The shared stylesheet lets any cell break inside
+    // a word so a narrow column cannot overflow, which is right for prose and wrong for a value a person
+    // reads as a single thing. Measured at a 768 viewport before this guard: `qa_succes` + `s_probe`,
+    // `setup_mem` + `ber`, `setup_admi` + `n`, `qa_longna` + `me` in the sign-in column, and the forename
+    // `Lawrence` as `Lawrenc` + `e` - one orphaned letter on a line of its own. Declaring these columns
+    // atomic keeps each value on one line and ellipsises what will not fit, so what shows is a recognisable
+    // prefix rather than two fragments that read as corruption.
+    it('keeps the identifier columns whole instead of breaking them mid-word', () => {
+      arrive();
+
+      const headers: readonly Element[] = queryAll<Element>('thead th');
+      const tracks: readonly HTMLTableColElement[] = queryAll<HTMLTableColElement>('colgroup col');
+
+      // ⚠ ADDRESSED BY POSITION AND CROSS-CHECKED BY HEADING, NOT MATCHED BY HEADING TEXT. Three of this
+      // grid's headings contain the word "Name" - "Username", "First Name" and "Last Name" all do - so a
+      // substring search for the display-name column's own heading, which is the bare word "Name", finds the
+      // sign-in column first and silently asserts the wrong track. That is how the first draft of this case
+      // failed against a correct implementation.
+      const atomicAt = (index: number): boolean => headers[index]?.getAttribute('data-atomic') === 'true';
+      const headingAt = (index: number): string => textIn(headers[index] as Element);
+
+      expect(headingAt(3)).toBe(USERNAME_HEADING);
+      expect(atomicAt(3)).withContext('a sign-in name is one token').toBeTrue();
+
+      expect(headingAt(4)).toBe(FIRST_NAME_HEADING);
+      expect(atomicAt(4)).withContext('a given name is one token').toBeTrue();
+
+      expect(headingAt(5)).toBe(LAST_NAME_HEADING);
+      expect(atomicAt(5)).withContext('a family name is one token').toBeTrue();
+
+      // ⚠ THE COUNTERPART, AND THE REASON THIS IS NOT A BLANKET RULE. Found as the one track that declares no
+      // width - the column absorbing the slack - so this stays true if the set is ever reordered. It is the
+      // widest column on the grid and holds a phrase rather than an identifier, so wrapping is correct there
+      // and ellipsising it would hide text that fits perfectly well on a second line.
+      const flexible: number = tracks.findIndex((track) => track.style.inlineSize === '');
+
+      expect(headingAt(flexible)).toBe(DISPLAY_NAME_HEADING);
+      expect(atomicAt(flexible))
+        .withContext('the flexible column holds a phrase and should wrap')
+        .toBeFalse();
     });
 
     it('names the table for a screen reader without painting a heading', () => {

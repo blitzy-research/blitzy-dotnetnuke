@@ -553,6 +553,10 @@ describe('RoleStore', () => {
       expect(store.busy()).toBeFalse();
       expect(store.hasRoleGroups()).toBeFalse();
 
+      // ⚠ NOT-ASKED IS A DIFFERENT FACT FROM ASKED-AND-EMPTY, and both hold an empty group set. A screen
+      // validating an addressed narrowing against the set must be able to tell them apart.
+      expect(store.roleGroupsSettled()).toBeFalse();
+
       // No account is the subject until one is asked for, and `null` is that fact. It is a
       // DIFFERENT fact from an account that holds no roles, which is the empty sequence.
       expect(store.rolesHeldByUser()).toBeNull();
@@ -1050,6 +1054,147 @@ describe('RoleStore', () => {
       expect(held.roleGroupId).toBeNull();
       expect(held.roleGroupId).not.toBe(-1);
       expect(held.roleGroupId).not.toBe(0);
+    });
+
+    /**
+     * ⚠ THE LISTING HEALS A NARROWING THAT NAMES A GROUP THE SERVER NO LONGER HAS. The address is what issues
+     * this read, so a narrowing the operator can no longer satisfy is re-staged on every subsequent emission
+     * - a Back, a paging click, a sort - and each one repeats the same 404. Deleting the group currently
+     * filtered on is one way to arrive here; a bookmark, a shared link and another administrator removing the
+     * group in a second session all reach the same dead end, which is why the guard lives on the READ rather
+     * than on the delete.
+     */
+    it('heals a narrowing whose group the server reports as gone, and re-reads', () => {
+      store.setGroupFilter({ kind: 'Group', roleGroupId: 42 });
+
+      expectGet(ROLES_URL).flush(
+        aProblem(404, 'role_group.not_found', 'Portal -1 has no role group bearing that identifier.'),
+        { status: 404, statusText: 'Not Found' },
+      );
+
+      expect(store.groupFilter())
+        .withContext('the unsatisfiable narrowing is discarded for the default')
+        .toEqual(DEFAULT_ROLE_GROUP_FILTER);
+
+      // The group set is re-read too, because a stale key means this client's idea of the group set is stale.
+      expectGet(ROLE_GROUPS_URL).flush(envelopeOf([aRoleGroup({ roleGroupId: 7 })]));
+
+      const healed = expectGet(ROLES_URL);
+      expect(healed.request.params.get('scope'))
+        .withContext('the re-read carries the healed narrowing, not the discarded one')
+        .toBe('Ungrouped');
+      expect(healed.request.params.get('roleGroupId'))
+        .withContext('the dead key is gone from the wire')
+        .toBeNull();
+
+      healed.flush(pageOf([aRoleListItem()], 1));
+
+      expect(store.roles().items.length)
+        .withContext('the operator ends on a populated listing')
+        .toBe(1);
+    });
+
+    /**
+     * THE PAIRED HALF: the withdrawn request must NOT be reported. It describes a read this store has already
+     * replaced, so a banner naming it would state a problem the operator can neither see nor act on - and it
+     * was the banner, not the empty grid, that made the original defect look like data loss.
+     */
+    it('reports no failure for the read it withdrew', () => {
+      store.setGroupFilter({ kind: 'Group', roleGroupId: 42 });
+
+      expectGet(ROLES_URL).flush(
+        aProblem(404, 'role_group.not_found', 'Portal -1 has no role group bearing that identifier.'),
+        { status: 404, statusText: 'Not Found' },
+      );
+
+      expect(store.failure()).withContext('a superseded request is not an operator-facing failure').toBeNull();
+
+      // The heal's own two reads are settled so the suite's no-open-requests check still measures this case
+      // rather than tripping over the recovery it deliberately triggers.
+      expectGet(ROLE_GROUPS_URL).flush(envelopeOf([aRoleGroup({ roleGroupId: 7 })]));
+      expectGet(ROLES_URL).flush(pageOf([aRoleListItem()], 1));
+
+      expect(store.failure()).withContext('and the recovery reports nothing either').toBeNull();
+    });
+
+    /**
+     * The heal resets the PAGE as well as the narrowing. Landing on page four of a listing that now has one
+     * page would answer empty and read as data loss for the second time.
+     */
+    it('returns to the first page when it heals', () => {
+      store.setGroupFilter({ kind: 'Group', roleGroupId: 42 });
+      expectGet(ROLES_URL).flush(pageOf([aRoleListItem()], 90));
+
+      store.setRolesPage(3);
+      expectGet(ROLES_URL).flush(
+        aProblem(404, 'role_group.not_found', 'Gone.'),
+        { status: 404, statusText: 'Not Found' },
+      );
+
+      expectGet(ROLE_GROUPS_URL).flush(envelopeOf([aRoleGroup({ roleGroupId: 7 })]));
+
+      expect(expectGet(ROLES_URL).request.params.get('pageIndex'))
+        .withContext('the healed read starts at the first page')
+        .toBe('0');
+    });
+
+    /**
+     * ⚠ BOTH HALVES OF THE PREDICATE ARE REQUIRED. The same code raised while NO narrowing is in force is a
+     * genuine failure about something else - discarding a narrowing that is not there would change nothing
+     * and re-reading would simply repeat it, so this case must be REPORTED rather than healed. Without the
+     * `kind === 'Group'` half this becomes a silent retry loop.
+     */
+    it('reports the same code as a failure when no narrowing is in force', () => {
+      store.setGroupFilter({ kind: 'AllRoles' });
+
+      expectGet(ROLES_URL).flush(
+        aProblem(404, 'role_group.not_found', 'Gone.'),
+        { status: 404, statusText: 'Not Found' },
+      );
+
+      expect(store.failure()).withContext('nothing was withdrawn, so this is the operator\'s to see').not.toBeNull();
+      expect(store.groupFilter().kind).withContext('an absent narrowing is not replaced').toBe('AllRoles');
+      httpMock.expectNone(ROLE_GROUPS_URL);
+    });
+
+    /**
+     * A DIFFERENT refusal under a narrowing is still a failure. Healing on any 404 would hide a genuine
+     * server fault behind a filter reset.
+     */
+    it('reports an unrelated refusal raised under a narrowing', () => {
+      store.setGroupFilter({ kind: 'Group', roleGroupId: 42 });
+
+      expectGet(ROLES_URL).flush(
+        aProblem(500, null, 'Server Error'),
+        { status: 500, statusText: 'Server Error' },
+      );
+
+      expect(store.failure()).withContext('an unrelated fault is reported').not.toBeNull();
+      expect(store.groupFilter())
+        .withContext('an unrelated fault does not discard the narrowing')
+        .toEqual({ kind: 'Group', roleGroupId: 42 });
+    });
+
+    it('reports a group read as settled on success, and on failure', () => {
+      expect(store.roleGroupsSettled()).withContext('nothing has been asked yet').toBeFalse();
+
+      store.loadRoleGroups();
+      expectGet(ROLE_GROUPS_URL).flush(envelopeOf([]));
+
+      expect(store.roleGroupsSettled()).withContext('an empty answer is still an answer').toBeTrue();
+
+      store.reset();
+      expect(store.roleGroupsSettled()).withContext('a reset un-asks the question').toBeFalse();
+
+      store.loadRoleGroups();
+      expectGet(ROLE_GROUPS_URL).flush(aProblem(500, null, 'Server Error'), {
+        status: 500,
+        statusText: 'Server Error',
+      });
+
+      expect(store.roleGroupsSettled())
+        .withContext('a failure has also settled whether a read happened')
+        .toBeTrue();
     });
 
     it('falls back to the every-role intent when the tenant declares no group', () => {

@@ -23,6 +23,29 @@ namespace DnnMigration.Domain.Abstractions.Repositories;
 /// </remarks>
 public interface IPermissionRepository
 {
+    /// <summary>Returns every catalogue entry this installation declares.</summary>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Every entry, ordered by identifier so the sequence is stable between calls.</returns>
+    /// <remarks>
+    /// <para>
+    /// <b>THIS IS THE ONE TABLE-WIDE READ ON THIS CONTRACT, and it exists because the API publishes the
+    /// catalogue.</b> Every other member here narrows by a scope the legacy provider also narrowed by -
+    /// identifier, module definition, module, folder path, scope-code-and-key, page - because the legacy
+    /// screens only ever asked scoped questions. Nothing in the legacy application listed the catalogue,
+    /// so no legacy reader answered "what does this installation declare"; <c>GET /api/v1/permissions</c>
+    /// does, and it cannot be answered by composing scoped reads without either enumerating every module
+    /// definition or fabricating the answer from the key enumeration this solution happens to name. The
+    /// second of those was measured returning four keys while the table held a fifth, and omitting an entry
+    /// the module permission matrices display is worse than adding a read.
+    /// </para>
+    /// <para>
+    /// <b>Unpaged by design.</b> <c>dbo.Permission</c> is bounded reference data seeded by the upgrade
+    /// scripts and extended only when a module package registers a key, so it is measured in rows rather
+    /// than pages. A caller wanting less asks a scoped member.
+    /// </para>
+    /// </remarks>
+    Task<IReadOnlyList<Permission>> GetCatalogueAsync(CancellationToken cancellationToken = default);
+
     /// <summary>Returns one catalogue entry by key, or <see langword="null"/> when none exists.</summary>
     /// <param name="permissionId">Permission identifier.</param>
     /// <param name="cancellationToken">Cancellation token.</param>

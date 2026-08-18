@@ -183,6 +183,16 @@ internal sealed class UserProfileRepository : IUserProfileRepository
     }
 
     /// <inheritdoc/>
+    public Task<int> CountProfileValuesForDefinitionAsync(
+        int propertyDefinitionId,
+        CancellationToken cancellationToken = default) =>
+        _dbContext.UserProfileValues
+            .AsNoTracking()
+            .CountAsync(
+                value => value.PropertyDefinitionId == propertyDefinitionId,
+                cancellationToken);
+
+    /// <inheritdoc />
     public async Task DeleteDefinitionAsync(
         int propertyDefinitionId,
         CancellationToken cancellationToken = default)

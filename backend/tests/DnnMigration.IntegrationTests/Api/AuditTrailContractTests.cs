@@ -660,15 +660,23 @@ public sealed class AuditTrailContractTests
     /// </summary>
     /// <returns>A task representing the test.</returns>
     /// <remarks>
+    /// <para>
     /// Two modules are used rather than one, so that the whole-module removal is observed on a module whose
     /// placement is intact - the state an operator actually deletes from - rather than on one this fact had
     /// already emptied.
+    /// </para>
+    /// <para>
+    /// The withdrawn module is created on EVERY page, so a placement survives its withdrawal and the module
+    /// genuinely does still exist afterwards. Withdrawing the LAST placement now recycles the module and
+    /// records both facts, which the module suite asserts separately; this case is the one where only the
+    /// placement went.
+    /// </para>
     /// </remarks>
     [Fact]
     public async Task WithdrawingAPlacementAndRemovingAModule_EmitTheTwoDistinctRemovalEvents()
     {
         using HttpClient administrator = await _fixture.CreateHostClientAsync();
-        ModuleDetailDto withdrawn = await CreateModuleAsync(administrator);
+        ModuleDetailDto withdrawn = await CreateModuleAsync(administrator, onEveryPage: true);
         ModuleDetailDto recycled = await CreateModuleAsync(administrator);
 
         try
@@ -694,6 +702,9 @@ public sealed class AuditTrailContractTests
                 "which placement went is the only fact that distinguishes this record from the next "
                 + "withdrawal of the same module");
             placement.Properties["AuditMetadata_AffectedTabCount"].Should().Be("1");
+            placement.Properties.Should().NotContainKey(
+                "AuditMetadata_RecycledWithLastPlacement",
+                "a placement survived, so the module was not recycled with this withdrawal");
 
             AuditsSince(
                 beforeWithdrawal,
@@ -1067,8 +1078,12 @@ public sealed class AuditTrailContractTests
 
     /// <summary>Creates a module on the seeded root page, failing the test when creation is refused.</summary>
     /// <param name="client">A client entitled to create a module.</param>
+    /// <param name="onEveryPage">
+    /// Whether the module is placed on every content page, which is how a case obtains a module with more
+    /// than one placement - and therefore one that survives having a single placement withdrawn.
+    /// </param>
     /// <returns>The created module.</returns>
-    private async Task<ModuleDetailDto> CreateModuleAsync(HttpClient client)
+    private async Task<ModuleDetailDto> CreateModuleAsync(HttpClient client, bool onEveryPage = false)
     {
         using HttpResponseMessage response = await client.PostAsJsonAsync(
             new Uri("/api/v1/modules", UriKind.Relative),
@@ -1078,7 +1093,7 @@ public sealed class AuditTrailContractTests
                 TabId = _fixture.Seed.RootTabId,
                 ModuleTitle = "Audited Module " + Suffix(),
                 ModuleOrder = 2,
-                AllTabs = false,
+                AllTabs = onEveryPage,
                 InheritViewPermissions = true,
                 Visibility = ModuleVisibility.Maximized,
                 DisplayTitle = true,

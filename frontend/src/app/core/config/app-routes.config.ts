@@ -41,6 +41,15 @@ export const USER_LIST_ROUTE = '/users';
 export const ROLE_LIST_ROUTE = '/roles';
 
 /**
+ * The query parameter the role listing narrows itself by. Published here rather than kept private to the
+ * listing because the role FORM has to read it too: the form returns the operator to the listing coordinate
+ * it remembers, and a coordinate naming a group that has since been deleted is a request the server answers
+ * 404 to - so the form validates that one parameter before navigating. Two spellings of the same name in two
+ * files would let that guard silently stop matching.
+ */
+export const ROLE_LIST_GROUP_PARAM = 'group';
+
+/**
  * The portal's membership settings screen - the legacy `UserSettings.Action` destination, labelled "User
  * Settings" in the sidebar.
  *

@@ -63,6 +63,8 @@ public class CreateModuleRequestValidator : AbstractValidator<CreateModuleReques
 
         RuleFor(request => request.ModuleTitle)
             .MaximumLength(ModuleTitleMaximumLength)
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage)
             .When(request => !string.IsNullOrEmpty(request.ModuleTitle));
 
         // Same treatment, same reasoning, against the measured icon column width.
@@ -71,6 +73,8 @@ public class CreateModuleRequestValidator : AbstractValidator<CreateModuleReques
             .When(request => !string.IsNullOrEmpty(request.IconFile));
 
         RuleFor(request => request.IconFile)
+            .Must(TextIntegrityRules.IsSingleLineSafe)
+            .WithMessage(TextIntegrityRules.SingleLineMessage)
             .Must(IconReferenceRules.IsContained)
             .WithMessage(IconReferenceRules.NotContainedMessage);
 

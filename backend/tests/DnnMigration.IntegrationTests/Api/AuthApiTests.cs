@@ -1573,6 +1573,75 @@ public sealed class AuthApiTests
     }
 
     /// <summary>
+    /// The caller's own snapshot publishes the blocking remediation obligations, INCLUDING one imposed after
+    /// the session began.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THIS IS THE CROSS-LAYER CONTRACT GAP THAT WAS MEASURED. Sign-in published the obligations on its own
+    /// top-level members while this endpoint omitted them entirely - and this endpoint is DELIBERATELY open
+    /// during remediation, which makes it the only response a confined caller can still read. An obligation
+    /// imposed after sign-in therefore reached the client on no path at all: every ordinary endpoint answered
+    /// <c>403 auth.remediation_required</c>, the console rendered as though nothing were owed, and the caller
+    /// was never sent to the screen that clears it.
+    /// </para>
+    /// <para>
+    /// THE OBLIGATION USED HERE IS ACCOUNT-SCOPED ON PURPOSE. A forced credential change touches ONE account
+    /// row, so this case cannot affect any other case in a suite that shares one database - whereas marking a
+    /// profile property required is tenant-wide and would confine every member account in the tenant. The
+    /// profile arm of the same decision is measured by the service-level facts, which can impose it in
+    /// isolation.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Me_AfterAnObligationIsImposedMidSession_PublishesIt()
+    {
+        using HttpClient administrator = await _fixture.CreateAdministratorClientAsync();
+        UserDetailDto account = await CreateUserAsync(administrator);
+
+        using HttpClient bearer = await _fixture.CreateClientForAsync(
+            account.Username ?? string.Empty,
+            ApiTestFixture.KnownPassword);
+
+        using HttpResponseMessage before = await bearer.GetAsync(MeRoute);
+
+        before.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        CurrentUserDto? unencumbered = await before.Content.ReadEnvelopeAsync<CurrentUserDto>();
+
+        unencumbered.Should().NotBeNull();
+        unencumbered!.MustChangePassword.Should().BeFalse(
+            "false is DATA here rather than an omission: the member owes nothing yet");
+        unencumbered.MustUpdateProfile.Should().BeFalse();
+
+        // The obligation is imposed by an administrator while the member's session is live and its access
+        // token unchanged, which is exactly the sequence the client cannot otherwise observe.
+        using HttpResponseMessage forced = await administrator.PostAsync(
+            new Uri(
+                $"/api/v1/users/{account.UserId.ToString(CultureInfo.InvariantCulture)}/require-password-change",
+                UriKind.Relative),
+            content: null);
+
+        forced.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        using HttpResponseMessage after = await bearer.GetAsync(MeRoute);
+
+        after.StatusCode.Should().Be(
+            HttpStatusCode.OK,
+            "the snapshot stays reachable while an obligation stands, which is what makes it the path that "
+            + "can report one");
+
+        CurrentUserDto? encumbered = await after.Content.ReadEnvelopeAsync<CurrentUserDto>();
+
+        encumbered.Should().NotBeNull();
+        encumbered!.MustChangePassword.Should().BeTrue(
+            "the same token now describes a session carrying an obligation the sign-in response could not "
+            + "have known about");
+        encumbered.UserId.Should().Be(account.UserId);
+    }
+
+    /// <summary>
     /// The snapshot is read from the database rather than from the token, so a token for an account that no
     /// longer exists is reported as a missing account instead of being answered from its own claims.
     /// </summary>

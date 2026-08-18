@@ -165,6 +165,8 @@ const detailFixture = (overrides: Partial<UserDetail> = {}): UserDetail => ({
   lastPasswordChangeDate: null,
   roles: ['Registered Users'],
   canDelete: true,
+  // Opaque and never interpreted here: a fixture only has to carry one for the round trip to close.
+  concurrencyToken: 'user-revision-token',
   ...overrides,
 });
 
@@ -312,6 +314,8 @@ const updateRequestFixture = (overrides: Partial<UpdateUserRequest> = {}): Updat
   lastName: 'Administrator',
   displayName: 'Ann Administrator',
   email: 'ann.admin@example.invalid',
+  // The revision the submission was composed against, echoed back verbatim.
+  concurrencyToken: 'user-revision-token',
   ...overrides,
 });
 

@@ -93,15 +93,27 @@ public class RedeemServiceCodeRequestValidatorTests
     }
 
     /// <summary>
-    /// A code that the role editor would now REFUSE to author is still accepted for redemption, and that
-    /// asymmetry is deliberate.
+    /// A code that the role editor would now REFUSE to author afresh is still accepted for redemption, and
+    /// still refused when a caller tries to author it.
     /// </summary>
     /// <param name="legacyCode">A code of the shape installations already hold.</param>
     /// <remarks>
-    /// The upgrade path is therefore: existing codes keep working, and the next time an issuer saves the
-    /// role the editor requires a stronger one. The two assertions here are what pin that path in place -
-    /// drop the first and legacy members are locked out, drop the second and weak codes can be authored
-    /// again.
+    /// Three cases must be told apart, and only the middle one is "authoring":
+    /// <list type="bullet">
+    /// <item>REDEEMING a stored weak code - always admitted, or every member holding a legitimately issued
+    /// code is locked out.</item>
+    /// <item>AUTHORING a weak code, meaning storing a value that is not already there - always refused,
+    /// which is the net-new security rule. Creation is authoring by definition, so the creation validator
+    /// owns it and asserts it here.</item>
+    /// <item>RE-SUBMITTING the stored code unchanged while editing something else on the role - admitted,
+    /// because nothing is authored. This is why the update validator no longer declares the strength rule:
+    /// a validator cannot see the stored value, so it cannot tell this case from the one above. The
+    /// decision moved to <c>RoleService.UpdateRoleAsync</c>, which compares the two, and both of its arms
+    /// are asserted in <c>RoleServiceTests</c>.</item>
+    /// </list>
+    /// Refusing the third case would have made a role carrying a legacy code un-editable except by rotating
+    /// that code - which invalidates it for every member holding it, defeating the very protection the first
+    /// case exists to give. AAP 0.7.5.5 forbids exactly this class of migration-time tightening.
     /// </remarks>
     [Theory]
     [InlineData("JOIN")]
@@ -113,11 +125,17 @@ public class RedeemServiceCodeRequestValidatorTests
         _validator.Validate(new RedeemServiceCodeRequest { Code = legacyCode }).IsValid
             .Should().BeTrue("a code already issued must stay redeemable by the members who hold it");
 
-        ValidationResult authored = new UpdateRoleRequestValidator().Validate(
-            new UpdateRoleRequest { RoleName = "Subscribers", RsvpCode = legacyCode });
+        ValidationResult authored = new CreateRoleRequestValidator().Validate(
+            new CreateRoleRequest { RoleName = "Subscribers", RsvpCode = legacyCode });
 
-        authored.IsValid.Should().BeFalse("the same value may no longer be authored or rotated in");
+        authored.IsValid.Should().BeFalse("the same value may not be authored into a new role");
         authored.Errors.Should().ContainSingle()
-            .Which.PropertyName.Should().Be(nameof(UpdateRoleRequest.RsvpCode));
+            .Which.PropertyName.Should().Be(nameof(CreateRoleRequest.RsvpCode));
+
+        // The shape rules still apply on update - only the provenance-dependent strength rule moved - so an
+        // unchanged legacy code passes the contract and reaches the service that can actually judge it.
+        new UpdateRoleRequestValidator().Validate(
+            new UpdateRoleRequest { RoleName = "Subscribers", RsvpCode = legacyCode }).IsValid
+            .Should().BeTrue("the contract cannot judge provenance, so it defers to the service");
     }
 }

@@ -53,6 +53,22 @@
   <div class="role-list__filter">
     <h2 data-visually-hidden>Filter Roles</h2>
 
+    <!--
+      THE FREE-TEXT FILTER. The endpoint has always accepted one - `RoleRepository` matches
+      `RoleName.ToLower().Contains(...)` - and this screen was the only listing that offered no way to reach
+      it, so a tenant with more roles than fit a page had to page through them by eye.
+
+      ⚠ IT SITS OUTSIDE THE GROUP FILTER'S FIELD, DELIBERATELY. Placed inside that field's slot it inherited
+      the field's `aria-labelledby`, which points at the GROUP selector's label - so its computed accessible
+      name became "Filter By Role Group", identical to the select beside it and unrelated to its own visible
+      "Search:" label. Two controls that a screen reader cannot tell apart is worse than no filter at all.
+    -->
+    <app-search-input
+      class="role-list__search"
+      [placeholder]="searchPlaceholder"
+      (search)="onSearch($event)"
+    />
+
     <app-form-field
       [label]="groupFilterLabel"
       [help]="groupFilterHelp"
@@ -142,9 +158,38 @@
             </svg>
             <span class="role-list__action-label">{{ removeGroupLabel }}</span>
           </button>
+        } @else if (groupRemovalWithheldReason() !== null) {
+          <!--
+            The condition, not silence. Rendered as ordinary text rather than as a disabled button: a disabled
+            control announces a command that is genuinely unavailable and gives no route forward, whereas the
+            sentence names the remedy the operator has to carry out first.
+          -->
+          <!--
+            A POLITE LIVE REGION, like its two siblings below. The Remove button disappears silently when the
+            chosen group changes, so a reader who does not happen to move focus back over the filter row would
+            never learn that the explanation had replaced it.
+          -->
+          <p class="role-list__filter-note" role="status" aria-live="polite">
+            {{ groupRemovalWithheldReason() }}
+          </p>
         }
       </div>
     </app-form-field>
+
+    <!--
+      WHAT IS IN FORCE, STATED. Two separate facts, and both were previously invisible: the free-text filter,
+      and the fact that the DEFAULT narrowing hides every grouped role. A polite live region, so a reader who
+      changes either hears what the grid now answers rather than only the row count changing.
+    -->
+    @if (filterDisclosure(); as disclosure) {
+      <p class="role-list__filter-disclosure" role="status" aria-live="polite" aria-atomic="true">{{ disclosure }}</p>
+    }
+
+    @if (defaultNarrowingInForce()) {
+      <p class="role-list__filter-disclosure" role="status" aria-live="polite" aria-atomic="true">
+        Showing roles that belong to no group. Choose &lt; All Roles &gt; to include grouped roles.
+      </p>
+    }
   </div>
 }
 
@@ -337,6 +382,18 @@
   identifier and `/roles/0` is a real address.
 -->
 <ng-template #editCommand let-row>
+  @if (isProtectedRole(row)) {
+    <!--
+      ⚠ A STATEMENT, NOT A DISABLED CONTROL. The legacy screen withheld these commands for the two protected
+      roles and the server refuses both writes with `role.protected`, so a link here led to an editor that
+      could change nothing. A disabled anchor is not a thing HTML has, and a disabled BUTTON would announce a
+      command that does not exist; an unfocusable marker carrying the reason is what a reader can act on.
+    -->
+    <span class="role-list__row-action-withheld" [attr.title]="protectedRoleReason(row)">
+      <span aria-hidden="true">&mdash;</span>
+      <span class="role-list__row-action-reason">{{ protectedRoleReason(row) }}</span>
+    </span>
+  } @else {
   <a
     class="role-list__row-action"
     [routerLink]="editRoleLinks()[row.roleId]"
@@ -359,6 +416,7 @@
     </svg>
     <span class="role-list__action-label">{{ editRoleLabel }}</span>
   </a>
+  }
 </ng-template>
 
 <!--
@@ -394,6 +452,16 @@
 
 <!-- ROW COMMAND THREE - DELETE. NO LEGACY COLUMN BEHIND IT. -->
 <ng-template #deleteCommand let-row>
+  @if (isProtectedRole(row)) {
+    <!--
+      The destructive command is WITHHELD rather than refused. Confirming the destruction of the role an
+      operator's own access depends on, and only then being refused, reads as a fault rather than as a rule.
+    -->
+    <span class="role-list__row-action-withheld" [attr.title]="protectedRoleReason(row)">
+      <span aria-hidden="true">&mdash;</span>
+      <span class="role-list__row-action-reason">{{ protectedRoleReason(row) }}</span>
+    </span>
+  } @else {
   <button
     type="button"
     class="role-list__row-action role-list__row-action--danger"
@@ -421,6 +489,7 @@
     </svg>
     <span class="role-list__action-label">{{ deleteRoleLabel }}</span>
   </button>
+  }
 </ng-template>
 
 <!-- THE SELF-SUBSCRIPTION CELL. Legacy template column headed `Public`. -->
@@ -485,9 +554,27 @@
   to yet, and this grid had a specific inconsistency to answer for - a stored `-1` rendered blank while
   a stored `-3` rendered "-3", two negative periods presented as different kinds of value.
 -->
+<!--
+  ⚠ THREE RECORDED STATES, NOT ONE. A count of zero describes no recurrence at all and was painted exactly like
+  a genuine count; and a count whose unit cannot be named is not a period, although the frequency cell beside it
+  already said so. The painted figure is unchanged in every branch - the legacy grid bound the raw count and it
+  still does - so what distinguishes them is the state treatment the fee column already established plus a
+  clipped sentence, and never colour alone.
+-->
 <ng-template #periodCell let-row let-column="column">
   @if (isPeriodAbsent(row, column.key)) {
     <app-absent-value />
+  } @else if (isPeriodZero(row, column.key)) {
+    <span class="role-list__fee-state" data-atomic-value>{{ periodText(row, column.key) }}</span>
+    <span class="role-list__absent-value">{{ zeroPeriodDescription }}</span>
+  } @else if (isPeriodUnitless(row, column.key)) {
+    <span
+      class="role-list__unnameable-code"
+      data-atomic-value
+      [attr.title]="unitlessPeriodDescription"
+      >{{ periodText(row, column.key) }}</span
+    >
+    <span class="role-list__absent-value">{{ unitlessPeriodDescription }}</span>
   } @else {
     <span data-atomic-value>{{ periodText(row, column.key) }}</span>
   }
@@ -510,8 +597,16 @@
     <!-- The shared absent-value rendering: the same mark, colour and words as every other listing. -->
     <app-absent-value />
   } @else if (isNameableFrequency(row, column.key)) {
+    <!--
+      ⚠ ONLY THE PAINTED CHARACTER IS EMITTED HERE, AND THE MISSING SIBLING IS DELIBERATE - QA-11. A
+      screen-reader-only span naming the unit used to sit on this line as well, which made the cell announce
+      the unit TWICE: measured as "WWeekWeek", "NNoneNone", "MMonthMonth", "DDayDay" and "YYearYear". The
+      cause is that `frequencyDescription` RETURNS `frequencyName` for any code it can name, so this span and
+      the unconditional sibling below it resolved to the same word. The sibling is the one that stays,
+      because it is the only branch-independent accessible text on the template and its own note records that
+      it exists precisely so no code can be left unannounced.
+    -->
     <span aria-hidden="true">{{ frequencyCode(row, column.key) }}</span>
-    <span class="role-list__absent-value">{{ frequencyName(row, column.key) }}</span>
   } @else {
     <!--
       A STORED CODE WITH NO WORD. Still painted verbatim, but muted and carrying a `title`, so a sighted

@@ -283,6 +283,8 @@ function account(userId: number, overrides: Partial<UserDetail> = {}): UserDetai
     lastPasswordChangeDate: '2024-02-01T10:00:00Z',
     roles: ['Registered Users'],
     canDelete: true,
+    // Opaque and never interpreted here: a fixture only has to carry one for the round trip to close.
+    concurrencyToken: 'account-revision-token',
   };
 
   return { ...base, ...overrides };
@@ -482,6 +484,8 @@ describe('UserPasswordComponent', () => {
         email: 'caller@example.test',
         isSuperUser: false,
         isPortalAdministrator: administersPortal,
+        mustChangePassword: false,
+        mustUpdateProfile: false,
         roles,
         permissions: [],
       },
@@ -2018,6 +2022,8 @@ describe('UserPasswordComponent', () => {
           email: 'caller@example.test',
           isSuperUser: false,
           isPortalAdministrator: false,
+          mustChangePassword: false,
+          mustUpdateProfile: false,
           roles: ['Registered Users'],
           permissions: [],
         },

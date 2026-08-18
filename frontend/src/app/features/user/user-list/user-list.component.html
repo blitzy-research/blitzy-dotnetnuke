@@ -114,7 +114,7 @@
   listing — no entry on the strip is what is in force.
 -->
 @if (filterDisclosure(); as disclosure) {
-  <p class="user-list__filter-disclosure" role="status" aria-live="polite">{{ disclosure }}</p>
+  <p class="user-list__filter-disclosure" role="status" aria-live="polite" aria-atomic="true">{{ disclosure }}</p>
 }
 
 <!--

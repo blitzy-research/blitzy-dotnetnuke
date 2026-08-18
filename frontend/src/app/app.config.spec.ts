@@ -129,6 +129,8 @@ const OPERATOR: CurrentUser = Object.freeze({
   email: 'operator@example.test',
   isSuperUser: false,
   isPortalAdministrator: false,
+  mustChangePassword: false,
+  mustUpdateProfile: false,
   roles: Object.freeze(['Administrators']),
   permissions: Object.freeze(['EDIT']),
 });

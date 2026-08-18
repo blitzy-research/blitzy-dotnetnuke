@@ -77,6 +77,8 @@ const RENEWED_SESSION: AuthSession = {
     email: 'admin@example.invalid',
     isSuperUser: false,
     isPortalAdministrator: true,
+    mustChangePassword: false,
+    mustUpdateProfile: false,
     roles: ['Administrators'],
     permissions: ['EDIT'],
   },

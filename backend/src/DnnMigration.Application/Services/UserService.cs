@@ -1,7 +1,9 @@
 using System.Collections.Concurrent;
+using System.Collections.Frozen;
 using System.Globalization;
 using System.Text.RegularExpressions;
 using DnnMigration.Application.Abstractions;
+using DnnMigration.Application.Common;
 using DnnMigration.Application.Dtos.Common;
 using DnnMigration.Application.Dtos.Role;
 using DnnMigration.Application.Dtos.User;
@@ -94,6 +96,16 @@ public sealed class UserService : IUserService
     /// <summary>Reported when the submitted electronic-mail address cannot be used.</summary>
     private const string CreateInvalidEmailCode = "user.create.invalid-email";
 
+    /// <summary>
+    /// Reported when a caller supplies a concurrency token that no longer matches the account it read.
+    /// </summary>
+    /// <remarks>
+    /// The reason token <c>concurrency_conflict</c> is what the API surface maps to <c>409 Conflict</c>, and
+    /// it is spelled identically here to the role and tenant equivalents so one classification rule covers
+    /// all three.
+    /// </remarks>
+    private const string ConcurrencyConflictCode = "user.concurrency_conflict";
+
     /// <summary>Reported when the submitted credential does not satisfy the configured policy.</summary>
     private const string CreateInvalidPasswordCode = "user.create.invalid-password";
 
@@ -168,8 +180,10 @@ public sealed class UserService : IUserService
     /// <summary>Reported for an unrecognised operation discriminator.</summary>
     private const string PasswordUnsupportedOperationCode = "user.password.unsupported-operation";
 
-    /// <summary>Reported when the account is not currently locked.</summary>
-    private const string UnlockNotLockedCode = "user.unlock.not-locked";
+    // NO CODE FOR "THE ACCOUNT WAS NOT LOCKED", DELIBERATELY. Clearing a lockout is idempotent: the
+    // unlocked state is the requested end state, so reaching it again succeeds. The constant that used to
+    // live here - `user.unlock.not-locked` - was removed with the refusal it named, and the classification
+    // table lost its entry in the same change so that nothing suggests the refusal is still reachable.
 
     /// <summary>Reported when an administrator invokes a membership transition on their own account.</summary>
     private const string MembershipSelfForbiddenCode = "user.membership.self-forbidden";
@@ -258,6 +272,38 @@ public sealed class UserService : IUserService
 
     /// <summary>Reported when no such profile property definition exists within the tenant.</summary>
     private const string ProfileDefinitionNotFoundCode = "profile-definition.not-found";
+
+    /// <summary>Reported when withdrawal is refused because the declaration is one the platform reserves.</summary>
+    public const string ProfileDefinitionProtectedCode = "profile-definition.protected";
+
+    /// <summary>
+    /// Reported when withdrawal would destroy recorded answers and the caller has not stated how many.
+    /// </summary>
+    public const string ProfileDefinitionValueDeletionUnacknowledgedCode =
+        "profile-definition.value-deletion-unacknowledged";
+
+    /// <summary>
+    /// The four declarations the legacy administration screen refused to let an operator withdraw, compared
+    /// case-insensitively exactly as it compared them.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <c>grdProfileProperties_ItemDataBound</c> reached into the delete column and set the command invisible
+    /// for these four names, tested against <c>PropertyName.ToLower</c>. In the legacy application that WAS
+    /// the enforcement: the administration grid was the only path to the operation, so hiding the command
+    /// made it unreachable.
+    /// </para>
+    /// <para>
+    /// ⚠ REPRODUCING ONLY THE HIDDEN BUTTON WOULD HAVE BEEN A LOSS OF PROTECTION, NOT PARITY. This API is a
+    /// second path that the legacy design never had, and it is reachable by any authenticated administrator
+    /// with a single request. Restating the rule here is what keeps the OBSERVABLE behaviour of the system
+    /// the same - these four cannot be withdrawn - rather than keeping the implementation the same and
+    /// quietly widening what the system permits.
+    /// </para>
+    /// </remarks>
+    private static readonly FrozenSet<string> ProtectedProfilePropertyNames =
+        new[] { "firstname", "lastname", "timezone", "preferredlocale" }
+            .ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Reported when no such role exists within the tenant.</summary>
     /// <remarks>
@@ -755,7 +801,7 @@ public sealed class UserService : IUserService
                 telephone,
                 designatedAdministrator);
 
-            WithholdColumnsTheTenantHides(row, visibility);
+            WithholdProfileValuesTheTenantHides(row, visibility);
 
             rows.Add(row);
         }
@@ -1112,13 +1158,60 @@ public sealed class UserService : IUserService
                 FormattableString.Invariant($"Account {userId} does not exist in portal {portalId}."));
         }
 
-        Result<bool> validEmail = await IsEmailValidAsync(portalId, request.Email, cancellationToken)
-            .ConfigureAwait(false);
-        if (validEmail.IsFailure || !validEmail.Value)
+        // OPTIMISTIC CONCURRENCY, CHECKED BEFORE ANY FIELD RULE RUNS. The order matches the role path's for
+        // the same reason: a caller holding a stale snapshot must be told that the record moved under it,
+        // not that some field of the snapshot it is trying to restore is unacceptable. It is also checked
+        // before the grandfathering test below, because "the address is unchanged" is a claim about a
+        // snapshot, and a stale snapshot is exactly the case where that claim cannot be trusted.
+        if (!ConcurrencyToken.Matches(request.ConcurrencyToken, UserMappings.ConcurrencyTokenFor(account)))
         {
             return Result<UserDetailDto>.Failure(
-                CreateInvalidEmailCode,
-                "The electronic-mail address does not satisfy this portal's validation rule.");
+                ConcurrencyConflictCode,
+                FormattableString.Invariant(
+                    $"Account {userId} was changed by someone else after you read it, so nothing was written. Reload the account to see the current values, then apply your change again."));
+        }
+
+        // ⚠ AN UNCHANGED STORED ADDRESS IS GRANDFATHERED, AND WITHOUT THIS AN EXISTING ACCOUNT CAN BECOME
+        // UNMAINTAINABLE. Two independent rules govern an e-mail address here. The SHAPE rule lives in
+        // Domain/ValueObjects/EmailAddress and is applied to every submission by
+        // UpdateUserRequestValidator; the ADMISSION rule is the tenant's own Security_EmailValidation
+        // expression, which an operator may set to anything. They are different questions and both are
+        // legitimate - but only one of them was ever asked of the value already in the column.
+        //
+        // The measured consequence: DotNetNuke's own default expression ends in [a-zA-Z]{2,4}, and this
+        // installation's seeded accounts hold admin@setup.local and member@setup.local, whose final label
+        // is five letters. Editing an unrelated field on either account - a surname, a display name - re-ran
+        // the admission rule over the address the caller had merely echoed back, and refused the whole
+        // update. The address was already stored, no caller was proposing to change it, and there was no
+        // submission that could have satisfied the rule short of altering data the caller never asked to
+        // touch. That is a maintenance dead end rather than a validation.
+        //
+        // So the admission rule is asked only of an address that is actually being CHANGED. A submission
+        // equal to the stored value is a no-op and is admitted on the strength of already being there;
+        // anything else must satisfy the tenant's rule as before. The shape rule still applies to both,
+        // because a caller must not be able to write a malformed address by claiming it was already stored.
+        //
+        // The comparison is case-insensitive because the store treats an address that way: the account
+        // read by address is matched case-insensitively, so two spellings that differ only in case name one
+        // account and echoing either of them back is echoing the stored value.
+        // account.Email is nullable because the column is; request.Email is not, so only the stored side
+        // needs a substitute. Coalescing the request side as well would tell the compiler it might be null
+        // and cost the admission call below its non-null argument.
+        bool emailUnchanged = string.Equals(
+            account.Email ?? string.Empty,
+            request.Email,
+            StringComparison.OrdinalIgnoreCase);
+
+        if (!emailUnchanged)
+        {
+            Result<bool> validEmail = await IsEmailValidAsync(portalId, request.Email, cancellationToken)
+                .ConfigureAwait(false);
+            if (validEmail.IsFailure || !validEmail.Value)
+            {
+                return Result<UserDetailDto>.Failure(
+                    CreateInvalidEmailCode,
+                    "The electronic-mail address does not satisfy this portal's validation rule.");
+            }
         }
 
         MembershipSettingsDto? settings =
@@ -1574,9 +1667,12 @@ public sealed class UserService : IUserService
 
         if (!isLockedOut)
         {
-            return Result.Failure(
-                UnlockNotLockedCode,
-                FormattableString.Invariant($"Account {userId} is not locked."));
+            // ALREADY IN THE REQUESTED END STATE, WHICH IS NOT A FAILURE. This refused with a
+            // user-visible 400, which reported work that had in fact been done as an action that had not -
+            // and left the operation unsafe to retry when an answer was lost in transit or two
+            // administrators cleared the same lockout at once. Nothing is written and nothing is
+            // invalidated, because nothing changed.
+            return Result.Success();
         }
 
         if (!await _users.UnlockAsync(userId, cancellationToken).ConfigureAwait(false))
@@ -2525,12 +2621,111 @@ public sealed class UserService : IUserService
 
     /// <inheritdoc />
     /// <remarks>
+    /// <para>
+    /// ⚠ THE COMMIT IS DELIBERATELY OUTSIDE THE LOOP, and moving it inside would reintroduce exactly the
+    /// defect this member exists to close. Every named declaration is resolved from ONE read, every
+    /// position is staged, and the whole set is written by a single
+    /// <see cref="IUnitOfWork.SaveChangesAsync"/> — so an exchange of two positions either lands complete
+    /// or does not land at all.
+    /// </para>
+    /// <para>
+    /// The read excludes withdrawn declarations, which is what makes a single absence test sufficient: an
+    /// identifier the request names and the read did not return is unknown, belongs to another tenant, or
+    /// has been withdrawn, and all three are the same answer to the caller. The absence is reported BEFORE
+    /// anything is staged.
+    /// </para>
+    /// <para>
+    /// Positions are stored exactly as submitted. Nothing is renumbered or compacted, because the legacy
+    /// grid exchanged two stored values and persisted them unchanged, leaving the sequence sparse — and a
+    /// tidy-up here would silently move declarations the caller never named.
+    /// </para>
+    /// </remarks>
+    public async Task<Result<IReadOnlyList<ProfilePropertyDefinitionDto>>>
+        ReorderProfilePropertyDefinitionsAsync(
+            int portalId,
+            ReorderProfilePropertyDefinitionsRequest request,
+            CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        IReadOnlyList<ProfilePropertyDefinitionPosition> positions = request.Positions;
+
+        if (positions.Count == 0)
+        {
+            throw new DomainException("At least one profile property position is required.");
+        }
+
+        // ONE read for the whole request. Resolving each identifier separately would make the cost
+        // proportional to the number of rows moved, and a Move Up on a long catalogue moves two rows out of
+        // however many the tenant declares.
+        IReadOnlyList<ProfilePropertyDefinition> declared = await _profiles
+            .GetDefinitionsByPortalIdAsync(portalId, cancellationToken)
+            .ConfigureAwait(false);
+
+        Dictionary<int, ProfilePropertyDefinition> byId = declared
+            .ToDictionary(definition => definition.PropertyDefinitionId);
+
+        // ⚠ TWO PASSES, AND THE FIRST ONE MUTATES NOTHING. Every identifier is resolved before any position
+        // is assigned, because the resolved declarations are TRACKED entities: assigning as the loop went
+        // would leave an earlier declaration carrying a new position in memory after a later identifier
+        // failed to resolve, and the next commit anywhere in the request would then persist a change this
+        // member had just declined to make. Measured against a request whose second position was unknown.
+        List<(ProfilePropertyDefinition Definition, int ViewOrder)> resolved = new(positions.Count);
+
+        foreach (ProfilePropertyDefinitionPosition position in positions)
+        {
+            if (!byId.TryGetValue(position.PropertyDefinitionId, out ProfilePropertyDefinition? definition))
+            {
+                return Result<IReadOnlyList<ProfilePropertyDefinitionDto>>.Failure(
+                    ProfileDefinitionNotFoundCode,
+                    FormattableString.Invariant(
+                        $"Profile property definition {position.PropertyDefinitionId} does not exist in portal {portalId}."));
+            }
+
+            resolved.Add((definition, position.ViewOrder));
+        }
+
+        // The second pass, reached only when the whole set resolved.
+        foreach ((ProfilePropertyDefinition definition, int viewOrder) in resolved)
+        {
+            definition.ViewOrder = viewOrder;
+            await _profiles.UpdateDefinitionAsync(definition, cancellationToken).ConfigureAwait(false);
+        }
+
+        // The single commit. A concurrency conflict is reported as one, exactly as the per-declaration
+        // update beside this member reports it, because the honest answer to "someone else moved this
+        // while you were moving it" is to reload rather than to guess whose order wins.
+        try
+        {
+            await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (IsConcurrencyConflict(exception))
+        {
+            return Result<IReadOnlyList<ProfilePropertyDefinitionDto>>.Failure(
+                PersistenceConflictCode,
+                "The definitions were changed by another request; reload them and try again.");
+        }
+
+        _cache.InvalidateProfileDefinitions(portalId);
+
+        // The WHOLE catalogue in its new order, read back through the same projection the listing uses, so
+        // a caller rebinds from this response instead of following it with a read that could observe
+        // another writer's work and appear to have lost the move.
+        IReadOnlyList<ProfilePropertyDefinitionDto> reordered =
+            await ReadProfileDefinitionsAsync(portalId, cancellationToken).ConfigureAwait(false);
+
+        return Result<IReadOnlyList<ProfilePropertyDefinitionDto>>.Success(reordered);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
     /// The per-account values recorded against the definition are discarded in the same unit of work, so no
     /// value is left referencing a definition that no longer exists.
     /// </remarks>
     public async Task<Result> DeleteProfilePropertyDefinitionAsync(
         int portalId,
         int propertyDefinitionId,
+        bool confirmValueDeletion = false,
         CancellationToken cancellationToken = default)
     {
         ProfilePropertyDefinition? definition = await _profiles
@@ -2545,6 +2740,49 @@ public sealed class UserService : IUserService
                 ProfileDefinitionNotFoundCode,
                 FormattableString.Invariant(
                     $"Profile property definition {propertyDefinitionId} does not exist in portal {portalId}."));
+        }
+
+        // THE FOUR RESERVED DECLARATIONS ARE REFUSED OUTRIGHT, restoring the protection the legacy screen
+        // provided by hiding the command. See ProtectedProfilePropertyNames for why enforcing it here is
+        // parity of behaviour rather than a departure from it.
+        if (definition.PropertyName is { Length: > 0 } propertyName
+            && ProtectedProfilePropertyNames.Contains(propertyName))
+        {
+            return Result.Failure(
+                ProfileDefinitionProtectedCode,
+                FormattableString.Invariant(
+                    $"\"{definition.PropertyName}\" is one of the profile properties this platform reserves, so it cannot be withdrawn. Clear it from the accounts that should not carry it, or mark it optional, instead."));
+        }
+
+        // ⚠ THE CASCADE IS THE HAZARD, AND CONSENT TO IT IS EXPLICIT. Withdrawing a declaration takes every
+        // answer recorded against it, because the store's foreign key cascades and DeleteDefinitionAsync
+        // loads those rows to be removed with it. That is irreversible and invisible from the request, so a
+        // caller who has not said how many answers they expect to destroy is told the number and asked again
+        // rather than being taken at their word.
+        //
+        // A declaration nobody has answered needs no acknowledgement: there is nothing to lose, so requiring
+        // a second request would be ceremony rather than safety.
+        int recordedAnswers = await _profiles
+            .CountProfileValuesForDefinitionAsync(definition.PropertyDefinitionId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (recordedAnswers > 0 && !confirmValueDeletion)
+        {
+            // THE REFUSAL IS THE IMPACT REPORT. It states what will be destroyed, that the loss is permanent,
+            // where to take a backup, and the one parameter that performs it - so a caller holding nothing but
+            // this response knows both the cost and the next step.
+            //
+            // ⚠ THE OVERRIDE IS A FLAG AND NOT THE COUNT, WHICH IS A DELIBERATE CHOICE. Requiring the caller to
+            // echo the exact number back would guard against the total changing between the two requests, but it
+            // would also force every client to recover that number from prose - the count is a fact about the
+            // store, not a field of the request, so there is no structured channel it belongs in. The consent
+            // being sought is "remove this declaration and whatever answers it holds", which is well defined
+            // however many there turn out to be, and a flag expresses exactly that without inviting a fragile
+            // contract.
+            return Result.Failure(
+                ProfileDefinitionValueDeletionUnacknowledgedCode,
+                FormattableString.Invariant(
+                    $"Withdrawing \"{definition.PropertyName}\" will permanently delete {recordedAnswers} recorded profile answer(s) held by this portal's accounts, and that cannot be undone. Back up the UserProfile table first, then repeat this request with confirmValueDeletion=true to proceed."));
         }
 
         // The answers recorded against the declaration are NOT removed one at a time here.
@@ -2854,38 +3092,48 @@ public sealed class UserService : IUserService
             .Replace("[LASTNAME]", lastName ?? string.Empty, StringComparison.Ordinal)
             .Replace("[USERNAME]", username ?? string.Empty, StringComparison.Ordinal);
 
-    /// <summary>Withholds from one listing row every column the tenant's own settings declare hidden.</summary>
+    /// <summary>
+    /// Withholds the two PROFILE VALUES the tenant's settings hide, and leaves every account column as
+    /// stored.
+    /// </summary>
     /// <param name="row">The row about to be published.</param>
     /// <param name="settings">The tenant's membership settings, holding the nine column flags.</param>
     /// <remarks>
-    /// A WITHHELD VALUE IS NOT AMBIGUOUS, and the objection that it is deserves answering directly, because
-    /// this minimisation was once withdrawn on exactly that ground.
+    /// <para>
+    /// ⚠ A HIDDEN COLUMN IS NOT RENDERED; IT IS NOT EMPTIED. This member used to overwrite the given name,
+    /// family name, display name, address, creation instant, last sign-in instant and approval flag with
+    /// each contract's absent value whenever the matching <c>Column_*</c> setting was off. Six of the nine
+    /// settings default to off, so a tenant with no accounts-module settings configured received an empty
+    /// name and an empty address for every account - which is what a QA pass measured and reported.
+    /// </para>
+    /// <para>
+    /// <b>The legacy application did not do this.</b> <c>UserModuleBase.vb:L98-L115</c> reads the same
+    /// settings and the grid honoured them by DECLINING TO RENDER A COLUMN. It never altered the value
+    /// behind the column, because which columns to render is a presentation decision.
+    /// </para>
+    /// <para>
+    /// <b>Why overwriting was strictly worse than either alternative.</b> An empty name is
+    /// indistinguishable from an account that holds no name, and an absent instant from an account that has
+    /// never signed in, so a caller could not tell a minimised row from an incomplete one. It concealed
+    /// nothing either: the same settings are published verbatim by <c>GET /api/v1/users/settings</c> and
+    /// every value is published unminimised by the single-account read, so any caller could learn which
+    /// columns were hidden and could read the values regardless. Reporting an APPROVED account as
+    /// unapproved was the sharpest case - a presentation setting was changing a membership fact, and a
+    /// caller acting on it would have been acting on a falsehood.
+    /// </para>
+    /// <para>
+    /// <b>What deliberately keeps its gate.</b> The postal address and the telephone number, because they
+    /// are different in kind: they are profile VALUES costing one additional read per row, and that read is
+    /// already skipped when the tenant hides them. A <see langword="null"/> there therefore reports "not
+    /// requested" rather than "overwritten", and the address composer already returns <see
+    /// langword="null"/> for an empty property set. The two assignments below are belt and braces over that
+    /// fetch gate: a future change to the gate must not be able to leak a value the tenant hides.
+    /// </para>
     /// </remarks>
-    private static void WithholdColumnsTheTenantHides(UserListItemDto row, MembershipSettingsDto settings)
+    private static void WithholdProfileValuesTheTenantHides(
+        UserListItemDto row,
+        MembershipSettingsDto settings)
     {
-        if (!settings.ColumnFirstName)
-        {
-            row.FirstName = string.Empty;
-        }
-
-        if (!settings.ColumnLastName)
-        {
-            row.LastName = string.Empty;
-        }
-
-        if (!settings.ColumnDisplayName)
-        {
-            row.DisplayName = string.Empty;
-        }
-
-        if (!settings.ColumnEmail)
-        {
-            row.Email = string.Empty;
-        }
-
-        // Address and telephone are profile VALUES rather than account columns, and their gate has already
-        // been applied above by not fetching them at all - so these two are belt and braces, and they are
-        // kept because a future change to the fetch gate must not be able to leak them.
         if (!settings.ColumnAddress)
         {
             row.Address = null;
@@ -2894,23 +3142,6 @@ public sealed class UserService : IUserService
         if (!settings.ColumnTelephone)
         {
             row.Telephone = null;
-        }
-
-        // The two instants are already nullable on the contract, so withholding them is expressible without
-        // substituting a value that could be mistaken for data.
-        if (!settings.ColumnCreatedDate)
-        {
-            row.CreatedDate = null;
-        }
-
-        if (!settings.ColumnLastLogin)
-        {
-            row.LastLoginDate = null;
-        }
-
-        if (!settings.ColumnAuthorized)
-        {
-            row.IsApproved = false;
         }
     }
 

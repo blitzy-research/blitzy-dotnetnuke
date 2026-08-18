@@ -1451,7 +1451,34 @@ export class UserListComponent implements OnInit {
       // by what its content needs, and they are weights rather than a budget: this grid's visible column set
       // varies with the operator's own choices, so the browser distributes whatever is left over in the same
       // proportions.
-      width: '14%',
+      //
+      // ⚠ AND THE WEIGHTS MUST LEAVE ROOM FOR THE SLACK COLUMN, WHICH IS WHAT THEY DID NOT DO. The nine
+      // weighted tracks summed to 109% while three command columns took a further 156px, so the leftover the
+      // display name absorbs was `T - 1.09T - 156px` - negative at every width. With the operator's own
+      // eleven-column set it came to 88% + 156px, which is EXACTLY zero at a 1300px table: the column resolved
+      // to 0.0625px, its characters wrapped one per line, rows grew to 398-414px tall and the text collided
+      // with the address beside it. Nothing reported overflow, because under a fixed layout a starved column is
+      // not overflow - it is a column that was given nothing.
+      //
+      // The nine weights are therefore scaled to sum to 71%, which is derived rather than chosen. The table is
+      // floored at `--table-min-inline-size` (60rem = 960px), and that floor is the tightest the arithmetic
+      // ever gets, so it is what the weights are solved against:
+      //
+      //     960 x (1 - 0.71) - 156px = 122px
+      //
+      // - a readable display name in the WORST case, every column visible at the narrowest the table goes,
+      // growing to 400px at 1920. The relative emphasis between tracks is preserved: each weight is the
+      // original scaled by 71/109, rounded to the nearest half percent.
+      width: '9%',
+      // ⚠ ATOMIC BECAUSE A SIGN-IN NAME IS NOT A PHRASE, AND WRAPPING ONE FRACTURES IT. The shared stylesheet
+      // lets any cell break inside a word so a narrow column never overflows, which is right for prose and
+      // wrong for a value read as a single token: measured at a 768 viewport, this column rendered
+      // `qa_succes` + `s_probe`, `setup_mem` + `ber`, `setup_admi` + `n` and `qa_longna` + `me`.
+      // Marked atomic the value stays on one line and a column too narrow to hold it ellipsises instead, so
+      // what is on screen is a recognisable prefix rather than two fragments that read as corruption. The
+      // whole value stays in the accessibility tree either way. No width changes - the grid's weights are
+      // derived as a set and still sum to the same total.
+      atomic: true,
       // The row's NAME. Emitted as `<th scope="row">` so a screen reader announces which record
       // each cell belongs to - without it, traversing a row gives the column name and the value
       // and never the record's identity. This column is the one a person would read aloud to say
@@ -1471,7 +1498,16 @@ export class UserListComponent implements OnInit {
     if (visible.firstName === true) {
       set.push({
         key: 'firstName',
-        width: '9%',
+        width: '6%',
+        // ⚠ ATOMIC BECAUSE A GIVEN NAME IS NOT A PHRASE, AND WRAPPING ONE FRACTURES IT. The shared stylesheet
+        // lets any cell break inside a word so a narrow column never overflows, which is right for prose and
+        // wrong for a value read as a single token: measured at a 768 viewport, this column rendered
+        // the forename `Lawrence` as `Lawrenc` + `e`, orphaning a single letter on its own line.
+        // Marked atomic the value stays on one line and a column too narrow to hold it ellipsises instead, so
+        // what is on screen is a recognisable prefix rather than two fragments that read as corruption. The
+        // whole value stays in the accessibility tree either way. No width changes - the grid's weights are
+        // derived as a set and still sum to the same total.
+        atomic: true,
         sortable: true,
         label: FIRST_NAME_HEADING,
         headerAlign: 'center',
@@ -1490,7 +1526,16 @@ export class UserListComponent implements OnInit {
     if (visible.lastName === true) {
       set.push({
         key: 'lastName',
-        width: '9%',
+        width: '6%',
+        // ⚠ ATOMIC BECAUSE A FAMILY NAME IS NOT A PHRASE, AND WRAPPING ONE FRACTURES IT. The shared stylesheet
+        // lets any cell break inside a word so a narrow column never overflows, which is right for prose and
+        // wrong for a value read as a single token: measured at a 768 viewport, this column rendered
+        // surnames fractured in the same 57.59px track its sibling given-name column uses.
+        // Marked atomic the value stays on one line and a column too narrow to hold it ellipsises instead, so
+        // what is on screen is a recognisable prefix rather than two fragments that read as corruption. The
+        // whole value stays in the accessibility tree either way. No width changes - the grid's weights are
+        // derived as a set and still sum to the same total.
+        atomic: true,
         sortable: true,
         label: LAST_NAME_HEADING,
         headerAlign: 'center',
@@ -1522,6 +1567,14 @@ export class UserListComponent implements OnInit {
         // the username column. The display name is the right column to absorb it — the widest identity value
         // a reader scans for, and the one that benefits from every pixel the others do not need.
         //
+        // ⚠ ABSORBING THE LEFTOVER ONLY WORKS WHILE THERE IS ONE, WHICH IS THE OTHER HALF OF THIS ARRANGEMENT.
+        // Being the slack column is not protection: a starved slack column is invisible to every overflow
+        // measurement, because under a fixed layout it has not overflowed anything - it was simply handed
+        // nothing. The floor that stops that is arithmetic on the weights rather than anything declared here,
+        // and it is set out on the username column above. Adding a weighted column to this grid, or raising an
+        // existing weight, has to be checked against that floor: the nine weights must leave
+        // `--table-min-inline-size` enough room for the three command tracks AND a readable name.
+        //
         // A TEMPLATE COLUMN rather than a plain field column, for the same reason the address column is
         // one: an absent value has to paint a mark AND expose a hidden explanation of it, which is two
         // elements, and a field column emits one string. Converting this column is what stops a row
@@ -1545,7 +1598,7 @@ export class UserListComponent implements OnInit {
     if (visible.address === true) {
       set.push({
         key: 'address',
-        width: '13%',
+        width: '8.5%',
         label: ADDRESS_HEADING,
         headerAlign: 'center',
         bodyAlign: 'start',
@@ -1567,7 +1620,7 @@ export class UserListComponent implements OnInit {
     if (visible.telephone === true) {
       set.push({
         key: 'telephone',
-        width: '10%',
+        width: '6.5%',
         atomic: true,
         label: TELEPHONE_HEADING,
         headerAlign: 'center',
@@ -1582,7 +1635,7 @@ export class UserListComponent implements OnInit {
     if (visible.email === true) {
       set.push({
         key: 'email',
-        width: '15%',
+        width: '9.5%',
         // Ordered on the STORED address, not on the anchor the cell template builds from it.
         sortable: true,
         label: EMAIL_HEADING,
@@ -1611,7 +1664,7 @@ export class UserListComponent implements OnInit {
       // of the address column beside it, which WRAPS and therefore loses nothing by being narrower.
       set.push({
         key: 'createdDate',
-        width: '15.5%',
+        width: '10%',
         atomic: true,
         label: CREATED_DATE_HEADING,
         headerAlign: 'center',
@@ -1625,7 +1678,7 @@ export class UserListComponent implements OnInit {
     if (visible.lastLogin === true) {
       set.push({
         key: 'lastLoginDate',
-        width: '12%',
+        width: '8%',
         atomic: true,
         label: LAST_LOGIN_HEADING,
         headerAlign: 'center',
@@ -1651,7 +1704,7 @@ export class UserListComponent implements OnInit {
     if (visible.authorized === true) {
       set.push({
         key: 'approved',
-        width: '11.5%',
+        width: '7.5%',
         label: AUTHORIZED_HEADING,
         headerAlign: 'center',
         bodyAlign: 'start',

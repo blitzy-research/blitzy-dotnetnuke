@@ -199,6 +199,8 @@ describe('UserProfileComponent', () => {
     lastPasswordChangeDate: '2024-01-05T09:20:00Z',
     roles: ['Registered Users'],
     canDelete: true,
+    // Opaque and never interpreted here: a fixture only has to carry one for the round trip to close.
+    concurrencyToken: 'account-revision-token',
   };
 
   /**
@@ -338,6 +340,8 @@ describe('UserProfileComponent', () => {
         email: 'caller@example.test',
         isSuperUser: false,
         isPortalAdministrator: false,
+        mustChangePassword: false,
+        mustUpdateProfile: false,
         roles: ['Registered Users'],
         permissions: [],
       },
@@ -677,6 +681,8 @@ describe('UserProfileComponent', () => {
           email: 'admin@example.test',
           isSuperUser: true,
           isPortalAdministrator: true,
+          mustChangePassword: false,
+          mustUpdateProfile: false,
           roles: ['Administrators'],
           permissions: [],
         },
@@ -2955,6 +2961,8 @@ describe('UserProfileComponent', () => {
           email: 'caller@example.test',
           isSuperUser: false,
           isPortalAdministrator: false,
+          mustChangePassword: false,
+          mustUpdateProfile: false,
           roles: ['Registered Users'],
           permissions: [],
         },

@@ -1,5 +1,9 @@
 using DnnMigration.Infrastructure;
+using DnnMigration.Infrastructure.Persistence;
 using FluentAssertions;
+using Microsoft.Data.SqlClient;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
@@ -125,6 +129,127 @@ public class ConnectionStringValidationTests
             "SecretCatalog",
             "SecretLogin",
             "Sfx7!qLp2vRz");
+    }
+
+    // ---- The connection-attempt bound ------------------------------------------------------------------
+    //
+    // A QA run measured a database-outage 503 taking roughly fifteen seconds to be produced. The answer was
+    // correct - 503 with Retry-After - but SqlClient's default connection attempt is fifteen seconds, so every
+    // caller waited out that default before receiving it, and a health probe reported an outage a quarter of a
+    // minute after it began.
+
+    /// <summary>A connection string that states no timeout is given a bounded one.</summary>
+    /// <remarks>
+    /// Asserted through the string the context is actually registered with, rather than by reaching into the
+    /// private method, so this measures the value a connection attempt would really use.
+    /// </remarks>
+    [Fact]
+    public void AConnectionStringStatingNoTimeout_IsGivenABoundedOne()
+    {
+        SqlConnectionStringBuilder registered = RegisteredConnection(UsableConnectionString);
+
+        registered.ConnectTimeout.Should().BeGreaterThan(
+            0,
+            "a zero timeout means wait forever, which is the opposite of the intent");
+        registered.ConnectTimeout.Should().BeLessThan(
+            15,
+            "the whole point is to answer sooner than SqlClient's own default");
+        registered.ShouldSerialize("Connect Timeout").Should().BeTrue(
+            "the value has to be written into the string to have any effect");
+    }
+
+    /// <summary>
+    /// ⚠ AN OPERATOR'S OWN TIMEOUT IS NEVER OVERRIDDEN, in any of the three spellings it can be written in.
+    /// </summary>
+    /// <param name="keyword">The synonym the deployment used.</param>
+    /// <remarks>
+    /// Detecting "the operator said nothing" is subtler than it looks, and this theory is what pins the
+    /// mechanism. <c>ConnectTimeout</c> reads 15 whether the keyword was supplied AS 15 or omitted entirely, and
+    /// <c>ContainsKey</c> answers true in both cases because the builder pre-populates every keyword it knows -
+    /// so either of those tests would silently overwrite a deployment that had tuned this. The 30 below is
+    /// deliberately LONGER than SqlClient's default, so a rule that merely clamped high values would fail here.
+    /// </remarks>
+    [Theory]
+    [InlineData("Connect Timeout")]
+    [InlineData("Connection Timeout")]
+    [InlineData("Timeout")]
+    public void AnOperatorsOwnTimeout_IsPreserved(string keyword)
+    {
+        SqlConnectionStringBuilder registered =
+            RegisteredConnection($"{UsableConnectionString};{keyword}=30");
+
+        registered.ConnectTimeout.Should().Be(
+            30,
+            "a deployment that has tuned this keeps its value, whichever synonym it used");
+    }
+
+    /// <summary>A deployment that deliberately asks to wait longer is respected too.</summary>
+    /// <remarks>
+    /// The companion to the case above, and the reason the rule is "fill in what is missing" rather than "cap
+    /// what is present". A cross-region or heavily loaded server may legitimately need longer than the default,
+    /// and a bound imposed against the operator's stated wish would break exactly that deployment.
+    /// </remarks>
+    [Fact]
+    public void ADeliberatelyLongTimeout_IsNotClamped()
+    {
+        RegisteredConnection($"{UsableConnectionString};Connect Timeout=120")
+            .ConnectTimeout.Should().Be(120);
+    }
+
+    /// <summary>Adding a timeout does not disturb anything else the connection string states.</summary>
+    /// <remarks>
+    /// The string is rebuilt through <see cref="SqlConnectionStringBuilder"/> when a timeout is added, so this
+    /// case exists to prove the rebuild is lossless. Losing the encryption setting or the catalogue here would
+    /// be a far worse fault than the one being fixed, and it would surface only at a live connection.
+    /// </remarks>
+    [Fact]
+    public void AddingATimeout_PreservesEveryOtherSetting()
+    {
+        SqlConnectionStringBuilder registered = RegisteredConnection(UsableConnectionString);
+        var original = new SqlConnectionStringBuilder(UsableConnectionString);
+
+        registered.DataSource.Should().Be(original.DataSource);
+        registered.InitialCatalog.Should().Be(original.InitialCatalog);
+        registered.UserID.Should().Be(original.UserID);
+        registered.Password.Should().Be(original.Password);
+        registered.Encrypt.Should().Be(original.Encrypt);
+    }
+
+    /// <summary>
+    /// Registers the infrastructure and returns the connection string the context was configured with.
+    /// </summary>
+    /// <param name="connectionString">The configured value.</param>
+    /// <returns>The connection string the registered context resolves to, parsed.</returns>
+    /// <remarks>
+    /// Read back from the composed <see cref="DbContextOptions"/> rather than from configuration, because the
+    /// question is what the CONTEXT will connect with - which is the value after registration has had its say.
+    /// </remarks>
+    private static SqlConnectionStringBuilder RegisteredConnection(string connectionString)
+    {
+        IConfiguration configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                ["ConnectionStrings:Default"] = connectionString,
+            })
+            .Build();
+
+        ServiceProvider provider = new ServiceCollection()
+            .AddInfrastructure(configuration)
+            .BuildServiceProvider();
+
+        using IServiceScope scope = provider.CreateScope();
+
+        DbContextOptions<DnnDbContext> options = scope.ServiceProvider
+            .GetRequiredService<DbContextOptions<DnnDbContext>>();
+
+        RelationalOptionsExtension? relational = options.Extensions
+            .OfType<RelationalOptionsExtension>()
+            .FirstOrDefault();
+
+        relational.Should().NotBeNull("the context is registered against a relational provider");
+        relational!.ConnectionString.Should().NotBeNullOrWhiteSpace();
+
+        return new SqlConnectionStringBuilder(relational.ConnectionString);
     }
 
     private static Action Register(string? connectionString)

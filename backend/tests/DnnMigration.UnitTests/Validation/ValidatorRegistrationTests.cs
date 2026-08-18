@@ -79,6 +79,12 @@ public sealed class ValidatorRegistrationTests
                     typeof(CreateProfilePropertyDefinitionRequest),
                     typeof(UpdateProfilePropertyDefinitionRequest),
 
+                    // The profile catalogue's ORDERING write. Bound by PUT /profile-definitions/order,
+                    // whose body carries several declarations' positions because a move EXCHANGES two of
+                    // them and the two are only correct together - so the set is a bound shape of its own
+                    // rather than a repetition of the per-declaration contract above.
+                    typeof(ReorderProfilePropertyDefinitionsRequest),
+
                     typeof(UpdateTabRequest),
                     typeof(PagedRequest),
                     typeof(PortalPagedRequest),

@@ -37,8 +37,10 @@ export const PERMISSION_KEYS = Object.freeze(['VIEW', 'EDIT', 'READ', 'WRITE'] a
 /**
  * Whether a value is one of the four recognised permission keys. THE ONE SUPPORTED ROUTE FROM AN OPEN
  * PRODUCER TO THE CLOSED VOCABULARY. Every server-supplied key — {@link Permission.permissionKey}, and
- * each entry of the bare-key array the catalogue listing publishes — is typed `string` because the column
- * stores whatever an installation seeded.
+ * each key carried by a caller's effective-permission list — is typed `string` because the column stores
+ * whatever an installation seeded. The catalogue listing publishes {@link Permission} records rather than
+ * bare keys, so a key outside this vocabulary reaches the client intact and is recognised as unrecognised
+ * rather than silently dropped from the catalogue.
  *
  * @param value A candidate key from any source, trusted or not.
  * @returns True only when the value is exactly one of the four keys.

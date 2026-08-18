@@ -13,10 +13,13 @@ import {
 } from '@angular/core';
 import type { Signal, WritableSignal } from '@angular/core';
 import { ListReturnStore } from '../../../core/state/list-return.store';
-import { ROLE_LIST_ROUTE } from '../../../core/config/app-routes.config';
+import {
+  ROLE_LIST_GROUP_PARAM,
+  ROLE_LIST_ROUTE,
+} from '../../../core/config/app-routes.config';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import type { AbstractControl, ValidationErrors, ValidatorFn } from '@angular/forms';
-import { Router, RouterLink } from '@angular/router';
+import { type Params, Router, RouterLink } from '@angular/router';
 // `problemDetailsMessage` is deliberately NOT imported here any more: this screen no longer resolves a
 // document's sentence for itself. The banner does it, from the document and the fallback it is given — see
 // `reportFailure`.
@@ -166,6 +169,69 @@ const DESCRIPTION_MAX_LENGTH = 1000;
 /** `txtRSVPCode MaxLength="50"` — `editroles.ascx:L153`. */
 const RSVP_CODE_MAX_LENGTH = 50;
 
+/**
+ * Shortest invitation code an AUTHORED or ROTATED value may be. Mirrors
+ * `RoleTermsRules.RsvpCodeMinimumAuthoredLength`.
+ */
+const RSVP_CODE_MIN_AUTHORED_LENGTH = 12;
+
+/**
+ * Reports whether a code is strong enough to be AUTHORED, accepting an absent or empty value.
+ *
+ * ⚠ A FAITHFUL MIRROR OF `RoleTermsRules.IsStrongAuthoredRsvpCode`, NOT AN APPROXIMATION OF IT. The two
+ * must agree exactly or the screen refuses a value the server would take, or takes one it would refuse.
+ * `\p{L}` and `\p{Nd}` are used rather than `[A-Za-z]` and `[0-9]` because the server's `char.IsLetter` and
+ * `char.IsDigit` are Unicode-aware and classify by category, so an accented letter or a non-Latin digit
+ * counts there and has to count here.
+ */
+function isStrongAuthoredRsvpCode(code: string | null | undefined): boolean {
+  if (code === null || code === undefined || code === '') {
+    return true;
+  }
+
+  if (code.length < RSVP_CODE_MIN_AUTHORED_LENGTH) {
+    return false;
+  }
+
+  // Three classes, of which at least two must appear. Anything that is neither a letter nor a digit -
+  // punctuation, a symbol, a separator - is the third class, exactly as the server's `else` branch treats it.
+  const hasLetter = /\p{L}/u.test(code);
+  const hasDigit = /\p{Nd}/u.test(code);
+  const hasOther = /[^\p{L}\p{Nd}]/u.test(code);
+
+  return Number(hasLetter) + Number(hasDigit) + Number(hasOther) >= 2;
+}
+
+/**
+ * Builds the invitation-code strength rule, held against the value being WRITTEN rather than against every
+ * submission.
+ *
+ * ⚠ THE GRANDFATHERING IS THE POINT OF THIS FACTORY, and dropping it reintroduces the trap the server fix
+ * removed: a role carrying a code from before the strength rule would become un-editable, because amending
+ * its description posts the stored code back and a rule held against every submission refuses it. The only
+ * escape would be rotating the code, which invalidates it for every member holding it. So the rule fires
+ * only once the submitted value DIFFERS from the stored one, which is precisely when something is authored.
+ *
+ * The comparison is case-SENSITIVE, matching the server's `StringComparison.Ordinal`: the value is a shared
+ * secret rather than a name, so altering only its casing produces a different secret and IS authoring.
+ *
+ * @param storedCode Reads the code currently held against the role, or `null` on the creation route where
+ * nothing is stored and therefore every non-empty value is authored.
+ * @returns A validator reporting `rsvpCodeTooWeak` when a newly authored code is too easily guessed.
+ */
+function authoredRsvpCodeValidator(storedCode: () => string | null): ValidatorFn {
+  return (control: AbstractControl): ValidationErrors | null => {
+    const submitted = typeof control.value === 'string' ? control.value : '';
+    const stored = storedCode() ?? '';
+
+    if (submitted === stored) {
+      return null;
+    }
+
+    return isStrongAuthoredRsvpCode(submitted) ? null : { rsvpCodeTooWeak: true };
+  };
+}
+
 /** The icon path limit. */
 const ICON_FILE_MAX_LENGTH = 100;
 
@@ -178,6 +244,13 @@ const UNREADABLE_ADDRESS_MESSAGE =
 
 /** `valRoleName.Text`, `<br>` stripped. */
 const ROLE_NAME_REQUIRED_MESSAGE = 'You Must Enter a Valid Name';
+
+/**
+ * Verbatim mirror of `RoleTermsRules.RsvpCodeTooWeakMessage`. Restated rather than derived because the two
+ * codebases share no wording source, and a caller must read the SAME sentence whichever side refuses.
+ */
+const RSVP_CODE_TOO_WEAK_MESSAGE =
+  'An RSVP Code must be at least 12 characters long and must mix letters with digits or punctuation.';
 
 /** `valServiceFee1.Text`, `<br>` stripped. */
 const SERVICE_FEE_INVALID_MESSAGE = 'Service Fee Value Entered Is Not Valid';
@@ -203,18 +276,7 @@ const TRIAL_PERIOD_INVALID_MESSAGE = 'Trial Period Value Entered Is Not Valid';
 /** `valTrialPeriod2.Text`, `<br>` stripped. */
 const TRIAL_PERIOD_NOT_POSITIVE_MESSAGE = 'Trial Period Must Be Greater Than Zero';
 
-/**
- * The accessible name of the billing-frequency select. AUTHORED, because the legacy had none to recover,
- * and authored as an accessible name only - it changes not one rendered pixel.
- */
-const BILLING_FREQUENCY_ACCESSIBLE_NAME = 'Billing Period (Every) — unit';
 
-/**
- * The accessible name of the trial-frequency select. Same reasoning as {@link
- * BILLING_FREQUENCY_ACCESSIBLE_NAME}: `plTrialPeriod` names `txtTrialPeriod` only, `cboTrialFrequency` is
- * named by nothing, and both controls were coming out as "Trial Period (Every)".
- */
-const TRIAL_FREQUENCY_ACCESSIBLE_NAME = 'Trial Period (Every) — unit';
 
 /**
  * Reported when an amount falls outside what the `money` column can hold. MIGRATION: NET-NEW WORDING —
@@ -993,6 +1055,17 @@ export class RoleFormComponent {
    */
   private readonly roleMissingSignal: WritableSignal<boolean> = signal<boolean>(false);
 
+  /**
+   * The invitation code as the store last reported it, or `null` on the creation route.
+   *
+   * ⚠ DECLARED BEFORE THE FORM DELIBERATELY. `new FormControl` validates on construction, so the strength
+   * validator's closure runs while the form field initialiser is still executing; a field declared after the
+   * form would be `undefined` at that moment. Held as a plain property rather than a signal because it is
+   * read from inside a validator, and reading a signal there would enrol the validator in reactive tracking
+   * for a value that must only be consulted at the moment validation runs.
+   */
+  private storedRsvpCode: string | null = null;
+
   // -------------------------------------------------------------------------
   // THE FORM
   // -------------------------------------------------------------------------
@@ -1051,7 +1124,14 @@ export class RoleFormComponent {
     trialFrequency: new FormControl<BillingFrequency>(NO_FREQUENCY, { nonNullable: true }),
     rsvpCode: new FormControl('', {
       nonNullable: true,
-      validators: [Validators.maxLength(RSVP_CODE_MAX_LENGTH)],
+      validators: [
+        Validators.maxLength(RSVP_CODE_MAX_LENGTH),
+        // The strength rule the server holds against an AUTHORED value, mirrored here so a caller learns of
+        // it while typing instead of through a 400 after saving. `() => this.storedRsvpCode` defers the read
+        // to validation time, which is what lets one validator serve both the creation route (nothing
+        // stored, so every value is authored) and the edit route (the stored value grandfathered).
+        authoredRsvpCodeValidator(() => this.storedRsvpCode),
+      ],
     }),
     iconFile: new FormControl('', {
       nonNullable: true,
@@ -1146,11 +1226,7 @@ export class RoleFormComponent {
   );
 
   /** The six frequency codes, shared by both frequency selects. */
-  /** The accessible name of the billing-frequency select. */
-  protected readonly billingFrequencyAccessibleName = BILLING_FREQUENCY_ACCESSIBLE_NAME;
 
-  /** The accessible name of the trial-frequency select. */
-  protected readonly trialFrequencyAccessibleName = TRIAL_FREQUENCY_ACCESSIBLE_NAME;
 
   protected readonly frequencyOptions: readonly RoleFormOption<BillingFrequency>[] =
     BILLING_FREQUENCY_OPTIONS;
@@ -1853,6 +1929,10 @@ export class RoleFormComponent {
       return ICON_NOT_CONTAINED_MESSAGE;
     }
 
+    if (errors['rsvpCodeTooWeak'] !== undefined) {
+      return RSVP_CODE_TOO_WEAK_MESSAGE;
+    }
+
     const maxLength: unknown = errors['maxlength'];
     if (typeof maxLength === 'object' && maxLength !== null) {
       const requested: unknown = (maxLength as { requiredLength?: unknown }).requiredLength;
@@ -1882,6 +1962,10 @@ export class RoleFormComponent {
   private resetToCreateDefaults(): void {
     this.loadedRole.set(null);
     this.clearFailure();
+    // Nothing is stored on the creation route, so there is nothing to grandfather and every non-empty code
+    // submitted here is authored. Cleared before `reset` for the same ordering reason the arrival path
+    // records it before `setValue`.
+    this.storedRsvpCode = null;
     this.form.reset();
     this.form.markAsPristine();
     this.form.markAsUntouched();
@@ -1918,6 +2002,13 @@ export class RoleFormComponent {
 
     const trialFrequency = coerceFrequency(role.trialFrequency);
     const onTrial = isRoleOnTrial(role);
+
+    // ⚠ RECORDED BEFORE `setValue`, NOT AFTER. `setValue` revalidates, so the strength validator runs during
+    // the call below; recording the stored code afterwards would let a legacy short code be marked invalid on
+    // arrival and only clear on the next keystroke. Normalised through the same `textOrEmpty` the control is
+    // filled with, so the comparison is between two values of the same shape - a null code and the empty box
+    // that renders it are the same state.
+    this.storedRsvpCode = textOrEmpty(role.rsvpCode);
 
     this.form.setValue({
       roleName: textOrEmpty(role.roleName),
@@ -1993,7 +2084,7 @@ export class RoleFormComponent {
     if (replaceEntry) {
       void this.router.navigate([ROLE_LIST_ROUTE], {
         // The listing's own place, so a save does not cost the operator the page they were working on.
-        queryParams: this.listReturn.coordinateFor(ROLE_LIST_ROUTE),
+        queryParams: this.listedCoordinate(),
         replaceUrl: true,
       });
 
@@ -2001,8 +2092,56 @@ export class RoleFormComponent {
     }
 
     void this.router.navigate([ROLE_LIST_ROUTE], {
-      queryParams: this.listReturn.coordinateFor(ROLE_LIST_ROUTE),
+      queryParams: this.listedCoordinate(),
     });
+  }
+
+  /**
+   * The listing coordinate to return to, with a group narrowing dropped when it names a group that no longer
+   * exists.
+   *
+   * ⚠ THE REMEMBERED COORDINATE CAN NAME A GROUP THAT HAS SINCE BEEN DELETED, AND SENDING THE OPERATOR BACK
+   * TO IT COST THEM THE RECORD THEY HAD JUST CREATED. The listing remembers where the operator was so a save
+   * does not lose their place, which is right - but "where they were" is remembered as an address, and an
+   * address naming a deleted group is a request the server answers 404 to. A save that succeeded then landed
+   * on a listing reporting failure with the new role nowhere in it.
+   *
+   * The listing itself now heals such a narrowing when it meets one, so this is not the only guard; it is
+   * the earlier and cheaper one. Validating here means the failed read is never issued at all, rather than
+   * issued, recognised and withdrawn. Anything the group set does not contain is dropped, which covers a
+   * group deleted from this session and one deleted by somebody else.
+   *
+   * ⚠ IT ASKS WHETHER THE GROUP READ SETTLED, NOT WHETHER THE SET HAS MEMBERS. "Not read yet" and "read and
+   * genuinely empty" both hold an empty array, and conflating them breaks this in both directions: treating
+   * unread as empty discards a narrowing that may be perfectly valid, while treating a genuinely empty set
+   * as unread sends the operator back to an address that can only be refused. Unsettled is left exactly as
+   * remembered rather than discarded on a guess.
+   *
+   * @returns The parameters to navigate with.
+   */
+  private listedCoordinate(): Params {
+    const remembered: Params = this.listReturn.coordinateFor(ROLE_LIST_ROUTE);
+    const narrowing: unknown = remembered[ROLE_LIST_GROUP_PARAM];
+
+    if (typeof narrowing !== 'string' || !this.roleStore.roleGroupsSettled()) {
+      return remembered;
+    }
+
+    const groups: readonly RoleGroup[] = this.roleGroups();
+
+    const key = Number(narrowing);
+
+    // A non-numeric value is one of the listing's own intent tokens rather than a key, so there is no group
+    // to look up and nothing to invalidate.
+    if (!Number.isInteger(key)) {
+      return remembered;
+    }
+
+    if (groups.some((group: RoleGroup): boolean => group.roleGroupId === key)) {
+      return remembered;
+    }
+
+    return { ...remembered, [ROLE_LIST_GROUP_PARAM]: null };
   }
 
   // -------------------------------------------------------------------------

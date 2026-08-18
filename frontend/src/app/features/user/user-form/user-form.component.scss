@@ -191,6 +191,35 @@ p {
 // The recovery surface for an account that could not be read. Bordered like the credential panel so the
 // two read as the same class of out-of-band notice, and muted rather than danger-coloured because the
 // shared banner immediately above is already carrying the failure at full weight.
+// The stale-read recovery surface. Same visual register as the unconfirmed-record surface below, because
+// the two say the same kind of thing: what is on screen cannot be trusted, and here is what to do about it.
+.user-form__conflict {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-2);
+  margin-block: var(--space-2);
+  padding: var(--space-3);
+  border: var(--border-width) var(--border-style) var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-surface);
+}
+
+// What happened. Weighted above the recovery sentence beside it, because a reader needs to know that
+// nothing was saved before they read what to do next.
+.user-form__conflict-statement {
+  margin-block: 0;
+  max-inline-size: mx.breakpoint('md');
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-tight);
+}
+
+.user-form__conflict-message {
+  margin-block: 0;
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-tight);
+  color: var(--color-text-muted);
+}
+
 .user-form__unconfirmed {
   display: grid;
   gap: var(--space-2);
@@ -235,6 +264,17 @@ a.user-form__recovery {
   background-color: var(--color-surface);
   border: var(--border-width) var(--border-style) var(--color-primary);
   border-radius: var(--radius-sm);
+}
+
+// The tenant-expression notice beside the address field. Muted rather than danger-coloured, because it is
+// an ADVISORY about a second rule that may or may not refuse the value - not a report that the field is
+// wrong. Colouring it as an error would make an ordinary `.museum` address look invalid when it is not.
+.user-form__tenant-advisory {
+  margin-block: var(--space-1) 0;
+  max-inline-size: mx.breakpoint('md');
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-tight);
+  color: var(--color-text-muted);
 }
 
 .user-form__credential-advisory {

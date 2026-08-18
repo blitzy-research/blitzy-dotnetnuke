@@ -83,6 +83,8 @@ public class RoleServiceTests
 
     private const string PagingInvalidCode = "role.paging_invalid";
 
+    private const string RsvpCodeTooWeakCode = "role.rsvp_code_too_weak";
+
     private static readonly DateTime Now = new(2026, 8, 2, 12, 0, 0, DateTimeKind.Utc);
 
     private static readonly DateTime PerpetualExpiry = new(9999, 12, 31, 0, 0, 0, DateTimeKind.Utc);
@@ -1644,7 +1646,10 @@ public class RoleServiceTests
         request.ServiceFee = 19.5m;
         request.BillingPeriod = 2;
         request.BillingFrequency = Frequency.Year;
-        request.RsvpCode = "NEW";
+        // A policy-compliant code, because this fact asserts FIELD PROPAGATION and the write only happens for
+        // a value the authoring rule admits. The previous three-character fixture was arbitrary and reached
+        // the service only because the strength rule used to sit in the validator this test bypasses.
+        request.RsvpCode = "NEWCODE-2026a";
         request.IconFile = "new.gif";
 
         Result<RoleDetailDto> outcome = await harness.Service
@@ -1662,7 +1667,7 @@ public class RoleServiceTests
         tracked.ServiceFee.Should().Be(19.5m);
         tracked.BillingPeriod.Should().Be(2);
         tracked.BillingFrequency.Should().Be(Frequency.Year);
-        tracked.RsvpCode.Should().Be("NEW");
+        tracked.RsvpCode.Should().Be("NEWCODE-2026a");
         tracked.IconFile.Should().Be("new.gif");
         tracked.PortalId.Should().Be(PortalId);
         outcome.Value.RoleName.Should().Be("Renamed subscribers");
@@ -1743,6 +1748,90 @@ public class RoleServiceTests
         harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
         harness.Cache.Verify(c => c.InvalidatePortal(It.IsAny<int>()), Times.Never);
     }
+
+    /// <summary>
+    /// An update that leaves a stored weak invitation code exactly as it is succeeds, so a role carrying a
+    /// legacy code stays editable.
+    /// </summary>
+    /// <param name="storedAndSubmitted">A code of the shape legacy installations already hold.</param>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// This is the arm that makes the strength rule survivable. Refusing it would leave every role carrying
+    /// a pre-rule code un-editable except by rotating that code, which invalidates it for every member
+    /// holding it - so the only route to amending a description would be to break the memberships the rule's
+    /// own redemption carve-out exists to protect. AAP 0.7.5.5 forbids that class of migration-time
+    /// tightening in as many words.
+    /// <para>
+    /// Absent and empty are covered too, because a screen that renders a null code as an empty box and posts
+    /// the empty box back has authored nothing.
+    /// </para>
+    /// </remarks>
+    [Theory]
+    [InlineData("JOIN")]
+    [InlineData("JOIN2008")]
+    [InlineData("abcdefghijk")]
+    [InlineData("")]
+    [InlineData(null)]
+    public async Task UpdateRole_WhenTheWeakInvitationCodeIsUnchanged_IsAdmitted(string? storedAndSubmitted)
+    {
+        Harness harness = Harness.Ready();
+        Role stored = StoredRole();
+        stored.RsvpCode = storedAndSubmitted;
+        harness.LookupRole = stored;
+
+        UpdateRoleRequest request = ValidUpdateRequest();
+        request.RsvpCode = storedAndSubmitted;
+
+        Result<RoleDetailDto> outcome = await harness.Service.UpdateRoleAsync(
+            PortalId,
+            RoleId,
+            request,
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue(
+            "re-submitting the code already stored authors nothing, so there is no new secret to judge");
+        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    /// <summary>
+    /// An update that rotates a weak invitation code IN is refused, whatever the stored value was.
+    /// </summary>
+    /// <param name="stored">The code currently held against the role.</param>
+    /// <param name="submitted">The different, weak code the request tries to author.</param>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// This is the arm that keeps the security rule real once the unchanged case is admitted. Both
+    /// directions are covered - weak replacing weak, and weak replacing strong - because the guard turns on
+    /// whether the value CHANGED, not on whether the stored one happened to be acceptable. The casing-only
+    /// case is included deliberately: the stored value is a shared secret rather than a name, so altering
+    /// only its casing produces a different secret and is therefore authoring.
+    /// </remarks>
+    [Theory]
+    [InlineData("JOIN2008", "JOIN")]
+    [InlineData("aaaaaaaaaaaa1", "short")]
+    [InlineData("JOIN", "join")]
+    [InlineData(null, "JOIN")]
+    public async Task UpdateRole_WhenAWeakInvitationCodeIsRotatedIn_IsRefused(string? stored, string submitted)
+    {
+        Harness harness = Harness.Ready();
+        Role role = StoredRole();
+        role.RsvpCode = stored;
+        harness.LookupRole = role;
+
+        UpdateRoleRequest request = ValidUpdateRequest();
+        request.RsvpCode = submitted;
+
+        Result<RoleDetailDto> outcome = await harness.Service.UpdateRoleAsync(
+            PortalId,
+            RoleId,
+            request,
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue("a code the caller is authoring must satisfy the strength rule");
+        outcome.Error!.Code.Should().Be(RsvpCodeTooWeakCode);
+        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Never);
+    }
+
 
     /// <summary>
     /// A write the store itself refuses as a lost update is reported as the same conflict a stale

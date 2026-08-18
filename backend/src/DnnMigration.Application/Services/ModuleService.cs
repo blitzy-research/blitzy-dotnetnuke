@@ -78,6 +78,18 @@ public sealed class ModuleService : IModuleService
     /// <summary>Reported when the named definition does not exist or is not available to the portal.</summary>
     private const string DefinitionNotFoundCode = "module.definition_not_found";
 
+    /// <summary>
+    /// Reported when an address names an installed module package - a <c>dbo.DesktopModules</c> row - that
+    /// this installation does not have.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from <see cref="DefinitionNotFoundCode"/> deliberately: a package holds definitions, so
+    /// "that package is not installed" and "that definition is not available here" are different answers to
+    /// different questions, and collapsing them would make an absent package indistinguishable from one that
+    /// declares nothing.
+    /// </remarks>
+    private const string PackageNotFoundCode = "module.package_not_found";
+
     private const string TabNotFoundCode = "module.tab_not_found";
 
     /// <summary>
@@ -700,6 +712,7 @@ public sealed class ModuleService : IModuleService
                 module,
                 placement,
                 destinationTab,
+                request.ModuleOrder,
                 affectedTabIds,
                 cancellationToken).ConfigureAwait(false);
 
@@ -764,10 +777,26 @@ public sealed class ModuleService : IModuleService
 
     /// <inheritdoc/>
     /// <remarks>
+    /// <para>
     /// Recycling the module is a soft delete through <c>dbo.Modules.IsDeleted</c>, a <c>bit NOT NULL</c>
     /// column added by the 02.00.00 upgrade script with a default of zero, so the module and every
     /// placement it has survive and can be restored. Recycling a module that is already recycled succeeds,
     /// because a delete is idempotent.
+    /// </para>
+    /// <para>
+    /// ⚠ REMOVING THE LAST PLACEMENT RECYCLES THE MODULE TOO, AND OMITTING THAT WAS A MEASURED DEFECT.
+    /// Deleting a module from the listing sends the placement form of this request, so the branch below used
+    /// to leave <c>Modules.IsDeleted</c> at zero with no <c>dbo.TabModules</c> row at all - a live module on
+    /// no page. Such a row answered nothing consistently: it vanished from the listing, the search and the
+    /// import destinations, the detail and settings reads reported 404 because both select through a
+    /// placement, the permission read answered 200 because it does not, and a second delete answered 204
+    /// without changing anything. The legacy provider closed the same gap in the same place -
+    /// <c>ModuleController.vb</c> <c>DeleteTabModule</c> L847-L855 removes the row, renumbers the pane and
+    /// then, "check if all modules instances have been deleted", soft-deletes the module when none remain.
+    /// The count is taken AFTER the removal is staged and BEFORE the commit, so the row removal and the
+    /// recycle flag are published by the one <see cref="IUnitOfWork.SaveChangesAsync"/> below and no reader
+    /// can observe the contradictory state in between.
+    /// </para>
     /// </remarks>
     public async Task<Result> DeleteModuleAsync(
         int portalId,
@@ -787,6 +816,7 @@ public sealed class ModuleService : IModuleService
         }
 
         var affectedTabIds = new HashSet<int>();
+        bool recycledWithLastPlacement = false;
 
         if (tabModuleId is int addressed)
         {
@@ -800,6 +830,23 @@ public sealed class ModuleService : IModuleService
 
             await RemovePlacementAsync(placement, cancellationToken).ConfigureAwait(false);
             affectedTabIds.Add(placement.TabId);
+
+            // The placements that SURVIVE this removal. Compared by key rather than by counting the rows
+            // read, because the row just staged for deletion is still returned by a store read inside the
+            // same unit of work.
+            IReadOnlyList<TabModule> remaining = await _modules
+                .GetTabModulesByModuleIdAsync(moduleId, cancellationToken)
+                .ConfigureAwait(false);
+
+            bool anySurvives = remaining.Any(other => other.TabModuleId != placement.TabModuleId);
+
+            if (!anySurvives && !module.IsDeleted)
+            {
+                // The module now sits on no page. It is recycled rather than left live, so every read of it
+                // agrees, and so the pane it left is the only thing the operator has to think about.
+                module.IsDeleted = true;
+                recycledWithLastPlacement = true;
+            }
         }
         else
         {
@@ -829,7 +876,27 @@ public sealed class ModuleService : IModuleService
                 ["Operation"] = tabModuleId is null ? "Recycle" : "RemovePlacement",
                 ["TabModuleId"] = tabModuleId?.ToString(CultureInfo.InvariantCulture),
                 ["AffectedTabCount"] = affectedTabIds.Count.ToString(CultureInfo.InvariantCulture),
+                ["RecycledWithLastPlacement"] = recycledWithLastPlacement
+                    ? bool.TrueString
+                    : null,
             });
+
+        // A SECOND ENTRY, AND ONLY WHEN THE MODULE ITSELF WENT. The placement entry above describes the row
+        // that was removed; a reader looking for when a module was recycled must find that fact under the
+        // event name that means it, exactly as the whole-module branch produces.
+        if (recycledWithLastPlacement)
+        {
+            RecordModuleAudit(
+                AuditEventNames.ModuleDeleted,
+                portalId,
+                moduleId,
+                new Dictionary<string, string?>(StringComparer.Ordinal)
+                {
+                    ["Operation"] = "Recycle",
+                    ["IsDeleted"] = bool.TrueString,
+                    ["Cause"] = "LastPlacementRemoved",
+                });
+        }
 
         return Result.Success();
     }
@@ -1177,15 +1244,36 @@ public sealed class ModuleService : IModuleService
 
     /// <inheritdoc/>
     /// <remarks>
+    /// <para>
     /// Narrows the catalogue for the same reason the single-definition read above does, and consequently
     /// preserves the catalogue's ordering - friendly name, then identifier - rather than imposing an order
     /// of its own.
+    /// </para>
+    /// <para>
+    /// ⚠ THE PACKAGE'S EXISTENCE IS SETTLED FIRST, AND ANSWERING WITHOUT IT WAS A MEASURED DEFECT. Narrowing
+    /// alone cannot distinguish "that package is not installed" from "that package declares nothing here":
+    /// both produced an empty collection and a 200, so a caller holding a stale or mistyped identifier was
+    /// told the package exists and is empty. The package is therefore read directly - it is a single keyed
+    /// read against a table this method does not otherwise touch - and a package no row names is reported
+    /// absent, which is what every other single-resource address in this API does.
+    /// </para>
     /// </remarks>
     public async Task<Result<IReadOnlyList<ModuleDefinitionDto>>> ListDesktopModuleDefinitionsAsync(
         int portalId,
         int desktopModuleId,
         CancellationToken cancellationToken = default)
     {
+        DesktopModule? package = await _definitions
+            .GetDesktopModuleByIdAsync(desktopModuleId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (package is null)
+        {
+            return Result<IReadOnlyList<ModuleDefinitionDto>>.Failure(
+                PackageNotFoundCode,
+                FormattableString.Invariant($"Module package {desktopModuleId} is not installed."));
+        }
+
         Result<IReadOnlyList<ModuleDefinitionDto>> catalogue = await this
             .ListModuleDefinitionsAsync(portalId, cancellationToken)
             .ConfigureAwait(false);
@@ -1195,6 +1283,8 @@ public sealed class ModuleService : IModuleService
             return catalogue;
         }
 
+        // An empty answer from here is now unambiguous: the package IS installed and either declares no
+        // definition at all or declares none this tenant is entitled to use.
         IReadOnlyList<ModuleDefinitionDto> declared = catalogue.Value
             .Where(candidate => candidate.DesktopModuleId == desktopModuleId)
             .ToList();
@@ -2206,6 +2296,10 @@ public sealed class ModuleService : IModuleService
     /// <param name="module">The module being relocated.</param>
     /// <param name="source">The placement being vacated.</param>
     /// <param name="destination">The content page the module is moving onto.</param>
+    /// <param name="requestedPosition">
+    /// The position the caller submitted, forwarded unresolved so that it is resolved against the
+    /// DESTINATION pane. <see cref="AppendPositionSentinel"/> means "the bottom of that pane".
+    /// </param>
     /// <param name="affectedTabIds">Set collecting the pages whose caches must be dropped.</param>
     /// <param name="cancellationToken">Token observed for cancellation.</param>
     /// <returns>
@@ -2213,15 +2307,27 @@ public sealed class ModuleService : IModuleService
     /// already existed on the destination.
     /// </returns>
     /// <remarks>
-    /// The pane and position follow the legacy copy exactly. An empty destination pane meant "the same pane
-    /// the module is already in" - <c>If toPaneName = "" Then toPaneName = objModule.PaneName</c> - and the
-    /// new row went to the bottom of it, under the comment "Add a copy of the module to the bottom of the
-    /// Pane for the new Tab".
+    /// <para>
+    /// The pane follows the legacy copy exactly. An empty destination pane meant "the same pane the module
+    /// is already in" - <c>If toPaneName = "" Then toPaneName = objModule.PaneName</c>.
+    /// </para>
+    /// <para>
+    /// ⚠ THE SUBMITTED POSITION IS HONOURED ON THE DESTINATION, AND DISCARDING IT WAS A MEASURED DEFECT.
+    /// The legacy screen offered a page chooser and no position control, so its own comment - "Add a copy of
+    /// the module to the bottom of the Pane for the new Tab" - described the only case it could produce.
+    /// This contract DOES carry a position, and the update path applies it to the source row a few lines
+    /// before this method deletes that row, so a caller submitting <c>moduleOrder: 1</c> with a move had its
+    /// value written to a row that never reached the database and read back the appended position instead -
+    /// measured as a submitted 1 being stored as 11, with no in-scope screen able to put it back. The
+    /// requested position is therefore resolved against the destination pane here, and the legacy append
+    /// remains what the sentinel asks for.
+    /// </para>
     /// </remarks>
     private async Task<TabModule> RelocatePlacementAsync(
         Module module,
         TabModule source,
         Tab destination,
+        int requestedPosition,
         ISet<int> affectedTabIds,
         CancellationToken cancellationToken)
     {
@@ -2235,6 +2341,15 @@ public sealed class ModuleService : IModuleService
         {
             // Already there. The source row still goes, so the caller's instruction - "this module should be
             // on that page, not this one" - is honoured, and no duplicate placement is created.
+            //
+            // A NAMED POSITION STILL APPLIES, to the row that survives. The alternative - honouring the
+            // position when a new row is created and ignoring it when one already existed - would make the
+            // same request mean two different things depending on state the caller cannot see.
+            if (requestedPosition != AppendPositionSentinel)
+            {
+                existing.ModuleOrder = requestedPosition;
+            }
+
             await RemovePlacementAsync(source, cancellationToken).ConfigureAwait(false);
             return existing;
         }
@@ -2248,7 +2363,7 @@ public sealed class ModuleService : IModuleService
         int position = await ResolvePositionAsync(
             destination.TabId,
             source.PaneName,
-            AppendPositionSentinel,
+            requestedPosition,
             cancellationToken).ConfigureAwait(false);
 
         var moved = new TabModule

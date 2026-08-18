@@ -43,6 +43,8 @@ const SESSION_BODY: AuthSession = {
     email: 'operator.a@example.test',
     isSuperUser: false,
     isPortalAdministrator: false,
+    mustChangePassword: false,
+    mustUpdateProfile: false,
     roles: ['Administrators'],
     permissions: ['EDIT'],
   },
