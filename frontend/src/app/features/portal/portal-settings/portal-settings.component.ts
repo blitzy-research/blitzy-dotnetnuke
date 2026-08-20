@@ -13,7 +13,8 @@ import {
   signal,
   viewChildren,
 } from '@angular/core';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import type { Signal } from '@angular/core';
+import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { ListReturnStore } from '../../../core/state/list-return.store';
 import { PORTAL_LIST_ROUTE } from '../../../core/config/app-routes.config';
 import type { Subscription } from 'rxjs';
@@ -46,6 +47,7 @@ import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialo
 import { EmptyStateComponent } from '../../../shared/components/empty-state/empty-state.component';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
 import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
+import { AbsentValueComponent } from '../../../shared/components/absent-value/absent-value.component';
 import {
   LoadingSpinnerComponent,
 } from '../../../shared/components/loading-spinner/loading-spinner.component';
@@ -211,6 +213,9 @@ const PROCESSOR_MAX_LENGTH = 50;
  */
 const TIME_ZONE_MIN_OFFSET = -720;
 
+/** Used only to restate a stored offset in hours and minutes. @see timeZoneReading */
+const MINUTES_PER_HOUR = 60;
+
 /** @see TIME_ZONE_MIN_OFFSET */
 const TIME_ZONE_MAX_OFFSET = 780;
 
@@ -354,7 +359,15 @@ const FIELD_HELP = Object.freeze({
   loginTabId: 'The Login Page for your site.',
   userTabId: 'The User Page for your site.',
   administratorId: 'The Administrator User for the site.',
-  homeDirectory: 'Enter the Home Directory for this site',
+  // ⚠ QA-21 — REWORDED FROM THE LEGACY IMPERATIVE, DELIBERATELY. `SiteSettings.ascx.resx`
+  // `plHomeDirectory.Help` reads "Enter the Home Directory for this site", and the legacy box it described
+  // was declared `Enabled="False"` at `sitesettings.ascx:L290` — so the legacy resource told an operator to
+  // type into a control the legacy itself had disabled. The port renders no control here at all, which
+  // makes the instruction not merely misleading but impossible to act on, and this screen's own notice
+  // beside it says the value cannot be changed. The replacement is not invented: it is the exact form the
+  // other twelve help strings on this screen already take — "The Splash Page for your site.", "The
+  // Administrator User for the site.", "The Currency used on the site." Recorded in MIGRATION_NOTES.md.
+  homeDirectory: 'The Home Directory for this site.',
   paymentProcessor: 'The Payment Processor used to handle payments on the site.',
   processorUserId: 'The UserId for the Payment Processor.',
   timeZoneOffset: 'The TimeZone for the location of the site.',
@@ -788,6 +801,7 @@ function buildPageOptions(
   selector: 'app-portal-settings',
   standalone: true,
   imports: [
+    AbsentValueComponent,
     FocusFirstInvalidDirective,
     SubmitGuardDirective,
     ReactiveFormsModule,
@@ -1278,6 +1292,15 @@ export class PortalSettingsComponent {
    * An unread or absent path renders as the empty string rather than as a marker: the box is a text input,
    * so a dash inside it would read as a stored VALUE of one character.
    */
+  /**
+   * Whether a home directory is recorded at all, so the read-only field can state an absence rather than
+   * paint an empty box. Whitespace-only counts as absent: a path of spaces is not a path, and treating it as
+   * one would put an invisible value in a box a reader cannot edit or interrogate.
+   */
+  protected readonly homeDirectoryPresent = computed<boolean>(
+    () => this.homeDirectoryText().trim().length > 0,
+  );
+
   protected readonly homeDirectoryText = computed<string>(() => {
     const held = this.portals.settings();
 
@@ -1329,6 +1352,60 @@ export class PortalSettingsComponent {
     this.portals.clearFailures();
     this.portals.loadSettings(portalId);
   }
+
+  /**
+   * The offset as it currently stands in the box. Tracked through the control rather than through a
+   * handler, and it picks up hydration as well as typing because {@link hydrate} sets the form without
+   * suppressing events.
+   */
+  private readonly timeZoneValue: Signal<string> = toSignal(
+    this.form.controls.timeZoneOffset.valueChanges,
+    { initialValue: '' },
+  );
+
+  /**
+   * The stored offset restated in hours and minutes, or the empty string while it is blank or unreadable.
+   *
+   * ⚠ QA-21 — WHY A SECOND RENDERING OF A NUMBER THE BOX ALREADY SHOWS. The legacy screen never asked for
+   * this figure: `sitesettings.ascx:L390` is a `DropDownList` filled by
+   * `Localization.LoadTimeZoneDropDownList`, whose options come from `Website/App_GlobalResources/
+   * TimeZones.xml` and read `(UTC -08:00) Pacific Time (US &amp; Canada); Tijuana` against the stored key
+   * `-480`. An operator picked a NAMED ZONE and never saw a number, so the unit could not be misread. The
+   * port asks for the raw minutes instead, and the moment it does, a stored value that looks like an hours
+   * offset becomes indistinguishable from one: measured on this installation, the box reads `-8` directly
+   * beside a note that says the unit is minutes and cites −480 for Pacific Time, and a reader cannot tell
+   * whether the site is eight minutes or eight HOURS behind UTC. It is eight minutes.
+   *
+   * Restating the value resolves that without reinstating a thirty-entry chooser and without touching the
+   * stored figure: `-8` now reads `UTC −00:08`, `-480` reads `UTC −08:00`, and a value entered in the wrong
+   * unit announces itself on sight. Recomputed from the control rather than from the loaded settings, so it
+   * follows what the operator is typing.
+   */
+  protected readonly timeZoneReading = computed<string>(() => {
+    const raw: string = this.timeZoneValue();
+    const trimmed = raw.trim();
+
+    if (trimmed.length === 0 || INTEGER_PATTERN.test(trimmed) === false) {
+      return '';
+    }
+
+    const minutes = Number(trimmed);
+
+    if (!Number.isFinite(minutes)) {
+      return '';
+    }
+
+    // U+2212 MINUS, matching the note beside it and the range message, because this is prose rather than a
+    // value being edited. Zero is signed POSITIVE deliberately: `UTC +00:00` is how the legacy option list
+    // spelled it (`(UTC  00:00) Dublin, Edinburgh, Lisbon, London`), and an unsigned `UTC 00:00` would be
+    // the only entry in the range without a sign.
+    const sign = minutes < 0 ? '\u2212' : '+';
+    const magnitude = Math.abs(minutes);
+    const hours = Math.floor(magnitude / MINUTES_PER_HOUR);
+    const remainder = magnitude % MINUTES_PER_HOUR;
+
+    return `UTC ${sign}${String(hours).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`;
+  });
 
   /** Why the path above cannot be changed here. */
   protected readonly homeDirectoryNotice =

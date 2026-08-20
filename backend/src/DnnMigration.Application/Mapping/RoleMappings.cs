@@ -112,10 +112,18 @@ public static class RoleMappings
     }
 
     /// <summary>Projects a role group onto its transfer contract.</summary>
+    /// <remarks>
+    /// ⚠ THE CLASSIFIED-ROLE COUNT IS A REQUIRED ARGUMENT RATHER THAN AN OPTIONAL ONE, AND THAT IS
+    /// DELIBERATE. Defaulting it would let a caller project a group without deciding what its count is, and
+    /// the value that would travel is zero - the one value that means "this group can be deleted". A caller
+    /// who has not looked would therefore be publishing a claim it never checked, on the side that grants
+    /// permission. Making it explicit forces every projection site to answer the question.
+    /// </remarks>
     /// <param name="roleGroup">The group to project.</param>
+    /// <param name="classifiedRoleCount">How many roles the group classifies.</param>
     /// <returns>The group contract.</returns>
     /// <exception cref="ArgumentNullException">Thrown when <paramref name="roleGroup"/> is null.</exception>
-    public static RoleGroupDto ToDto(RoleGroup roleGroup)
+    public static RoleGroupDto ToDto(RoleGroup roleGroup, int classifiedRoleCount)
     {
         ArgumentNullException.ThrowIfNull(roleGroup);
 
@@ -125,6 +133,7 @@ public static class RoleMappings
             PortalId = roleGroup.PortalId,
             RoleGroupName = roleGroup.RoleGroupName,
             Description = roleGroup.Description,
+            ClassifiedRoleCount = classifiedRoleCount,
         };
     }
 

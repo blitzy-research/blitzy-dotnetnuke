@@ -779,7 +779,14 @@ public class RoleServiceApplicationTests
         stored.UserId.Should().Be(UserId);
         stored.RoleId.Should().Be(RoleId, "a role identifier of zero is a real identifier");
         stored.EffectiveDate.Should().Be(Now.AddDays(5));
-        stored.ExpiryDate.Should().Be(Now.AddMonths(1));
+
+        // The month runs forward from the STATED START, not from the request. The assertion previously read
+        // `Now.AddMonths(1)`, which encoded the legacy computation - and for a future start that computation
+        // produced a term shorter than the role's own by exactly the distance to the start, and for a short
+        // enough term an expiry that fell BEFORE the membership opened. Updated with the derivation.
+        stored.ExpiryDate.Should().Be(
+            Now.AddDays(5).AddMonths(1),
+            "a monthly membership stated to open in five days lasts a month from then");
         stored.IsTrialUsed.Should().BeFalse();
 
         harness.Roles.Verify(
@@ -819,6 +826,209 @@ public class RoleServiceApplicationTests
             repository => repository.AddUserRoleAsync(It.IsAny<UserRole>(), It.IsAny<CancellationToken>()),
             Times.Never);
         harness.UnitOfWork.Verify(unit => unit.SaveChangesAsync(CancellationToken.None), Times.Once);
+    }
+
+    /// <summary>
+    /// An AMENDMENT that states an effective date and leaves the expiry explicitly clear stores the clear
+    /// expiry, rather than having a year of membership substituted for it.
+    /// </summary>
+    /// <remarks>
+    /// Measured before the split, on an existing paid membership amended with an effective date of 2030-01-01
+    /// and an explicitly null expiry: the store received request-time plus one year. Three consequences
+    /// followed from the one substitution - the caller's stated intent was discarded silently, the stored pair
+    /// could be left with its start AFTER its end and so was refused by the very editor that had just written
+    /// it, and a LAPSED membership was silently reactivated for a further year by an operator who had asked only
+    /// to clear its end date. This fact pins all three shut.
+    /// </remarks>
+    [Fact]
+    public async Task AssignUserToRole_AmendmentAuthoringABound_PreservesAnExplicitlyClearedExpiry()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupRole = TermRole(Frequency.Year, period: 1);
+        UserRole held = Membership(trialUsed: true, expiryDate: Now.AddDays(-90));
+        harness.ExistingAssignment = held;
+        DateTime starts = new(2030, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        Result outcome = await harness.Service.AssignUserToRoleAsync(
+            PortalId,
+            RoleId,
+            Assignment(effectiveDate: starts, expiryDate: null),
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        harness.AddedAssignments.Should().BeEmpty("an amendment stages no second row");
+        held.EffectiveDate.Should().Be(starts);
+        held.ExpiryDate.Should().BeNull(
+            "the caller cleared the bound, and a stated clear is an instruction rather than an omission");
+        harness.UnitOfWork.Verify(unit => unit.SaveChangesAsync(CancellationToken.None), Times.Once);
+    }
+
+    /// <summary>
+    /// An amendment authoring an expiry and leaving the effective date clear stores that pair verbatim too, so
+    /// the split is about the amendment and not about which of the two bounds was named.
+    /// </summary>
+    [Fact]
+    public async Task AssignUserToRole_AmendmentAuthoringAnExpiry_ClearsTheEffectiveDateAsAsked()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupRole = TermRole(Frequency.Month, period: 6);
+        UserRole held = Membership(trialUsed: false, expiryDate: Now.AddDays(30));
+        held.EffectiveDate = Now.AddDays(-30);
+        harness.ExistingAssignment = held;
+        DateTime ends = Now.AddDays(400);
+
+        Result outcome = await harness.Service.AssignUserToRoleAsync(
+            PortalId,
+            RoleId,
+            Assignment(effectiveDate: null, expiryDate: ends),
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        held.EffectiveDate.Should().BeNull();
+        held.ExpiryDate.Should().Be(ends);
+    }
+
+    /// <summary>
+    /// An amendment that authors NEITHER bound is still a renewal, and the role's own terms still decide the
+    /// expiry - which is what keeps re-subscription, trial enrolment and code redemption working.
+    /// </summary>
+    /// <remarks>
+    /// The counterpart to the two facts above, and the reason the split needs both of its conditions. Every
+    /// internal caller submits an assignment carrying only the account identifier, precisely because the role's
+    /// trial and billing terms are what should decide the bounds; obeying that verbatim against an existing row
+    /// would leave a paid membership with no expiry at all, which is a perpetual grant.
+    /// </remarks>
+    [Fact]
+    public async Task AssignUserToRole_AmendmentAuthoringNoBound_StillRenewsFromTheRoleTerms()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupRole = TermRole(Frequency.Month, period: 1);
+        UserRole held = Membership(trialUsed: true, expiryDate: Now.AddDays(-90));
+        harness.ExistingAssignment = held;
+
+        Result outcome = await harness.Service
+            .AssignUserToRoleAsync(PortalId, RoleId, Assignment(), CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        held.ExpiryDate.Should().Be(
+            Now.AddMonths(1),
+            "a renewal that names no bound is the case the role's terms are meant to answer");
+    }
+
+    /// <summary>
+    /// A submitted pair whose start follows its end is refused before anything is staged, so a membership that
+    /// can never be in force is unreachable through this member.
+    /// </summary>
+    /// <remarks>
+    /// The ordering rule is carried by RoleAssignmentRequestValidator for an HTTP caller, and asserting it here
+    /// as well is deliberate: this member is also reached from the account vertical, and a rule only one route
+    /// meets is not a rule.
+    /// </remarks>
+    [Fact]
+    public async Task AssignUserToRole_SubmittedStartAfterItsEnd_IsRefusedBeforeAnythingIsStaged()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupRole = TermRole(Frequency.Day, period: 7);
+
+        Result outcome = await harness.Service.AssignUserToRoleAsync(
+            PortalId,
+            RoleId,
+            Assignment(effectiveDate: Now.AddDays(40), expiryDate: Now.AddDays(10)),
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Error!.Code.Should().Be("role_assignment.dates_invalid");
+        harness.AddedAssignments.Should().BeEmpty();
+        harness.UnitOfWork.Verify(
+            unit => unit.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// An AMENDMENT is held to the same ordering rule, so the authored pair cannot wedge a stored membership
+    /// the way the substituted expiry did.
+    /// </summary>
+    [Fact]
+    public async Task AssignUserToRole_AmendmentInvertingTheBounds_IsRefused()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupRole = TermRole(Frequency.Year, period: 1);
+        UserRole held = Membership(trialUsed: true, expiryDate: Now.AddDays(30));
+        DateTime storedExpiry = held.ExpiryDate!.Value;
+        harness.ExistingAssignment = held;
+
+        Result outcome = await harness.Service.AssignUserToRoleAsync(
+            PortalId,
+            RoleId,
+            Assignment(effectiveDate: Now.AddDays(400), expiryDate: Now.AddDays(60)),
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Error!.Code.Should().Be("role_assignment.dates_invalid");
+        held.ExpiryDate.Should().Be(storedExpiry, "a refused amendment leaves the stored row alone");
+        harness.UnitOfWork.Verify(
+            unit => unit.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// A DERIVED expiry is held to the ordering rule as well, and the derivation is what satisfies it: a
+    /// short-term role granted to open in the future ends its term from that opening rather than from now.
+    /// </summary>
+    /// <remarks>
+    /// Offsetting from the request produced the inverted pair the reported defect names - a seven-day role
+    /// granted to start in ten days' time was stored with an expiry three days BEFORE it opened. The role's
+    /// terms mean seven days of membership, so the term runs from when the membership opens.
+    /// </remarks>
+    [Fact]
+    public async Task AssignUserToRole_FutureStartWithAShortTerm_RunsTheTermFromThatStart()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupRole = TermRole(Frequency.Day, period: 7);
+        DateTime starts = Now.AddDays(10);
+
+        Result outcome = await harness.Service.AssignUserToRoleAsync(
+            PortalId,
+            RoleId,
+            Assignment(effectiveDate: starts),
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue("the derived pair is coherent, so nothing is refused");
+        UserRole stored = Assert.Single(harness.AddedAssignments);
+        stored.EffectiveDate.Should().Be(starts);
+        stored.ExpiryDate.Should().Be(starts.AddDays(7));
+        stored.ExpiryDate.Should().BeAfter(
+            stored.EffectiveDate!.Value,
+            "a membership whose end precedes its beginning can never be in force");
+    }
+
+    /// <summary>
+    /// A BACKDATED start still runs its term from now, which is the legacy computation and is left alone
+    /// because a backdated grant is not the defective case.
+    /// </summary>
+    /// <remarks>
+    /// Taking the stated start unconditionally would store a seven-day role said to have opened ten days ago as
+    /// already lapsed. Reading the later of now and the stated start changes the outcome in the one case that
+    /// produced an inverted pair and leaves every other case identical to the legacy value.
+    /// </remarks>
+    [Fact]
+    public async Task AssignUserToRole_BackdatedStart_StillRunsTheTermFromNow()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupRole = TermRole(Frequency.Day, period: 7);
+        DateTime opened = Now.AddDays(-10);
+
+        Result outcome = await harness.Service.AssignUserToRoleAsync(
+            PortalId,
+            RoleId,
+            Assignment(effectiveDate: opened),
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        UserRole stored = Assert.Single(harness.AddedAssignments);
+        stored.EffectiveDate.Should().Be(opened);
+        stored.ExpiryDate.Should().Be(Now.AddDays(7), "the legacy value, and it is not the defective case");
+        stored.GetStatus(Now).Should().Be(RoleStatus.Active);
     }
 
     /// <summary>

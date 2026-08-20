@@ -391,3 +391,24 @@ th.data-table__cell {
 
   margin-block-end: var(--space-2);
 }
+
+// THE PAINTED OVERFLOW CUE, the seen half of a self-description that was assistive-technology only.
+//
+// ⚠ THE MEASURED DEFECT. The container already takes `role="region"`, a name borrowed from the caption and a
+// tab stop while it clips. A SIGHTED reader was told nothing: measured on all six listings at 320px and
+// 375px, no painted text inside any table container mentioned scrolling and no scrollbar was rendered, so a
+// 968px table inside a 271px scrollport looked like a grid that simply ended at the container's edge.
+//
+// Sticky to the scrollport's start, so the sentence reporting the overflow does not itself scroll out of the
+// region it is reporting on. Not sticky in the block direction: a reader who has scrolled has answered it.
+.data-table__overflow-cue {
+  position: sticky;
+  inset-inline-start: 0;
+  inline-size: fit-content;
+
+  margin: 0 0 var(--space-1);
+
+  font-size: var(--font-size-xs);
+  font-style: italic;
+  color: var(--color-text-muted);
+}

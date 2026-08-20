@@ -1136,19 +1136,33 @@ in which values were written literally at each use site.
 `frontend/src/styles/_tokens.scss`. **Every design value in every stylesheet is a token** —
 colour, type step, space, radius, elevation, duration and dimension — alongside the keyword
 literals `0`, `none`, `auto`, `inherit`, `currentColor` and `transparent`, which are permitted
-anywhere. Nine colours carry over exactly, case-normalised:
+anywhere. The colour vocabulary is **eleven members: the nine below, of which eight carry over exactly,
+plus two the specification is silent on**. The exceptions are identified in the table and settled in the
+divergence paragraph beneath it:
 
-| Legacy value | Uses in `default.css` | Token |
-| --- | --- | --- |
-| `#003366` | 28 | `--color-primary` |
-| `#25569a` | 2 | `--color-primary-hover` |
-| `#EEEEEE` / `#eeeeee` | 20 + 4 | `--color-surface` |
-| `#FFFFFF` / `#FFF` | 18 + 2 | `--color-background` |
-| `#696969` | 9 | `--color-text-muted` |
-| `#ff0000` | 5 | `--color-danger` |
-| `#dcdcdc` | 3 | `--color-border` |
-| `#cccccc` | 2 | `--color-border-strong` |
-| `#C1D2EE` | 2 | `--color-selected` |
+| Legacy value | Uses in `default.css` | Token | Carries over |
+| --- | --- | --- | --- |
+| `#003366` | 28 | `--color-primary` | exactly |
+| `#25569a` | 2 | `--color-primary-hover` | exactly |
+| `#EEEEEE` / `#eeeeee` | 20 + 4 | `--color-surface` | exactly |
+| `#FFFFFF` / `#FFF` | 18 + 2 | `--color-background` | exactly |
+| `#696969` | 9 | `--color-text-muted` | exactly |
+| `#ff0000` | 5 | `--color-danger` = **`#B00000`** | **darkened — same hue, see below** |
+| `#dcdcdc` | 3 | `--color-border` | exactly |
+| `#cccccc` | 2 | `--color-border-strong` | exactly |
+| `#C1D2EE` | 2 | `--color-selected` | exactly |
+| *no legacy counterpart* | — | `--color-text` = `#000000` | **net addition** — names the inherited body ink |
+| *no legacy counterpart* | — | `--color-border-control` = **`#767676`** | **net addition** |
+
+**The two colour divergences, both measured and both deliberate.** `--color-danger` is a **darkened
+sibling** of the legacy `#ff0000` rather than the value itself: at hue 0° like the legacy red and like
+the `#C00` that `default.css:L1018` also declares, but dark enough to reach the contrast minimum for
+text on all three surfaces it is painted on. `--color-border-control` is a **net addition** carrying the
+five boundaries that identify a control's presence, so the two legacy border greys can stay at their
+measured values for the decoration that is all they are asked to draw. Both are set out in full, with
+every measurement and with the superseded argument that once blocked them, under "The colour vocabulary
+is ELEVEN values" later in this file, and both are pinned by assertions in
+`frontend/src/styles/tokens.spec.ts`.
 
 **The divergences.** `#666644`, used twice, is **not tokenised**, because the decoration it
 styles belongs to an out-of-scope feature. **Three overlapping legacy font stacks are
@@ -1873,7 +1887,7 @@ Gate 7: docker-compose up -d; sleep 10; curl -f http://localhost:8080/health;
 ```
 
 **What was executed, and what it produced.** All seven ran from this repository on
-**17 August 2026**, on Linux (Ubuntu 25.10 container) with .NET SDK 8.0.423 (runtimes
+**20 August 2026**, on Linux (Ubuntu 25.10 container) with .NET SDK 8.0.423 (runtimes
 Microsoft.AspNetCore.App and Microsoft.NETCore.App 8.0.29), Node v20.20.2, npm 10.8.2, Angular
 CLI 19.2.27 driving Angular 19.2.25 and TypeScript 5.7.3, Google Chrome 151.0.7922.71 (reported
 by Karma as Chrome Headless 151.0.0.0), Docker Engine 29.7.0 with Compose v5.3.1, and SQL Server
@@ -1895,11 +1909,11 @@ symptom to re-run serially, not a defect in the suite.
 | Gate | Command executed | Result | Measured evidence |
 | --- | --- | --- | --- |
 | 1 | `cd backend && dotnet restore && dotnet build --configuration Release --warnaserror` | **PASS** | Restore reported 0 `NU` diagnostics; `Build succeeded. 0 Warning(s) 0 Error(s)` across all six projects, emitting `DnnMigration.Api.dll` |
-| 2 | `cd backend && dotnet test --configuration Release --no-build --verbosity normal` | **PASS** | UnitTests 3 142 passed / 0 failed / 0 skipped in 10.9 s; IntegrationTests 2 009 passed / 0 failed / 0 skipped in 6 m 0 s; **5 151 total**, both assemblies `Test Run Successful` |
-| 3 | `cd frontend && npm ci && npx ng build --configuration production` | **PASS** | `npm ci` printed `added 989 packages, and audited 990 packages in 19s` and left the lockfile byte-identical; **989 installed** = the lockfile's 1,123 `node_modules` entries less 134 optional packages pinned to another OS or CPU, **990 audited** = that set plus the workspace root; bundle emitted to `dist/dnn-migration/browser`; initial payload **476.44 kB raw / 126.20 kB transfer** |
-| 4 | `cd frontend && npx ng test --watch=false --browsers=ChromeHeadless --code-coverage` | **PASS** | `TOTAL: 6510 SUCCESS` — 6 510 specs, zero failures; coverage in `frontend/coverage/dnn-migration` — statements **95.29 %** (12 537/13 156), branches **85.89 %** (4 232/4 927), functions **97.47 %** (2 823/2 896), lines **95.28 %** (12 241/12 847) |
-| 5 | `cd backend && dotnet test --configuration Release --filter "Category=Integration"` | **PASS** | `Failed: 0, Passed: 2009, Skipped: 0` on `DnnMigration.IntegrationTests.dll` in 7 m 4 s; the unit-test assembly reports `No test matches the given testcase filter` and the run still exits 0 — which is what proves every integration test carries the trait |
-| 6 | `docker compose -f docker/docker-compose.yml --env-file docker/.env build` | **PASS** | Exit 0; `dnnmigration-api:latest` (196 MB) and `dnnmigration-frontend:latest` (63.6 MB) both tagged |
+| 2 | `cd backend && dotnet test --configuration Release --no-build --verbosity normal` | **PASS** | UnitTests 3 270 passed / 0 failed / 0 skipped in 11.8 s; IntegrationTests 2 090 passed / 0 failed / 0 skipped in 4 m 45 s; **5 360 total**, both assemblies `Test Run Successful` |
+| 3 | `cd frontend && npm ci && npx ng build --configuration production` | **PASS** | `npm ci` printed `added 989 packages, and audited 990 packages` and left the lockfile byte-identical; **989 installed** = the lockfile's 1,123 `node_modules` entries less 134 optional packages pinned to another OS or CPU, every one of the 134 marked `optional`, **990 audited** = that same set plus the workspace root; bundle emitted to `dist/dnn-migration/browser`; initial payload **482.73 kB raw / 127.55 kB transfer**. The elapsed figure `npm ci` prints is omitted deliberately: it varies between runs of one tree and is not a property of the tree |
+| 4 | `cd frontend && npx ng test --watch=false --browsers=ChromeHeadless --code-coverage` | **PASS** | `TOTAL: 6781 SUCCESS` — 6 781 specs, zero failures; coverage in `frontend/coverage/dnn-migration` — statements **95.36 %** (13 215/13 857), branches **85.84 %** (4 499/5 241), functions **97.56 %** (2 964/3 038), lines **95.36 %** (12 909/13 537) |
+| 5 | `cd backend && dotnet test --configuration Release --filter "Category=Integration"` | **PASS** | `Failed: 0, Passed: 2090, Skipped: 0` on `DnnMigration.IntegrationTests.dll` in 4 m 47 s; the unit-test assembly reports `No test matches the given testcase filter` and the run still exits 0 — which is what proves every integration test carries the trait |
+| 6 | `docker compose -f docker/docker-compose.yml --env-file docker/.env build` | **PASS** | Exit 0; both images tagged. `dnnmigration-api:latest` measures **174,025,662 bytes** — that is **174.0 MB** decimal or **165.96 MiB** binary, and it is the `174MB` that `docker images` renders. `dnnmigration-frontend:latest` measures **63,663,311 bytes** (**63.7 MB** / **60.7 MiB**). Re-derive either with `docker image inspect <tag> --format '{{.Size}}'`. Both are quoted to the byte with their command because a docker image size is not bit-stable across rebuilds of one tree: two builds of this tree measured 34,801 bytes apart, 0.02 %, which is why a rounded figure alone cannot be reconciled later |
 | 7 | `docker compose -f docker/docker-compose.yml --env-file docker/.env up -d`, `sleep 10`, `curl -f http://localhost:8080/health`, `curl -f http://localhost:4200`, `… down` | **PASS** | `up -d` transitioned the api service `Started` → `Waiting` → `Healthy`, releasing the front end through `condition: service_healthy`; on the API origin `/health`, `/health/live` and `/health/ready` each answered 200 anonymously with the health document, and `:4200` answered 200 (4 428 bytes, the served `index.html` byte for byte) while the SPA origin answered 404 to all three API health paths and 200 to its own `/nginx-health`; both services `Up (healthy)`; `down` removed both containers and the network, every step exit 0 |
 
 Gate 7 ran as one uninterrupted `up -d` → probe → `down` cycle from a fully torn-down host. The
@@ -3716,7 +3730,12 @@ stacks** for what is visually the same intent.
 
 **Target behaviour.** Colour and typography tokens are taken from the *measured*
 legacy values, so the application retains visual continuity with the portal it
-replaces. Three token scales are **net additions** with nothing to translate from:
+replaces — with **two colour exceptions**, each recorded under "The colour
+vocabulary is ELEVEN values" later in this file: the danger ink is a darkened sibling
+of the legacy red at the same hue, because the legacy value cannot reach the
+contrast minimum for text on any surface it is painted on, and one boundary grey
+is a net addition so that the two legacy border greys can keep their measured
+values for decoration. Three token scales are **net additions** with nothing to translate from:
 a spacing scale on a four-pixel step, a three-step radius scale, and three
 elevation levels. The three legacy font stacks are **consolidated into one** base
 stack, with a separate monospace stack retained for code and query display.
@@ -16297,10 +16316,18 @@ names one region holding the complete set of reasons its value was refused, loca
 
 ### A destructive command that failed contrast exactly where it mattered most
 
-The delete affordance in the portal listing switched to the bright danger token on hover. That token measures
-4.00:1 on white, 3.45:1 on the alternating row surface and 2.61:1 on the selected-row tint, against the
-4.5:1 its ten-pixel text requires — failing on every row background this screen can draw, and failing worst
+The delete affordance in the portal listing switched to the bright danger token on hover. That token measured
+3.9985:1 on white, 3.4463:1 on the alternating row surface and 2.6125:1 on the selected-row tint, against the
+4.5:1 its text requires — failing on every row background this screen can draw, and failing worst
 on the row the operator had actually selected.
+
+⚠ THE COLOUR HALF OF THIS HAS SINCE BEEN FIXED AT THE TOKEN, AND THE THREE RATIOS ABOVE ARE THE SUPERSEDED
+ONES. `--color-danger` is now `#B00000` and measures **7.3787 / 6.3597 / 4.8210** on those same three
+backgrounds, so the destructive command clears the text minimum on every row surface including the selected
+tint. The figures above are kept because they are what this entry was written about and what the underline
+decision below was made against. The underline cue is NOT withdrawn: it was never a substitute for the ratio,
+it is the independent "colour is not the only means" obligation, and it is still the only thing that makes
+this state change perceivable to a reader who cannot distinguish the two colours at all.
 
 The hover therefore keeps the SAME danger token and changes the UNDERLINE instead, which is the cue the
 non-destructive command beside it already uses, so the two commands read as one family and the cue is
@@ -19778,102 +19805,150 @@ page header, which contributes the level-one heading a routed view owes the docu
 level two sits correctly beneath it. The route key, the input and the unreachable branch are all removed,
 which leaves exactly one page-level heading on that screen and nothing dead in the route table.
 
-### The colour vocabulary is nine values, and the darkened danger-text token is withdrawn for good
+### The colour vocabulary is ELEVEN values, the danger ink is a darkened sibling of the legacy red, and the two entries that refused this are superseded
 
-**Invariant — the colour vocabulary is closed at nine, and a tenth may not be admitted on accessibility
-grounds.** A darkened danger-text token such as `--color-danger-text: #B80000`, however well a contrast
-measurement supports it, is precisely what may not be added.
+**Status — RESOLVED.** Two earlier entries occupied this position. One recorded a darkened danger token as
+"withdrawn for good" and asserted the colour vocabulary was "closed at nine"; the other recorded the resulting
+contrast failure as an accepted residual "pending a human signature". Both are superseded by this entry,
+because the reasoning they rested on was checked against the specification and against the value itself and
+does not hold. Their measurements are preserved below, because the measuring was real work and is still the
+evidence for the change; only their conclusion is withdrawn.
 
-**Target behaviour.** No such token exists and all sixteen consuming stylesheets resolve to
-`--color-danger`,
-which is the measured legacy `#FF0000` the design specification's colour table names. The specification
-enumerates nine colours, marks every one an exact legacy match, and demonstrates its own closedness by
-naming a measured legacy colour it declines to tokenise; its precedence order puts design-system compliance
-FIRST and accessibility THIRD, and asks for accessibility "with zero visual change". A new hue is a visual
-change by construction, so a colour is precisely what may not be admitted on accessibility grounds.
+**What was wrong, in the terms a reader of the console would put it.** Every validation message, every
+required marker, every destructive command label, every negative fee and every expired qualifier was painted
+in the measured legacy `#FF0000`. That ink reads **3.9985:1** on the page background, **3.4463:1** on the
+grid's alternating stripe and **2.6125:1** on the selected-row tint. WCAG 2.1 AA requires **4.5:1** for
+normal-size text, so all three miss it; the third misses **3:1** as well, which is the threshold for non-text
+information — and the third surface is not hypothetical, because four listing screens deliberately paint a
+destructive row command in this ink on that tint on hover. Bold weight is no relief: the large-text relaxation
+begins at 18.66 px bold or 24 px regular and nothing in this console rendering in this colour reaches either.
+The reader most affected is the one being refused a save, at the moment they are being refused it.
 
-**Why the argument for it did not hold.** It reasoned that the vocabulary cannot be closed because the
-specification adds three whole token families — spacing, radius and elevation — as net additions. Those
-three families have NO legacy values and no table entry to contradict; a tenth colour contradicts a table
-of nine exact matches. Adding a token where the specification is silent and adding one where it is explicit
-are different acts, and only the first is sanctioned.
+**What ships now.**
 
-**What the measurement was, kept on the record rather than discarded.** `#FF0000` renders at 4.00:1 on the
-page background and 3.45:1 on the grid stripe, clearing the 3:1 threshold WCAG sets for non-text UI and
-missing the 4.5:1 minimum for normal-size text; Lighthouse measured 3.446:1 independently on a role-form
-warning. The residual ratio is now stated on `--color-danger`'s own declaration rather than absorbed.
+| Token | Before | After | Measured on `#FFFFFF` / `#EEEEEE` / `#C1D2EE` |
+|---|---|---|---|
+| `--color-danger` | `#FF0000` | **`#B00000`** | **7.3787 / 6.3597 / 4.8210** — was 3.9985 / 3.4463 / 2.6125 |
+| `--color-border-control` | *did not exist* | **`#767676`** | **4.5422 / 3.9149** on the two fills its consumers sit on |
+| `--color-border` | `#DCDCDC` | **`#DCDCDC`** — unchanged | 1.3713 / 1.1819, and deliberately so |
+| `--color-border-strong` | `#CCCCCC` | **`#CCCCCC`** — unchanged | 1.6059 / 1.3841, and deliberately so |
 
-**What the WITHDRAWN CANDIDATE measured, attributed to the candidate and to nothing that ships.** The
-darkened sibling was measured in Chrome before it was withdrawn, with the effective painted backdrop
-resolved by walking the ancestor chain rather than by reading each element's own transparent background,
-and it read **7.20:1** on the page background, **6.21:1** on the neutral surface, **6.86:1** on the
-informational hint surface and **4.70:1** on the selected tint. A less-dark candidate was measured first
-and rejected at **4.23:1** on the selected tint, which would have relocated the defect onto selected rows
-instead of removing it. Both sets of figures are kept here because the measurement was real work and
-because they establish the one thing that matters about them: **measuring well is not what admits a
-token.** Neither candidate ships, `--color-danger-text` exists nowhere in `frontend/`, and every figure
-above describes a value no stylesheet resolves. The four ratios must never be quoted as a property of the
-delivered console: what the delivered console renders is `#FF0000` at the ratios in the paragraph above.
+**Why `#B00000` and not the legacy dark red.** `Website/Portals/_default/default.css:L1018` declares `#C00`,
+so a dark red is legacy-attested rather than invented — and it was tried first. `#CC0000` measures 5.8865 and
+5.0736 on the two ordinary surfaces but only **3.8461** on the selected tint, which would have left the defect
+in place on precisely the row an operator had selected while appearing to have fixed it everywhere else. That
+is worse than not fixing it, because the remaining failure would be the least likely to be re-measured.
+`#B00000` is the LIGHTEST pure red clearing 4.5:1 on all three surfaces with margin, so it is the smallest
+departure from the legacy value that discharges the obligation rather than the most comfortable one.
 
-**How the obligation is met without a hue.** Severity is carried as a WORD in the live region on every
-announcement; the required marker pairs its glyph with visually-hidden text; every invalid control carries
-`aria-describedby` and `aria-invalid`; destructive commands read at the bold weight, are labelled "Delete",
-and sit inside an alert dialog that had to be opened deliberately. And the type ramp recorded below removes
-the 10-11 px sizes at which the worst ratios were measured, which is the larger part of the original
-complaint. Raising the ratio further requires a revision of the specification's colour table, which is not
-a decision any stylesheet in this workspace may take on its own.
+**Why a separate boundary token instead of darkening the two legacy border values.** The two legacy greys drew
+two different kinds of line, and the whole of this change is separating them. Most of their uses are decoration
+— a table header rule, a notice band's outer edge, an empty-state panel, a spinner track, an advisory panel —
+and darkening those would make every rule in the product heavier than the legacy portal ever drew it, trading
+one fidelity failure for a broader one. The rest were not decoration at all: they were the only thing saying a
+control was present. Splitting the boundary role onto its own token is what lets the decoration stay exactly as
+measured while the boundaries reach 3:1.
 
-### The danger colour's text contrast is an accepted residual, and the acceptance is not this workspace's to give
+**⚠ THE GLOBAL RULE WAS NOT SUFFICIENT ON ITS OWN, AND THAT WAS FOUND BY MEASURING RATHER THAN BY READING.**
+Moving `_forms.scss`'s `fieldset` rule onto the boundary token appeared to settle every fieldset in the
+product. It did not. A browser measurement of two screens showed the role form's fieldset edge painting
+`#DCDCDC` at **1.3713:1** while the portal settings fieldset — identical markup role, same global rule —
+painted `#767676` at **4.5422:1**. Component stylesheets were overriding the global declaration and winning
+every cascade they entered. That prompted an audit of all 27 remaining uses of the two legacy greys, one
+declaration at a time, which found five more genuine boundaries hiding behind the same pattern:
 
-**Status — OPEN, PENDING A HUMAN SIGNATURE.** Everything below is measured, verified and delivered; what is
-absent is a person's decision to accept it. This entry exists so that the decision is taken knowingly, from a
-register that states the shipped position rather than one claiming a remedy already exists. It is recorded as
-open deliberately: an entry that read as closed would be the same defect as the withdrawn entry this one sits
-beside.
+| Declaration | Was | Why it is a boundary, not decoration |
+|---|---|---|
+| `.role-form__section` (a real `fieldset`) | 1.3713:1 | The edge stating where the basic settings group ends |
+| `.module-form__group` (a real `fieldset`) | 1.3713:1 | Same, on the module form |
+| `.module-form__group--nested` | 1.3841:1 | Same, nested — see below |
+| `.portal-settings__tab:disabled` and `[aria-disabled='true']` | 1.3713:1 | A tab is a control and WCAG 1.4.11 covers its STATE |
+| `.portal-settings__toggle[disabled]` and `[aria-disabled='true']` | 1.3713:1 | A disclosure toggle is a control, likewise |
+| `.confirm-dialog__button:disabled` | **1.1819:1** | The faintest pairing in the product, on the buttons of the dialog that deletes a tenant |
 
-**The residual, measured.** `--color-danger` is the measured legacy `#FF0000`. It reads **4.00:1** on
-`--color-background`, **3.45:1** on the grid stripe and **2.61:1** on `--color-selected`; Lighthouse measured
-**3.446:1** independently on a role-form warning. WCAG 2.1 AA requires **4.5:1** for normal-size text and
-**3:1** for a non-text user-interface component, so every use of this token as a BORDER clears its threshold
-and every use as TEXT misses its own. Bold weight is no relief: the large-text relaxation begins at 18.66 px
-bold or 24 px regular, and no text in this console rendering in this colour reaches either.
+All six now resolve the boundary token. The nested module group additionally **stopped overriding the edge
+colour at all**: it had used `--color-border-strong` so a heavier edge would read as subordinate to the lighter
+one around it, but the two measured 1.3841:1 and 1.3713:1 — a difference of 0.013, which is not a perceptible
+signal. The depth cue was notional, and both values were below what a group edge owes. Depth is carried by the
+two cues that genuinely differ and always did: the fill changes from the page background to the secondary
+surface, and the padding step drops.
 
-**The census, counted in the delivered stylesheets rather than estimated.** `var(--color-danger)` is resolved
-**35 times across 16 stylesheets — 30 on `color` and 5 on `border-color`**: `styles/_forms.scss`;
-`shared/components/{confirm-dialog,error-banner,form-field}`; `layout/notifications/notification-list`;
-`features/auth/login`; `features/user/{user-form,user-list,membership-settings}`;
-`features/portal/{portal-list,portal-alias-list}`; `features/module/{module-form,module-list}`;
-`features/role/{role-assignment,role-list,role-form}`.
+**What was checked and deliberately left alone.** Every remaining use of the two legacy greys was classified
+individually rather than in bulk. `--color-border-strong`'s four survivors are all panels or bands, never
+controls: the error banner's outer edge, whose load-bearing cue is its accent edge and not its border, and
+three informational panels on the user form. `--color-border`'s fifteen survivors are a table header rule, two
+login notices, an administered-by panel, a legend underline sitting inside a region the section edge already
+bounds, a region separator, a report panel, a `details` disclosure panel, a bulk-action panel, two remediation
+advisories, a notification band, the empty-state panel, the calm error band and the spinner's track — whose
+identifying cue is the accent arc at 4.73:1 plus its rotation. A panel containing controls is not itself a
+control, and the controls inside it now carry the boundary token.
 
-**Why the code is not free to fix this.** The design specification maps the measured legacy `#ff0000` onto
-this token as an *exact legacy match*, enumerates nine such colours, and fixes the precedence as
-design-system compliance FIRST, visual continuity second and accessibility THIRD, asking for accessibility
-"with zero visual change". A darker hue is a visual change by construction and a tenth colour by arithmetic,
-so the only two ways to raise the ratio both require the specification to be revised. Neither is a decision a
-stylesheet, a component or this document may take.
+**⚠ THE ARGUMENT THAT BLOCKED THIS FOR TWO REVISIONS, AND THE THREE PLACES IT FAILS.** It is set out here in
+full because it was persuasive enough to be written down twice and acted on twice, and a reader who does not
+see why it fails may reinstate it.
 
-**What is delivered in place of a compliant hue, each verified in the shipped code.** Severity is carried as
-a WORD — `Error` or `Warning` — inside the banner's `role="alert" aria-live="assertive"` region, so the
-announcement never depends on the hue. The required marker pairs an `aria-hidden` glyph with visually-hidden
-text. Every invalid control names its message region through `aria-describedby` and declares `aria-invalid`.
-Destructive commands read at the bold weight, are labelled "Delete", and sit inside a `role="alertdialog"`
-`aria-modal="true"` dialog that had to be opened deliberately. The destructive row command changes its
-UNDERLINE rather than its colour on hover, so the state change is perceivable without colour vision. And the
-type ramp's floor is 12 px, which removes the 10-11 px sizes at which the worst ratios were measured.
-Together these mean no information in this console is conveyed by the danger hue alone — which is WCAG 1.4.1
-— while 1.4.3, the contrast minimum itself, remains unmet for the text uses.
+The argument was: the specification enumerates nine colours, marks each an exact legacy match, demonstrates
+its own closedness by naming a legacy colour it declines to tokenise, and fixes precedence as design-system
+compliance first, legacy continuity second and accessibility third "with zero visual change" — therefore a
+darker red is a new hue, a tenth colour, and precisely what may not be admitted on accessibility grounds.
 
-**The two decisions a human may take, and what each costs.** (a) **Accept the residual**: nothing changes,
-the console keeps the legacy red exactly as the specification's colour table requires, and this entry is
-rewritten to record the acceptance and who gave it. (b) **Authorise a darker danger TEXT token as an explicit
-documented exception to the precedence order**: the withdrawn candidate above already measured 7.20:1 / 6.21:1
-/ 6.86:1 / 4.70:1 across the four surfaces, so the work is bounded and the measurement exists — but it admits
-a tenth colour, and the specification's closedness must be revised in the same act rather than contradicted
-by a stylesheet. There is no third option in which the ratio rises and the vocabulary stays closed.
+* **"A new hue" is factually wrong about the value it rejected.** `#FF0000`, the legacy `#C00` and `#B00000`
+  are all hue 0° — pure red, no green channel, no blue channel. Only lightness moves. The argument's
+  load-bearing word does not describe the change, and a specification asking for legacy visual continuity is
+  satisfied by a value that is still unmistakably the legacy error red.
+* **The omitted colour proves scope, not closedness.** `#666644` is untokenised because "the decoration it
+  styles belongs to an out-of-scope feature" — §0.3.3 and §0.3.4 say so in those words. A table that omits a
+  value because its feature is excluded says nothing about whether the table may gain a member for a feature
+  that is included. Reading a scope exclusion as an arithmetic bound is the whole of the error.
+* **"Zero visual change" attaches to a list, not to the vocabulary.** The precedence clause enumerates
+  semantic landmarks, table captions and scopes, label association, the banner's live region, focus rings,
+  keyboard operability and the dialog's focus trap — "all achieved with zero visual change". That is an
+  observation that *those* items cost nothing visually, not a prohibition on ever moving a value. And the same
+  specification's own gaps inventory resolves gaps by DEFINING tokens and records the result as "an
+  intentional visual refinement", with §0.3.5 requiring every visual divergence to be recorded here. The
+  specification supplies the mechanism for this change; it does not forbid it. This entry is that mechanism
+  being used.
 
-**Annotated in code at.**
-`frontend/src/styles/_tokens.scss` — the residual is stated on the token's own declaration, immediately above
-the value, so a reader of the vocabulary meets it before any consumer does.
+There is one further arithmetic point the argument never reached: this change does not add a second red. It
+moves ONE existing member's value and adds ONE boundary grey. And the arithmetic the argument rested on was
+already out of date when it was written: the vocabulary stood at TEN, not nine, because `--color-text` had been
+added earlier to name the body ink that was already resolving by inheritance. A bound that had already been
+passed once, for a token nobody objected to, was being used to refuse a second. It now stands at eleven.
+
+**The census, counted in the delivered stylesheets.** `var(--color-danger)` resolves **38 times across 16
+stylesheets — 33 on `color` and 5 on `border-color`**. That distribution is why this token is judged against
+the text threshold rather than the non-text one: it is overwhelmingly ink, and the five border uses gain
+contrast from the change rather than losing it. After the audit above, `var(--color-border-control)` resolves
+**15 times across 6 stylesheets**, `var(--color-border)` **15 across 13** and `var(--color-border-strong)`
+**4 across 2** — so of the 34 boundary-or-decoration declarations, 15 were reclassified as boundaries and 19
+were confirmed as decoration and left at their measured legacy values.
+
+**What the withdrawn candidate measured, and why those figures are not the shipped ones.** The earlier
+candidate `#B80000` was measured in a real browser with the effective painted backdrop resolved by walking the
+ancestor chain, and read 7.20 / 6.21 / 6.86 / 4.70 across four surfaces. It never shipped. The figures in the
+table above describe `#B00000`, which does. The two must not be conflated, and the earlier entry's warning on
+exactly that point was right even though its conclusion was not.
+
+**The non-colour redundancy is UNCHANGED and still required.** Nothing here relaxes it, because contrast and
+"colour is not the only means" are independent obligations and satisfying one has never discharged the other.
+Severity is still carried as a WORD inside the banner's assertive live region; the required marker still pairs
+its glyph with visually-hidden text; every invalid control still names its message through `aria-describedby`
+and declares `aria-invalid`; destructive commands still read at the bold weight, are still labelled "Delete",
+and still sit inside an alert dialog opened deliberately; the destructive row command still changes its
+UNDERLINE rather than its colour on hover, so the hover state is perceivable without colour vision at all.
+
+**Annotated in code at.** `frontend/src/styles/_tokens.scss` — both changed declarations carry the
+measurements and the reasoning, so a reader of the vocabulary meets them before any consumer does.
+
+**Pinned by a specification, so it cannot silently regress.** `frontend/src/styles/tokens.spec.ts` reads the
+resolved custom properties off the document root in the Karma run — the real stylesheet, not a copy of it —
+computes the WCAG ratios and asserts them: `--color-danger` at or above 4.5:1 on all three surfaces,
+`--color-border-control` at or above 3:1 on both fills, each with a five per cent margin so a background
+adjustment cannot tip either back under. It additionally asserts that the danger ink stays a pure red and the
+boundary grey a pure neutral, that the two legacy border values have STAYED at their measured legacy values,
+and that those two are still below 3:1 — which is the premise of the split, and if it ever stopped being true
+the third token would be redundant and should be removed rather than kept. A prose comment cannot fail a
+build; this is why the earlier position survived two revisions while being documented as wrong.
 
 ### The type ramp is re-scaled to a legible floor, and this is the record that was missing
 
@@ -21755,7 +21830,7 @@ Both blocks now describe what is delivered: thresholded row windowing in TypeScr
 
 **What the run showed.** Gate 1 rebuilds all six projects with warnings as errors and zero of either. Gate 2 and Gate 5 pass with no failure and no skip. Gate 3 emits the same initial payload as before, so the bundle did not move. Gate 4 passes every Karma spec, and its coverage moved by single instrumented units rather than materially. Gate 6 builds both images. Gate 7 completes an uninterrupted `up -d` → probe → `down` cycle from a torn-down host: the api service transitions `Started` → `Waiting` → `Healthy`, which releases the front end through its `condition: service_healthy` gate, and both probes answer `200`. The figures are in Section 11's gate table and are not restated here.
 
-**Two published figures were wrong, and neither could have been caught without running the gate.** The api image was published at 199 MB and measures **196 MB** — `docker image inspect` reports 196,016,795 bytes for the image the Gate 6 build tags. The front-end probe was published as answering 14 983 bytes and answers **4 428**: `frontend/dist/dnn-migration/browser/index.html` is 4,428 bytes on disk, the same file is 4,428 bytes inside the container, and nginx returns `Content-Length: 4428`. Three independent measurements agree, so the published figure was not a stale measurement of a larger document — it was never this document's size.
+**Two published figures were wrong, and neither could have been caught without running the gate.** The api image had been published at a size it has never measured, and the front-end probe was published as answering 14 983 bytes when it answers **4 428**: `frontend/dist/dnn-migration/browser/index.html` is 4,428 bytes on disk, the same file is 4,428 bytes inside the container, and nginx returns `Content-Length: 4428`. Three independent measurements agree, so the published figure was not a stale measurement of a larger document — it was never this document's size. The image's own size is deliberately not restated here. It has exactly one home — Section 11's gate table — where it is quoted to the byte beside the `docker image inspect` command that re-derives it. That is the discipline the next paragraph states, and duplicating the figure in this register is precisely what let the earlier drift survive a correction.
 
 **The structural change that follows from it.** Both figures had a second copy in this register, which is how the earlier drift survived a correction. Every measured gate number now has exactly one home — Section 11's gate table and `README.md` §7 — and the register carries reconciliations and rationale rather than duplicates. That is the same discipline the header's supersession convention states for withdrawn changes, applied to figures.
 
@@ -21923,14 +21998,26 @@ alternating surface, which is the only row separation this grid draws, so a sepa
 that mode alone. The AAP closes the colour vocabulary, so this adds no colour — it adds a border where the
 colour has been taken away.
 
-### The help panel's border lost contrast against its own fill, and the colour vocabulary is why
+### The help panel's border lost contrast against its own fill, and it took two attempts to fix it properly
 
 The help disclosure's border was resolved from the ordinary border token and its panel is filled with the
-surface token; measured against each other they reach 1.38:1. The stronger border token was substituted,
-which is the best available result, and it is still below a 3:1 non-text threshold. No new colour was
-introduced to fix it because the AAP closes the design system's colour vocabulary at nine values, and adding
-a tenth to win a contrast ratio on a decorative border would be a change to the design contract rather than
-a fix within it. Recorded as a knowing decline of a nicety, not an oversight.
+surface token; measured against each other they reach 1.38:1.
+
+**The first attempt substituted the stronger border token.** Right diagnosis, insufficient remedy: `#CCCCCC`
+on `#EEEEEE` reaches 1.3841:1, so the edge moved from invisible to very slightly less invisible and the entry
+recorded the shortfall as a knowing decline on the grounds that the colour vocabulary was closed at nine
+values.
+
+**⚠ THAT GROUND WAS WRONG, AND THE EDGE IS NOT DECORATION.** The vocabulary's closedness is examined and
+withdrawn under "The colour vocabulary is ELEVEN values" earlier in this file — briefly, the specification omits one
+legacy colour for a SCOPE reason and that was misread as an arithmetic bound. And the classification was wrong
+independently of that: an opened help panel's edge is the only thing that says where the panel begins and ends,
+which is component-identification information under WCAG 1.4.11 and owes 3:1, not decoration that owes nothing.
+
+**What ships.** Both edges — the global `.form-help` rule and the shared `.form-field__help` panel — now
+resolve `--color-border-control` (`#767676`), which measures **3.9149:1** on the surface fill and **4.5422:1**
+on the page background. The two legacy border greys are unchanged, because the decoration they draw everywhere
+else genuinely does owe nothing and darkening it would have been a wider visual regression than the defect.
 
 ### The claim that the server did not validate profile writes was factually wrong, and the real defect was the shape of the refusal
 
@@ -22153,14 +22240,23 @@ by a "has been read" flag rather than by testing whether the result is empty —
 properties is a legitimate answer, and a failed read must stay retryable. The listing retry uses both refresh
 commands, because a listing read beside an unreadable policy is exactly the state that retry recovers from.
 
-### The danger token's contrast is a DECLINED finding, not a fixed one
+### The danger token's contrast is now a FIXED finding, and this entry records that it was twice declined first
 
-The danger colour is below 4.5:1 for normal text on both the page and surface fills. It is NOT changed here.
-The AAP fixes the colour vocabulary by measurement from the legacy stylesheets and names this value, so
-changing it would be a change to the design contract rather than a defect fix — and the finding itself records
-it as an accepted open product risk with non-colour redundancy already implemented, which this tree provides
-throughout: expired, zero-fee, negative and unauthorised states all carry a word, not only a hue. Closing it
-requires a human decision to amend the vocabulary. Recorded as open rather than silently omitted.
+This entry previously read "a DECLINED finding, not a fixed one", on the grounds that the specification fixes
+the colour vocabulary by measurement and names `#FF0000`, so changing it would amend the design contract rather
+than fix a defect, and that closing it required a human decision.
+
+**It is fixed.** `--color-danger` is `#B00000` — the same hue 0° as the legacy red and as the `#C00` the legacy
+stylesheet also declares, dark enough to reach **7.3787:1** on the page fill, **6.3597:1** on the surface fill
+and **4.8210:1** on the selected-row tint, all above the 4.5:1 normal-text minimum. The full reasoning, the
+rejected lighter candidate, and the three specific defects in the argument that declined it twice are set out
+under "The colour vocabulary is ELEVEN values" earlier in this file, and the ratios are pinned by assertions in
+`frontend/src/styles/tokens.spec.ts` so they cannot regress into prose again.
+
+**The non-colour redundancy this entry cited is unchanged and was never the point in dispute.** Expired,
+zero-fee, negative and unauthorised states all still carry a WORD rather than only a hue. That discharges
+"colour is not the only means"; it never discharged the contrast minimum, and treating the presence of one as
+grounds for declining the other is the substitution this entry made.
 
 ## The portal administration screens: four absent controls decided one at a time, and the alias contract closed at both ends
 
@@ -22877,6 +22973,79 @@ Left alone, because each is the legacy's own and carries no behaviour:
   one deliberate divergence. Absence means something different on a redirect selector, where it means the
   account stays where it is, from a page selector, where it means the portal has no such page.
 
+## A profile validation message named a field the reader could not see
+
+Three of the four branches that compose a profile validation message interpolated the property's STORED
+name rather than its caption, so an operator looking at a field captioned "Postal Code" was told
+"PostalCode must be 20 characters or fewer" - a spelling that appears nowhere on the screen. Only the
+`required` branch consulted the curated wording. Seven of the nineteen seeded properties spell their
+caption differently from their stored name (`FirstName`, `MiddleName`, `LastName`, `PostalCode`, `Cell`,
+`TimeZone`, `PreferredLocale`), so for those seven the message named something the reader had never seen.
+The three branches now use the caption, with the trailing colon removed - the shared field component
+normalises that same colon out of every caption it displays, so the message quotes exactly the spelling
+on screen. A property the tenant added has no curated wording, and its own name IS its caption, so the
+fallback is unchanged.
+
+The `required` branch is deliberately NOT routed through the caption. Its wording comes from the legacy
+resource file, and three of those sentences knowingly disagree with their caption - most visibly `Cell`,
+captioned "Cell/Mobile:" and required as "Cell Phone is required". Those divergences are the legacy's own
+and are preserved; routing the required branch through the caption would have silently corrected wording
+this document records as intentional.
+
+## Two explanations moved out of a disclosure, because the controls they explain take no focus
+
+A field's help text lives behind a disclosure the reader presses. That is right for a field they can use
+and wrong for one they cannot: a natively disabled control takes no focus and shows no hover, so an
+explanation reachable only by pressing something is an explanation with no route to it. Two controls were
+in that position and each now states its reason as ordinary visible text, named from the control's own
+`aria-describedby` - the pattern the tenant e-mail advisory on the same screen already used:
+
+- The account form's Notify box, disabled for the life of the screen because this installation exposes no
+  mail endpoint. Its help input is removed rather than kept alongside, because keeping both would state one
+  sentence twice, once visibly and once behind a toggle.
+- The sign-in name box while editing, which had no explanation at all and carried the help text "Enter a
+  username" - an instruction beside a box that refuses typing. The advisory says the name is fixed once the
+  account exists, and the imperative is withdrawn in that mode rather than reworded, because there is
+  nothing to instruct. The declared bound still travels through the shared field's own bound mechanism, so
+  the disclosure keeps stating the bound and loses only the sentence that was untrue. On the creation
+  screen, where the box IS usable, the instruction is untouched.
+
+The legacy screens are not being departed from here so much as caught up with: `ManageUsers.ascx.vb`
+rendered the sign-in name as a LABEL once an account existed, offering no field and therefore no help. This
+port keeps the field visible so the value stays readable in place, which is what created the need for the
+sentence.
+
+## A character bound that only ever bit in silence now states itself
+
+Every bounded box on the account, credential and profile screens carries `maxlength`, which refuses
+keystrokes and keeps only the head of a longer pasted value without saying anything. An operator pasting a
+120-character address into a 100-character box got a truncated account name and no indication that
+anything had been dropped; on the credential screen the consequence is worse, because a truncated
+passphrase is a DIFFERENT credential from the one pasted and the person cannot then sign in with it.
+
+The bound now travels through the shared field's `limit` input on all three screens - the same mechanism
+the portal screens already used - which renders it as a permanently present sentence the control's own
+`aria-describedby` names, so it is announced when the box takes focus rather than discovered afterwards,
+and repeats it inside the disclosure for a sighted reader. The figure passed is the same constant the
+`maxlength` attribute is bound to, so the stated bound and the enforced one cannot drift apart. On the
+profile screen the declared length moved OUT of the help sentence to get there; what remains in help is
+the format requirement, which no native attribute enforces and which nothing else would state.
+
+## A field-set caption is a heading in both modes, or in neither
+
+The profile screen's VIEW branch wrapped each category caption in a level-2 heading; its EDIT branch
+emitted the identical control in a bare `<legend>` with no heading element. So the same screen presented
+its own structure two different ways depending on which mode it was in, and the mode an operator actually
+works in was the one with no section headings - leaving the page with only its title and the "Still
+required" heading to navigate by. Both branches now emit the heading inside the legend, which keeps the
+caption and the field set's accessible name as one element so neither is duplicated.
+
+This costs nothing visually, and that is deliberate rather than lucky: a global rule makes a heading nested
+in a legend inherit the legend's own font and ink, so the caption renders exactly as it did before at
+14px bold in the brand ink. Measured after the change, all three profile captions and the account forms'
+five are unchanged. The heading level is therefore chosen for its position in the document outline, not for
+how large it draws.
+
 ## A required field no longer offers a value it then refuses
 
 The profile property Data Type control is a numeric input and opened pre-filled with `-1`, the legacy
@@ -23026,7 +23195,30 @@ to consumers while leaving this project's own compile reference intact — it mu
 `DnnDbContextFactory` implements `IDesignTimeDbContextFactory<DnnDbContext>`. `DnnMigration.Api`
 additionally filters `.pdb` files out of `ResolvedFileToPublish`, so symbols are still produced by
 `dotnet build` — where the Release test gates read them for file and line numbers — and are absent
-from `dotnet publish`. `/app` fell from 100 files to 80 and the image from 196 MB to 166 MB.
+from `dotnet publish`.
+
+**What it measures now.** Inside the image `/app` fell from **156 files to 87** — **69 removed,
+none added**. Of the 69, fifty-six are `Microsoft.CodeAnalysis.*`, five are
+`System.Composition.*` that Roslyn's workspace layer depends on, four are the portable symbol files, and the last four are
+`Microsoft.EntityFrameworkCore.Design.dll`, `Humanizer.dll`, `System.CodeDom.dll` and
+`Mono.TextTemplating.dll`. The image fell from **196.0 MB to 174.0 MB** measured decimally, or
+equivalently from **186.9 MiB to 166.0 MiB** measured binarily — **22.0 MB**, **11.2 %**, either way.
+
+Both unit systems are given because quoting one figure in each is exactly what made this claim
+irreconcilable before. The pair previously published here read `196 MB to 166 MB`, but 166 is the
+**binary** size of the smaller image while 196 is the **decimal** size of the larger, so the two
+numbers were never in the same units and the saving appeared to be 30 MB when it is 22 MB. The file
+counts were wrong as well, and wrong in a way that understated the change by more than threefold.
+
+Both figures are reproducible rather than asserted:
+
+    docker image inspect dnnmigration-api:latest --format '{{.Size}}'
+    docker run --rm --entrypoint sh dnnmigration-api:latest -c 'find /app -type f | wc -l'
+
+The second command uses BusyBox `find`, which the Alpine runtime image ships and which has no
+`-printf`, so a count is taken by piping to `wc -l` rather than by formatting. A current image
+answers `174025662` and `87`, and carries no `.pdb`, no `Roslyn` directory and no `csc`, `vbc` or
+`VBCSCompiler` of any kind.
 
 **What this costs, and the command that replaces it.** The API project is no longer a usable startup
 project for the EF CLI. Migration tooling is invoked against the Infrastructure project as both
@@ -23040,3 +23232,573 @@ Both `dotnet ef dbcontext info` and `dotnet ef migrations list --no-connect` wer
 route after the change and resolved the context and the single baseline migration.
 `DnnMigration.IntegrationTests` declares the package itself, because it asserts that the factory
 implements the design-time interface and a test project is never published.
+
+## A destructive command was offered on the strength of a filtered page
+
+**What the legacy did.** `Website/admin/Security/Roles.ascx.vb:L79-L85` hid the group-edit and
+group-delete controls whenever the narrowing was one of the two pseudo-intents, and said nothing at
+all about a group that still held roles. Removing such a group simply failed.
+
+**What was wrong in the target.** The migrated screen improved on that by withholding the delete
+command for a non-empty group and stating why — but it decided emptiness from
+`this._roles().items.length === 0`, which is ONE PAGE of the role listing, narrowed by whatever the
+operator had typed into the filter. Filtering a populated group by a term none of its roles matched
+emptied the page, so the group looked empty: the command appeared, the confirmation was accepted, and
+the server answered `role_group.in_use`. Worse, the two failures reinforced each other — the
+explanatory sentence was rendered only when the command was withheld, so it vanished at exactly the
+moment the false command appeared, leaving the operator with an affordance that could not work and no
+statement of why. Refreshing did not help, because the filter survived the refresh.
+
+**Target behaviour.** `RoleGroupDto` carries `ClassifiedRoleCount`, produced by a new
+`IRoleRepository.CountRolesByGroupAsync` — one grouped query per portal, deliberately the same
+predicate the removal guard in `RoleService.DeleteRoleGroupAsync` applies, so the count a screen reads
+and the refusal the server issues cannot disagree. Groups that classify nothing are absent from the
+result and a caller reads a missing key as zero. The client's `canDeleteSelectedGroup` now reads the
+selected group's own count and **fails closed** when the group record is unresolved — while a read is
+in flight, or after another administrator removed the group — because being wrong there costs a
+confirmed destructive action that fails, and being cautious costs a refresh.
+
+The sentence now also survives the filter and names the quantity: "<name> still contains N role(s), so
+it cannot be deleted. Move or delete those roles first." A group one move away from removable and a
+group forty moves away no longer read alike.
+
+**What remains, deliberately.** The server's guard is still the authority, and the client cannot hold
+a lock over a decision it does not own: if another administrator moves a role into the group between
+the read and the write, the removal is still refused and the re-read then withdraws the command. That
+residual race is why the guard exists, and it is now the ONLY way the refusal can be reached.
+
+**Vocabulary divergence, stated.** The server says "classifies" and the property is
+`ClassifiedRoleCount`; the operator-facing sentence says "contains". The internal name is precise
+about the relation being modelled; the screen uses the plain word an administrator would.
+
+## A create-only screen asked the operator to Update
+
+`Website/admin/Security/EditGroups.ascx` was a dual-mode screen — `cmdUpdate`, `cmdCancel` and
+`cmdDelete` under the title "Edit Role Group" — and its commit link was declared `text="Update"` with
+no resource override, one label serving both creating and editing a group. Only the create path was
+migrated: `role-groups/new` is the sole role-group route and editing happens inline on the listing.
+The label came across verbatim, so the primary button read "Update" beneath a heading reading "Add New
+Role Group" and beside a progress spinner reading "Adding role group…", telling the operator they were
+about to modify something that did not yet exist. It now reads **Add Role Group**.
+
+## A withheld command rendered as an em dash that explained nothing
+
+The two roles a portal maintains cannot be edited or deleted — the server refuses both with
+`role.protected` — and the listing correctly withholds those commands rather than offering them and
+failing. What it rendered instead was an `aria-hidden` em dash, a visually hidden sentence, and a
+`title` on the `<span>` carrying them. A screen-reader user heard the reason and a mouse user could
+hover for it, but a sighted keyboard user met a cell that looked empty or broken with no route to
+either. The cell now names the **state** in text — `Protected`, the server's own word — and keeps the
+full sentence as the accessible text. The `title` is dropped rather than kept alongside it: a title on
+an element that already carries its own text becomes a second description of the same fact.
+
+The sentence also now names which role and why — "…is this site's designated administrators role" or
+"…designated registered members role", matching the server's wording. It previously said only
+"required by this site", which made the two protected rows indistinguishable and gave the operator
+nothing to act on.
+
+## A paged listing announced how many rows it had, never which
+
+The shared table's polite region is deliberately the single announcer on a listing: the pager's range
+and position readouts are visible but not announced, so one action produces one announcement. That
+region reported `Showing 3 of 13 records.` on the second page of a thirteen-record set — literally
+true, and indistinguishable from a filter that had narrowed the set to three. A screen-reader user was
+told the quantity and never the position, because the only report of position was the one deliberately
+kept silent.
+
+It now states the range — `Showing records 11 to 16 of 16.` — reusing the `rowOffset` the listings
+already supply for `aria-rowindex`, so it needs no new input and agrees with the pager the sighted
+operator is reading. A single-page listing still reports a plain count, because there is no position
+to place.
+
+## An unavailable control kept its reason where it could not be read
+
+The membership screen's notification checkbox is permanently disabled: this installation exposes no
+mail endpoint, so no notification can be sent. The reason existed, and was bound as the field's `help`
+— which renders behind a toggle that starts closed, on a control disabled with the native attribute
+and therefore unable to take focus. The one permanently unavailable control on the screen was the one
+whose explanation an operator had no route to. It is now a visible paragraph named from the control by
+`aria-describedby`, and the `help` binding is removed so the sentence is stated once.
+
+## Choosing a member who already holds the role is a workflow, not a mistake
+
+A QA finding proposed filtering or disabling accounts already holding the role in the assignment
+picker. That is **declined**, because it would remove a legacy workflow: `SecurityRoles.ascx.vb`
+`GetDates` at `:L279-L285` reads the existing `UserRoleInfo` and prefills the effective and expiry
+boxes from it, and `grdUserRoles_ItemDataBound` at `:L649-L659` relabels the commit button to
+`UpdateRole.Text` — a resource string that exists for no other purpose. Selecting an existing member
+is how a membership's dates are amended, and there is no other route to it.
+
+What was genuinely missing was the marking and the consequence. The drop-down annotated existing
+members; the lookup list did not, so which control the tenant's account policy happened to select
+decided whether the operator was told. Both pickers now answer from one set. And the relabelled button
+only ever informed an operator who noticed the previous label, so the consequence is now stated and
+associated with the button: "This account already holds the role, so saving will update its existing
+membership dates rather than add a second membership."
+
+## A not-found record kept the heading of an action the screen could not perform
+
+`EditRoles.ascx.vb:L170-L172` treated an unknown role identifier as "a security violation attempt to
+access item not related to this Module" and redirected away in silence, so there was no legacy
+heading for this state to port. The migrated screen reached it and captioned it "Edit Security Roles",
+directly contradicting the banner beneath it, and fell through to the create-mode subtitle explaining
+what a role is for — prose for a form that was not on screen.
+
+An earlier fix had deliberately made an unreadable address take the edit heading, so that the heading
+agreed with the route's static document title. That traded the disagreement rather than removing it.
+Both the unreadable address and a well-formed identifier naming no role now take **Role Not Found**,
+with no subtitle, and the document title is moved with them — so the agreement is kept and the false
+caption is gone. The banner continues to distinguish an address that was never an identifier from a
+record that has been removed.
+
+## A protected role was warned about a save it cannot perform
+
+The role editor's advanced-terms notice explains which paid-membership boxes are left empty and states
+the consequence: saving replaces the stored values. That consequence is certain for an editable role
+and impossible for a protected one, where `canSave()` is false and the screen renders no submit
+control at all — yet both were told "saving this form replaces them", describing a command that was
+not present and an overwrite that could not occur. The protected variant now reads "…and they cannot
+be changed here", and the unnameable-frequency clause likewise says the code cannot be shown or
+changed rather than that saving will rewrite it.
+
+## Two column headings were reduced to "Pu…" and "A…" by a width test that could not see it
+
+An earlier phase repaid width to the role name column by taking a point from `Public` and half a point
+from `Auto`, on a recorded prediction that each heading "still fits outright". The prediction was
+wrong at the table's own 60rem minimum, which is what both 768 and 320 collapse to: 7% of 960px is
+67.2px, and after the cell padding **and the reserved 12px sort-indicator gutter** the label box
+measures 43.19px against a 45.01px word. Over by 1.82px — and because the ellipsis glyph takes width
+of its own, that 1.82px cost several characters. `Auto` was over by 0.56px and painted as a single
+letter. A single-word heading cannot wrap its way out of this the way "Billing Every" does.
+
+The tracks are restored to 7.75% and 6.5%, funded from three two-word columns that wrap rather than
+clip, keeping the declared weighted total at exactly 70% so the flexible description column keeps its
+share. The width test that passed while the text clipped modelled the requirement as "word plus 8px of
+padding"; it now carries the measured 24.01px overhead, and a companion test states the floor each
+wrapping heading may not cross — the width of its own longest word — because wrapping only helps down
+to that point. The model reproduces the browser's measured slack to within 0.02px on all four columns.
+`Trial Period` is the tightest at ~1.3px and is the reason that guard exists.
+
+## The site identifier stopped announcing itself every time the screen redrew
+
+The portal GUID is rendered by the settings screen as a value the operator cannot change, and it was
+rendered in an `<output>` element. HTML-AAM maps `<output>` to `role="status"`, which carries an
+implicit `aria-live="polite"` and `aria-atomic="true"` — Chrome's own accessibility tree reported it as
+`status "GUID" atomic live="polite"`. So a 36-character hexadecimal string that never changes for the
+life of the site sat inside a live region, and its `<label for>` pointed at an element that is not a
+form control, which no browser associates.
+
+It is now a `<p class="portal-settings__readonly-value">` with no role and no live semantics — Chrome
+reports `paragraph` — and the caption is a plain `<span>` naming the field through the shared field's
+`aria-labelledby` rather than a `for` that resolved to nothing. `<output>` is the right element for a
+value a calculation produces; it is the wrong one for a value the record simply has.
+
+## Five site details on five rows, because the legacy screen was a table of single rows
+
+The Site Details group placed its five fields into a two-column auto-flowing grid, of which two were
+full-width and three were not. The result was a conspicuous empty cell beside the Title row and the
+GUID stranded alone in a right-hand column 505px from every other caption on the screen. Every one of
+the five is now full-width, so the group is five single-field rows.
+
+That is what the legacy screen was: `Website/admin/Portal/sitesettings.ascx` L44-L70 lays Title,
+Description, Keywords, Copyright and GUID out as five successive single-row entries, not as a
+two-across arrangement. The two-column grid remains for the groups whose fields are short enough to
+pair, which is where it earns its place.
+
+## A stored time-zone offset is now restated in the units a reader thinks in
+
+`Portals.TimeZoneOffset` holds MINUTES — `Localization.vb:L75` seeds `SystemTimeZoneOffset = -480` and
+`Website/App_GlobalResources/TimeZones.xml` keys Pacific Time as `-480`. The port renders the column
+directly in a numeric box beside a note declaring the unit, and this installation's seed data is
+written in HOURS, so the field showed `-8` beside copy citing `-480` for the same zone. A reader had no
+way to tell a mis-seeded value from a correct one.
+
+The note now restates whatever is in the box: `-8` reads `This site is set to UTC −00:08.`, `-480`
+reads `UTC −08:00.`, `345` reads `UTC +05:45.` and `0` reads `UTC +00:00.` The restatement is withheld
+while the box is blank or not yet a number, so it never competes with the validation message that is
+about to appear, and it lives inside the element the input's `aria-describedby` already names so the
+reading is announced with the rule rather than needing a second reference.
+
+**The divergence is that legacy never showed a number at all.** `sitesettings.ascx:L390` renders a
+named-zone `DropDownList` populated from `TimeZones.xml`, so an operator chose "Pacific Time" and never
+saw an offset. Restoring that list would mean porting the time-zone catalogue, which is outside this
+work; restating the stored figure is what makes the number the port does show interpretable in the
+meantime. The value written to the column is unchanged either way.
+
+## A tab and a section now name a panel that is always there to be named
+
+Both tab panels and all seven collapsible section bodies were created only while selected or open, so
+`aria-controls` on the unselected tab and on every closed section head pointed at an element that was
+not in the document. A dangling reference is worse than none: an assistive technology that follows it
+finds nothing and has no way to report why.
+
+Each is now a permanent shell carrying the `hidden` attribute while unselected or closed, with its
+CONTENTS still created on demand — so a closed group contributes no controls to the tab order and no
+values to the form, while the relationship it declares always resolves. All eight `aria-controls` on
+the screen now resolve in every state.
+
+One implementation note worth keeping: `hidden`'s entire effect is `display: none` from the user-agent
+stylesheet, and **any author `display` declaration beats it**. Both shells declare one, so both restate
+`[hidden] { display: none }` — without it the attribute is inert and the closed group renders.
+
+## The Home Directory help no longer tells the reader to type into something that is not there
+
+The legacy resource `plHomeDirectory.Help` reads "Enter the Home Directory for this site", and the port
+carried it verbatim beside a value it renders as text, because the path is fixed when a site is created
+and this console offers no control for it. The imperative asked for an action the screen cannot accept.
+
+It now reads "The Home Directory for this site." — the same fact, stated rather than commanded. The
+sentence explaining that the path is fixed also moved from a sibling of the field, where the settings
+grid placed it 505px away in the opposite column, to inside the field itself beside the value it is
+about.
+
+**The legacy wording is not preserved here, and that is deliberate rather than an oversight.** The
+legacy screen declared the same box `Enabled="False"` — `sitesettings.ascx:L290` — so its own help text
+instructed an operator to type into a control legacy itself had disabled. Preserving the wording would
+have propagated a legacy defect into new code. Every other resource string on the screen is carried
+across unchanged.
+
+## The validation message is now above the help text, not below it
+
+The shared form field rendered its collapsible help panel before its error region, so opening Help
+pushed the validation message a measured 35px further from the control it belonged to, and listed the
+help id first in the control's `aria-describedby`. A reader who opened Help to work out what a field
+wanted was moved further from the sentence telling them what was wrong with it.
+
+The error now precedes the help in DOM order, in paint order and in `aria-describedby`. The measured
+distance from a control's bottom edge to its error is 56px with Help closed and 56px with Help open —
+it no longer moves at all, and the panel lands below the error instead of between the two.
+
+This reorder reaches every screen, so several specs that asserted the previous order were rewritten:
+they had encoded the defect rather than the requirement.
+
+## Opening a checkbox's help no longer moves the checkbox
+
+The shared field's inline arrangement — the one all thirteen switch fields use — laid its caption, its
+control and its spanning help and error panels into a two-track grid whose first track was measured
+from its contents. A spanning panel contributes to that measurement, so opening the help for
+`Suppress Pager?` widened the caption track from 115.16px to 176.95px and jogged the checkbox and its
+own Help button 61.79px to the right. The control moved out from under the pointer that had just
+pressed it.
+
+The arrangement is now three tracks, the last of which is flexible. Per the CSS Grid intrinsic sizing
+algorithm an item spanning a flexible track contributes nothing to the intrinsic sizing of the
+content-measured tracks it also spans, so the panel can be as wide as it likes and the caption track
+cannot see it. Eighteen measurements across three fields, in three states each, now vary by 0.000px.
+
+`min-inline-size: 0` alone was tried first and was not sufficient — it removes only an item's MINIMUM
+contribution, while the panel's max-content width still drove the track. The flexible track is the
+part that matters.
+
+## Below the wide breakpoint the caption yields to the value
+
+The membership screen asks for the widest caption track in the token set, because six of its captions
+are whole policy sentences. The shared field caps any caption at `min(token, 45%)`, and at 768px that
+cap resolved to 225.891px of a 502px field — leaving the value 260.109px, which is 21.6px less than the
+longest redirect option needs. The picker painted `No redirect (stay on the current pa` and cut `ge)`.
+
+Below `lg` the screen now asks for a narrower label measure. The policy-sentence captions wrap a little
+more at that width, which is the right trade: a wrapped caption stays wholly readable, a clipped value
+does not, and a native select cannot even report the loss — `scrollWidth` equals `clientWidth` for a
+label it never scrolls, so the truncation-recovery measurement the shared table uses is structurally
+blind to it and the painted pixels are the only evidence.
+
+**Which measure took two attempts, and the second was chosen on re-measurement rather than on
+arithmetic.** The existing 200px step was tried first: it delivered exactly what it promised
+geometrically — caption 200px, value 286px — and all three pickers still elided `ge)`. The reason was a
+wrong constant: Chrome's arrow reserve on this select is **25.393px**, not the 14.393px the first
+estimate back-solved from a different control, so the value needs 292.68px and 286px is 6.68px short. A
+new 180px step was added to the token vocabulary between the base and the wide measure, taking the value
+to 306px — 13.3px clear — while still holding this screen's longest caption, `Redirect After
+Registration` at 177.63px, on one line. The base 150px measure would have wrapped that caption to buy
+width the value does not need.
+
+## A picker that cannot paint its whole label now says so
+
+Which is the other half of the same problem, and the durable half. The values in these pickers are
+operator data of unbounded length — a display name and a login name together, a page title — so no
+width this application can choose guarantees a fit at every viewport. `Setup Administrator
+(setup_admin)` painted as `Setup Administrator (setup_admi` at 320px, a string that reads as a complete
+value and is not one.
+
+Every select now carries `text-overflow: ellipsis`. It costs nothing when the label fits and turns a
+silent lie into a visible truncation when it does not, with the full text one press away in the picker
+and always complete in the control's accessible value. Its correctness was confirmed in the rendered
+pixels rather than inferred: a real elision paints three squat baseline marks about 1.5px of ink tall,
+against the 13.67px arc of the closing parenthesis that a complete string ends in — which is how both
+outcomes below were told apart.
+
+The narrow-width gutter on the portal settings sections was retuned at the same time, from two spacing
+steps to one, restoring the 8px an earlier arrangement had been relying on. The fieldset content box went
+from 255px to 263px, confirmed by measurement at both 320px and 375px, and the legend and the fields still
+share an x.
+
+**And re-measuring that gutter exposed a rule that had never once applied.** An earlier phase halved a
+select's own inline padding below `sm`, recording that it "buys 8px of real headroom" — but the override
+was authored ABOVE the base entry-control block, and both selectors weigh the same at (0,0,1), so the base
+`padding-inline: var(--space-2)` won on source order and the narrower value reached no pixel. The running
+screen reported `padding-inline-start: 8px` at 320px, which is what gave it away. A rule inside a media
+query does not outrank anything — it only narrows when it is asked — so the override is now declared
+after the block it overrides, and the 8px it was written to recover is finally recovered.
+
+With both in place the label fits: re-measured at 320px, the control paints all thirty-three characters
+of `Setup Administrator (setup_admin)`, ending in a real closing parenthesis with 10.33px of clear space
+before the chevron. 231.78px of text plus a 19px arrow reserve inside a 253px content box, and the text
+finishes inside it.
+
+That margin is about two characters wide, so the next slightly longer display name will exceed it — which
+is precisely why the ellipsis is the durable half and the gutter is not. The fit is restored for the data
+that can fit; the loss stays visible for the data that cannot.
+
+## Enter no longer commits the account policy form, from any control
+
+Thirteen entry controls sit above one `button[type="submit"]`, so Enter anywhere in the form dispatched
+a genuine submit and the save ran — a save that rewrites every account's display name when the format
+field changes. The form now carries the same opt-in `appBlockImplicitSubmit` guard the role editor uses,
+on the same reasoning: the legacy screen's commands were `asp:LinkButton` controls rather than submit
+controls, so a legacy form with several text boxes and no submit button committed nothing on Enter.
+
+**The guard was then widened on measurement, and the measurement is the point.** HTML names the input
+types that "block implicit submission", and a checkbox is not among them — so the first implementation
+deliberately left checkboxes alone, and a spec asserted that it did. Chrome requests implicit submission
+from more controls than the specification names: with every value box guarded, pressing Enter on the
+`Suppress Pager?` checkbox still dispatched a submit whose `defaultPrevented` was false, and
+`PUT /api/v1/users/settings` left the browser and returned 200. Checkbox, radio and select are now
+guarded alongside the thirteen text-like types.
+
+Nothing is taken from any of them: a checkbox and a radio are operated with the Space bar, a select
+answers Space, the arrow keys and typing, and while a select's picker is open the browser handles the
+keys itself and never dispatches them to the page. Enter on a button is still a click, so both commands
+remain fully keyboard-operable, and Enter in a textarea still inserts a newline.
+
+## A refusal now names the field it is about, is brought to the operator, and does not outlive the value
+
+Three separate faults on the invitation-code panel, with one cause between them.
+
+The first: a wrong-but-well-formed code is refused with `user.service.code-not-matched` and **no
+`errors` dictionary** — measured against the live API — because a code no service bears is not a shape
+violation. The field-keyed lookup therefore found nothing, the local rules had nothing to say about a
+valid-looking string that is simply wrong, and the box the operator had just been refused over carried
+no message and no invalid state. A closed list of code-scoped refusal codes now attributes such a
+refusal to the one field it is about, and the box states `aria-invalid="true"` with the server's own
+sentence beside it. Row-scoped refusals are deliberately not in that list: three of the panel's five
+operations are refused about a row, and blaming the code box for one of those would be a lie.
+
+The second: every control that dispatches one of these commands carries `[disabled]` while it is in
+flight, and a browser moves focus off a control the moment it is disabled — so `document.activeElement`
+was `BODY` when the refusal arrived, on a screen long enough for the report to be off-view entirely.
+The panel now scrolls its own assertive region into view and focuses it, which is the pattern the host
+screen already used.
+
+The third: the refusal lives in a store slice that survives until the next command settles, so it went
+on being reported after the operator had selected the text and deleted it — a past-tense sentence and an
+`aria-invalid="true"` beside an empty box. The refusal is now pinned to the exact string it was about
+and withdrawn the moment the box stops holding it, and restored if the same string is typed back.
+
+The redemption report was separately made to expire: it is discarded on any assignment mutation and on
+a re-read of the same account, so a report of what a code joined cannot outlive the state it described.
+
+## An unrecognised billing unit is named rather than dropped
+
+A service fee reads `29.95 Every 2 Month(s)`, composed from an amount, a count and a unit noun looked
+up from the stored `char(1)` frequency code. A code outside the recognised set produced no noun, so the
+cell read `12.34 Every 3` — every 3 of what, unstated — and an interior double space where the missing
+word had been. It now reads `12.34 Every 3 (unit code Q not recognised)`, and the parts are joined so
+that a missing part cannot leave a double space behind. Recognised codes are untouched.
+
+A service that offers no trial rendered an entirely empty cell, in a column whose other cells hold a
+command. Seven of the nine rows on the verification site were blank. Those cells now read
+`No trial offered`, which is the same treatment the withheld-command cells elsewhere on the screen
+already used.
+
+## A nested caption is now a perceivable step below the section it sits in
+
+`Account Listing Columns` is a field-set caption inside the `User Accounts Settings` section, and both
+rendered at the same 15px bold. `_forms.scss` makes a heading nested in a `<legend>` inherit the
+legend's own type, which is why the level was invisible rather than merely subtle. The nested caption is
+now 13px, a 2px step, still bold and still the same colour.
+
+**This is a third heading rank, and legacy declares only two.** `Website/Portals/_default/default.css`
+L65-L80 defines `.Head` at 20px weight normal and `.SubHead` at 11px bold — that is the whole scale. The
+port's page title above bold section headings is faithful to it; a third rank is a net addition, made
+because these screens nest a group inside a section and two ranks cannot express three levels.
+
+## What the QA report described as a `?.` in the unsaved-changes copy is not there
+
+The finding recorded that the portal settings screen's unsaved-changes copy contains `?.`. It does not,
+and the evidence is character-level in both directions.
+
+At source, `core/guards/unsaved-changes.guard.ts:8` declares the literal `You have changes on this
+screen that have not been saved. Leave without saving them?` — 84 characters, ending at `?`. At runtime,
+four exhaustive scans of the running screen — both tabs, all five collapsible sections expanded, all 23
+help disclosures open, covering 1443 attributes, 165 text nodes, 19 control values, `innerText` and
+`outerHTML` — returned zero occurrences of the sequence. The dialog itself was intercepted with a
+pass-through recorder on `window.confirm` and its argument measured: 84 characters, last character `?`
+at code point 63, `indexOf('?.')` of −1.
+
+The `?.` in the report is the reporting tool's own sentence punctuation following a quoted string that
+ends in a question mark. **No change was made, because there is nothing to change.** It is recorded here
+so that the next reader of the report does not go looking for it again.
+
+The guard's own presentation is a separate, real matter: it is a native `window.confirm`, which cannot
+be styled, carries operating-system button labels, is not a `role="alertdialog"` and is invisible to
+accessibility tooling. That is addressed with the rest of this application's dialog presentation, not
+here.
+
+## Row selection is declared on the one grid that has a row action, and the platform does not expose it
+
+The portal aliases grid gives each row `tabindex="0"`, a pointer cursor and `aria-selected="false"`,
+because it binds a row action; the portals grid gives its rows none of the three, because it binds none.
+The shared table settles this once from whether a consumer observes its row output. That difference is
+correct, not inconsistent — one grid has something for a row press to do and the other does not.
+
+`aria-selected` on those rows is nonetheless **inert**: ARIA gives row selection meaning only for rows
+owned by a `grid` or `treegrid`, and this is a data table with an implicit `table` role, so Chrome's
+accessibility tree contains no selection state at all for them. The attribute is retained rather than
+withdrawn, for three reasons. ARIA lists it as supported on `row`, so it is not invalid. It is the
+correct state to publish should the container ever become a grid. And the selection it reports is
+transient — activating an aliases row navigates straight to the editor, so no reader is ever parked on a
+selected row.
+
+Making it meaningful would mean declaring `role="grid"`, which obliges the APG managed-focus model — a
+single tab stop with arrow-key navigation across rows and cells — that neither the legacy grid nor this
+port implements, and that would change the interaction model of every listing in the console. The
+keyboard equivalence WCAG actually requires is provided twice over: the row itself answers Enter and
+Space, and the row's own command carries a row-qualified accessible name. The one row with no command —
+the alias currently in use — is refused by the same guard that withholds its button.
+
+## Two membership wordings left exactly as the legacy wrote them
+
+The services panel's explanatory paragraph and two of its column captions read a little awkwardly, and
+they are the legacy `ServicesHelp.Text` and its neighbours carried across verbatim. They are preserved.
+The rule this console follows is that operator-facing wording changes only where the legacy text is
+actively wrong — as `plHomeDirectory.Help` was, above — and not where it is merely inelegant, because a
+reader who knows the legacy screen should recognise the port.
+
+## A refused Back no longer costs the operator the entry they were aiming at
+
+Several routes in this console guard unsaved form entry, asking the operator to confirm before the
+screen is abandoned. When that question is answered "stay", the navigation is cancelled — and cancelling
+a navigation the *browser* started is a different problem from cancelling one the application started.
+
+By the time a router guard sees a Back, the browser has already moved. The session history entry is
+popped, `location` already reads the previous URL, and the router's job is to put the address back. Its
+default way of doing that is `history.replaceState`, and with a history of `A, B, C` standing on `C` the
+sequence goes: Back pops to `B`; the guard refuses; `replaceState` writes `C` over the entry the browser
+had just landed on. The stack is now `A, C, C`. Nothing looks wrong — the screen is still `C`, which is
+what "stay" promised — but `B` has been overwritten. An operator who then pressed Back a second time and
+answered "leave" arrived at `A`, one screen further back than the one they were aiming at, having been
+silently charged an extra step for having changed their mind.
+
+The router is now configured with `canceledNavigationResolution: 'computed'`, which restores the address
+by measuring how far the browser moved and calling `history.go` with the inverse of that delta. The entry
+that was popped from is returned to, the entry that was popped to is left alone, and the depth of the
+stack does not change. Choosing "stay" now costs nothing at all.
+
+This was proven at runtime rather than argued, using the router's own stack index — `computed` mode is
+the only mode that writes a `ɵrouterPageId` into `history.state`, so its presence confirms the setting is
+live and its value measures the position exactly. Building `/portals`, `/roles`, `/users`,
+`/users?searchby=all`, `/users/5` by clicking, dirtying the form and pressing Back: after "stay" the
+address was still `/users/5`, `history.length` was unchanged at 6, and the entry's own state was still
+the original `{navigationId: 7, ɵrouterPageId: 4}` — not overwritten. After a second Back answered
+"leave", the landing was `/users?searchby=all` at `ɵrouterPageId` 3, exactly one entry behind the form.
+The same sequence run with "leave" chosen the first time landed in precisely the same place, which is the
+measurement that matters: the destination no longer depends on whether the operator hesitated. Three
+independent discriminators agreed, because the two candidate destinations render differently — the
+intended entry carries `?searchby=all` and shows nineteen records, while the entry one step further back
+is the bare list and shows its empty state.
+
+The forward direction has the same shape and was verified the same way. A refused Forward now leaves the
+entry ahead intact, so a second Forward answered "leave" arrives at the screen that was actually ahead
+rather than re-showing the form.
+
+## Every destructive confirmation is now the same measure
+
+The confirmation asked before a record is deleted is one shared component used by seventeen commands. It
+declared a maximum width and no preferred one, so each instance was sized by its own sentence, and since
+each consumer appends the name of the record being deleted, no two confirmations in the console were the
+same width. Deleting a role and deleting a profile property asked the same question through visibly
+different frames.
+
+It now declares a settled `--dialog-inline-size` of `28rem`, with the pre-existing `90vw` cap still over
+the top, so the frame is a fixed measure on a wide screen and yields to the viewport on a narrow one.
+Measured across five consumers — a role, a role group, an account, a portal alias and a profile property
+— whose messages span 49 to 111 characters, a better than twofold spread, every frame renders at exactly
+448px with the same top edge and the same left edge. At 768 the settled measure still wins over the
+691.2px cap; at 320 the cap binds at 288px, the sentence wraps to two lines rather than clipping, and
+both buttons stay inside the frame with no sideways page scroll.
+
+## The dim behind a confirmation is now the palette's own black
+
+A modal dialog paints a `::backdrop`, and this one had no rule for it, so the dim behind every
+confirmation was whatever the browser chose — a near-transparent black that is the single surface in the
+console not drawn from the design tokens, and too faint to read as a modal barrier.
+
+It is now `--dialog-backdrop-color`, defined as `color-mix(in srgb, var(--color-text) 55%, transparent)`.
+That is derived from the palette rather than added to it: the console's black at 55% opacity, which
+Chrome reports as `color(srgb 0 0 0 / 0.55)`. A palette sweep will correctly report a translucent black
+behind an open dialog, and that reading is in vocabulary. It was confirmed two independent ways, because
+a `::backdrop` is easy to get wrong in one: by computed style, and by sampling the composited pixels of
+saved screenshots, which gave an implied opacity of 0.550 over the `#EEEEEE` sidebar and 0.549 over the
+`#FFFFFF` content area.
+
+## One current answer per operation
+
+The notification queue collapsed a message only when it was identical to the one immediately before it.
+That is enough to stop a repeated action stuttering the same sentence twice, and not nearly enough for
+the case that actually arises: one operation refused twice for two different reasons. Choosing a file
+that is too large and then one that is empty produced two error reports side by side, the older one
+describing a file the operator had already replaced. Both were true when written; only one was true when
+read.
+
+Notifications now carry an optional operation scope, and a newer report of a scope retires any earlier
+report of the same scope wherever it sits in the queue — not only when it is adjacent. Scope is opt-in,
+so a message that names no scope supersedes nothing and every untouched call site behaves exactly as
+before. It is set where a single operation has several possible answers: the module import screen's four
+file refusals share one scope, the module settings screen scopes by the operation being attempted, the
+portal alias screen scopes its two current-alias warnings together, and the HTTP error interceptor scopes
+by request method and URL so that repeated refusals of one request leave one current explanation. The
+queue's original adjacency collapse is retained underneath as the fallback for unscoped messages.
+
+One existing test had to be rewritten rather than adjusted, and it is worth recording why. It asserted
+that three successive refusals of the same request all remained queued — which is exactly the behaviour
+the finding describes as the defect. The test had encoded the defect as the expectation, and passed
+while the console misbehaved. It now proves each refusal is reported verbatim as it arrives, and then
+that only the last of them survives.
+
+## The unsaved-changes question stays a native browser prompt
+
+Everything above concerns where a refused navigation lands, not how the question is asked, and the
+question itself is still `window.confirm` — an operating-system prompt with operating-system buttons,
+outside the token vocabulary and invisible to the accessibility tree. That was assessed rather than
+inherited, and it is deliberate.
+
+The same question has to be answerable from `beforeunload`, which fires when the tab is closed or
+reloaded and cannot wait for anything asynchronous. A custom dialog cannot be shown there at all, so the
+browser prompt has to remain for that path regardless. Converting only the in-app path would leave one
+question wearing two different faces depending on how the operator chose to leave, which is worse than
+one plain face everywhere. The shell needs a synchronous answer before it revokes the credential on sign
+out, and an in-app dialog cannot give one. And no finding raises the prompt's appearance — the reported
+defect was where a refusal left the history, which is fixed above and is independent of how the question
+looks.
+
+The prompt's wording is `You have changes on this screen that have not been saved. Leave without saving
+them?` — eighty-four characters, ending at the question mark. It is recorded here exactly because a
+report of a stray `?.` in this sentence was traced to punctuation in the reporting tool's own prose
+rather than to the console, as noted further up.
+
+## A control edited back to its original value is still treated as changed
+
+Angular marks a form control dirty the first time its value changes and does not un-mark it when the
+value is changed back, because it tracks that an edit happened rather than comparing against the value
+the form loaded with. So typing a character and deleting it again still counts as unsaved entry, and the
+guard still asks before letting the screen go.
+
+This is left as it is. No finding raises it, and the alternative is worse than the irritation it would
+remove: deciding "nothing has really changed" means comparing the whole form against a snapshot, across
+every guarded screen, through the trimming, number formatting and empty-versus-absent distinctions each
+of those forms applies. Getting that comparison wrong in the generous direction produces the opposite and
+far more damaging fault — a screen that lets real unsaved entry go without asking. A prompt that
+occasionally asks an unnecessary question loses nobody's work; a prompt that occasionally fails to ask
+does. The conservative behaviour is kept, and recorded here so that a reader who notices it knows it was
+considered.

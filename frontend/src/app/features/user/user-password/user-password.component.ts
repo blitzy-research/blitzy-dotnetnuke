@@ -1,6 +1,7 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  ElementRef,
   computed,
   effect,
   inject,
@@ -36,7 +37,8 @@ import { ErrorBannerComponent } from '../../../shared/components/error-banner/er
 import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
 import { LoadingSpinnerComponent } from '../../../shared/components/loading-spinner/loading-spinner.component';
 import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
-import { DateDisplayPipe } from '../../../shared/pipes/date-display.pipe';
+import { DateDisplayPipe, parseDisplayInstant } from '../../../shared/pipes/date-display.pipe';
+import { AbsentValueComponent } from '../../../shared/components/absent-value/absent-value.component';
 import { FocusFirstInvalidDirective } from '../../../shared/directives/focus-first-invalid.directive';
 import { SubmitGuardDirective } from '../../../shared/directives/submit-guard.directive';
 
@@ -337,6 +339,7 @@ const PAGE_SUBTITLE =
   selector: 'app-user-password',
   standalone: true,
   imports: [
+    AbsentValueComponent,
     FocusFirstInvalidDirective,
     SubmitGuardDirective,
     ReactiveFormsModule,
@@ -354,6 +357,19 @@ const PAGE_SUBTITLE =
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class UserPasswordComponent {
+
+  /**
+   * Whether a wire instant names a real moment, so a value and its absent affordance can never both be
+   * withheld. The display pipe's OWN parser is asked, so "paint the date" and "paint the absent mark" come
+   * from one implementation and cannot disagree; it is also what makes the legacy null-date sentinel count as
+   * absent here, since that is exactly how the pipe treats it.
+   *
+   * @param instant The value as it arrived on the wire.
+   * @returns True when the value names a real moment.
+   */
+  protected hasInstant(instant: string | null | undefined): boolean {
+    return parseDisplayInstant(instant) !== null;
+  }
   // COLLABORATORS
   // Injected through the function form rather than through constructor parameters, which is what lets the
   // field initialisers below read them.
@@ -363,6 +379,12 @@ export class UserPasswordComponent {
    * and the decision was made by reading it rather than by assuming.
    */
   private readonly store = inject(UserStore);
+
+  /**
+   * This component's own element. Used for exactly one thing: deciding whether the element that currently
+   * holds focus belongs to THIS screen, which is what {@link resetEntryState} needs before it may blur it.
+   */
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
 
   /**
    * The authentication store, read for the CALLER's identity. Required because the two gates this screen
@@ -414,6 +436,15 @@ export class UserPasswordComponent {
    * person makes.
    */
   private readonly _validityRevision = signal(0);
+
+  /**
+   * The account this screen has most recently been set up for, or `undefined` before the first resolution.
+   *
+   * A THREE-STATE FIELD, and the third state is load-bearing: `undefined` means "no account has been
+   * observed yet", which must not be treated as a change, while `null` is the real observed state of an
+   * address that names no account. Collapsing the two would reset the form on first render for no reason.
+   */
+  private administeredKey: number | null | undefined = undefined;
 
   // THE CALLER'S IDENTITY, AND THE TWO GATES IT TURNS
   // ⚠ DECLARED BEFORE THE FORM ON PURPOSE. Class field initialisers run in declaration order, and the
@@ -1047,6 +1078,37 @@ export class UserPasswordComponent {
       });
     });
 
+    // 1b. AND THE ROUTE ALSO CLEARS WHAT THE PREVIOUS ACCOUNT ACCUMULATED.
+    //
+    // ⚠ THIS SCREEN IS REUSED IN PLACE BETWEEN SIBLING ACCOUNTS, AND EVERYTHING IT REMEMBERS IS ABOUT THE
+    // ACCOUNT IT REMEMBERED IT FOR. The router reuses one component instance across `/users/3/password` and
+    // `/users/1/password` - it is the same route with a different parameter - so no constructor runs, no
+    // form is rebuilt, and nothing above resets. Measured: submit the form empty on one account, then move
+    // in-app to another, and the new account's Current and New Password fields arrive already touched and
+    // already invalid, with assertive messages about a submission made against somebody else's record. A
+    // FRESH mount of the same screen is clean, which is what makes it a leak rather than a policy.
+    //
+    // A dedicated effect with exactly ONE dependency, and that narrowness is deliberate: folding this into
+    // the read effect above would make the reset fire whenever the withheld gate flips too, which can happen
+    // while an operator is mid-entry and would discard what they had typed. Guarded on the key having
+    // actually CHANGED - a first resolution has nothing to clear, and re-resolving the same key must leave
+    // the form alone.
+    effect(() => {
+      const key = this.accountKey();
+
+      untracked(() => {
+        const previous: number | null | undefined = this.administeredKey;
+
+        this.administeredKey = key;
+
+        if (previous === undefined || previous === key) {
+          return;
+        }
+
+        this.resetEntryState();
+      });
+    });
+
     // 2. THE ENFORCEMENT GATE DRIVES THE REQUIRED RULE. Re-runs only when the gate itself
     //    flips, which happens once, when the caller's identity resolves.
     effect(() => {
@@ -1087,6 +1149,47 @@ export class UserPasswordComponent {
         this.announceSuccess();
       });
     });
+  }
+
+  /**
+   * Returns this screen to the state a fresh mount would give it.
+   *
+   * ⚠ THE STORE'S FAILURE IS CLEARED TOO, AND LEAVING IT WAS HALF THE LEAK. {@link problem} narrows the
+   * shared failure slot by OPERATION but not by account, so a refused credential change against one record
+   * went on being rendered in the banner - complete with its support reference - above a form addressing a
+   * different one. An operator would have read somebody else's refusal as their own.
+   *
+   * Everything else here is the recipe {@link UserPasswordComponent.announceSuccess} already uses after a
+   * successful write, which is the same requirement stated the other way round: this screen has one notion
+   * of "clean" and both paths reach it.
+   */
+  private resetEntryState(): void {
+    // ⚠ FOCUS IS SURRENDERED FIRST, AND THE ORDER IS THE WHOLE OF WHY THIS WORKS. A refused submission
+    // leaves focus on the first failing control, and Angular marks a control touched when it BLURS. The
+    // form is unmounted the moment the account key changes - it waits on the new account's read - so the
+    // focused input is destroyed, and destroying a focused element fires a blur. A reset performed before
+    // that blur is silently undone by it: measured, the replacement box arrived untouched and was marked
+    // touched again a moment later, and its message came straight back. Blurring here means the touch
+    // happens BEFORE the reset rather than after it, and nothing is left pending that could re-mark the
+    // control. It costs no orientation: the element holding focus is about to be destroyed either way.
+    const focused: Element | null = this.host.nativeElement.ownerDocument.activeElement;
+
+    if (focused instanceof HTMLElement && this.host.nativeElement.contains(focused)) {
+      focused.blur();
+    }
+
+    // Returns every control to the empty string rather than to null - the point of constructing them
+    // non-nullable - and returns the group to pristine and untouched in the same call.
+    this.form.reset();
+    this._submitAttempted.set(false);
+    this._resetConfirmOpen.set(false);
+    this._pendingOperation.set(null);
+    this.store.clearFailure();
+
+    // The rule set attached to `currentPassword` belongs to the CALLER rather than to the account being
+    // administered, so it is left in force; the revision is bumped so the field messages recompute against
+    // the newly pristine controls.
+    this._validityRevision.update((revision) => revision + 1);
   }
 
   /**

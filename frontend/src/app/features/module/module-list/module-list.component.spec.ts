@@ -594,12 +594,12 @@ describe('ModuleListComponent', () => {
     // OVER goes to the columns that declared something else. With every column weighted, that leftover went to
     // the command columns: the single commands column was left one percent, so its four commands stacked one per line and made every row 196px tall. One unweighted column absorbs the slack instead, so every
     // other track resolves to exactly the share it declares.
-    // ⚠ A NAME IS ONE TOKEN, AND THE TWO NARROWEST COLUMNS HERE USED TO SPLIT THEIRS. The slack column on this
-    // grid is not the roomy one: the others claim 77% and the commands column takes a fixed 144px, leaving the
-    // undeclared "Module" track about 9.1% of the table - 94.81px at a 1280 viewport, 76.83px at 768. Measured
-    // before these were marked atomic: `Announcements` painted `Announcem` + `ents` at 1280 and `Announce` +
-    // `ments` at 768, `Text/HTML` painted `Text/HTM` + `L`, and the package beside it painted
-    // `QA_Announcement` + `s`, orphaning one letter by 3.39px.
+    // ⚠ A NAME IS ONE TOKEN, AND THE TWO NARROWEST COLUMNS HERE USED TO SPLIT THEIRS. Measured before these
+    // were marked atomic: `Announcements` painted `Announcem` + `ents` at 1280 and `Announce` + `ments` at 768,
+    // `Text/HTML` painted `Text/HTM` + `L`, and the package beside it painted `QA_Announcement` + `s`,
+    // orphaning one letter by 3.39px. Both columns now declare a weight as well, so at the shared floor they
+    // hold their values outright rather than relying on the ellipsis; see the case below for which column
+    // carries the slack instead, and why it is no longer this one.
     it('keeps the module and package names whole instead of breaking them mid-word', () => {
       arrive([moduleRow()]);
 
@@ -625,9 +625,10 @@ describe('ModuleListComponent', () => {
       arrive([moduleRow()]);
 
       const tracks = queryAll<HTMLTableColElement>('colgroup col');
+      const headings = queryAll<Element>('thead th');
 
       expect(tracks.length).withContext('one track per rendered column').toBeGreaterThan(0);
-      expect(tracks.length).toBe(queryAll<Element>('thead th').length);
+      expect(tracks.length).toBe(headings.length);
 
       const flexible: readonly number[] = tracks
         .map((track, index) => ({ index, declared: track.style.inlineSize }))
@@ -635,6 +636,35 @@ describe('ModuleListComponent', () => {
         .map((entry) => entry.index);
 
       expect(flexible.length).withContext('one and only one flexible track').toBe(1);
+
+      // ⚠ AND IT MATTERS WHICH ONE, WHICH THIS CASE PREVIOUSLY DID NOT SAY. The leftover is the SMALLEST share
+      // on this grid, not the largest - the weighted tracks claim 71% and the command token takes a fixed 144px -
+      // so whichever column abstains is the one that gets squeezed. It used to be the row header, and measured at
+      // 1024 that gave the identity 76.83px against a 117.41px requirement, ellipsising six of eight module
+      // names: the column hoisted to the front and pinned sticky so a reader can identify a row was the first
+      // value cut. The title carries it now, being the only prose column here and the only one that wraps
+      // gracefully rather than clipping.
+      const identity = headings.findIndex(
+        (heading) => heading.getAttribute('data-row-identity') === 'true',
+      );
+
+      expect(identity).withContext('the grid declares a row identity').toBeGreaterThan(-1);
+      expect(flexible).not.toContain(identity);
+      expect(headings[flexible[0]]?.textContent ?? '')
+        .withContext('the flexible track is the title')
+        .toContain('Title');
+      expect(tracks[identity]?.style.inlineSize)
+        .withContext('and the identity declares a real weight')
+        .toMatch(/%$/);
+
+      // The identity's requirement, measured in Chrome: `Announcements` needs 108.41px, and this cell carries a
+      // 1px separator border in its pinned state on top of the shared 4px inline padding either side, so 9px of
+      // chrome rather than 8px. The floor every listing sits at or above is 960px.
+      const identityPx = (Number.parseFloat(tracks[identity]?.style.inlineSize ?? '0') / 100) * 960;
+
+      expect(identityPx - 9)
+        .withContext(`the identity resolves to ${String(identityPx)}px at the floor, and needs 108.41px`)
+        .toBeGreaterThanOrEqual(108.41);
 
       // The command tracks declare their own token rather than inheriting the slack.
       for (let index = 0; index < 1; index += 1) {

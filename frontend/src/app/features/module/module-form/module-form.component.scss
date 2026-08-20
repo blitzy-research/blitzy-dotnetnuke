@@ -43,14 +43,28 @@
   gap: var(--space-3);
   min-inline-size: 0;
   padding: var(--space-4);
-  border: var(--border-width) var(--border-style) var(--color-border);
+
+  // ⚠ THE COMPONENT-BOUNDARY TOKEN. These are real `fieldset` elements, so the global rule in `_forms.scss`
+  // already resolves the boundary token - this declaration overrode it and painted `#DCDCDC` at 1.3713:1
+  // against its own white fill, the same defect measured on the role form's section edge. A group edge owes
+  // 3:1 because it is the only thing stating where one group of settings ends and the next begins.
+  border: var(--border-width) var(--border-style) var(--color-border-control);
   border-radius: var(--radius-md);
   background-color: var(--color-background);
 }
 
+// EXACTLY ONE LEVEL OF NESTING, and it no longer signals depth through edge WEIGHT.
+//
+// ⚠ THE EDGE COLOUR IS DELIBERATELY NOT OVERRIDDEN HERE ANY MORE. It used to resolve `--color-border-strong`,
+// on the reasoning that a heavier edge reads as subordinate to the lighter one around it. Two things were
+// wrong with that. The weights were 1.3841:1 and 1.3713:1 against their respective fills - a difference of
+// 0.013, which is not a perceptible signal, so the depth cue was notional rather than real. And both values
+// sat below the 3:1 a group edge owes, so the "stronger" token was not strong enough to identify anything
+// either. Depth is carried by the two cues that genuinely differ and always did: the FILL changes from the
+// page background to the secondary surface, and the padding step drops. Both inherit the boundary token now,
+// so the nested group is distinguished by its fill and reaches 3.9149:1 on it.
 .module-form__group--nested {
   padding: var(--space-3);
-  border-color: var(--color-border-strong);
   background-color: var(--color-surface);
 }
 
@@ -110,9 +124,11 @@
   align-items: center;
 }
 
-// The accessible danger colour, not the raw danger token. The raw token is the measured legacy red and
-// renders below the contrast minimum for normal text; the vocabulary declares a darker companion for danger
-// TEXT precisely so a destructive label is legible.
+// The danger token, which IS the accessible value: it was darkened from the measured legacy `#FF0000` to
+// `#B00000` precisely so a destructive label is legible, and it now measures 7.3787:1 on the page fill and
+// 6.3597:1 on the surface fill. This comment previously named a separate "darker companion for danger TEXT" -
+// no such token has ever existed in this vocabulary, and the rule below has always resolved `--color-danger`;
+// the obligation was discharged by moving that token's value rather than by adding a second red.
 .module-form__action--danger {
   color: var(--color-danger);
 }

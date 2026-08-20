@@ -3148,6 +3148,44 @@ public class PortalServiceTests
         harness.InvalidatedPortalIds.Should().BeEmpty();
     }
 
+    /// <summary>
+    /// The settings route saves a tenant whose STORED designation carries no membership row, provided the
+    /// submission leaves that designation alone.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// This is the exact route the defect was reported through: PUT of the body the paired GET had just
+    /// returned. Six readable tenants on the measured installation designate an account with no matching
+    /// UserPortals row, and asking the ownership rule of a value the caller was only echoing back refused every
+    /// one of them - so no footer, keyword or page reference could be amended on any of the six. The membership
+    /// read is asserted absent rather than merely tolerant of a null answer, because a save that changes nothing
+    /// should not consult the account store at all.
+    /// </remarks>
+    [Fact]
+    public async Task UpdatePortalSettings_UnchangedAdministratorWithoutMembership_IsSaved()
+    {
+        Harness harness = Harness.Ready();
+        harness.ExistingMembership = null;
+        UpdatePortalSettingsRequest request = ValidSettingsUpdateRequest();
+        request.AdministratorId = harness.PortalRow!.AdministratorId;
+
+        Result<PortalSettingsDto?> outcome = await harness.Service.UpdatePortalSettingsAsync(
+            PortalId,
+            request,
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue(
+            "the submission echoes the stored designation, so it authors no new reference");
+        harness.UnitOfWork.Verify(u => u.SaveChangesAsync(It.IsAny<CancellationToken>()), Times.Once);
+        harness.OpenedTransactions.Should().ContainSingle().Which.Committed.Should().BeTrue();
+        harness.Users.Verify(
+            u => u.GetMembershipAsync(
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
     /// <summary>The settings route cannot be used to point a tenant's navigation at another tenant's page.</summary>
     /// <returns>A task representing the assertion.</returns>
     /// <remarks>

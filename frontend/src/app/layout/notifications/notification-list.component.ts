@@ -163,6 +163,9 @@ export class NotificationListComponent {
 
   private readonly destroyRef = inject(DestroyRef);
 
+  /** Set once the surface's own box is under observation, so the observer is attached exactly once. */
+  private extentObserved = false;
+
   /** The application's zone, used only to keep the dismissal countdown OUT of it. */
   private readonly zone = inject(NgZone);
 
@@ -170,6 +173,10 @@ export class NotificationListComponent {
     effect(() => {
       const entries = this.entries();
       const paused = this.paused();
+
+      // Attached from here rather than from the constructor because the view has to exist first; see the
+      // method for why measuring the host instead published a permanent zero.
+      this.publishMeasuredExtent();
 
       this.clearPendingDismissals();
 
@@ -199,6 +206,73 @@ export class NotificationListComponent {
     // which on a route change is a removal nobody asked for.
     this.destroyRef.onDestroy(() => {
       this.clearPendingDismissals();
+    });
+  }
+
+  /**
+   * Publishes this surface's MEASURED height, so the main region can reserve exactly the space it covers.
+   *
+   * ⚠ THE RESERVATION USED TO BE AN ESTIMATE, AND AT NARROW WIDTHS THE ESTIMATE WAS TOO SMALL. This surface
+   * is fixed-positioned in the bottom corner, so it cannot make room for itself and the main region reserves
+   * the room on its behalf - against a constant of six rem. That constant holds for a short message on a
+   * wide viewport and fails exactly where the surface is largest: at 320px its width collapses to the
+   * viewport less two gutters, a sentence that occupied one line at desktop width wraps to four or five, and
+   * a message that survives navigation then sits on top of the action row it was raised about - so the Save
+   * and Delete controls an operator had just used were the controls they could no longer see.
+   *
+   * A height cannot be estimated from the message, because it depends on the wrapped line count at the
+   * current width, on how many entries are queued and on whether the clear-everything control is showing.
+   * So it is measured. The consumer in `styles/_layout.scss` takes the greater of this value and the old
+   * constant, which keeps a floor for the frame before the first measurement and for any environment
+   * without a resize observer.
+   */
+  private publishMeasuredExtent(): void {
+    if (this.extentObserved || typeof document === 'undefined' || typeof ResizeObserver === 'undefined') {
+      return;
+    }
+
+    // ⚠ THE REGION, NOT THE HOST, AND THE DIFFERENCE IS THE WHOLE MEASUREMENT. Both are positioned `fixed`
+    // by the paired stylesheet, so the region is out of ITS HOST'S flow as well as the page's, and the
+    // host's own height is zero however many entries are queued. Measuring the host published `0px` on
+    // every frame - a reservation of nothing, which is the old estimate with extra machinery attached.
+    //
+    // ⚠ AND IT IS RESOLVED LAZILY, BECAUSE A CONSTRUCTOR RUNS BEFORE THE VIEW EXISTS. Queried from the
+    // constructor this returns null, the fallback measures the zero-height host, and the observer then
+    // watches an element whose size never changes - so it never fires and the published value stays at the
+    // one wrong reading it started with. Called from the queue effect instead, which runs once the view is
+    // there, and guarded so the observer is attached exactly once.
+    const surface: HTMLElement | null =
+      this.host.nativeElement.querySelector<HTMLElement>('.notification-list');
+
+    if (surface === null) {
+      return;
+    }
+
+    this.extentObserved = true;
+
+    const root: HTMLElement = document.documentElement;
+
+    const publish = (): void => {
+      // The rounded-up height, so a fractional measurement can never under-reserve by the fraction.
+      const extent: number = Math.ceil(surface.getBoundingClientRect().height);
+
+      root.style.setProperty('--notification-measured-block-size', `${extent}px`);
+    };
+
+    publish();
+
+    const observer = new ResizeObserver(() => {
+      publish();
+    });
+
+    observer.observe(surface);
+
+    this.destroyRef.onDestroy(() => {
+      observer.disconnect();
+
+      // Removed rather than zeroed: a stale reservation would otherwise outlive the surface that justified
+      // it, and the consumer's own fallback is the correct value once this component is gone.
+      root.style.removeProperty('--notification-measured-block-size');
     });
   }
 

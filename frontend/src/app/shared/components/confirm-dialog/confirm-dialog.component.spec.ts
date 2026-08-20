@@ -1579,8 +1579,10 @@ describe('ConfirmDialogComponent', () => {
     });
 
     it('keeps the outcome in words as well as in colour and glyph', () => {
-      // The paired stylesheet records that the danger ink measures below the contrast minimum for normal
-      // text and is implemented exactly as measured, flagged for designer review.
+      // Severity is stated in words as well as in colour and glyph, which is a requirement of its own and is
+      // independent of contrast. It was formerly the compensation for a danger ink that measured below the
+      // normal-text minimum; the ink now clears that minimum on every surface it is painted on, and the words
+      // remain because colour must never be the sole carrier of an outcome regardless.
       const fixture = createDialog({ danger: true, confirmLabel: 'Delete Portal' });
       const confirmButton = confirmButtonOf(fixture);
 
@@ -1600,19 +1602,24 @@ describe('ConfirmDialogComponent', () => {
       const danger = getComputedStyle(confirmButton).color;
       const ordinary = getComputedStyle(cancelButton).color;
 
-      // ⚠ THE LABEL AND THE BORDER READ IN ONE TOKEN, AND ONE IS ALL THE VOCABULARY HAS. A darkened sibling
-      // for danger TEXT was declared briefly and is withdrawn: the colour vocabulary is closed at the nine
-      // values the design specification enumerates, design-system compliance is the first precedence rule,
-      // and accessibility is the third and is asked for "with zero visual change" - so a new hue is
-      // precisely what may not be admitted on accessibility grounds.
-      expect(danger).withContext('#FF0000, the vocabulary\'s only danger value').toBe('rgb(255, 0, 0)');
+      // ⚠ THE LABEL AND THE BORDER READ IN ONE TOKEN, AND ONE IS ALL THE VOCABULARY HAS - still true, and it
+      // is why the remedy was to move that ONE value rather than to add a second. This note used to say a
+      // darkened sibling had been declared and withdrawn, on the grounds that the vocabulary is closed at the
+      // values the design specification enumerates and that accessibility must cost no visual change. Both
+      // premises were misapplied. Darkening the single danger token adds no red at all - it re-values the one
+      // that was already there - and #B00000 is not a new hue: it is hue 0, the same pure
+      // red as #FF0000 and as the legacy dark red #C00 at default.css L1018, so continuity is kept through hue,
+      // weight and shape, which is precisely what the design rule asks for. The failure it replaces was
+      // measured, not theoretical: 3.9985:1, 3.4463:1 and 2.6125:1 against the three surfaces this ink is
+      // painted on, all three short of the 4.5:1 normal-text minimum.
+      expect(danger).withContext('#B00000, the vocabulary\'s only danger value').toBe('rgb(176, 0, 0)');
       expect(danger)
         .withContext('and NOT #25569A, which is the hover token this rule used to name')
         .not.toBe('rgb(37, 86, 154)');
       expect(danger)
         .withContext('so the two buttons cannot be mistaken for one another')
         .not.toBe(ordinary);
-      expect(getComputedStyle(confirmButton).borderTopColor).toBe('rgb(255, 0, 0)');
+      expect(getComputedStyle(confirmButton).borderTopColor).toBe('rgb(176, 0, 0)');
     });
 
     it('coerces the bare attribute form to destructive', () => {
@@ -2399,6 +2406,101 @@ describe('ConfirmDialogComponent', () => {
     function anchorOffset(): number {
       return resolvedLength('var(--space-8)');
     }
+
+    /**
+     * ⚠ QA-26 — EVERY CONFIRMATION IS THE SAME WIDTH, WHATEVER ITS SENTENCE SAYS. With a cap alone and no
+     * width, a `<dialog>` is sized by its content, so the seventeen confirmations in this application were
+     * seventeen widths: the frame visibly resized between one destructive prompt and the next, and the same
+     * question asked about a long record name and a short one did not look like the same question. Asserted
+     * against a short message AND a long one, because a single-message assertion cannot tell a settled
+     * width from a coincidence.
+     */
+    it('takes one settled measure rather than the width of its own sentence', () => {
+      const shortDialog = createDialog({ message: 'Delete?' });
+      const shortWidth: number = dialogOf(shortDialog).getBoundingClientRect().width;
+
+      const longDialog = createDialog({
+        message:
+          'Delete the portal named Contoso Corporate Intranet, together with every page, module '
+          + 'instance, security role and user account that belongs to it? This cannot be undone.',
+      });
+      const longWidth: number = dialogOf(longDialog).getBoundingClientRect().width;
+
+      expect(shortWidth).withContext('a real frame, not a collapsed one').toBeGreaterThan(0);
+      expect(longWidth)
+        .withContext('the sentence does not set the measure')
+        .toBeCloseTo(shortWidth, 0);
+      expect(shortWidth)
+        .withContext('and the measure is the declared one')
+        .toBeCloseTo(resolvedLength('var(--dialog-inline-size)'), 0);
+    });
+
+    /**
+     * ⚠ THE CAP STILL APPLIES OVER THE TOP, which is what keeps the narrow-viewport behaviour exactly as
+     * it was. A settled width that could not yield would push the frame off a 320px screen.
+     */
+    it('still yields to the viewport cap, so a narrow screen is unaffected', () => {
+      const fixture = createDialog();
+      const resolved: CSSStyleDeclaration = getComputedStyle(dialogOf(fixture));
+
+      expect(resolved.inlineSize).withContext('a width is declared at all').not.toBe('auto');
+
+      // ⚠ COMPARED IN RESOLVED PIXELS, NOT AGAINST THE AUTHORED TEXT. `max-inline-size` computes a
+      // viewport-relative token to a length, so comparing it with the custom property's own value — which
+      // comes back as authored, `90vw` — compares a number with an expression and fails against correct
+      // code. The browser is asked to resolve the expression instead.
+      expect(Number.parseFloat(resolved.maxInlineSize))
+        .withContext('and the cap is still the viewport-relative token, unchanged')
+        .toBeCloseTo(resolvedLength('var(--dialog-max-inline-size)'), 0);
+    });
+
+    /**
+     * ⚠ QA-26 — THE SCRIM IS THE APPLICATION'S, NOT THE USER AGENT'S. `::backdrop` is unstyled by
+     * default, so the one surface in the product that dims everything behind it was the only surface taking
+     * its colour from outside the token vocabulary. Read from the stylesheet rather than computed, because
+     * `getComputedStyle` cannot address a pseudo-element that belongs to the top layer.
+     */
+    it('paints its own scrim from the token vocabulary', () => {
+      // ⚠ A DIALOG IS MOUNTED FIRST, AND WITHOUT IT THIS SEARCHES AN EMPTY SET. A component's stylesheet
+      // is attached to the document when that component first renders and is removed again when the
+      // testing module is reset, so a specification that only reads the sheets finds nothing at all.
+      createDialog();
+
+      let declaration: string | null = null;
+
+      // Both lists are searched: constructed stylesheets adopted by the document are NOT members of
+      // `document.styleSheets`, and which of the two a component's styles land in is the framework's choice
+      // rather than this component's.
+      const sheets: CSSStyleSheet[] = [
+        ...Array.from(document.styleSheets),
+        ...Array.from(document.adoptedStyleSheets),
+      ];
+
+      for (const sheet of sheets) {
+        let rules: CSSRule[] = [];
+
+        try {
+          rules = Array.from(sheet.cssRules);
+        } catch {
+          continue;
+        }
+
+        for (const rule of rules) {
+          if (rule instanceof CSSStyleRule && rule.selectorText.includes('::backdrop')) {
+            const value = rule.style.getPropertyValue('background-color');
+
+            if (value !== '') {
+              declaration = value;
+            }
+          }
+        }
+      }
+
+      expect(declaration).withContext('a backdrop rule exists at all').not.toBeNull();
+      expect(declaration ?? '')
+        .withContext('expressed in the vocabulary rather than as a literal colour')
+        .toContain('--dialog-backdrop-color');
+    });
 
     it('anchors near the top of the viewport instead of over the middle of the screen', () => {
       const fixture = createDialog();

@@ -1962,7 +1962,7 @@ describe('FormFieldComponent', () => {
       ]);
     });
 
-    it('reads help then error, in the order they are seen', () => {
+    it('reads the error BEFORE the help, in the order they are seen', () => {
       const fixture = createHost();
 
       fixture.componentInstance.help = HELP_TEXT;
@@ -1974,10 +1974,39 @@ describe('FormFieldComponent', () => {
       const root = hostRootOf(fixture);
       const control = queryOrFail<HTMLInputElement>(root, 'input[type="text"]');
 
+      // ⚠ THIS ASSERTION WAS THE OTHER WAY ROUND, AND IT ENCODED A DEFECT — QA-21 / QA-24. It required the
+      // help sentence to be announced before the reason the value had just been refused, and the rendered
+      // order agreed with it: measured on the portal settings screen, opening Help pushed the validation
+      // message to 151.5px below the bottom edge of the box it described, because the panel was inserted
+      // between them. Both orders were corrected together, and this states the one that must hold.
       expect(referencesOf(control, 'aria-describedby')).toEqual([
-        helpRegionOf(root).id,
         errorRegionOf(root).id,
+        helpRegionOf(root).id,
       ]);
+    });
+
+    it('renders the error above the help, so the two orders agree', () => {
+      const fixture = createHost();
+
+      fixture.componentInstance.help = HELP_TEXT;
+      fixture.componentInstance.error = ERROR_WITHOUT_LEADING_BREAK;
+      fixture.detectChanges();
+      toggleOf(hostRootOf(fixture)).click();
+      fixture.detectChanges();
+
+      const root = hostRootOf(fixture);
+      const children = Array.from(
+        queryOrFail<HTMLElement>(root, '.form-field').children,
+      ) as readonly Element[];
+      const errorIndex = children.indexOf(errorRegionOf(root));
+      const helpIndex = children.indexOf(helpRegionOf(root));
+
+      // Asserted on POSITION rather than on geometry: the two are siblings in one flow, so document order
+      // is what decides which of them a reader meets first, and it is what a headless run can state
+      // without depending on a layout engine's line boxes.
+      expect(errorIndex).withContext('the error is a direct child of the field').toBeGreaterThan(-1);
+      expect(helpIndex).withContext('the help is a direct child of the field').toBeGreaterThan(-1);
+      expect(errorIndex).toBeLessThan(helpIndex);
     });
 
     it('describes every control of a composite field, not just the first', () => {
@@ -2363,7 +2392,7 @@ describe('FormFieldComponent choice arrangement', () => {
     // #CCCCCC, the STRONG border token. The ordinary token was measured to be too close: this panel is filled
     // with the secondary surface and so is the role form's Advanced section, so inside that section the panel
     // was drawn on a fill identical to its own and read as barely raised.
-    expect(computed.borderTopColor).toBe('rgb(204, 204, 204)');
+    expect(computed.borderTopColor).toBe('rgb(118, 118, 118)');
 
     // And provably not inherited from the text colour, which is what it used to be.
     expect(computed.borderTopColor).not.toBe(computed.color);
@@ -2388,6 +2417,60 @@ describe('FormFieldComponent choice arrangement', () => {
       expect(region.getBoundingClientRect().left).toBeCloseTo(captionLeft, 0);
       expect(region.getBoundingClientRect().width).toBeGreaterThan(100);
     }
+  });
+
+  // ⚠ QA-24 — OPENING THE EXPLANATION MOVED THE THING IT EXPLAINED. A grid item's automatic minimum size is
+  // its own min-content contribution, and a SPANNING item distributes that contribution across the tracks it
+  // spans — so the help panel, whose sentence is far longer than any switch caption, inflated this
+  // arrangement's content-sized caption track. Measured on the membership screen: opening the help of
+  // `Suppress Pager?` widened track 1 from 115.16px to 176.953px and jogged the checkbox and its own Help
+  // button 61.79px to the RIGHT, so the control moved out from under the pointer that had just asked about
+  // it. Geometric findings get geometric cases: a rule that names the right selector and resolves to the
+  // wrong box is exactly the failure that was shipped.
+  it('does not move the box sideways when its explanation opens', () => {
+    const before = parts().box.getBoundingClientRect();
+
+    fixture.componentInstance.help =
+      'Check to hide the pager if only one page of records is available for this listing.';
+    fixture.detectChanges();
+
+    queryOrFail<HTMLButtonElement>(
+      fixture.nativeElement as HTMLElement,
+      '.form-field__help-toggle',
+    ).click();
+    fixture.detectChanges();
+
+    const panel = queryOrFail<HTMLElement>(
+      fixture.nativeElement as HTMLElement,
+      '.form-field__help',
+    );
+
+    expect(panel.textContent ?? '')
+      .withContext('the premise: the explanation is on screen')
+      .toContain('Check to hide the pager');
+
+    const after = parts().box.getBoundingClientRect();
+
+    expect(after.left).withContext('the box has not moved').toBeCloseTo(before.left, 1);
+    expect(getComputedStyle(panel).minInlineSize)
+      .withContext('the panel contributes no minimum to the tracks it spans')
+      .toBe('0px');
+  });
+
+  it('does not move the box sideways when a failure is reported either', () => {
+    const before = parts().box.getBoundingClientRect();
+
+    fixture.componentInstance.error =
+      'This setting is required, and the value you entered could not be read as one.';
+    fixture.detectChanges();
+
+    const errors = queryOrFail<HTMLElement>(
+      fixture.nativeElement as HTMLElement,
+      '.form-field__errors',
+    );
+
+    expect(getComputedStyle(errors).minInlineSize).toBe('0px');
+    expect(parts().box.getBoundingClientRect().left).toBeCloseTo(before.left, 1);
   });
 });
 
@@ -2434,6 +2517,7 @@ describe('FormFieldComponent caption row', () => {
   // shortfall in the label column is absorbed by the caption's own text rather than by moving anything onto a
   // line of its own. The affordance's placement beside its control is pinned by 'keeps the box beside its
   // caption when the screen does not override the label track' and by the help-panel cases below.
+
 });
 
 /**
@@ -2754,7 +2838,7 @@ describe('FormFieldComponent — the typing bound', () => {
       .toContain(String(region?.id));
   });
 
-  it('keeps the bound on the control alongside the help and the error, bound first', () => {
+  it('keeps the bound on the control alongside the help and the error, the failure first', () => {
     // Order is asserted because it is the order the three are SPOKEN in. The bound comes first: it is the
     // one that has to be heard before typing rather than after being refused.
     const fixture = renderProjected(50);
@@ -2774,7 +2858,11 @@ describe('FormFieldComponent — the typing bound', () => {
 
     // ⚠ The error reference is the CONTAINER, `<base>-error`, not the individual message element
     // `<base>-error-0`: a field can carry several messages and a description points at all of them.
-    expect(references).toEqual([`${base}-limit`, `${base}-help`, `${base}-error`]);
+    // ⚠ AND THE REASON LEADS — QA-21 / QA-24. The order used to be bound, help, error, so a reader
+    // arriving at a refused control heard the typing bound and the whole help sentence before hearing why
+    // the value had been rejected. The bound keeps its place ahead of the help, for the reason its own
+    // note gives; what changed is that the failure now precedes both.
+    expect(references).toEqual([`${base}-error`, `${base}-limit`, `${base}-help`]);
     expect(host.querySelector('.form-field__limit')?.id).toBe(`${base}-limit`);
     expect(host.querySelector('.form-field__help')?.id).toBe(`${base}-help`);
   });

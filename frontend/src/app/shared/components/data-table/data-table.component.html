@@ -37,7 +37,25 @@
   [attr.tabindex]="isHorizontallyScrollable() ? 0 : null"
   [attr.role]="isHorizontallyScrollable() ? 'region' : null"
   [attr.aria-labelledby]="isHorizontallyScrollable() ? captionId : null"
+  [attr.data-identity-pinned]="identityPinned() ? 'true' : null"
 >
+  <!--
+    THE PAINTED OVERFLOW CUE, AND IT IS THE HALF OF THIS REGION'S SELF-DESCRIPTION THAT WAS MISSING.
+    The attributes above already tell assistive technology there is a scrollable region and give a keyboard
+    user a stop to reach it. A SIGHTED reader was told nothing: measured on all six listings at 320px and
+    375px, no painted text inside any table container mentioned scrolling and no scrollbar was rendered, so a
+    968px table inside a 271px scrollport simply looked like a grid that ended at the container's edge.
+
+    It states the COUNT of columns still to come rather than "scroll for more", because the count is the part
+    a reader cannot infer from a clipped edge. Rendered only while something is actually hidden, and hidden
+    from assistive technology because the region already announces itself by name and role - a second
+    announcement of the same fact is noise, not redundancy.
+  -->
+  @if (hiddenColumnCount() > 0) {
+    <p class="data-table__overflow-cue" aria-hidden="true">
+      {{ overflowCueText() }}
+    </p>
+  }
   <!--
     THE SINGLE ANNOUNCING REGION ON A LISTING, and it now carries the ORDER as well as the count - see
     `resultSummary` for why the order is folded in here rather than announced from a region of its own.
@@ -80,7 +98,12 @@
     </button>
   }
 
-  <table class="data-table" [attr.aria-rowcount]="ariaRowCount()" [attr.aria-busy]="ariaBusy()">
+  <table
+    class="data-table"
+    [attr.aria-rowcount]="ariaRowCount()"
+    [attr.aria-busy]="ariaBusy()"
+    [style.min-inline-size]="tableMinInlineSize()"
+  >
     <caption class="data-table__caption" data-visually-hidden [id]="captionId">
       <ng-content select="[dataTableCaption]">Data table</ng-content>
     </caption>
@@ -111,6 +134,7 @@
             class="data-table__header"
             [attr.data-align]="cell.align"
             [attr.data-atomic]="cell.atomic ? 'true' : null"
+            [attr.data-row-identity]="cell.rowHeader ? 'true' : null"
             [attr.aria-sort]="cell.ariaSort"
           >
             @if (cell.sortable) {

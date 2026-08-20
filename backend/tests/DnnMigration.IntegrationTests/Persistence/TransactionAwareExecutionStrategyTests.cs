@@ -1,3 +1,4 @@
+using System.Reflection;
 using DnnMigration.Domain.Abstractions.Repositories;
 using DnnMigration.Infrastructure.Persistence;
 using FluentAssertions;
@@ -211,6 +212,80 @@ public sealed class TransactionAwareExecutionStrategyTests
             context.ExplicitTransactionOpen = false;
 
             strategy.RetriesOnFailure.Should().BeTrue("and clearing it restores retrying immediately");
+        }
+        finally
+        {
+            context.ExplicitTransactionOpen = false;
+        }
+    }
+
+    /// <summary>
+    /// The RETRY LOOP is suspended inside a unit-of-work transaction as well, not only the first-execution
+    /// check.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THIS IS THE ASSERTION WHOSE ABSENCE LET A REAL DEFECT SHIP, and every test above it passed while
+    /// that defect was live. The two members are read by different parts of the base class:
+    /// <c>RetriesOnFailure</c> is consulted once, to decide whether to REFUSE an operation that already holds
+    /// a user transaction, while <c>ShouldRetryOn</c> is what the loop asks after each failure. Overriding
+    /// only the first therefore bought the unit of work the right to hold its own transaction WITHOUT buying
+    /// it protection from being retried inside one.
+    /// </para>
+    /// <para>
+    /// What that cost: the engine aborted one participant of a write race, the loop treated the abort as
+    /// transient and re-ran the flush, and the flush opened by issuing a savepoint against a transaction the
+    /// engine had already discarded - error 628, which is not transient, describes nothing the caller did,
+    /// and reached the caller as a 500.
+    /// </para>
+    /// <para>
+    /// Reached by reflection because the member is protected, which is the framework's shape rather than a
+    /// choice made here. The alternative - provoking a real deadlock and observing the answer - is what
+    /// <c>SimultaneousWriteRaceTests</c> does through the API; this asserts the mechanism directly so that a
+    /// regression is named at its cause rather than diagnosed from a status code.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void ShouldRetryOn_FollowsTheAnnouncementOnTheContext()
+    {
+        using IServiceScope scope = _fixture.Services.CreateScope();
+        DnnDbContext context = scope.ServiceProvider.GetRequiredService<DnnDbContext>();
+
+        IExecutionStrategy strategy = context.Database.CreateExecutionStrategy();
+
+        MethodInfo shouldRetryOn = strategy.GetType()
+            .GetMethod("ShouldRetryOn", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException(
+                "The execution strategy no longer declares ShouldRetryOn, so the retry loop is driven by "
+                + "something this test does not describe.");
+
+        // A timeout is the provider's canonical transient fault, so the base classification answers true for
+        // it. Any exception the base class retries would serve; this one makes the contrast unambiguous.
+        var transient = new TimeoutException("Provoked, to be classified rather than thrown.");
+
+        try
+        {
+            context.ExplicitTransactionOpen = false;
+
+            shouldRetryOn.Invoke(strategy, [transient]).Should().Be(
+                true,
+                "outside a unit-of-work transaction the provider's own transient classification must be "
+                + "left exactly as it ships, or the resilience this strategy exists to keep is lost");
+
+            context.ExplicitTransactionOpen = true;
+
+            shouldRetryOn.Invoke(strategy, [transient]).Should().Be(
+                false,
+                "inside a unit-of-work transaction the same fault must NOT be retried: the transaction the "
+                + "retry would run in may already have been discarded by the engine, and re-running the "
+                + "flush against it fails with a savepoint error that reaches the caller as a server fault");
+
+            context.ExplicitTransactionOpen = false;
+
+            shouldRetryOn.Invoke(strategy, [transient]).Should().Be(
+                true,
+                "and the suspension lifts with the announcement, so a scope does not cost the rest of the "
+                + "request its resilience");
         }
         finally
         {

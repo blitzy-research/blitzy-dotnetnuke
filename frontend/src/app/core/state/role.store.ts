@@ -676,14 +676,44 @@ export class RoleStore implements OnDestroy {
    * `Website/admin/Security/Roles.ascx.vb:L79-L85`, which is two guards, not one: - `:L79-L81` hides both
    * the edit-group and the delete control whenever the narrowing is negative, because neither
    * pseudo-intent is a group you can act on.
+   *
+   * ⚠ THE SECOND GUARD IS ANSWERED FROM THE SERVER'S COUNT, NEVER FROM THE LOADED PAGE. This read used
+   * to be `this._roles().items.length === 0`, and that is a different question wearing the same clothes:
+   * `_roles` is ONE PAGE of the listing, narrowed by whatever the operator has typed into the filter.
+   * Filtering a populated group down to a term that matches nothing emptied the page, so the group looked
+   * empty, so this returned true, so the screen offered the deletion - and the server, which counts the
+   * group's roles rather than the ones on screen, refused it with `role_group.in_use`. The affordance
+   * promised something the rule forbade, and it survived a refresh because the filter did.
+   *
+   * `classifiedRoleCount` is the same quantity the server's removal guard tests, taken from the same
+   * predicate, and no filter and no page boundary can influence it.
+   *
+   * Absent evidence FAILS CLOSED. `selectedRoleGroup` is `null` while a read is in flight and after another
+   * administrator has removed the group, and in neither case can this promise that a deletion would
+   * succeed. Withholding the command then costs a refresh; offering it costs a confirmed destructive action
+   * that fails.
    */
   readonly canDeleteSelectedGroup = computed<boolean>(() => {
-    if (this.selectedRoleGroupId() === null) {
+    const chosen = this.selectedRoleGroup();
+
+    if (chosen === null) {
       return false;
     }
 
-    return this._roles().items.length === 0;
+    return chosen.classifiedRoleCount === 0;
   });
+
+  /**
+   * How many roles the group the narrowing names classifies, or `null` when no group is resolved.
+   *
+   * Exposed so a screen can state the REMEDY rather than only the rule: "still classifies 3 roles" tells an
+   * operator how much work stands between them and the deletion, where "cannot be deleted" tells them only
+   * that they have been refused. Tenant-wide, not page-scoped, for the reason recorded on
+   * {@link canDeleteSelectedGroup}.
+   */
+  readonly selectedRoleGroupRoleCount = computed<number | null>(
+    () => this.selectedRoleGroup()?.classifiedRoleCount ?? null,
+  );
 
   /** How the selected role's billing terms bound the membership, or `null` if no role is selected. */
   readonly selectedRoleBillingTerms = computed<BillingTermsBound | null>(() => {

@@ -369,6 +369,13 @@ interface DataTableHeaderCell<TRow> {
    * label cannot be the thing that widens the track the value was sized for.
    */
   readonly atomic: boolean;
+
+  /**
+   * Resolved {@link DataTableColumnCommon.rowHeader}. A HEADING carries it as well as the body cells so that
+   * the pinned identity column pins as one piece: a sticky body cell under a static heading leaves the
+   * heading sliding out from above its own values.
+   */
+  readonly rowHeader: boolean;
 }
 
 /**
@@ -448,6 +455,41 @@ export interface DataTableColumnWidth {
 const OVERFLOW_TOLERANCE_PX = 1;
 
 /**
+ * The tolerance for comparing a measured TEXT width against the box that has to hold it.
+ *
+ * ⚠ IT IS DELIBERATELY MUCH SMALLER THAN THE TOLERANCE ABOVE, AND REUSING THAT ONE HID A REAL DEFECT. A whole
+ * pixel is the right slack for a scroll measurement, where both operands are integers and a rounding artefact
+ * is worth a pixel. It is far too coarse for a text comparison, where both operands are fractional: the `Auto`
+ * heading overflowed its box by 0.559px, painted `A…` on screen, and a one-pixel tolerance discarded it.
+ *
+ * A tenth of a pixel is safe in the other direction as well, because the two measurements agree closely: the
+ * canvas figure and the browser's own layout matched to within 0.02px on every heading measured, and the
+ * tightest FITTING heading measured had 0.001px to spare on the correct side.
+ */
+const TEXT_OVERFLOW_TOLERANCE_PX = 0.1;
+
+/** The attribute that marks a run of text as present for assistive technology and painted nowhere. */
+const VISUALLY_HIDDEN_ATTRIBUTE = 'data-visually-hidden';
+
+/**
+ * The class a command column's heading label carries.
+ *
+ * A command column needs an accessible name without a painted heading, so its label is clipped to a single
+ * pixel ON PURPOSE. That is not truncation, and treating it as such would put a tooltip on every icon column in
+ * the application.
+ */
+const HIDDEN_LABEL_CLASS = 'data-table__label--hidden';
+
+/** The token {@link OVERFLOW_CUE_PLURAL} substitutes the hidden-column count into. */
+const OVERFLOW_CUE_COUNT_TOKEN = '{count}';
+
+/** The painted overflow cue when exactly one column is hidden. */
+const OVERFLOW_CUE_SINGULAR = 'Scroll sideways for 1 more column.';
+
+/** The painted overflow cue when more than one column is hidden, or none has been counted yet. */
+const OVERFLOW_CUE_PLURAL = `Scroll sideways for ${OVERFLOW_CUE_COUNT_TOKEN} more columns.`;
+
+/**
  * How many focusable controls the body must hold before a skip affordance is offered.
  *
  * ⚠ A THRESHOLD RATHER THAN ALWAYS, BECAUSE THE AFFORDANCE COSTS A STOP OF ITS OWN. Below this the run being
@@ -459,8 +501,13 @@ const OVERFLOW_TOLERANCE_PX = 1;
  */
 const ROW_SKIP_THRESHOLD = 6;
 
-/** The controls a projected cell may put in the tab order, for counting what a skip would pass over. */
-const FOCUSABLE_IN_BODY = 'a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])';
+/**
+ * The controls a projected cell may put in the tab order.
+ *
+ * Two callers, for two different questions: counting what a row-command skip would pass over, and asking
+ * whether a cut heading already holds a stop of its own before one is added to the cell around it.
+ */
+const FOCUSABLE_SELECTOR = 'a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])';
 
 /** The wording of the affordance that passes over a run of row commands. */
 const ROW_SKIP_LABEL = 'Skip past the record commands';
@@ -607,6 +654,13 @@ export class DataTableComponent<TRow extends object> implements OnInit, OnChange
    */
   private readonly visibleInlineSizeSignal = signal<number | null>(null);
 
+  /**
+   * How many heading cells are wholly or partly outside the scrollport, measured in the same pass that
+   * decides whether the region clips at all. A count rather than a boolean because the cue reports the size
+   * of what is missing, which is the part a reader cannot infer from the clipped edge.
+   */
+  private readonly hiddenColumnCountSignal = signal(0);
+
   /** Whether the container is a scrollable region right now, for the template's conditional attributes. */
   protected readonly isHorizontallyScrollable = this.horizontallyScrollableSignal.asReadonly();
 
@@ -628,6 +682,9 @@ export class DataTableComponent<TRow extends object> implements OnInit, OnChange
   private readonly selectedRowSignal = signal<TRow | null>(null);
 
   private readonly rowsSelectableSignal = signal(false);
+
+
+  private readonly minInlineSizeSignal = signal<string | null>(null);
 
   /**
    * Sets the columns to render, in order. Public because the strict input-access check rejects a
@@ -891,6 +948,36 @@ export class DataTableComponent<TRow extends object> implements OnInit, OnChange
     return this.totalCountSignal();
   }
 
+  /**
+   * An override for the width below which this grid scrolls sideways instead of narrowing further, as a CSS
+   * length. Null — the default — leaves every grid on the shared `--table-min-inline-size` floor, so this
+   * input changes nothing for a listing that does not set it.
+   *
+   * ⚠ WHY A GRID NEEDS TO BE ABLE TO SAY THIS, AND THE MEASUREMENT THAT FORCED IT. The shared floor is
+   * 60rem, and it is right for the grids it was solved against — nine to thirteen columns, where anything
+   * narrower crushes some track below its own content. It is badly wrong for a SMALL grid. The portal alias
+   * listing has TWO columns whose content needs 207px between them, and the floor made its table 960px wide:
+   * at a 320 viewport that put the host name — the only data the screen carries — 214px beyond the right
+   * edge of a 271px scrollport, so the visible table was three command buttons and nothing else. A reader had
+   * to discover a scroll region to see any data at all.
+   *
+   * ⚠ IT IS A FLOOR AND NOT A WIDTH. The table still fills its container whenever the container is wider,
+   * so nothing about the wide rendering changes; this only stops a small grid being inflated past what its
+   * own columns need.
+   *
+   * @param value A CSS length for this grid's floor, or null to use the shared token.
+   */
+  @Input()
+  public set minInlineSize(value: string | null | undefined) {
+    const usable = typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+
+    this.minInlineSizeSignal.set(usable);
+  }
+
+  public get minInlineSize(): string | null {
+    return this.minInlineSizeSignal();
+  }
+
   @Output() public readonly sortChange = new EventEmitter<DataTableSortChange>();
 
   /** Emits the row that was activated. */
@@ -904,6 +991,9 @@ export class DataTableComponent<TRow extends object> implements OnInit, OnChange
 
   /** Whether rows carry the selection affordance, for the template's row attributes. */
   protected readonly rowsSelectable = this.rowsSelectableSignal.asReadonly();
+
+  /** This grid's own scroll floor, or null to defer to the shared token. */
+  protected readonly tableMinInlineSize = this.minInlineSizeSignal.asReadonly();
 
   /** Whether there is nothing to show and nothing on the way. */
   /**
@@ -941,9 +1031,20 @@ export class DataTableComponent<TRow extends object> implements OnInit, OnChange
     // facts in a single announcement.
     const total: number | null = this.resolvedTotalCount();
 
+    // ⚠ THE ANNOUNCED SENTENCE STATES THE RANGE, NOT JUST A QUANTITY, AND THAT IS THE CORRECTION. It
+    // used to read "Showing 3 of 13 records." on the second page of a thirteen-record set - literally true
+    // and materially misleading, because the only OTHER report of position is the pager, whose range and
+    // "2 / 2" readout are deliberately visible-but-not-announced so that one action produces one
+    // announcement. A screen-reader user therefore heard a sentence describing a page without being told it
+    // was a page, and "3 of 13" is indistinguishable from a filter that had narrowed the set to three.
+    //
+    // `rowOffset` is the dataset position of the first rendered row and is already supplied by every
+    // listing that pages, for `aria-rowindex`; reusing it costs no new input and makes this sentence agree
+    // with the pager the sighted operator is reading.
+    const offset: number = this.rowOffsetSignal();
     const records: string =
       total !== null && total > count
-        ? `Showing ${count} of ${total} records.`
+        ? `Showing records ${offset + 1} to ${offset + count} of ${total}.`
         : count === 1
           ? '1 record.'
           : `${count} records.`;
@@ -1094,6 +1195,12 @@ export class DataTableComponent<TRow extends object> implements OnInit, OnChange
   /** Guards against queueing more than one measurement per frame. */
   private windowUpdateQueued = false;
 
+  /** Whether a truncation re-measure is already queued for the next frame. @see scheduleTruncationUpdate */
+  private truncationUpdateQueued = false;
+
+  /** The reused canvas context text measurement runs through. @see measureText */
+  private textMeasurement: CanvasRenderingContext2D | null = null;
+
   /** The row count above which only the rows near the viewport are rendered. */
   @Input()
   public set virtualizeThreshold(value: number | null | undefined) {
@@ -1167,7 +1274,39 @@ export class DataTableComponent<TRow extends object> implements OnInit, OnChange
       this.windowUpdateQueued = false;
       this.measureHorizontalOverflow();
       this.measureRowSkip();
+      this.measureTruncatedCells();
       this.updateWindow();
+    });
+  }
+
+  /**
+   * Re-measures truncation alone, on the next frame.
+   *
+   * ⚠ IT EXISTS BECAUSE THE RESIZE OBSERVER COULD NOT SAFELY CALL {@link scheduleWindowUpdate}, AND CALLING
+   * NOTHING WAS A REAL DEFECT. The observer watches the container and the table precisely because the
+   * things that change their width - a column set arriving, a sort indicator appearing, the sidebar
+   * collapsing, a column's declared weight changing - do not move the window, so the window listeners never
+   * fire. Measured before this method existed: forcing a heading to clip WITHOUT resizing the window left it
+   * unmarked, and firing a window resize immediately marked it correctly. Truncation marks were therefore
+   * stale or absent after every non-window width change, while the overflow measurement beside them stayed
+   * correct - which is exactly why the omission was easy to miss.
+   *
+   * ⚠ AND IT IS DELIBERATELY NOT `scheduleWindowUpdate`. That method also runs the row-window measurement,
+   * which changes how many rows are rendered, which changes the table's height, which re-notifies this very
+   * observer - a feedback loop. Truncation marking writes only `data-truncated`, `title` and `tabindex`, none
+   * of which affects layout (the reveal applies on focus only), so it cannot re-trigger the observer and is
+   * safe to run from it.
+   */
+  private scheduleTruncationUpdate(): void {
+    if (this.truncationUpdateQueued || typeof window === 'undefined') {
+      return;
+    }
+
+    this.truncationUpdateQueued = true;
+
+    window.requestAnimationFrame(() => {
+      this.truncationUpdateQueued = false;
+      this.measureTruncatedCells();
     });
   }
 
@@ -1208,6 +1347,336 @@ export class DataTableComponent<TRow extends object> implements OnInit, OnChange
     this.visibleInlineSizeSignal.set(
       container.clientWidth - (Number.isFinite(inlinePadding) ? inlinePadding : 0),
     );
+
+    // ⚠ COUNTED FROM THE RENDERED HEADING CELLS, NOT FROM THE DECLARED TRACK WIDTHS. A declared width may be
+    // a percentage, `min-content` or absent, so only the browser knows what any of them resolved to — and on
+    // the portal-alias grid the two declarations resolved to 480px each, which no reading of the source
+    // predicts. A heading is counted as hidden when ANY part of it lies past the scrollport's trailing edge,
+    // because a half-visible column is not a column a reader can use.
+    const scrollportEnd = container.getBoundingClientRect().right;
+    const headings = container.querySelectorAll('thead th');
+
+    let hiddenColumns = 0;
+
+    for (const heading of Array.from(headings)) {
+      if (heading.getBoundingClientRect().right > scrollportEnd + OVERFLOW_TOLERANCE_PX) {
+        hiddenColumns += 1;
+      }
+    }
+
+    this.hiddenColumnCountSignal.set(hiddenColumns);
+  }
+
+  /**
+   * Marks the atomic body cells whose value is actually being cut off, so each one gains a recovery
+   * affordance and no other cell pays for it.
+   *
+   * ⚠ THE MEASURED DEFECT THIS CLOSES, AND IT WAS A LOSS TO SIGHTED READERS ONLY. An atomic column keeps its
+   * value on one line and ellipsises what does not fit, which is right for a figure or a date — a date broken
+   * across lines reads as a different, plausible date. But the ellipsis was the END of the story: measured at
+   * 1440 on the account listing, twelve cells were cut, and **none of the twelve carried a `title`, a
+   * `tabindex`, an `aria-label`, or the full text anywhere else on its row.** A hundred-character sign-in name
+   * rendered eleven characters; a fifty-character role name rendered about thirteen. The complete value was in
+   * the accessibility tree the whole time, so a screen-reader user could read what a sighted user could not.
+   *
+   * ⚠ WHY THIS IS MEASURED RATHER THAN APPLIED TO EVERY ATOMIC CELL. The affordance includes a focus stop, and
+   * an unconditional one would have put six extra stops on every row of the account listing — sixty on a
+   * ten-row page — most of them on cells showing their value in full. Marking only the cells that are actually
+   * cut keeps the tab order proportional to the information actually missing.
+   *
+   * ⚠ ITS ONE KNOWN BLIND SPOT, STATED BECAUSE IT IS A REAL ONE. `scrollWidth` and `clientWidth` are integers
+   * and this test carries the same one-pixel tolerance as the region measurement above, so an overflow of a
+   * pixel or less does not register: `setup_member` measures 100.1px of text in a 100px content box, paints a
+   * visible ellipsis, and reports the two widths as equal. That tolerance is deliberate — it keeps a rounding
+   * artefact from putting a focus stop on a cell showing its value in full — and it is affordable because a
+   * cell overflowing by a pixel loses at most its last character. The remedy for THAT is the column width
+   * rather than an affordance, which is why the widths of the columns where it was observed were corrected as
+   * well; every overflow large enough to cost a reader a word is far above this threshold (the shortest one
+   * measured was 15px).
+   */
+  private measureTruncatedCells(): void {
+    const body = this.host.nativeElement.querySelector('tbody.data-table__body');
+
+    if (body === null) {
+      return;
+    }
+
+    // ⚠ HEADINGS FIRST, AND LEAVING THEM OUT WAS THE OTHER HALF OF THE SAME DEFECT. A heading clips on exactly
+    // the same terms as its cells, and measured on the account listing the `Telephone` heading painted
+    // `Teleph…` in a 77.86px track that its text needed 81.91px of — so the column's own identity was the
+    // truncated thing, which is worse than a truncated value. A heading gets the tooltip but NOT a focus stop:
+    // a sortable heading already holds a focusable button whose accessible name carries the full column name,
+    // and adding a stop on the cell around it would put two stops on one heading.
+    //
+    // ⚠ EVERY HEADING IS EXAMINED, NOT ONLY AN ATOMIC COLUMN'S. That restriction was wrong and measurement
+    // proved it: the `Public` and `Auto` headings belong to columns that are NOT atomic, and at 320 they
+    // painted `Pu…` and `A…` — four of six characters and three of four gone — because a single word that does
+    // not fit is ellipsised whether or not the column asked for atomic treatment. Whether a label is cut is a
+    // harder question than it looks, and {@link isHeadingTruncated} carries the two measurements that settled
+    // it.
+    for (const heading of Array.from(
+      this.host.nativeElement.querySelectorAll<HTMLElement>('thead th'),
+    )) {
+      if (this.isHeadingTruncated(heading)) {
+        heading.setAttribute('data-truncated', 'true');
+
+        // The VISIBLE text, not `textContent`: see {@link visibleText}. A heading that carries hidden companion
+        // wording would otherwise offer a tooltip containing text the reader cannot see on screen.
+        heading.setAttribute('title', this.visibleText(heading));
+
+        // ⚠ A CUT HEADING NEEDS A KEYBOARD ROUTE TO ITS OWN FULL TEXT, AND THE TOOLTIP ALONE IS NOT ONE.
+        // `title` is a pointer affordance: a sighted keyboard user cannot hover, so before this branch the
+        // in-place reveal was reachable on a cut VALUE and unreachable on a cut COLUMN NAME - measured on the
+        // profile-property listing, where the `Validation Expression` heading painted an ellipsis while
+        // sitting in neither the focusable set nor holding a focusable descendant.
+        //
+        // The stop is still CONDITIONAL, because the original reason for withholding it was sound: a sortable
+        // heading already holds a focusable button, and a stop on the cell around it would put two stops on
+        // one heading. So the cell takes a stop only when nothing inside it can take one, and the stylesheet
+        // reveals on `:focus-within` as well as `:focus-visible` so that focusing a sort button reveals the
+        // heading it belongs to. Every cut heading is reachable exactly once, either way.
+        if (heading.querySelector(FOCUSABLE_SELECTOR) === null) {
+          heading.setAttribute('tabindex', '0');
+        } else {
+          heading.removeAttribute('tabindex');
+        }
+
+        continue;
+      }
+
+      heading.removeAttribute('data-truncated');
+      heading.removeAttribute('title');
+      heading.removeAttribute('tabindex');
+    }
+
+    // ⚠ EVERY BODY CELL IS VISITED, NOT ONLY THE ATOMIC ONES, AND THE NARROWER QUERY ORPHANED MARKS. The
+    // clearing branch below used to sit inside a `[data-atomic="true"]` loop, so a cell that STOPPED being
+    // atomic - a column set replaced, a value re-projected through a different column - was never visited
+    // again and kept its `data-truncated`, its `title` and, worst of all, its `tabindex`: a permanent phantom
+    // tab stop on a value that is no longer cut. A cell is now cleared precisely because it is no longer a
+    // candidate, which is the case the old query could not express.
+    for (const cell of Array.from(body.querySelectorAll<HTMLElement>('th, td'))) {
+      // The same reasoning as the headings above: a cell whose value is wrapped in an element that owns the
+      // clipping reports no overflow of its own, so whichever box is actually cut is the one measured.
+      const inner = cell.querySelector<HTMLElement>('[data-atomic-value]');
+      const measured = inner !== null && inner.scrollWidth > inner.clientWidth ? inner : cell;
+
+      // ⚠ THE FRACTIONAL TEST RUNS HERE TOO, AND OMITTING IT LEFT A CUT VALUE UNRECOVERABLE. The integer test
+      // below is a fast positive signal, but it cannot see an overflow smaller than a pixel: measured on the
+      // role listing at 768 and 1024, `QA Annual Patrons` needed 126.77px in a 125.39px content box - 1.38px
+      // over - and reported `scrollWidth 135` against `clientWidth 134`, exactly 1, which this tolerance
+      // discards. Chrome painted `QA Annual Patr…` and the cell carried no tooltip and no focus stop. The
+      // heading path had already been corrected this way; the body path had not, and the two must agree.
+      const cut =
+        cell.getAttribute('data-atomic') === 'true' &&
+        (measured.scrollWidth - measured.clientWidth > OVERFLOW_TOLERANCE_PX ||
+          this.textExceedsBox(measured));
+
+      if (cut) {
+        cell.setAttribute('data-truncated', 'true');
+        cell.setAttribute('tabindex', '0');
+
+        // The pointer affordance. Set from the rendered text rather than from the projected cell, so a
+        // template column — whose content this component never composes — is covered on the same terms as a
+        // text column. VISIBLE text only: `textContent` produced a tooltip reading "—not recorded" over an
+        // absent value, which is companion wording for assistive technology and is painted nowhere.
+        cell.setAttribute('title', this.visibleText(cell));
+
+        continue;
+      }
+
+      // Cleared rather than left behind: a column that widens, a row that is replaced, or a value that
+      // shortens must give the stop and the tooltip back, or the tab order accumulates stops for values that
+      // are no longer cut.
+      cell.removeAttribute('data-truncated');
+      cell.removeAttribute('tabindex');
+      cell.removeAttribute('title');
+    }
+  }
+
+  /**
+   * Whether a heading's own label is being cut off.
+   *
+   * ⚠ `scrollWidth` ALONE IS A BLIND SIGNAL HERE, AND TRUSTING IT MISSED TWO VISIBLY CUT HEADINGS. Two separate
+   * measurements established the shape of the problem:
+   *
+   * - The cell is the wrong element to measure. A heading's text lives in a `.data-table__label` span, and when
+   *   that span owns the `overflow: hidden` the `th` around it reports equal widths however badly the label is
+   *   cut — at 320 the `Username` heading painted `Userna…` with its label at 67/73 while its cell reported
+   *   91/91.
+   * - For a label allowed to WRAP, the browser lays out the already-ellipsised line, so the overflow collapses:
+   *   `Auto` reported `scrollWidth - clientWidth = 0` while painting `A…`, and `Public` reported 2 while
+   *   painting `Pu…`.
+   *
+   * So the question is asked the other way round — how much room does the text NEED — and which text has to fit
+   * depends on whether the label may wrap:
+   *
+   * - A label held on one line must fit ENTIRELY, so the whole string is measured.
+   * - A label allowed to wrap only needs its LONGEST WORD to fit; anything longer wraps to another line and
+   *   loses nothing. Measuring the whole string here would have flagged `Billing Every` and `Trial Period`,
+   *   which sit on two complete lines and are not cut at all.
+   *
+   * @param heading The heading cell to judge.
+   * @returns True when the heading's label cannot show its text in full.
+   */
+  private isHeadingTruncated(heading: HTMLElement): boolean {
+    const label = heading.querySelector<HTMLElement>('.data-table__label');
+
+    // A command column's label is deliberately clipped to a single pixel so the column has an accessible name
+    // without a painted heading. It is not truncated; it is hidden, and marking it would put a tooltip on every
+    // icon column in the application.
+    if (label === null || label.classList.contains(HIDDEN_LABEL_CLASS)) {
+      return false;
+    }
+
+    return (
+      label.scrollWidth - label.clientWidth > OVERFLOW_TOLERANCE_PX || this.textExceedsBox(label)
+    );
+  }
+
+  /**
+   * Whether an element's own text needs more room than its content box gives it, measured in fractions of a
+   * pixel.
+   *
+   * ⚠ IT IS ASKED THE OTHER WAY ROUND FROM `scrollWidth`, AND THAT IS THE WHOLE POINT. `scrollWidth` and
+   * `clientWidth` are INTEGERS, and a fixed table layout resolves fractional track widths - so a real overflow
+   * smaller than a pixel is rounded into invisibility. Two separate values proved it: the `Auto` heading
+   * overflowed its 33.594px label box by 0.559px and reported 0.153px, and the `QA Annual Patrons` role name
+   * overflowed its 125.39px content box by 1.38px while reporting exactly 1, which a one-pixel tolerance
+   * discards. Both painted an ellipsis on screen with no tooltip and no focus stop.
+   *
+   * Which text has to fit depends on whether the element may wrap:
+   *
+   * - Held on one line, the whole string must fit.
+   * - Allowed to wrap, only the LONGEST WORD must fit; anything longer wraps to another line and loses nothing.
+   *   Measuring the whole string here would flag `Billing Every` and `Trial Period`, which sit on two complete
+   *   lines and are not cut at all.
+   *
+   * @param element The element whose own text is judged - a heading's label, or an atomic cell.
+   * @returns True when the text cannot be shown in full.
+   */
+  private textExceedsBox(element: HTMLElement): boolean {
+    const text = this.visibleText(element);
+
+    if (text.length === 0) {
+      return false;
+    }
+
+    const style = getComputedStyle(element);
+    const holdsOneLine = style.whiteSpace === 'nowrap' || style.whiteSpace === 'pre';
+    const parts = holdsOneLine ? [text] : text.split(/\s+/);
+    let needs = 0;
+
+    for (const part of parts) {
+      needs = Math.max(needs, this.measureText(part, style));
+    }
+
+    // The rect is fractional, and the element's own padding and border are subtracted from it so the comparison
+    // is against the space the text actually gets.
+    return needs - this.contentWidth(element, style) > TEXT_OVERFLOW_TOLERANCE_PX;
+  }
+
+  /**
+   * An element's text as a reader SEES it, with the text that is deliberately hidden from sight left out.
+   *
+   * ⚠ `textContent` IS THE WRONG STRING FOR BOTH OF THIS COMPONENT'S USES OF IT, AND IT PRODUCED SEVEN FALSE
+   * POSITIVES. Cells carry companion text that is painted 1x1px under `clip-path: inset(50%)` so it reaches
+   * assistive technology and nothing else - most visibly the shared absent-value marker, which pairs a painted
+   * em-dash with a hidden "not recorded". Measured on the account listing, an absent telephone painted 13px of
+   * em-dash inside a 64.66px box, so it had 51.66px to spare, yet `textContent` measured the whole
+   * "—not recorded" string at about 85px and the cell was marked as cut. The visible consequences were a
+   * tooltip reading "—not recorded" over a cell that was not truncated and a keyboard stop on a cell with
+   * nothing to reveal.
+   *
+   * A decorative glyph marked `aria-hidden` is deliberately KEPT: it is hidden from assistive technology but it
+   * is painted, so it occupies room and belongs in a measurement of what has to fit.
+   *
+   * @param element The element to read.
+   * @returns The element's visible text, whitespace collapsed the way CSS collapses it.
+   */
+  private visibleText(element: HTMLElement): string {
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, {
+      acceptNode: (node: Node): number => {
+        for (
+          let ancestor = node.parentElement;
+          ancestor !== null;
+          ancestor = ancestor.parentElement
+        ) {
+          if (
+            ancestor.hasAttribute(VISUALLY_HIDDEN_ATTRIBUTE) ||
+            ancestor.classList.contains(HIDDEN_LABEL_CLASS)
+          ) {
+            return NodeFilter.FILTER_REJECT;
+          }
+
+          if (ancestor === element) {
+            break;
+          }
+        }
+
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    });
+
+    let text = '';
+
+    while (walker.nextNode() !== null) {
+      text += walker.currentNode.nodeValue ?? '';
+    }
+
+    // Collapsed rather than merely trimmed, because a template's own newline indentation is inside the text node
+    // and would otherwise be measured as spaces.
+    return text.replace(/\s+/g, ' ').trim();
+  }
+
+  /**
+   * The fractional width available to an element's own content.
+   *
+   * @param element The element to measure.
+   * @param style Its computed style, already read by the caller.
+   * @returns The content-box width in pixels.
+   */
+  private contentWidth(element: HTMLElement, style: CSSStyleDeclaration): number {
+    const inset =
+      Number.parseFloat(style.paddingLeft) +
+      Number.parseFloat(style.paddingRight) +
+      Number.parseFloat(style.borderLeftWidth) +
+      Number.parseFloat(style.borderRightWidth);
+
+    return element.getBoundingClientRect().width - (Number.isFinite(inset) ? inset : 0);
+  }
+
+  /**
+   * The width a run of text wants in a given element's font, measured off the layout so nothing reflows.
+   *
+   * A canvas is used rather than a hidden element because measuring through the DOM means writing to it: a probe
+   * element has to be inserted, laid out and removed inside the same frame as the reads around it, and that is
+   * precisely the read-write interleaving this component's single measurement pass exists to avoid. The context
+   * is created once and reused.
+   *
+   * @param text The run to measure.
+   * @param style The computed style whose font it should be measured in.
+   * @returns The width in pixels, or zero when no measurement context is available.
+   */
+  private measureText(text: string, style: CSSStyleDeclaration): number {
+    if (this.textMeasurement === null) {
+      if (typeof document === 'undefined') {
+        return 0;
+      }
+
+      this.textMeasurement = document.createElement('canvas').getContext('2d');
+    }
+
+    if (this.textMeasurement === null) {
+      return 0;
+    }
+
+    // The shorthand is assembled from four longhands only. A malformed value is silently IGNORED by the canvas,
+    // which would leave the previous font in place and answer for the wrong typeface - so nothing that cannot
+    // appear in the shorthand goes in, `font-variant-numeric` included.
+    this.textMeasurement.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+
+    return this.textMeasurement.measureText(text).width;
   }
 
   /**
@@ -1251,7 +1720,7 @@ export class DataTableComponent<TRow extends object> implements OnInit, OnChange
       return;
     }
 
-    const controls = body.querySelectorAll(FOCUSABLE_IN_BODY).length;
+    const controls = body.querySelectorAll(FOCUSABLE_SELECTOR).length;
 
     this.offersRowSkipSignal.set(controls > ROW_SKIP_THRESHOLD);
   }
@@ -1361,6 +1830,12 @@ export class DataTableComponent<TRow extends object> implements OnInit, OnChange
 
     const observer = new ResizeObserver(() => {
       this.measureScrollable();
+
+      // Truncation is measured here too, and leaving it out was a defect rather than an omission of
+      // convenience: every width change this observer exists to catch is a width change that can start or
+      // stop cutting a value. See {@link scheduleTruncationUpdate} for why the narrow scheduler is used
+      // rather than the full window update.
+      this.scheduleTruncationUpdate();
     });
 
     const container = this.host.nativeElement.querySelector<HTMLElement>('.data-table__container');
@@ -1426,9 +1901,95 @@ export class DataTableComponent<TRow extends object> implements OnInit, OnChange
    */
   protected readonly headerRowIndex = HEADER_ROW_COUNT;
 
+  /**
+   * The columns in the order they are PRESENTED, which is the caller's declared order except while the
+   * region is actually clipping, when the row-identity column is moved to the front.
+   *
+   * ⚠ WHY A COMPONENT MAY REORDER A LAYOUT THE CALLER DECIDED, WHEN {@link DataTableColumn} SAYS IT MAY NOT.
+   * The type's `readonly` members stop a column being REWRITTEN — a caller's width, label or sort key is
+   * never altered here, and still is not. What moves is which track a column occupies, and only in the one
+   * situation the caller cannot see from where it sits: whether the viewport is currently hiding part of the
+   * table. That is measured here and nowhere else, so this is the only place the decision can be made.
+   *
+   * ⚠ THE MEASURED DEFECT. At a 320px viewport every listing in the application resolves to a 271px
+   * scrollport against a 968px table, hiding 697px. Four of the six listings put their commands first, so
+   * the initial view was command columns and blank icon-only headings with the record's identity off screen
+   * entirely: the member-services grid's name began 8px past the right edge, profile definitions 54px past,
+   * modules 108px past and the portal-alias grid 214px past — that last one showing nothing but a column of
+   * identical "Edit" buttons, with no indication of WHICH host name each would edit. The two listings whose
+   * identity did fall inside the scrollport did so with 24px and 9px to spare, i.e. by accident of column
+   * arithmetic rather than by design.
+   *
+   * ⚠ IT CANNOT OSCILLATE, AND THAT IS WHY IT IS SAFE TO DRIVE FROM A MEASUREMENT. Reordering moves the same
+   * columns at the same widths, so the table's total width is unchanged and the very measurement that
+   * triggered the reorder is unaffected by it. A reorder therefore cannot make the region stop clipping and
+   * so cannot undo itself.
+   *
+   * The declared order is restored the moment nothing is hidden, so a desktop reader sees the arrangement
+   * the feature authored — which for several of these grids is documented legacy parity — and only a reader
+   * who would otherwise have lost the identity sees it hoisted.
+   */
+  private readonly presentedColumns = computed<readonly DataTableColumn<TRow>[]>(() => {
+    const declared = this.columnsSignal();
+
+    if (this.horizontallyScrollableSignal() === false) {
+      return declared;
+    }
+
+    const identityIndex = declared.findIndex((column) => column.rowHeader === true);
+
+    // `0` is as much a no-op as `-1`: already first needs no move, and a column set with no declared row
+    // header has no identity to hoist. Neither case is a fault, so neither is reported.
+    if (identityIndex <= 0) {
+      return declared;
+    }
+
+    return [
+      declared[identityIndex],
+      ...declared.slice(0, identityIndex),
+      ...declared.slice(identityIndex + 1),
+    ];
+  });
+
+  /**
+   * Whether the identity column is currently pinned to the inline start — true exactly when the region is
+   * clipping AND the column set declares a row header. Bound to a container attribute so the stylesheet can
+   * make that one column sticky without needing to know which track it is in.
+   */
+  protected readonly identityPinned = computed<boolean>(
+    () =>
+      this.horizontallyScrollableSignal() &&
+      this.columnsSignal().some((column) => column.rowHeader === true),
+  );
+
+  /**
+   * How many columns are currently outside the scrollport, for the painted overflow cue.
+   *
+   * ⚠ THE CUE EXISTS BECAUSE THE REGION ANNOUNCED ITSELF TO ASSISTIVE TECHNOLOGY ONLY. The container already
+   * takes `role="region"`, a name borrowed from the caption and a tab stop while it clips, so a screen-reader
+   * user is told there is a scrollable region and a keyboard user can reach it. A SIGHTED reader was told
+   * nothing at all: measured across all six listings at 320px and 375px, no painted text anywhere inside any
+   * table container mentioned scrolling, and no scrollbar was rendered either, so the grid simply appeared to
+   * end at the container edge. Counting the columns rather than saying "scroll for more" reports the size of
+   * what is missing, which is the part a reader cannot infer.
+   */
+  protected readonly hiddenColumnCount = this.hiddenColumnCountSignal.asReadonly();
+
+  /**
+   * The cue's wording. Singular and plural are written out rather than assembled with a conditional `s`,
+   * because the two sentences differ in their verb as well as their noun.
+   */
+  protected readonly overflowCueText = computed<string>(() => {
+    const hidden = this.hiddenColumnCountSignal();
+
+    return hidden === 1
+      ? OVERFLOW_CUE_SINGULAR
+      : OVERFLOW_CUE_PLURAL.replace(OVERFLOW_CUE_COUNT_TOKEN, String(hidden));
+  });
+
   /** Track sizes for the table's `colgroup`. */
   protected readonly columnWidths = computed<readonly DataTableColumnWidth[]>(() =>
-    this.columnsSignal().map((column) => ({
+    this.presentedColumns().map((column) => ({
       key: column.key,
       width: resolveWidth(column.width),
     })),
@@ -1440,7 +2001,7 @@ export class DataTableComponent<TRow extends object> implements OnInit, OnChange
     const activeKey = this.displayedSortBySignal();
     const activeDirection = this.displayedSortDirSignal();
 
-    return this.columnsSignal().map((column) => {
+    return this.presentedColumns().map((column) => {
       const sortable = column.sortable === true;
       const sorted = sortable && activeKey !== undefined && column.key === activeKey;
 
@@ -1455,6 +2016,7 @@ export class DataTableComponent<TRow extends object> implements OnInit, OnChange
         sortLabel: sortable ? `${SORT_LABEL_PREFIX}${column.label}` : null,
         align: column.headerAlign ?? DEFAULT_ALIGN,
         atomic: column.atomic === true,
+        rowHeader: column.rowHeader === true,
       };
     });
   });
@@ -1476,7 +2038,7 @@ export class DataTableComponent<TRow extends object> implements OnInit, OnChange
 
   /** The body rows with every cell projected. */
   protected readonly bodyRows = computed<readonly DataTableBodyRow<TRow>[]>(() => {
-    const columns = this.columnsSignal();
+    const columns = this.presentedColumns();
     // ⚠ THE OFFSET IS WHAT MAKES THE INDEX A POSITION IN THE SET RATHER THAN IN THE WINDOW. Without it
     // the indices restart at two on every page, so the eleventh record of seventeen announced as row two -
     // a number that contradicts both the pager and the row count above.

@@ -83,8 +83,8 @@
 .search-input__field:disabled,
 .search-input__submit:disabled {
   // MIGRATION: the muted-text token, where the legacy disabled style measured the
-  // named colour `Silver`. That colour is outside the closed nine-member
-  // vocabulary, and it measured 1.57 to 1 against the surface it is paired with
+  // named colour `Silver`. That colour is not in the vocabulary, and it measured 1.57 to 1 against the
+  // surface it is paired with
   // here — so far below the 4.5-to-1 minimum that a disabled control's text was
   // effectively unreadable. The muted token measures 4.73 to 1 on that surface and
   // passes AA outright, so this treatment relies on no exemption. Matches the

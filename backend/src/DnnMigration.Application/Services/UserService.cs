@@ -1160,6 +1160,29 @@ public sealed class UserService : IUserService
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        // ⚠ THE READ, THE TOKEN COMPARISON AND THE FLUSH ARE ONE SERIALISABLE OPERATION, AND THIS PATH HAD NO
+        // TRANSACTION AT ALL. Its two sibling whole-record writes - PortalService.UpdatePortalSettingsAsync
+        // and RoleService.UpdateRoleAsync - have opened one since they were written, for a reason that
+        // applies here identically and was measured here as data loss rather than argued from symmetry.
+        //
+        // The token this path verifies is DERIVED from the record's own values rather than stored on it -
+        // Rule T4 makes the legacy schema immutable, so there is no version column to compare and none may
+        // be added - which means the comparison is a READ and the write that follows is a separate
+        // statement. With no transaction spanning the two, two callers presenting the SAME token both read
+        // the same values, both found the token current, and both wrote: measured as two 200 responses where
+        // one had to be a refusal, with the second submission silently replacing the first operator's
+        // committed edit and no record anywhere that it had existed.
+        //
+        // Serialisable is the level the siblings use, and it is what makes the comparison load-bearing: the
+        // range locks the read takes are held to the commit, so the second caller cannot pass a comparison
+        // whose subject the first is in the middle of replacing. It is refused instead - by the comparison
+        // when the first commit landed before the second read, and by the engine when the two genuinely
+        // interleaved. Both refusals are reported below under one code, because to the caller they are the
+        // same event and carry the same remedy.
+        await using ITransactionScope transaction = await _unitOfWork
+            .BeginTransactionAsync(TransactionIsolation.Serializable, cancellationToken)
+            .ConfigureAwait(false);
+
         User? account = await _users.GetAsync(portalId, userId, cancellationToken).ConfigureAwait(false);
         if (account is null)
         {
@@ -1262,12 +1285,23 @@ public sealed class UserService : IUserService
         try
         {
             await _unitOfWork.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         }
-        catch (Exception exception) when (IsConcurrencyConflict(exception))
+        catch (ConcurrencyConflictException)
         {
+            // The comparison above closes the window a caller can OBSERVE; it cannot close the window
+            // between that comparison and the write. Under serialisable isolation the engine can still
+            // refuse this participant - as the loser of a lost update, or as the victim it chose to break
+            // the lock conversion two simultaneous writers produce - and either way nothing was written.
+            //
+            // Reported under the SAME code the stale-token branch uses rather than a distinct persistence
+            // code. The two branches detect one event at two moments, the remedy for both is to re-read and
+            // re-apply, and a caller that had to distinguish them would be reacting to which microsecond it
+            // arrived in.
             return Result<UserDetailDto>.Failure(
-                PersistenceConflictCode,
-                "The account was changed by another request; reload it and try again.");
+                ConcurrencyConflictCode,
+                FormattableString.Invariant(
+                    $"Account {userId} was changed by someone else after you read it, so nothing was written. Reload the account to see the current values, then apply your change again."));
         }
 
         if (portal?.AdministratorId == userId)

@@ -54,7 +54,32 @@
     The form replaces the indicator rather than sitting beside it, so the seated defaults are never on
     screen while the tenant's real policy is still in flight.
   -->
-  <form class="membership-settings" [formGroup]="form" (ngSubmit)="submit()">
+  <!--
+    ⚠ `appBlockImplicitSubmit` — ENTER IN A VALUE BOX MUST NOT COMMIT THIS FORM. Thirteen entry controls
+    sit above one real `type="submit"` button, so HTML's implicit-submission rule made a stray Enter
+    anywhere on the screen save the tenant's entire membership policy — including boxes an operator is
+    mid-way through editing. Every command stays fully keyboard-operable, because Enter on a BUTTON is a
+    click and is never suppressed.
+
+    ⚠ AND THIS IS A DOCUMENTED DIVERGENCE, NOT A RESTORATION. On the sibling role editor the same
+    directive restores legacy behaviour, because every command in `editroles.ascx` is an `asp:LinkButton`
+    that renders as an anchor, leaving Enter with no submit control to find. That argument does NOT hold
+    here: this screen's legacy commands are `dnn:commandbutton`
+    (`Website/admin/Users/UserSettings.ascx:L72-L73`), and `CommandButton.CreateChildControls` at
+    `Library/Controls/CommandButton/CommandButton.vb:L259-L273` adds BOTH a `LinkButton` and an
+    `ImageButton` with `icon.Visible = True` — and an `ImageButton` renders `<input type="image">`, which
+    IS a submit control. So Enter may well have submitted in the legacy. What it submitted, though, was
+    never this screen's decision: the legacy wrapped the whole page in one server-side form, so the
+    control Enter actually reached depended on the skin's and every other module's control order. The
+    divergence is therefore from an accident rather than from a designed affordance, and it is recorded in
+    `MIGRATION_NOTES.md` rather than absorbed silently.
+  -->
+  <form
+    appBlockImplicitSubmit
+    class="membership-settings"
+    [formGroup]="form"
+    (ngSubmit)="submit()"
+  >
     <!--
       MIGRATION: the legacy toggle was withdrawn from the tab order with a negative tab index at
       `Website/controls/sectionheadcontrol.ascx` L3, so it was operable by pointer only. That defect is

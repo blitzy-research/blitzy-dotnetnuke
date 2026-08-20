@@ -2188,12 +2188,15 @@ describe('ModuleSettingsComponent', () => {
       expect(field<HTMLElement>('moduleTitle')?.getAttribute('aria-describedby'))
         .toBe('module-settings-moduleTitle-error');
 
-      // ⚠ THE HELP IS NAMED FIRST AND THE MESSAGE SECOND once both exist, so the order of the description
-      // does not change as a field moves in and out of refusal - a reader hears the same field described
-      // the same way either side of one, with the reason added rather than the description rebuilt.
+      // ⚠ THE MESSAGE IS NAMED FIRST AND THE HELP SECOND once both exist — QA-21 / QA-24. This assertion
+      // was the other way round, on the reasoning that a stable order lets a reader hear the same field
+      // described the same way either side of a refusal. The order IS stable under the new rule too, and it
+      // now leads with the reason: the failure is the urgent half, and the rendered order was corrected to
+      // match it in the same change, because the help panel was measured inserting 35px of explanation
+      // between a control and the message refusing it.
       expect(hintIn(regionOf('module-settings-moduleTitle'))).not.toBeNull();
       expect(field<HTMLElement>('moduleTitle')?.getAttribute('aria-describedby'))
-        .toBe('module-settings-moduleTitle-help module-settings-moduleTitle-error');
+        .toBe('module-settings-moduleTitle-error module-settings-moduleTitle-help');
 
       drain();
     });
@@ -2870,12 +2873,23 @@ describe('ModuleSettingsComponent', () => {
           { permissionId: 2, permissionKey: 'EDIT', permissionName: 'Edit Module' },
         ];
 
+        // ⚠ THE SERVER COMPUTES THE INHERITED COLUMN FROM THE STORED STATE, AND SO MUST THIS FIXTURE.
+        // While a module is stored as inheriting, `PermissionService.BuildRoleRow` clears and locks the
+        // VIEW cell of EVERY row - the inherited column short-circuits ahead of the administrator rule -
+        // and `BuildPermissionUserRowsAsync` sets `Editable = !inheritedColumn`. A fixture that reported
+        // VIEW editable while inheritance was on described a server that does not exist, which is exactly
+        // why no spec here noticed that clearing the switch could never unlock the column.
         const cells = (
           view: boolean,
           edit: boolean,
           editable: boolean,
         ): readonly unknown[] => [
-          { permissionId: 1, permissionKey: 'VIEW', allowAccess: view, editable },
+          {
+            permissionId: 1,
+            permissionKey: 'VIEW',
+            allowAccess: inheriting ? false : view,
+            editable: inheriting ? false : editable,
+          },
           { permissionId: 2, permissionKey: 'EDIT', allowAccess: edit, editable },
         ];
 
@@ -2938,10 +2952,19 @@ describe('ModuleSettingsComponent', () => {
         return qa<HTMLInputElement>('.module-settings__permission-grid tbody input[type="checkbox"]');
       }
 
-      /** Brings up the screen with a fully populated grid. */
+      /**
+       * Brings up the screen with a fully populated grid.
+       *
+       * ⚠ THE MODULE DETAIL AND THE GRID ARE GIVEN THE SAME INHERITANCE STATE, because in the running system
+       * they are two readings of ONE stored flag: the detail is what patches the switch, and the grid is what
+       * the server projected the cells under. Letting them disagree would describe an installation that
+       * cannot exist and would test the screen against it.
+       *
+       * @param inheriting Whether the module is stored as inheriting its view rights from its page.
+       */
       function activateWithGrid(inheriting = false): void {
         tokenStorage.store(sessionWith(true));
-        activate();
+        activate(moduleDetailOf({ inheritViewPermissions: inheriting }));
         expectGrid().flush({ data: fullGrid(inheriting) });
         fixture.detectChanges();
       }
@@ -2994,7 +3017,88 @@ describe('ModuleSettingsComponent', () => {
 
         expect(adminBoxes.every((box) => box.checked)).toBeTrue();
         expect(adminBoxes.every((box) => box.disabled)).toBeTrue();
-        expect(adminBoxes[0]?.getAttribute('title') ?? '').toContain('always hold every module permission');
+      });
+
+      it('states every lock reason as associated text rather than a tooltip', () => {
+        activateWithGrid();
+
+        // ⚠ A `title` ON A DISABLED BOX WAS THE ONE PLACE THE REASON COULD NOT BE REACHED. A disabled
+        // checkbox takes no focus and offers no hover affordance, so a keyboard user never landed on it, and
+        // `title` is advisory content no screen reader is obliged to announce.
+        expect(boxes().every((box) => box.getAttribute('title') === null))
+          .withContext('no locked box explains itself through a tooltip')
+          .toBeTrue();
+
+        // The administrator row's boxes point at a sentence that is ON THE PAGE.
+        const described: string | null = boxes()[0]?.getAttribute('aria-describedby') ?? null;
+
+        expect(described).not.toBeNull();
+
+        const sentence: HTMLElement | null = document.getElementById(described ?? '');
+
+        expect(sentence).withContext('the description resolves to a real element').not.toBeNull();
+        expect(sentence?.textContent ?? '').toContain('always hold every module permission');
+
+        // ⚠ ONE ELEMENT PER REASON, NOT ONE PER CELL. A grid this wide can hold hundreds of locked boxes.
+        const locks: readonly HTMLElement[] = qa<HTMLElement>('[data-permission-lock]');
+
+        expect(locks.length)
+          .withContext('only the reasons actually in play are stated')
+          .toBe(1);
+
+        // And an operable box carries no description at all, so nothing suggests it is locked.
+        expect(boxes()[2]?.getAttribute('aria-describedby'))
+          .withContext('an operable cell is not described as locked')
+          .toBeNull();
+      });
+
+      it('does not describe a server-withheld grant as an administrator row', () => {
+        tokenStorage.store(sessionWith(true));
+        activate();
+
+        // A non-administrator row whose EDIT cell the SERVER locked, for a reason this client does not model.
+        expectGrid().flush({
+          data: {
+            moduleId: 0,
+            inheritViewPermissions: false,
+            inheritedPermissionKey: 'VIEW',
+            definitions: [
+              { permissionId: 1, permissionKey: 'VIEW', permissionName: 'View Module' },
+              { permissionId: 2, permissionKey: 'EDIT', permissionName: 'Edit Module' },
+            ],
+            roles: [
+              {
+                roleId: 2,
+                roleName: 'Subscribers',
+                isAdministrator: false,
+                isPseudoRole: false,
+                cells: [
+                  { permissionId: 1, permissionKey: 'VIEW', allowAccess: true, editable: true },
+                  { permissionId: 2, permissionKey: 'EDIT', allowAccess: false, editable: false },
+                ],
+              },
+            ],
+            users: [],
+          },
+        });
+        fixture.detectChanges();
+
+        const editBox: HTMLInputElement | undefined = boxes()[1];
+
+        expect(editBox?.disabled).withContext('the server locked it, so it stays locked').toBeTrue();
+
+        // ⚠ THE DEFECT THIS REPLACES. Every server-locked cell was described with the administrator
+        // sentence, so a row that is not the administrator row - and a column the administrator rule says
+        // nothing about - asserted that portal administrators hold every permission. It is a false
+        // statement about the row the operator is looking at.
+        const sentence: HTMLElement | null = document.getElementById(
+          editBox?.getAttribute('aria-describedby') ?? '',
+        );
+
+        expect(sentence?.textContent ?? '')
+          .withContext('the reason does not claim this is the administrator row')
+          .not.toContain('Portal administrators');
+        expect(sentence?.textContent ?? '').toContain('managed outside this screen');
       });
 
       it('names every cell by its row AND its column', () => {
@@ -3048,6 +3152,218 @@ describe('ModuleSettingsComponent', () => {
             (note.textContent ?? '').trim(),
           ),
         ).toEqual(['inherited from page']);
+      });
+
+      it('unlocks every non-administrator view grant the moment the inherit switch is turned OFF', () => {
+        // ⚠ THE MODULE IS STORED AS INHERITING, which is the state the defect lived in. The server computes
+        // the inherited column from the STORED flag, so every VIEW cell arrives cleared and locked -
+        // administrator and non-administrator alike.
+        activateWithGrid(true);
+
+        const viewBoxes = (): readonly HTMLInputElement[] =>
+          boxes().filter((_box, index) => index % 2 === 0);
+
+        expect(viewBoxes().length).toBe(5);
+        expect(viewBoxes().every((box) => box.disabled))
+          .withContext('every view cell arrives locked while the module is stored as inheriting')
+          .toBeTrue();
+
+        const inherit: HTMLInputElement | null = field<HTMLInputElement>('inheritViewPermissions');
+
+        expect(inherit?.checked).withContext('the switch reflects the stored state').toBeTrue();
+
+        inherit!.checked = false;
+        inherit!.dispatchEvent(new Event('change'));
+        fixture.detectChanges();
+
+        // No round trip: the column re-decides itself, exactly as it does when the switch is turned ON.
+        httpMock.expectNone((candidate) => candidate.url === GRID_URL);
+
+        // ⚠ THE DEFECT. Every one of these seventeen boxes stayed natively disabled and unfocusable, because
+        // the projection deferred to the server's `editable` - a flag computed under the OPPOSITE inheritance
+        // state. Turning the switch off could therefore never unlock anything, and the operator was left
+        // with a column of dead controls and no way to grant view access at all.
+        const unlocked: readonly HTMLInputElement[] = viewBoxes().slice(1);
+
+        expect(unlocked.length).toBe(4);
+        expect(unlocked.every((box) => box.disabled === false))
+          .withContext('clearing the switch makes every non-administrator view grant operable')
+          .toBeTrue();
+
+        // Operable means REALLY operable: a natively disabled control is absent from the tab order, so the
+        // property is what a keyboard user is affected by.
+        expect(unlocked.every((box) => box.getAttribute('aria-describedby') === null))
+          .withContext('an unlocked cell no longer carries a lock explanation')
+          .toBeTrue();
+
+        // The administrator row is still locked - by the administrator rule, which the switch does not touch.
+        expect(viewBoxes()[0]?.disabled)
+          .withContext('the administrator row is locked for its own reason, not by inheritance')
+          .toBeTrue();
+        expect(viewBoxes()[0]?.checked).toBeTrue();
+
+        // And the two locks are now told apart: the inherited sentence is GONE from the page, because no
+        // cell bears that reason any more, while the administrator sentence remains.
+        const stated: readonly string[] = qa<HTMLElement>('[data-permission-lock]').map((note) =>
+          (note.textContent ?? '').replace(/\s+/gu, ' ').trim(),
+        );
+
+        expect(stated.length).toBe(1);
+        expect(stated[0] ?? '').toContain('always hold every module permission');
+
+        // Turning it back on restores the lock, and restores the sentence with it.
+        inherit!.checked = true;
+        inherit!.dispatchEvent(new Event('change'));
+        fixture.detectChanges();
+
+        expect(viewBoxes().every((box) => box.disabled))
+          .withContext('the lock returns with the switch')
+          .toBeTrue();
+        expect(
+          qa<HTMLElement>('[data-permission-lock]').some((note) =>
+            (note.textContent ?? '').includes('being inherited from the page'),
+          ),
+        )
+          .withContext('the inherited reason is stated again')
+          .toBeTrue();
+      });
+
+      it('lets a newly unlocked view grant actually be granted and submitted', () => {
+        activateWithGrid(true);
+
+        const inherit: HTMLInputElement | null = field<HTMLInputElement>('inheritViewPermissions');
+
+        inherit!.checked = false;
+        inherit!.dispatchEvent(new Event('change'));
+        fixture.detectChanges();
+
+        // Subscribers' VIEW cell - locked on arrival, operable now.
+        const subscribersView: HTMLInputElement | undefined = boxes()[2];
+
+        expect(subscribersView?.disabled).toBeFalse();
+
+        subscribersView!.checked = true;
+        subscribersView!.dispatchEvent(new Event('change'));
+        fixture.detectChanges();
+
+        submit();
+
+        const write: TestRequest = httpMock.expectOne(
+          (candidate) => candidate.method === 'PUT' && candidate.url === GRID_URL,
+        );
+
+        const body = write.request.body as {
+          inheritViewPermissions: boolean;
+          grants: readonly { roleId?: number; permissionId: number }[];
+        };
+
+        expect(body.inheritViewPermissions).toBeFalse();
+
+        // ⚠ THE POINT OF THE WHOLE FIX. The grant has to REACH the server: an unlocked box that cannot be
+        // ticked, or a ticked box the submission filters out because the projection still calls it
+        // ineditable, would leave the operator no better off than a dead control.
+        expect(body.grants.some((grant) => grant.permissionId === 1 && grant.roleId === 2))
+          .withContext('the newly granted view permission is submitted')
+          .toBeTrue();
+
+        write.flush(null, { status: 204, statusText: 'No Content' });
+        expectGrid().flush({ data: fullGrid(false) });
+        fixture.detectChanges();
+
+        // Every remaining request drained, so the suite's httpMock.verify() teardown is not the assertion.
+        httpMock.match(() => true).forEach((request) => request.flush({ data: null }));
+        fixture.detectChanges();
+      });
+
+      it('never lets a lock sentence contradict the box it explains', () => {
+        // ⚠ THE INVARIANT THAT SETTLES WHICH LOCK OUTRANKS WHICH. Inheritance is tested before the
+        // administrator rule, for the state AND for the explanation, and the tempting objection is that the
+        // administrator lock is permanent while inheritance is transient - so it looks like the more
+        // specific reason for the administrator row's view cell. It is not, because a sentence has to
+        // explain the box a reader is looking at: while inheritance is on that box is rendered UNCHECKED,
+        // and "portal administrators always hold every module permission" beside a visibly withheld
+        // permission is a statement the screen itself contradicts. Rather than assert a precedence, this
+        // asserts the property that makes the precedence right, over every locked cell in every state.
+        const CLAIMS_EVERY_PERMISSION = 'always hold every module permission';
+
+        const sentenceFor = (box: HTMLInputElement): string => {
+          const id: string | null = box.getAttribute('aria-describedby');
+
+          if (id === null) {
+            return '';
+          }
+
+          return (document.getElementById(id)?.textContent ?? '').replace(/\s+/gu, ' ').trim();
+        };
+
+        /** Every locked box whose sentence claims the row holds every permission while it reads unchecked. */
+        const contradictions = (): readonly string[] =>
+          boxes()
+            .filter(
+              (box) =>
+                box.disabled
+                && box.checked === false
+                && sentenceFor(box).includes(CLAIMS_EVERY_PERMISSION),
+            )
+            .map((box) => box.id);
+
+        // State one: stored as inheriting. The administrator row's view box is locked AND unchecked here,
+        // which is the case the objection is about.
+        activateWithGrid(true);
+
+        expect(contradictions())
+          .withContext('no withheld box claims the row holds every permission')
+          .toEqual([]);
+
+        // And the cell IS explained - silence would satisfy the check above trivially.
+        expect(sentenceFor(boxes()[0] as HTMLInputElement)).toContain('inherited from the page');
+
+        const inherit: HTMLInputElement | null = field<HTMLInputElement>('inheritViewPermissions');
+
+        // State two: the switch cleared. The administrator row's view box is now locked and CHECKED, so the
+        // administrator sentence is the accurate one and is expected to appear.
+        inherit!.checked = false;
+        inherit!.dispatchEvent(new Event('change'));
+        fixture.detectChanges();
+
+        expect(contradictions()).toEqual([]);
+        expect(boxes()[0]?.checked).toBeTrue();
+        expect(sentenceFor(boxes()[0] as HTMLInputElement)).toContain(CLAIMS_EVERY_PERMISSION);
+
+        // State three: back on. The sentence follows the box back.
+        inherit!.checked = true;
+        inherit!.dispatchEvent(new Event('change'));
+        fixture.detectChanges();
+
+        expect(contradictions()).toEqual([]);
+        expect(boxes()[0]?.checked).toBeFalse();
+        expect(sentenceFor(boxes()[0] as HTMLInputElement)).toContain('inherited from the page');
+      });
+
+      it('names and focuses the permission scroller only while it actually clips', () => {
+        activateWithGrid();
+
+        const scroller: HTMLElement | null = q<HTMLElement>('.module-settings__permission-grid-scroll');
+
+        expect(scroller).not.toBeNull();
+
+        // ⚠ THE PUBLISHED CONTRACT IS OPTED INTO UNCONDITIONALLY. `styles/_tables.scss` carries the overflow
+        // behaviour, the contained overscroll and the focus ring on this attribute, and this scroller used to
+        // emit none of it - so a grid wider than the viewport was reachable by pointer alone.
+        expect(scroller?.hasAttribute('data-table-scroll'))
+          .withContext('the scroller opts into the shared contract')
+          .toBeTrue();
+
+        // A two-column grid in a test viewport does not clip, so it contributes no landmark and no tab stop -
+        // the same conditional discipline the shared grid's region follows.
+        expect(scroller?.getAttribute('role')).toBeNull();
+        expect(scroller?.getAttribute('tabindex')).toBeNull();
+
+        // And the caption carries the identifier the region borrows when it does clip, so the region and the
+        // table can never describe themselves differently.
+        const caption: HTMLElement | null = q<HTMLElement>('.module-settings__permission-grid caption');
+
+        expect(caption?.id ?? '').withContext('the caption is addressable').not.toBe('');
       });
 
       it('submits exactly the ticked, editable cells and withdraws the rest', () => {

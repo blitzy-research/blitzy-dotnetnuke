@@ -323,6 +323,85 @@ describe('NotificationListComponent', () => {
       expect(notifications.notifications().length).toBe(7);
     });
 
+    /**
+     * Waits for the resize observer to deliver a measurement.
+     *
+     * ⚠ THE WAIT IS INHERENT, NOT A TEST CONVENIENCE. A resize observer delivers its records after layout at
+     * the end of a frame, so no synchronous change-detection pass can produce a measurement of a box that
+     * has only just been laid out - which is precisely why the stylesheet keeps the old constant as a
+     * `max()` floor for that one frame. Two frames are awaited because the first is when layout settles and
+     * the second is when the delivery after it is observable.
+     */
+    async function settleMeasurement(): Promise<void> {
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            resolve();
+          });
+        });
+      });
+    }
+
+    it('publishes its MEASURED height, so the reservation is exact rather than an estimate', async () => {
+      const property = '--notification-measured-block-size';
+      const read = (): string =>
+        document.documentElement.style.getPropertyValue(property).trim();
+
+      queueWarnings(1);
+      await settleMeasurement();
+
+      // ⚠ THE RESERVATION USED TO BE A CONSTANT, AND AT NARROW WIDTHS THE CONSTANT WAS TOO SMALL. This
+      // surface is fixed-positioned in the bottom corner, so it cannot make room for itself and the main
+      // region reserves the room on its behalf - against six rem. That holds for a short message on a wide
+      // viewport and fails exactly where the surface is largest: at 320px its width collapses to the
+      // viewport less two gutters, a sentence that occupied one line at desktop width wraps to four or
+      // five, and a message that survives navigation then sits on top of the action row it was raised
+      // about. A height cannot be estimated from the message, because it depends on the wrapped line count
+      // at the current width, on how many entries are queued and on whether the bulk control is showing -
+      // so it is measured.
+      const single: string = read();
+
+      expect(single).withContext('a height is published while the queue is occupied').not.toBe('');
+
+      const singlePx: number = Number.parseFloat(single);
+
+      expect(singlePx).toBeGreaterThan(0);
+
+      // Growing the queue grows the surface, and the published value has to follow it - a value that only
+      // ever described the first message would be the same estimate with extra machinery.
+      queueWarnings(3);
+      await settleMeasurement();
+
+      // ⚠ THE REGION, NOT THE HOST. Both are positioned `fixed` by the stylesheet, so the region is out of
+      // its host's flow and the host's own height is zero however many entries are queued.
+      const surface: HTMLElement | null = region();
+
+      expect(surface).withContext('the region is rendered').not.toBeNull();
+
+      const measured: number = Math.ceil((surface as HTMLElement).getBoundingClientRect().height);
+
+      expect(Number.parseFloat(read()))
+        .withContext('the published value tracks the surface it describes')
+        .toBe(measured);
+      expect(measured).toBeGreaterThan(singlePx);
+    });
+
+    it('withdraws the published height when the surface goes away', async () => {
+      queueWarnings(1);
+      await settleMeasurement();
+
+      expect(document.documentElement.style.getPropertyValue('--notification-measured-block-size'))
+        .not.toBe('');
+
+      fixture.destroy();
+
+      // Removed rather than zeroed: a stale reservation would otherwise outlive the surface that justified
+      // it, and the consumer's own fallback is the correct value once this component is gone.
+      expect(document.documentElement.style.getPropertyValue('--notification-measured-block-size'))
+        .withContext('nothing is left behind on the document')
+        .toBe('');
+    });
+
     it('offers a single control that clears all of them, from the second entry onwards', () => {
       // Two DISTINCT messages: an immediate repetition of the same sentence is collapsed by the
       // service onto one row, so repeating one here would never produce a second entry.

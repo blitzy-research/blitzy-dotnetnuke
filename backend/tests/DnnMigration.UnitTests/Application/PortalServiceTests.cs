@@ -772,6 +772,80 @@ public class PortalServiceApplicationTests
             Times.Never);
     }
 
+    /// <summary>
+    /// A designation the caller merely ECHOES BACK is admitted even when the account holds no membership row
+    /// for the addressed portal, and the ownership rule is not asked at all.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// Measured on this installation before the split: PortalIDs 0 through 5 each designate one account that
+    /// carries no matching UserPortals row, so opening Site Settings as host, changing nothing and pressing
+    /// Update was refused 400 portal.administrator_invalid - and so was PUTting back the exact body the GET had
+    /// just returned. No submission could satisfy the rule short of altering data the caller never asked to
+    /// touch, which left those six tenants unmaintainable through this API on a field they did not change. The
+    /// Times.Never assertion is the load-bearing half: admitting the value by re-reading membership and
+    /// tolerating its absence would pass this test while still charging every unchanged save a round trip.
+    /// </remarks>
+    [Fact]
+    public async Task UpdatePortal_UnchangedAdministratorWithoutMembership_IsAdmittedWithoutAskingTheRule()
+    {
+        Subject subject = Subject.Ready();
+        UpdatePortalRequest request = SentinelUpdateRequest();
+        request.AdministratorId = subject.StoredPortal!.AdministratorId;
+        subject.Users
+            .Setup(users => users.GetMembershipAsync(
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((UserPortal?)null);
+
+        Result<PortalDetailDto?> outcome = await subject.Service.UpdatePortalAsync(
+            SeedPortalId,
+            request,
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue(
+            "a submission equal to the stored designation authors nothing and is admitted on the strength of already being there");
+        subject.UnitOfWork.Verify(
+            work => work.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Once);
+        subject.Users.Verify(
+            users => users.GetMembershipAsync(
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
+    /// <summary>
+    /// A designation the caller CHANGES is still tested, so grandfathering history admits no new breakage.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task UpdatePortal_ChangedAdministratorWithoutMembership_IsStillRefused()
+    {
+        Subject subject = Subject.Ready();
+        UpdatePortalRequest request = SentinelUpdateRequest();
+        request.AdministratorId = subject.StoredPortal!.AdministratorId + 1;
+        subject.Users
+            .Setup(users => users.GetMembershipAsync(
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<CancellationToken>()))
+            .ReturnsAsync((UserPortal?)null);
+
+        Result<PortalDetailDto?> outcome = await subject.Service.UpdatePortalAsync(
+            SeedPortalId,
+            request,
+            CancellationToken.None);
+
+        outcome.IsFailure.Should().BeTrue();
+        outcome.Error!.Code.Should().Be("portal.administrator_invalid");
+        subject.UnitOfWork.Verify(
+            work => work.SaveChangesAsync(It.IsAny<CancellationToken>()),
+            Times.Never);
+    }
+
     /// <summary>Each submitted page reference must belong to the addressed portal.</summary>
     /// <param name="field">The reference to make foreign.</param>
     /// <returns>A task representing the assertion.</returns>

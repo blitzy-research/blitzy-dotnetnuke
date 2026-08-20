@@ -334,7 +334,15 @@ internal sealed class UserRepository : IUserRepository
             await PopulateAsync(new[] { user }, cancellationToken).ConfigureAwait(false);
         }
 
-        return user;
+        // Inside a transaction the account row's values are taken from the store rather than from an instance
+        // the request may already hold - an operator amending their OWN account addresses the row the request
+        // resolved in order to authorise it. Only the account row is refreshed, and that is the whole of the
+        // concurrency subject: the token this aggregate publishes derives from four of its own columns, so
+        // the membership rows and the credential facts composed alongside them take no part in the comparison
+        // the caller is about to make. See TransactionalRead.
+        return await TransactionalRead
+            .InTransactionAsync(_context, user, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -807,61 +815,23 @@ internal sealed class UserRepository : IUserRepository
         };
     }
     /// <summary>
-    /// Reports whether a text filter is composed entirely of characters the database collation cannot
-    /// weigh, and therefore cannot filter on.
+    /// Reports whether a text filter is composed entirely of characters the database collation cannot weigh,
+    /// and therefore cannot filter on.
     /// </summary>
     /// <param name="filter">The trimmed filter text, in the case the caller typed it.</param>
     /// <returns>
-    /// <see langword="true"/> when the filter cannot discriminate between rows and must therefore be
-    /// treated as matching nothing.
+    /// <see langword="true"/> when the filter cannot discriminate between rows and must therefore be treated
+    /// as matching nothing.
     /// </returns>
     /// <remarks>
-    /// <para>
-    /// ⚠ THIS EXISTS TO MAKE A FILTER FAIL CLOSED RATHER THAN OPEN, and the distinction is a safety one.
-    /// The database this maps onto is collated <c>SQL_Latin1_General_CP1_CI_AS</c>, which predates
-    /// supplementary-character support. In that collation a supplementary character carries NO WEIGHT, so
-    /// it compares equal to the empty string: measured directly, <c>N'🎉🎉🎉' = N''</c> evaluates true, and
-    /// <c>Username LIKE N'🎉🎉🎉%'</c> therefore degrades to <c>LIKE N'%'</c> and returns EVERY ROW.
-    /// </para>
-    /// <para>
-    /// The consequence observed on the account listing was a search that reported itself as filtered while
-    /// presenting the complete record set. That is the unsafe direction to fail in: an operator who
-    /// believes a listing is narrowed to one account may act on a row - authorise, unauthorise, delete -
-    /// in the belief that it is the account they searched for. Returning no rows for a filter that cannot
-    /// filter is both honest and safe, and it is what a person typing characters no account contains
-    /// expects to see.
-    /// </para>
-    /// <para>
-    /// The column collation is NOT changed to correct this, because the schema is immutable, and the
-    /// predicate is not forced onto a supplementary-aware collation either: doing so would make it
-    /// non-sargable on a listing path and would silently alter matching for all other text.
-    /// </para>
-    /// <para>
-    /// Only a filter composed ENTIRELY of weightless characters is caught. A filter mixing them with
-    /// ordinary text still discriminates on the ordinary part and is left exactly as it was.
-    /// </para>
+    /// ⚠ THE RULE MOVED, AND WHY IT MOVED IS THE USEFUL PART. It was implemented here and ONLY here, and the
+    /// tenant, module-placement and role listings each shipped the open failure it prevents - a search that
+    /// announced itself as filtered while returning every row. One definition, in
+    /// <see cref="CollationSafeFilter"/>, is what stops the next listing shipping it again; this member stays
+    /// as the local name the four call sites in this file already read well against.
     /// </remarks>
-    private static bool CannotDiscriminate(string filter)
-    {
-        if (filter.Length == 0)
-        {
-            return false;
-        }
-
-        foreach (char unit in filter)
-        {
-            // A surrogate code unit is half of a supplementary character, which is the weightless class.
-            // Anything else - letter, digit, punctuation, symbol in the basic plane - carries weight and
-            // makes the filter discriminating.
-            if (!char.IsSurrogate(unit))
-            {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
+    private static bool CannotDiscriminate(string filter) =>
+        CollationSafeFilter.CannotDiscriminate(filter);
 
     /// <summary>Turns literal search text into a <c>LIKE</c> pattern that matches it as a prefix.</summary>
     /// <param name="text">The literal text to match at the start of a value.</param>
@@ -958,6 +928,18 @@ internal sealed class UserRepository : IUserRepository
         if (!hasProperty && !hasPrefix)
         {
             return query;
+        }
+
+        // ⚠ THE FAIL-CLOSED RULE REACHES THIS AXIS TOO, and it was missing here while the three axes above it
+        // carried it. No report named this one - the reported failures were on the tenant, module-placement
+        // and role listings - but the mechanism is identical: a prefix made only of supplementary characters
+        // carries no weight in this collation, so the comparison degrades to one that matches every row and
+        // the listing presents the complete record set under an announced filter. A profile-property search is
+        // if anything the more exposed of the two, because the value being searched for is often the reason an
+        // operator is about to act on the row they find.
+        if (hasPrefix && CannotDiscriminate(valuePrefix!.Trim()))
+        {
+            return query.Where(_ => false);
         }
 
         // One pattern is built once and compared against both columns, reproducing the legacy procedure's

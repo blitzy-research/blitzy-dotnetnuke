@@ -8,6 +8,7 @@ import type { ChangePasswordRequest, UserDetail } from '../../../core/models/use
 import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 import { NotificationService } from '../../../core/services/notification.service';
 import { TokenStorageService } from '../../../core/services/token-storage.service';
+import { CREDENTIAL_MAX_LENGTH } from '../../../core/utils/credential-bounds.util';
 import {
   PASSWORD_UPDATE_CODES,
   PASSWORD_UPDATE_MESSAGE,
@@ -1327,23 +1328,31 @@ describe('UserPasswordComponent', () => {
   }
 
   describe('the sentinels', () => {
-    it('shows nothing at all for the null-date sentinel', () => {
-      // For LAST CHANGED this is PARITY rather than a divergence: the legacy display helper already
-      // answered with the empty string for the null date, so an empty field is exactly what a person saw.
-      // It is asserted, and it is NOT reported as a behavioural difference, because it is not one.
+    it('states the null-date sentinel as an absent value, never as a year-one date', () => {
+      // ⚠ THE PART THAT MATTERS IS UNCHANGED: a date in the year one must never reach the screen, because
+      // the legacy display helper answered with the empty string for the null date and `01/01/0001` would be
+      // the real behavioural change. That is still asserted.
+      //
+      // What changed is what stands in its place. An empty paragraph was defended here as parity, and as
+      // parity it was right — but QA-20 recorded the consequence: this line collapsed to a label above
+      // nothing, which reads as a screen that failed to load rather than as a password never changed since
+      // the account was made. The shared affordance states the absence in both media, and it is the same one
+      // four listings already use; the divergence from the blank legacy field is recorded in
+      // MIGRATION_NOTES.
       arrive(account(7, { lastPasswordChangeDate: NULL_DATE_ON_THE_WIRE }));
 
       const stated = statedValue(LAST_CHANGED_LABEL);
 
-      expect(stated).withContext('empty, not a date in the year one').toBe('');
+      expect(query('app-absent-value')).withContext('stated, not left blank').not.toBeNull();
       expect(stated).not.toContain('0001');
       expect(stated).not.toContain('01/01/0001');
     });
 
-    it('shows nothing for an explicitly null date', () => {
+    it('states an explicitly null date the same way', () => {
       arrive(account(7, { lastPasswordChangeDate: null }));
 
-      expect(statedValue(LAST_CHANGED_LABEL)).toBe('');
+      expect(query('app-absent-value')).not.toBeNull();
+      expect(statedValue(LAST_CHANGED_LABEL)).not.toContain('0001');
     });
 
     it('refuses a payload whose date member is missing entirely', () => {
@@ -2370,6 +2379,106 @@ describe('UserPasswordComponent', () => {
         .withContext('an empty confirmation is a refusal on the confirming control')
         .toBeTrue();
       expect(document.activeElement).toBe(confirmation);
+    });
+  });
+
+  // =========================================================================
+  // ARRIVING AT A DIFFERENT ACCOUNT WITHOUT LEAVING THE SCREEN
+  //
+  // ⚠ A ROUTE CHANGE USED TO CHANGE THE SUBJECT AND NOTHING ELSE. Angular reuses this component
+  // across `/users/3/password` -> `/users/1/password`, so no constructor runs and no form is rebuilt: the
+  // account was re-read and every trace of the previous attempt stayed behind. An operator who submitted
+  // an empty form for one account and then moved to another was met by a form already reporting failures
+  // about entries they had never made HERE - announced assertively, and against a record the messages did
+  // not describe. A fresh browser load of the same address was clean, which is the tell.
+  // =========================================================================
+
+  describe('moving between two accounts on the same mounted screen', () => {
+    it('arrives at the second account with no trace of the first attempt', () => {
+      arriveAsAdministrator(account(3));
+
+      // Refuse a submission, which is what put the screen into a reporting state.
+      press('Reset Password');
+      fixture.detectChanges();
+
+      expect(inlineMessages().length)
+        .withContext('the precondition: the first account IS reporting')
+        .toBeGreaterThan(0);
+
+      // The in-app move. Only the input changes - the component instance is the same one.
+      fixture.componentRef.setInput('userId', '1');
+      fixture.detectChanges();
+      expectRequest('GET', accountUrl(1), 'the second account read').flush({
+        data: account(1),
+        meta: null,
+      });
+      fixture.detectChanges();
+
+      expect(inlineMessages())
+        .withContext('nothing is reported about entries that were never made here')
+        .toEqual([]);
+
+      for (const id of EVERY_CONTROL_ID) {
+        const box = query(`#${id}`) as HTMLInputElement | null;
+
+        if (box === null) {
+          continue;
+        }
+
+        expect(box.value).withContext(`${id} is empty`).toBe('');
+        expect(box.classList.contains('ng-touched')).withContext(`${id} is untouched`).toBeFalse();
+        expect(box.classList.contains('ng-dirty')).withContext(`${id} is clean`).toBeFalse();
+      }
+    });
+
+    it('leaves an in-progress entry alone when the account has NOT changed', () => {
+      // The negative control, and the reason the reset watches ONE dependency. A screen that discarded
+      // entry on every re-render would throw away typing whenever any unrelated gate flipped.
+      arriveAsAdministrator(account(7));
+
+      enter(CONTROL_ID.newPassword, REPLACEMENT);
+      fixture.componentRef.setInput('userId', '7');
+      fixture.detectChanges();
+
+      expect(control(CONTROL_ID.newPassword).value)
+        .withContext('the same account is the same subject, so the entry survives')
+        .toBe(REPLACEMENT);
+    });
+  });
+
+  // =========================================================================
+  // THE TYPING BOUND, STATED BEFORE IT BITES
+  //
+  // ⚠ A TRUNCATED CREDENTIAL IS A CREDENTIAL THE PERSON DID NOT CHOOSE. `maxlength` refuses keystrokes
+  // and keeps only the head of a longer pasted value in silence, so somebody pasting a long passphrase set
+  // a DIFFERENT credential from the one they pasted - and then could not sign in with it.
+  // =========================================================================
+
+  describe('the declared credential bound', () => {
+    it('states the bound on every credential box, and names it from the box', () => {
+      arriveAsSelf(account(7));
+
+      for (const id of EVERY_CONTROL_ID) {
+        const box = query(`#${id}`) as HTMLInputElement | null;
+
+        if (box === null) {
+          continue;
+        }
+
+        const statement = box.closest('app-form-field')?.querySelector<HTMLElement>(
+          '.form-field__limit',
+        );
+
+        expect(box.getAttribute('maxlength'))
+          .withContext(`${id} enforces the bound`)
+          .toBe(String(CREDENTIAL_MAX_LENGTH));
+        expect((statement?.textContent ?? '').trim())
+          .withContext(`${id} states the bound it enforces`)
+          .toBe(`At most ${CREDENTIAL_MAX_LENGTH} characters.`);
+        expect(box.getAttribute('aria-describedby'))
+          .withContext(`${id} names the statement, so it is heard on focus`)
+          .toContain(statement?.id ?? 'missing');
+      }
     });
   });
 });

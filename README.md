@@ -1009,7 +1009,7 @@ Three mechanical differences, and nothing else:
   Compose v1 is end-of-life and absent from current Docker distributions; the literal v1
   spelling exits 127 without starting anything. No product change can address this.
 
-**Result matrix.** All seven gates were executed from this repository on **17 August 2026** on
+**Result matrix.** All seven gates were executed from this repository on **20 August 2026** on
 Linux (Ubuntu 25.10 container) with .NET SDK 8.0.423 (runtimes Microsoft.AspNetCore.App and
 Microsoft.NETCore.App 8.0.29), Node v20.20.2, npm 10.8.2, Angular CLI 19.2.27 driving Angular
 19.2.25 and TypeScript 5.7.3, Google Chrome 151.0.7922.71 (reported by Karma as Chrome Headless
@@ -1022,14 +1022,14 @@ several dates invites the reader to compare rows that were never measured agains
 and the counts move whenever test cases are added — which they have been, repeatedly, as reviews
 closed gaps in the test net. One tree, one toolchain, one sitting, seven rows.
 
-| Gate | Command run | Status (17 Aug 2026) | Measured evidence |
+| Gate | Command run | Status (20 Aug 2026) | Measured evidence |
 | --- | --- | --- | --- |
 | 1 | Gate 1 above | **PASS** | Restore reported 0 `NU` diagnostics; `Build succeeded. 0 Warning(s) 0 Error(s)` across all six projects, emitting `DnnMigration.Api.dll` — the exact assembly name the image `ENTRYPOINT` requires |
-| 2 | Gate 2 above | **PASS** | `DnnMigration.UnitTests` 3 142 passed / 0 failed / 0 skipped in 10.9 s; `DnnMigration.IntegrationTests` 2 009 passed / 0 failed / 0 skipped in 6 m 0 s; **5 151 tests total**, both assemblies reporting `Test Run Successful` |
-| 3 | Gate 3 above | **PASS** | `npm ci` printed `added 989 packages, and audited 990 packages in 19s` and left `package-lock.json` byte-identical. The two figures name different sets and neither is the lockfile's own count: **989 is what was installed** on this platform — the lockfile's **1,123** `node_modules` entries less the **134** optional packages pinned to another OS or CPU, every one of the 134 marked `optional`; **990 is what was audited**, that same set plus the workspace root. Production build emitted `dist/dnn-migration/browser`; initial payload **476.44 kB raw / 126.20 kB transfer** |
-| 4 | Gate 4 above | **PASS** | `TOTAL: 6510 SUCCESS` — 6 510 specs, zero failures; coverage written to `frontend/coverage/dnn-migration` — statements **95.29 %** (12 537/13 156), branches **85.89 %** (4 232/4 927), functions **97.47 %** (2 823/2 896), lines **95.28 %** (12 241/12 847) |
-| 5 | Gate 5 above | **PASS** | `Failed: 0, Passed: 2009, Skipped: 0` on `DnnMigration.IntegrationTests.dll` in 7 m 4 s; the unit-test assembly reports `No test matches the given testcase filter` and the run still exits 0, which is what proves every integration test carries the trait |
-| 6 | Gate 6 above | **PASS** | Exit 0; both images tagged — `dnnmigration-api:latest` (196 MB) and `dnnmigration-frontend:latest` (63.6 MB) |
+| 2 | Gate 2 above | **PASS** | `DnnMigration.UnitTests` 3 270 passed / 0 failed / 0 skipped in 11.8 s; `DnnMigration.IntegrationTests` 2 090 passed / 0 failed / 0 skipped in 4 m 45 s; **5 360 tests total**, both assemblies reporting `Test Run Successful` |
+| 3 | Gate 3 above | **PASS** | `npm ci` printed `added 989 packages, and audited 990 packages` and left `package-lock.json` byte-identical. The two figures name different sets and neither is the lockfile's own count: **989 is what was installed** on this platform — the lockfile's **1,123** `node_modules` entries less the **134** optional packages pinned to another OS or CPU, every one of the 134 marked `optional`; **990 is what was audited**, that same set plus the workspace root. Production build emitted `dist/dnn-migration/browser`; initial payload **482.73 kB raw / 127.55 kB transfer** |
+| 4 | Gate 4 above | **PASS** | `TOTAL: 6781 SUCCESS` — 6 781 specs, zero failures; coverage written to `frontend/coverage/dnn-migration` — statements **95.36 %** (13 215/13 857), branches **85.84 %** (4 499/5 241), functions **97.56 %** (2 964/3 038), lines **95.36 %** (12 909/13 537) |
+| 5 | Gate 5 above | **PASS** | `Failed: 0, Passed: 2090, Skipped: 0` on `DnnMigration.IntegrationTests.dll` in 4 m 47 s; the unit-test assembly reports `No test matches the given testcase filter` and the run still exits 0, which is what proves every integration test carries the trait |
+| 6 | Gate 6 above | **PASS** | Exit 0; both images tagged. `dnnmigration-api:latest` measures **174,025,662 bytes** — **174.0 MB** decimal, **165.96 MiB** binary, the `174MB` that `docker images` renders — and `dnnmigration-frontend:latest` **63,663,311 bytes** (**63.7 MB** / **60.7 MiB**). Re-derive either with `docker image inspect <tag> --format '{{.Size}}'`. Quoted to the byte with its command because an image size is not bit-stable across rebuilds: two builds of this tree measured 34,801 bytes apart |
 | 7 | Gate 7 above | **PASS** | `up -d` transitioned the api service `Started` → `Waiting` → `Healthy`, which released `dnnmigration-frontend` through its `condition: service_healthy` gate; on the API origin `/health`, `/health/live` and `/health/ready` each answered **200** anonymously with the health document, and `curl -f http://localhost:4200` → 200 (4 428 bytes, the served `index.html` byte for byte) while the SPA origin answered **404** to all three API health paths and **200** to its own `/nginx-health`; both services `Up (healthy)`; `down` removed both containers and the network, every step exit 0 |
 
 Gate 7 ran as a single uninterrupted `up -d` → probe → `down` cycle from a fully torn-down

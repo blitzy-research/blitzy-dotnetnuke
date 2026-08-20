@@ -73,6 +73,21 @@
   line-height: var(--line-height-none);
 }
 
+// ⚠ THE ONE DESTRUCTIVE CONTROL ON THIS SCREEN THAT WAS NOT PAINTED AS ONE. Measured across the six shared-table
+// listings, this grid's delete command computed `#003366` — the PRIMARY hue every non-destructive command uses —
+// while all five siblings define a danger variant and paint `var(--color-danger)`. The cause is structural rather
+// than a wrong value: `profile-definitions__row-action` above is shared by all four commands, so the delete
+// button had no class of its own and fell through to the generic button chrome. The glyph is a bare multiplication
+// sign, so hue was the ONLY signal distinguishing "remove this property permanently" from "move it up one place",
+// and it was absent.
+//
+// The colour is pinned rather than moved on hover, for the same reason the sibling listings pin theirs: a
+// destructive command must stay in the danger hue and this vocabulary declares exactly ONE danger token, so
+// there is no second red to move to.
+.profile-definitions__row-action--danger {
+  color: var(--color-danger);
+}
+
 // `anywhere` rather than `break-word` is the load-bearing choice. Both break inside a word to avoid
 // overflow, but only `anywhere` also lets the break count towards the element's minimum content size — and
 // it is that contribution the table's column algorithm reads.

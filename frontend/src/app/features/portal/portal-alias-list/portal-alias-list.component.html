@@ -118,12 +118,22 @@
       region survives to say it. `[failed]` keeps the two apart: a refused read reports that the records
       could not be READ and never that none EXIST.
     -->
+    <!--
+      ⚠ THIS GRID DECLARES ITS OWN SCROLL FLOOR, AND THE SHARED ONE WAS MEASURED DOING REAL HARM HERE. The
+      shared floor is 60rem, solved for the nine- to thirteen-column administration grids. This listing has
+      TWO columns needing 207px between them, and the shared floor inflated its table to 960px: at a 320
+      viewport the host name — the only data on the screen — began 214px past the right edge of a 271px
+      scrollport, so the visible table was three Edit buttons above an apparently empty body. The floor comes
+      from the shared compact token, which carries that measurement and its derivation, so the table fills any
+      container wider than it and never scrolls at a width where it does not have to.
+    -->
     <app-data-table
       [columns]="columns()"
       [rows]="rows()"
       [rowKey]="aliasRowKey"
       [failed]="listFailed()"
       [emptyMessage]="emptyMessage"
+      minInlineSize="var(--table-min-inline-size-compact)"
       (rowSelect)="editAlias($event)"
     >
       <span dataTableCaption>{{ heading }}</span>

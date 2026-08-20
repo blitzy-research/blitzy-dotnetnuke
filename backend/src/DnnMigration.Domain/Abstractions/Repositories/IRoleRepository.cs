@@ -171,6 +171,34 @@ public interface IRoleRepository
     /// <returns>The roles in that group; an empty list when the group is empty or unknown.</returns>
     Task<IReadOnlyList<Role>> GetRolesByGroupAsync(int roleGroupId, int portalId, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Returns how many roles each of one portal's groups classifies, keyed by group identifier.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THIS EXISTS SO A SCREEN CAN OFFER A DELETION ONLY WHEN THE DELETION WOULD SUCCEED, AND IT IS
+    /// DELIBERATELY THE SAME QUESTION <see cref="GetRolesByGroupAsync"/> ANSWERS. Removing a group is
+    /// refused while it still classifies a role, and the only evidence a client previously had for that was
+    /// the role listing in front of the operator - which is scoped to one page and narrowed by whatever the
+    /// operator has typed into the filter. Narrowing to a name that matches nothing emptied the page and so
+    /// made a populated group look empty, which turned a correct refusal into a broken promise: the command
+    /// appeared, the confirmation was accepted, and the server answered with a conflict. A count that no
+    /// filter and no page boundary can influence is the only thing that closes that gap.
+    /// </para>
+    /// <para>
+    /// One query for the whole portal rather than one per group: a portal may define any number of groups,
+    /// and asking per group would make a listing read scale with the number of groups it is describing.
+    /// Groups that classify nothing are absent from the result rather than present with zero, so a caller
+    /// must treat a missing key as zero - which is what "this group is empty" means.
+    /// </para>
+    /// </remarks>
+    /// <param name="portalId">The portal whose groups are being counted.</param>
+    /// <param name="cancellationToken">Propagates notification that the operation should stop.</param>
+    /// <returns>The count per group identifier, omitting groups that classify no roles.</returns>
+    Task<IReadOnlyDictionary<int, int>> CountRolesByGroupAsync(
+        int portalId,
+        CancellationToken cancellationToken = default);
+
     // Dbo.UserRoles CARRIES NO PORTAL COLUMN. Its terminal columns are UserRoleID (IDENTITY(1,1)), UserID,
     // RoleID, ExpiryDate, IsTrialUsed and the later EffectiveDate added at 03.02.03.SqlDataProvider:L380 -
     // and no PortalID among them.

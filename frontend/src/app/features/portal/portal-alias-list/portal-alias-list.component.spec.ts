@@ -867,6 +867,49 @@ describe('PortalAliasListComponent', () => {
         .toBe(true);
     });
 
+    // ⚠ TWO DEFECTS THAT ONLY THIS GRID COULD HAVE — QA-7. Both came from the same place: a two-column table
+    // being sized by machinery derived for grids of nine to thirteen columns.
+    //
+    // FIRST, the command track was authored `min-content`, which reads as "no wider than the button needs" and
+    // is exactly the right intent — but a fixed table layout honours only definite lengths and percentages on a
+    // column track, so an intrinsic keyword is treated as `auto`. With the other column unsized too, two auto
+    // tracks split the table in half: measured, the command column resolved to 480px at a 320 viewport and
+    // 599px at 1440, against a painted button of 50.13px. Nothing reported a fault, because a column handed too
+    // much has not overflowed anything.
+    //
+    // SECOND, the shared 60rem floor inflated the whole table to 960px, so at 320 the host name — the only data
+    // this screen carries — began 214px past the right edge of a 271px scrollport and the visible table was a
+    // column of identical Edit buttons above an apparently empty body.
+    it('sizes its two columns for their own content instead of halving an inflated table', () => {
+      arrive([alias(7, 'localhost')]);
+
+      const tracks = queryAll<HTMLTableColElement>('colgroup col');
+
+      expect(tracks).withContext('one track per column').toHaveSize(2);
+
+      const command = tracks[0]?.style.inlineSize ?? '';
+
+      expect(command)
+        .withContext('an intrinsic keyword is discarded by a fixed table layout')
+        .not.toContain('content');
+      expect(command)
+        .withContext('the shared track for a column holding one WORDED command')
+        .toContain('--table-command-column-text-inline-size');
+      expect(tracks[1]?.style.inlineSize)
+        .withContext('the host name absorbs the remainder, so the command track resolves as written')
+        .toBe('');
+
+      const table = query<HTMLElement>('table.data-table');
+
+      if (table === null) {
+        throw new Error('the grid did not render');
+      }
+
+      expect(table.style.minInlineSize)
+        .withContext('and this grid declares its own floor rather than the nine-column one')
+        .toContain('--table-min-inline-size-compact');
+    });
+
     it('names the host-name column from the resource value, not from the markup attribute', () => {
       arrive([alias(7, 'localhost')]);
 
@@ -1938,8 +1981,8 @@ describe('PortalAliasListComponent', () => {
       }
 
       expect(getComputedStyle(remove).color)
-        .withContext('#FF0000, the danger token, as on the listing row commands')
-        .toBe('rgb(255, 0, 0)');
+        .withContext('#B00000, the danger token, as on the listing row commands')
+        .toBe('rgb(176, 0, 0)');
 
       const cancel = button(CANCEL_LABEL);
 

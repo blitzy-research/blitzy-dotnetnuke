@@ -22,11 +22,41 @@
   <app-error-banner [problem]="problem()" />
 
   <!--
-    `role="status"` makes this a polite live region, so the sentence is announced without interrupting
-    and without moving focus.
+    ⚠ TWO CHANNELS, WHERE THERE USED TO BE ONE. Every sentence this screen raises went through the polite
+    region below, so "nothing was exported" and "the export produced an empty document" were announced
+    identically and neither interrupted - while a server refusal of the same action went to the assertive
+    banner above. An operator who pressed Export and was told, politely and without interruption, that it
+    had been refused could go on waiting for a download that was never coming.
+
+    A REFUSAL - the action did not happen - is now assertive, matching the banner and the sibling import
+    screen. Rendered conditionally on purpose: `role="alert"` announces on insertion, which is the instant
+    this becomes true.
   -->
-  @if (notice(); as message) {
-    <p role="status">{{ message }}</p>
+  @if (refusalNotice(); as message) {
+    <p class="module-export__notice-refusal" role="alert" aria-live="assertive">{{ message }}</p>
+  }
+
+  <!--
+    AN OUTCOME - the action ran, and this is what it produced - stays polite. An export that found nothing
+    to write is a real answer the legacy screen also reported, not a fault, and interrupting for it would
+    make an ordinary result read as one.
+  -->
+  @if (outcomeNotice(); as message) {
+    <p class="module-export__notice-outcome" role="status">{{ message }}</p>
+  }
+
+  <!--
+    ⚠ THE RECOVERY THIS SCREEN DID NOT HAVE, and the sibling import screen already did. A refused module
+    read left the filename unprepopulated and the confirming action disabled; a refused export left the
+    banner reporting a failure with nothing able to re-attempt it. On both paths the only way forward was
+    to navigate away and come back. Offered only while a failure is actually being presented, so the
+    healthy screen gains no control, and resolved to whichever operation failed rather than to one
+    hard-coded command.
+  -->
+  @if (retryableOperation() !== null) {
+    <p class="module-export__recovery">
+      <button class="module-export__retry" type="button" (click)="onRetry()">Try again</button>
+    </p>
   }
 
   <!--

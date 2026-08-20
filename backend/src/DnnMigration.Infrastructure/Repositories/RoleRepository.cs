@@ -96,8 +96,16 @@ internal sealed class RoleRepository : IRoleRepository
 
         if (!string.IsNullOrWhiteSpace(nameQuery))
         {
-            string wanted = nameQuery.Trim().ToLowerInvariant();
-            query = query.Where(role => role.RoleName.ToLower().Contains(wanted));
+            string trimmed = nameQuery.Trim();
+            string wanted = trimmed.ToLowerInvariant();
+
+            // ⚠ FAIL CLOSED WHEN THE FILTER CANNOT FILTER. A filter made only of supplementary characters
+            // carries no weight in this schema's collation, so the comparison degrades to one that matches
+            // every row - and the screen goes on announcing an active filter over the complete record set.
+            // See CollationSafeFilter for the measurement and for the two remedies that were rejected.
+            query = CollationSafeFilter.CannotDiscriminate(trimmed)
+                ? query.Where(_ => false)
+                : query.Where(role => role.RoleName.ToLower().Contains(wanted));
         }
 
         query = ApplyRoleOrder(query, sortBy, descending);
@@ -191,13 +199,24 @@ internal sealed class RoleRepository : IRoleRepository
     }
 
     /// <inheritdoc />
-    public Task<Role?> GetByIdAsync(int roleId, int portalId, CancellationToken cancellationToken = default)
+    public async Task<Role?> GetByIdAsync(
+        int roleId,
+        int portalId,
+        CancellationToken cancellationToken = default)
     {
         // Both keys are conditions, matching the terminal GetRole. RoleID is IDENTITY(0, 1): zero is the
         // first role an installation creates, so it can never be read as "no role".
-        return _context.Roles
+        Role? role = await _context.Roles
             .Include(r => r.RoleGroup)
-            .FirstOrDefaultAsync(r => r.RoleId == roleId && r.PortalId == portalId, cancellationToken);
+            .FirstOrDefaultAsync(r => r.RoleId == roleId && r.PortalId == portalId, cancellationToken)
+            .ConfigureAwait(false);
+
+        // Inside a transaction the values are taken from what the store just returned rather than from an
+        // instance the request may already hold, so an optimistic-concurrency comparison judges the row this
+        // transaction locked. See TransactionalRead.
+        return await TransactionalRead
+            .InTransactionAsync(_context, role, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -401,6 +420,47 @@ internal sealed class RoleRepository : IRoleRepository
     /// <inheritdoc />
     /// <remarks>
     /// <para>
+    /// The predicate is deliberately identical to the one the removal guard applies, so the count a client
+    /// reads and the refusal the server issues can never disagree. Grouped in the database rather than
+    /// materialising rows and counting them here: the answer wanted is one small integer per group, and
+    /// fetching every role of every group to discard all but its cardinality would read the whole table to
+    /// produce a handful of numbers.
+    /// </para>
+    /// <para>
+    /// ⚠ THE NULL GROUP IS EXCLUDED, AND EXCLUDING IT IS THE POINT. <c>Roles.RoleGroupID</c> is nullable and
+    /// a role belonging to no group carries null there - that is the ordinary case, measured at eleven of
+    /// this tenant's fifteen roles. Those roles are not classified BY any group, so counting them would
+    /// attribute them to a group that does not exist, and no group's deletability depends on them.
+    /// </para>
+    /// </remarks>
+    public async Task<IReadOnlyDictionary<int, int>> CountRolesByGroupAsync(
+        int portalId,
+        CancellationToken cancellationToken = default)
+    {
+        List<GroupRoleCount> counts = await _context.Roles
+            .Where(r => r.PortalId == portalId && r.RoleGroupId != null)
+            .GroupBy(r => r.RoleGroupId!.Value)
+            .Select(group => new GroupRoleCount(group.Key, group.Count()))
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return counts.ToDictionary(row => row.RoleGroupId, row => row.Count);
+    }
+
+    /// <summary>
+    /// One group's identifier paired with how many roles it classifies.
+    /// </summary>
+    /// <remarks>
+    /// A named projection rather than an anonymous type, because the query is translated and the shape has
+    /// to be nameable at the point the provider builds it.
+    /// </remarks>
+    /// <param name="RoleGroupId">The group.</param>
+    /// <param name="Count">How many roles it classifies.</param>
+    private sealed record GroupRoleCount(int RoleGroupId, int Count);
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// <para>
     /// The portal is applied through the assignment's role, since <c>dbo.UserRoles</c> has no portal column
     /// of its own. The role is materialised alongside the assignment because the caller that asks this
     /// question is almost always about to consult the role's terms.
@@ -586,10 +646,22 @@ WHERE [UserID] = {userId} AND [RoleID] = {roleId}")
 
         if (!string.IsNullOrWhiteSpace(accountQuery))
         {
-            string wantedAccount = accountQuery.Trim().ToLowerInvariant();
-            query = query.Where(a =>
-                a.User!.DisplayName.ToLower().Contains(wantedAccount)
-                || a.User!.Username.ToLower().Contains(wantedAccount));
+            string trimmedAccount = accountQuery.Trim();
+            string wantedAccount = trimmedAccount.ToLowerInvariant();
+
+            // ⚠ FAIL CLOSED WHEN THE FILTER CANNOT FILTER. A filter made only of supplementary characters
+            // carries no weight in this schema's collation, so the comparison degrades to one that matches
+            // every row - and the screen goes on announcing an active filter over the complete record set.
+            // See CollationSafeFilter for the measurement and for the two remedies that were rejected.
+            //
+            // Carried onto the MEMBERSHIP listing as well as the role listing, and not because a report named
+            // it: the same open failure here would offer an operator every member of a role while claiming to
+            // show one, and withdrawing a membership is destructive.
+            query = CollationSafeFilter.CannotDiscriminate(trimmedAccount)
+                ? query.Where(_ => false)
+                : query.Where(a =>
+                    a.User!.DisplayName.ToLower().Contains(wantedAccount)
+                    || a.User!.Username.ToLower().Contains(wantedAccount));
         }
 
         query = ApplyMembershipOrder(query, sortBy, descending);

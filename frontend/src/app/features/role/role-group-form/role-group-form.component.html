@@ -52,13 +52,14 @@
     </div>
 
     <!--
-      The first VALIDATES. The legacy declared its update link with no validation attribute at all,
+      The first VALIDATES. The legacy declared its commit link with no validation attribute at all,
       taking that framework's default of true, and guarded the whole handler behind a page-validity
-      check.
+      check. Its label read "Update" because that one link served both creating and editing a group;
+      only creating was migrated here, so the label names creating.
     -->
     <div class="role-group-form__actions">
       <button class="form-action--primary" type="submit" [disabled]="submitting()"
-          [attr.aria-busy]="submitting() ? 'true' : null">{{ updateActionLabel }}</button>
+          [attr.aria-busy]="submitting() ? 'true' : null">{{ createActionLabel }}</button>
       <button type="button" (click)="cancel()">{{ cancelActionLabel }}</button>
 
       <!-- The one string authored in this template, because the class exposes no member for it. -->

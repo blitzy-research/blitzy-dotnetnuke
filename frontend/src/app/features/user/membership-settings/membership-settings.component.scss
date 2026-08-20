@@ -25,6 +25,32 @@
   // instead of to this track, so the override applies only to the six text, number and select fields it was
   // actually written for.
   --field-label-inline-size: var(--field-label-inline-size-wider);
+
+  // ⚠ BELOW `lg` THE CAPTION YIELDS TO THE VALUE, because at that width the two can no longer both have
+  // what they want and the value is the one that cannot be recovered.
+  //
+  // The shared field caps its caption track at `min(token, 45%)`, so at 768 the 300px above resolves to
+  // 225.891px of a 502px field and leaves the value 260.109px. Measured against the running screen, that is
+  // 21.6px short of what the longest redirect option needs: `No redirect (stay on the current page)` is
+  // 249.287px of text against a 242px content box once Chrome's ~14.4px dropdown-arrow reserve is taken
+  // out, so the picker painted `No redirect (stay on the current pa` and clipped `ge)` with no ellipsis.
+  // A native select cannot signal that loss the way a table cell can — `scrollWidth` equals `clientWidth`
+  // because a select never scroll-overflows its own label, so nothing in the DOM even reports it.
+  //
+  // ⚠ THE WIDE STEP WAS TRIED FIRST AND WAS MEASURABLY 6.68px SHORT. It takes the caption to 200px and
+  // the value to 286px, and re-measurement on the running screen showed all three redirect pickers STILL
+  // eliding `ge)` — because the arrow reserve on this select is 25.393px, not the 14.393px the first
+  // estimate back-solved, so the value needs 292.68px. The step below it takes the caption to 180px and the
+  // value to 306px, 13.3px clear, and still holds the longest caption here — `Redirect After
+  // Registration` at 177.63px — on one line. Going all the way to the base 150px would wrap that caption
+  // to buy width the value does not need.
+  //
+  // The captions this screen widened the track for are policy sentences that already wrap; they wrap a
+  // little more at this width, and a wrapped caption stays entirely readable while a clipped value does
+  // not. The cap still applies on top, so nothing here can exceed 45% of a narrower field.
+  @include mx.respond-below('lg') {
+    --field-label-inline-size: var(--field-label-inline-size-medium);
+  }
 }
 
 .membership-settings {
@@ -132,12 +158,22 @@
 // the compact `--font-size-lg` step that all three settings screens use for a disclosure head, and this
 // legend's `h3` took the same 15px from the element ramp - so the sub-region and the region containing it
 // were the same size. One step down restores the rank.
+// ⚠ QA-24 — THE THIRD LEVEL IS NOW A PERCEIVABLE STEP BELOW THE SECOND, AND IT WAS ONE PIXEL. Measured:
+// the section heading above this legend renders at 15px/700 (`--font-size-lg`, the size every one of the
+// twelve section headings in this application uses) and this caption rendered at 14px/700 — a one-pixel
+// distinction that conveys no rank at all, while the 14px is also the body size, so the caption matched the
+// text it was captioning. `--font-size-sm` is the next step the vocabulary offers and gives a 2px drop; the
+// bold weight and the primary colour are what keep it reading as a caption rather than as small print.
+//
+// The legacy vocabulary offers no third level to copy — `Website/Portals/_default/default.css` L65-L80
+// declares exactly two, `.Head` at 20px/normal for a page title and `.SubHead` at 11px/bold for every item
+// title — so a third rank is a net addition and is recorded as such in MIGRATION_NOTES.md.
 .membership-settings__columns-legend {
   padding-inline: 0;
   margin-block-end: var(--space-2);
 
   h3 {
-    font-size: var(--font-size-md);
+    font-size: var(--font-size-sm);
   }
 }
 

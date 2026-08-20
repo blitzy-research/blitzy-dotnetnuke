@@ -160,6 +160,7 @@ function roleGroup(roleGroupId = 4, overrides: Partial<RoleGroup> = {}): RoleGro
     portalId: -1,
     roleGroupName: 'Paid Services',
     description: 'Groups that carry a fee',
+    classifiedRoleCount: 0,
     ...overrides,
   };
 }
@@ -1282,7 +1283,7 @@ describe('RoleListComponent', () => {
     });
 
     it('withholds the group removal while the group still holds roles', async () => {
-      arrive([roleGroup(4, { roleGroupName: 'Paid Services' })]);
+      arrive([roleGroup(4, { roleGroupName: 'Paid Services', classifiedRoleCount: 1 })]);
 
       await chooseFilter('Paid Services');
       expectRequest('GET', ROLES_URL).flush(pageOf([roleRow()]));
@@ -1294,13 +1295,61 @@ describe('RoleListComponent', () => {
     });
 
     it('offers the group removal once the group is empty', async () => {
-      arrive([roleGroup(4, { roleGroupName: 'Paid Services' })]);
+      arrive([roleGroup(4, { roleGroupName: 'Paid Services', classifiedRoleCount: 0 })]);
 
       await chooseFilter('Paid Services');
       expectRequest('GET', ROLES_URL).flush(pageOf([]));
       fixture.detectChanges();
 
       expect(hasGroupCommand('remove')).withContext('offered when empty').toBeTrue();
+    });
+
+    it('keeps the removal withheld, and keeps saying why, once a filter empties the page', async () => {
+      // ⚠ THIS IS THE REPORTED DEFECT, END TO END, THROUGH THE RENDERED SCREEN. A populated group is
+      // narrowed by a term none of its roles match. The page goes empty. Previously the Delete command
+      // APPEARED at that moment and the explanation DISAPPEARED - the two failures reinforcing each other,
+      // since the operator lost the sentence that would have told them why the command could not work.
+      // Both must now hold: the command stays withheld and the sentence stays on screen.
+      arrive([roleGroup(4, { roleGroupName: 'Paid Services', classifiedRoleCount: 3 })]);
+
+      await chooseFilter('Paid Services');
+      expectRequest('GET', ROLES_URL).flush(pageOf([roleRow()]));
+      fixture.detectChanges();
+
+      expect(hasGroupCommand('remove')).withContext('withheld while occupied').toBeFalse();
+
+      // Now narrow to something the group's roles do not match, so the page empties. Driven through the
+      // SHARED CONTROL rather than a component member, so the spec takes the same path an operator does.
+      const box = query<HTMLInputElement>('app-search-input input');
+
+      expect(box).withContext('the filter box is mounted').not.toBeNull();
+      box!.value = 'nothing-matches-this';
+      box!.dispatchEvent(new Event('input'));
+      box!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      fixture.detectChanges();
+      await settleAddress();
+      expectRequest('GET', ROLES_URL, 'the filtered read').flush(pageOf([]));
+      fixture.detectChanges();
+
+      expect(hasGroupCommand('remove'))
+        .withContext('an empty page is not an empty group')
+        .toBeFalse();
+
+      const explanation = fixture.nativeElement.textContent as string;
+
+      expect(explanation)
+        .withContext('the explanation survives the filter that emptied the page')
+        .toContain('still contains 3 roles');
+    });
+
+    it('states the remedy in the singular when one role stands in the way', async () => {
+      arrive([roleGroup(4, { roleGroupName: 'Paid Services', classifiedRoleCount: 1 })]);
+
+      await chooseFilter('Paid Services');
+      expectRequest('GET', ROLES_URL).flush(pageOf([roleRow()]));
+      fixture.detectChanges();
+
+      expect(fixture.nativeElement.textContent as string).toContain('still contains 1 role,');
     });
 
     /**
@@ -1831,8 +1880,19 @@ describe('RoleListComponent', () => {
         .withContext('and no removal command for an act the server refuses')
         .toBeNull();
       expect(protectedRow.textContent)
-        .withContext('the reason is available to a reader')
-        .toContain('required by this site');
+        .withContext('the reason is available to a reader, and it names WHICH role this is')
+        .toContain("is this site's designated administrators role, so it cannot be edited or deleted");
+
+      // ⚠ THE STATE IS VISIBLE, NOT ONLY AUDIBLE. The cell used to hold an `aria-hidden` em dash over a
+      // visually hidden sentence, so a sighted keyboard user saw an empty cell and had no way to reach the
+      // `title` that explained it. Both withheld cells now name the state in text of their own.
+      const withheldStates = Array.from(
+        protectedRow.querySelectorAll('.role-list__row-action-state'),
+      ).map((element) => (element.textContent ?? '').trim());
+
+      expect(withheldStates)
+        .withContext('the edit and delete cells each state the row is protected')
+        .toEqual(['Protected', 'Protected']);
 
       expect(ordinaryRow.querySelector('a.role-list__row-action[aria-label^="Edit"]'))
         .withContext('an ordinary role is unaffected')
@@ -2612,7 +2672,12 @@ describe('RoleListComponent', () => {
         .filter((entry) => entry.declared === '')
         .map((entry) => entry.index);
 
-      expect(flexible).withContext('one and only one flexible track').toEqual([4]);
+      expect(flexible.length).withContext('one and only one flexible track').toBe(1);
+
+      // ⚠ IDENTIFIED BY ITS HEADING RATHER THAN BY ITS INDEX. The shared grid hoists the row-header column to
+      // the front while its scroll region clips, so a column's position depends on a width measurement; the
+      // heading does not.
+      expect((headerCells()[flexible[0]]?.textContent ?? '').trim()).toBe('Description');
 
       // And the command tracks declare the token they are supposed to, rather than inheriting the slack.
       for (let index = 0; index < 3; index += 1) {
@@ -2625,17 +2690,159 @@ describe('RoleListComponent', () => {
     // Measured at a 768 viewport before this guard, in the 100.80px name track: `Administrators` painted as
     // `Administrator` + `s`. Declaring the column atomic keeps the value on one line and ellipsises what will
     // not fit, so what shows is a recognisable prefix rather than two fragments that read as corruption.
+    // ⚠ THE REPAYMENT TO THE NAME COLUMN, WRITTEN DOWN SO IT CANNOT BE TAKEN BACK QUIETLY — QA-4d.
+    //
+    // The name track was donated down to 10.5% to buy width for six headings, on a stated premise that turned
+    // out to be false: that a role name "wraps and stays legible at a narrower measure". It does not — the
+    // column is atomic, so it ELLIPSISES — and measured at 1440, seven of ten names painted with an ellipsis in
+    // a 125.78px track. 3.5% was repaid out of four columns holding genuine surplus, so the description's slack
+    // is untouched. Both halves are asserted: the identity column must be the widest weighted track, and the
+    // weighted total must not grow, which is what would eat the slack instead of the surplus.
+    it('gives the identity column more width than any other weighted track, without touching the slack', () => {
+      arrive();
+
+      const cells = headerCells();
+      const tracks = queryAll<HTMLTableColElement>('colgroup col');
+      const weighted: readonly { heading: string; weight: number }[] = tracks
+        .map((track, index) => ({
+          heading: (cells[index]?.textContent ?? '').trim(),
+          declared: track.style.inlineSize,
+        }))
+        .filter((entry) => entry.declared.endsWith('%'))
+        .map((entry) => ({ heading: entry.heading, weight: Number.parseFloat(entry.declared) }));
+      const identity = weighted.find((entry) => entry.heading === 'Name');
+
+      expect(identity).withContext('the name column declares a weight').toBeDefined();
+
+      for (const entry of weighted) {
+        expect(entry.weight)
+          .withContext(`"${entry.heading}" must not outweigh the identity column`)
+          .toBeLessThanOrEqual(identity?.weight ?? 0);
+      }
+
+      expect(weighted.reduce((total, entry) => total + entry.weight, 0))
+        .withContext('the repayment came from the surplus columns, not from the description slack')
+        .toBeLessThanOrEqual(70);
+    });
+
+    // The counterpart: the columns that funded the repayment must still hold their own headings. A TWO-WORD
+    // heading is not at risk — the shared label box wraps it, so a reduction costs a line of height and no
+    // text — but a SINGLE-WORD heading cannot wrap and must be given a track that fits it.
+    //
+    // ⚠ THE OVERHEAD FIGURE BELOW IS THE WHOLE POINT OF THIS TEST, AND IT USED TO BE WRONG. The earlier
+    // version modelled the requirement as "the word's measured width plus the cell's 8px of padding", which
+    // let `Public` (7%) and `Auto` (6%) pass while the RUNTIME painted them as "Pu…" and "A…" at 320 and
+    // 768. The model omitted the sort-indicator gutter: a sortable heading's label box is not the track minus
+    // padding, it is the track minus padding AND the space reserved for the 12px indicator beside it.
+    // Measured in a real browser at the 960px floor: `Public` declared 7% (67.2px of track) and its label box
+    // came out at 43.19px for a 45.01px word — an overhead of 24.01px, not 8px. Understating that overhead is
+    // precisely how a width test passes a heading that clips, so it is stated once here and applied to both.
+    it('leaves every column that funded the repayment wide enough for its own heading', () => {
+      arrive();
+
+      const cells = headerCells();
+      const tracks = queryAll<HTMLTableColElement>('colgroup col');
+      const floor = 960;
+
+      // Track width consumed before the label box begins, on a SORTABLE heading: cell padding plus the
+      // reserved indicator gutter. Measured, not assumed.
+      const sortableOverhead = 24.01;
+      const required: Readonly<Record<string, number>> = {
+        ['Fee']: 49.85,
+        ['Trial']: 54.85,
+        // The two single-word headings that actually clipped, now stated as word + measured overhead:
+        // 45.01 + 24.01 and 34.15 + 24.01.
+        ['Public']: 45.01 + sortableOverhead,
+        ['Auto']: 34.15 + sortableOverhead,
+      };
+
+      for (const [heading, needs] of Object.entries(required)) {
+        const index = cells.findIndex((cell) => (cell.textContent ?? '').trim() === heading);
+
+        expect(index).withContext(`"${heading}" is rendered`).toBeGreaterThanOrEqual(0);
+
+        const declared = tracks[index]?.style.inlineSize ?? '';
+
+        expect(declared).withContext(`"${heading}" declares a percentage`).toMatch(/%$/);
+        expect((Number.parseFloat(declared) / 100) * floor)
+          .withContext(`"${heading}" needs ${needs}px at the floor and declares ${declared}`)
+          .toBeGreaterThanOrEqual(needs);
+      }
+    });
+
+    // ⚠ THE GUARD THE PREVIOUS MODEL LACKED. A two-word heading is safe from ELLIPSIS because it wraps -
+    // but wrapping only helps down to the width of its LONGEST WORD, and below that the same clipping
+    // returns. The three columns that funded the Public/Auto correction are all two-word, so this states the
+    // floor each of them may not cross. Widths measured in a real browser at 700 15px Tahoma: "Billing"
+    // 45.828px, "Period" 46.688px, "Every" 40.875px, "Trial" 30.85px.
+    //
+    // The model reproduces the browser's own measured slack to within 0.02px on all four columns, which is
+    // what makes it trustworthy as a guard rather than a guess: predicted 2.16 / 3.70 / 7.11 / 1.30 against
+    // measured 2.172 / 3.703 / 7.125 / 1.312. `Trial Period` is the tightest on the grid at ~1.3px, so this
+    // test is the thing that will catch it first if the type scale, the cell padding or the sort-indicator
+    // gutter is ever changed.
+    it('leaves every wrapping heading wide enough for its own longest word', () => {
+      arrive();
+
+      const cells = headerCells();
+      const tracks = queryAll<HTMLTableColElement>('colgroup col');
+      const floor = 960;
+      const sortableOverhead = 24.01;
+
+      // Heading -> the measured width of its widest single word. Wrapping cannot rescue a column narrower
+      // than this, so it is the real constraint on every multi-word heading.
+      const longestWord: Readonly<Record<string, number>> = {
+        ['Billing Every']: 45.828,
+        ['Billing Period']: 46.688,
+        ['Trial Every']: 40.875,
+        ['Trial Period']: 46.688,
+      };
+
+      for (const [heading, word] of Object.entries(longestWord)) {
+        const index = cells.findIndex((cell) => (cell.textContent ?? '').trim() === heading);
+
+        expect(index).withContext(`"${heading}" is rendered`).toBeGreaterThanOrEqual(0);
+
+        const declared = tracks[index]?.style.inlineSize ?? '';
+
+        expect(declared).withContext(`"${heading}" declares a percentage`).toMatch(/%$/);
+        expect((Number.parseFloat(declared) / 100) * floor)
+          .withContext(
+            `"${heading}" wraps, but its longest word needs ${word}px plus ${sortableOverhead}px of `
+            + `padding and sort gutter, and it declares ${declared}`,
+          )
+          .toBeGreaterThanOrEqual(word + sortableOverhead);
+      }
+    });
+
+    // The budget the two corrections above have to live inside: raising Public and Auto had to be funded from
+    // other WEIGHTED tracks, never from the flexible description slack.
+    it('keeps the declared weighted total within its budget', () => {
+      arrive();
+
+      const declared = queryAll<HTMLTableColElement>('colgroup col')
+        .map((track) => track.style.inlineSize)
+        .filter((size) => size.endsWith('%'))
+        .map((size) => Number.parseFloat(size));
+
+      expect(declared.reduce((total, weight) => total + weight, 0)).toBeCloseTo(70, 5);
+    });
+
     it('keeps the role name whole instead of breaking it mid-word', () => {
       arrive();
 
       const cells = headerCells();
+      const cellFor = (heading: string): HTMLTableCellElement | undefined =>
+        cells.find((cell) => (cell.textContent ?? '').trim() === heading);
 
-      expect(cells[3]?.getAttribute('data-atomic')).withContext('the name is one token').toBe('true');
+      expect(cellFor('Name')?.getAttribute('data-atomic'))
+        .withContext('the name is one token')
+        .toBe('true');
 
-      // ⚠ THE COUNTERPART, AND THE REASON THIS IS NOT A BLANKET RULE. Index 4 is the description - the one
-      // track left flexible, holding a sentence rather than a name. Wrapping is correct there, and
-      // ellipsising it would hide text that fits perfectly well on a second line.
-      expect(cells[4]?.getAttribute('data-atomic'))
+      // ⚠ THE COUNTERPART, AND THE REASON THIS IS NOT A BLANKET RULE. The description is the one track left
+      // flexible, and it holds a sentence rather than a name. Wrapping is correct there, and ellipsising it
+      // would hide text that fits perfectly well on a second line.
+      expect(cellFor('Description')?.getAttribute('data-atomic'))
         .withContext('the flexible column holds a sentence and should wrap')
         .toBeNull();
     });

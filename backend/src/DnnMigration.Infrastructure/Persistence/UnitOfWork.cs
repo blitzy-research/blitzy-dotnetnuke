@@ -89,6 +89,19 @@ internal sealed class UnitOfWork : IUnitOfWork
         {
             throw ConcurrencyConflictException.ForLostUpdate(exception);
         }
+
+        // ⚠ THE LAST CLAUSE IS DELIBERATELY NOT NARROWED TO DbUpdateException, AND ITS ABSENCE WAS MEASURED AS
+        // A 500. Not every store refusal reaches here wrapped: the mapper wraps a failure raised while
+        // EXECUTING the update, but a failure raised while OPENING the flush - the savepoint the provider
+        // issues when a transaction is already in hand - is raised by the client library and arrives
+        // unwrapped. Under a write race that was exactly the shape observed, so the loser of the race
+        // escaped all three clauses above and was answered as a server fault. The filter is the same
+        // predicate, so this clause admits nothing the narrowed ones would have refused; it only stops the
+        // wrapper's presence deciding whether a lost update is reported as one.
+        catch (Exception exception) when (LostUpdateTranslator.Describes(exception))
+        {
+            throw ConcurrencyConflictException.ForLostUpdate(exception);
+        }
     }
 
     /// <inheritdoc />

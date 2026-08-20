@@ -156,8 +156,20 @@
 // after a save or a delete, exactly the record the operator had just acted on and wanted to check. The
 // reservation is conditional so no screen carries dead space at rest, and it is applied here rather than in
 // the message component's own stylesheet because a fixed element cannot make room for itself.
+// ⚠ THE MEASURED EXTENT OUTRANKS THE CONSTANT, BECAUSE THE CONSTANT WAS TOO SMALL WHERE IT MATTERED. Six rem
+// covers a one-line message on a wide viewport and fails at 320px, where this surface widens to the viewport
+// less two gutters and a sentence that fitted one line at desktop width wraps to four or five - so a message
+// that survives navigation covered the action row it was raised about, and the Save and Delete controls the
+// operator had just used were the ones they could no longer see. The surface now measures itself and
+// publishes its height (see `layout/notifications/notification-list.component.ts`); the offset it is
+// anchored by and one spacing step of clearance are added, so the reservation clears the surface rather than
+// meeting it exactly. The constant is retained as the floor for the frame before the first measurement and
+// for any environment with no resize observer, which is why this is `max()` and not a plain substitution.
 .shell__main--message-reserved {
-  padding-block-end: var(--notification-reserved-block-size);
+  padding-block-end: max(
+    var(--notification-reserved-block-size),
+    calc(var(--notification-measured-block-size, 0px) + var(--space-4) + var(--space-2))
+  );
 }
 
 .shell__footer {

@@ -162,6 +162,17 @@ describe('MemberServicesComponent', () => {
     return element;
   }
 
+  /**
+   * The withheld-state wording rendered in the two command columns, in document order. Read by class
+   * rather than by cell position: the shared grid hoists its row-identity column to the front while the
+   * region is narrow, so a positional index would be asserting on the layout instead of on the state.
+   */
+  function withheldWording(): readonly string[] {
+    return queryAll('.member-services__unavailable').map(
+      (element) => element.textContent?.trim() ?? '',
+    );
+  }
+
   /** Every row command control, in document order. */
   function rowActions(): readonly HTMLButtonElement[] {
     return queryAll('.member-services__row-action').filter(
@@ -412,12 +423,32 @@ describe('MemberServicesComponent', () => {
       expect(bodyRows()[0][5]).toBe('Free');
     });
 
-    it('renders an unknown frequency code without inventing a unit', () => {
-      // `Localization.GetString` answered the empty string for a key it did not hold, and the composed
-      // sentence still rendered.
+    it('names an unrecognised frequency code rather than dropping the unit silently', () => {
+      // ⚠ THIS ASSERTION REQUIRED THE DEFECT — QA-24. `Localization.GetString` answered the empty string
+      // for a key it did not hold and the composed sentence still rendered, so the port reproduced that:
+      // measured against the live API on the role whose stored code is `Q`, the service fee read
+      // `12.34 Every 3` and the trial fee `0.00 for 0` — a count with nothing to count. The figure is
+      // unchanged; what is added is the statement of what could not be resolved, and the code itself,
+      // because that is the part an operator can act on.
       arrive([offer({ serviceFee: 5, billingPeriod: 2, billingFrequency: 'Q' })]);
 
-      expect(bodyRows()[0][4]).toBe('5.00 Every 2');
+      expect(bodyRows()[0][4]).toBe('5.00 Every 2 (unit code Q not recognised)');
+    });
+
+    it('leaves a recognised unit exactly as it was', () => {
+      // The converse, and the guard on the change above: nothing may have shifted for the four codes this
+      // console does word.
+      arrive([offer({ serviceFee: 29.95, billingPeriod: 2, billingFrequency: 'M' })]);
+
+      expect(bodyRows()[0][4]).toBe('29.95 Every 2 Month(s)');
+    });
+
+    it('composes no double space when a recognised unit has no recorded count', () => {
+      // The previous composition interpolated `period ?? ''` into the middle of the sentence and trimmed
+      // the result, which removes an outer space but never an interior one.
+      arrive([offer({ serviceFee: 5, billingPeriod: null, billingFrequency: 'W' })]);
+
+      expect(bodyRows()[0][4]).toBe('5.00 Every Week(s)');
     });
   });
 
@@ -426,10 +457,33 @@ describe('MemberServicesComponent', () => {
   // =========================================================================
 
   describe('the expiry column', () => {
-    it('renders nothing when the account holds no expiring assignment', () => {
+    it('marks an absent expiry rather than painting nothing', () => {
+      // ⚠ THIS ASSERTION WAS INVERTED, AND IT ENCODED A REAL DEFECT. It required an empty cell, and an empty
+      // cell is what a reader saw: measured against the live endpoint, all nine services reported
+      // `expiryDate: null` with `isExpired: false`, and all nine cells painted nothing while occupying a full
+      // 171px track - which reads as a rendering failure rather than as the fact it is. The marker was already
+      // in this template but nested one level too deep, under `expiryDate !== null`, so it could only answer a
+      // NON-NULL date that would not parse: a case the API never produces.
       arrive([offer({ expiryDate: null })]);
 
-      expect(bodyRows()[0][6]).toBe('');
+      const cell = Array.from(queryAll('tbody tr')[0].querySelectorAll('td,th'))[6];
+
+      expect(cell.querySelector('app-absent-value'))
+        .withContext('the shared marker, not an empty cell')
+        .not.toBeNull();
+      expect(bodyRows()[0][6])
+        .withContext('and it says so in both media')
+        .toContain('not recorded');
+    });
+
+    it('marks an expiry the display pipe cannot read, the case that already worked', () => {
+      // The branch the old nesting DID reach. Flattening the conditional must not lose it.
+      arrive([offer({ isSubscribed: true, expiryDate: '0001-01-01T00:00:00Z' })]);
+
+      const cell = Array.from(queryAll('tbody tr')[0].querySelectorAll('td,th'))[6];
+
+      expect(cell.querySelector('app-absent-value')).not.toBeNull();
+      expect(bodyRows()[0][6]).not.toContain('0001');
     });
 
     it('renders the date when the assignment is current', () => {
@@ -469,14 +523,67 @@ describe('MemberServicesComponent', () => {
       expect(action.getAttribute('aria-label')).toBe('Unsubscribe Newsletter');
     });
 
-    it('offers no command at all for a service the server does not offer one for', () => {
+    it('states the payment refusal even when no command is offered, the case that was unreachable', () => {
+      // ⚠ THE EXPLANATION WAS NESTED INSIDE `subscriptionOffered`, WHICH MADE IT SELF-DEFEATING. Its whole
+      // purpose is to say why no command is offered, so gating it on one being offered meant the combination
+      // that actually occurs could never render it. Measured against the live endpoint: the three fee-charging
+      // services report `subscriptionOffered: false` WITH `subscriptionRequiresPayment: true`, and all three
+      // cells painted blank beside a priced service with no indication why.
+      arrive([
+        offer({
+          serviceFee: 29.95,
+          billingPeriod: 2,
+          billingFrequency: 'M',
+          subscriptionOffered: false,
+          subscriptionRequiresPayment: true,
+        }),
+      ]);
+
+      expect(rowActions().length).withContext('still no command, correctly').toBe(0);
+      expect(text('.member-services__unavailable')).toBe('Payment required');
+      expect(bodyRows()[0][4])
+        .withContext('and the fee stays visible, so the offering is not hidden')
+        .toBe('29.95 Every 2 Month(s)');
+    });
+
+    it('offers no subscription command for a service the server does not offer one for', () => {
       // `ShowSubscribe` rendered the link only for a public role that either charges nothing or has a
       // payment processor configured. A tenant that publishes a paid role without configuring one offered
       // nothing, and neither does this.
+      //
+      // ⚠ THE SECOND ASSERTION IS NOW STATED AS THE WHOLE WITHHELD-WORDING SET — QA-24. It used to require
+      // NO withheld wording anywhere in the row, which the trial cell has since acquired: this fixture
+      // offers no trial either, and a trial cell that says so is the fix rather than a regression. Read as
+      // a SET rather than by cell position, because the shared grid hoists its row-identity column to the
+      // front while the region is narrow and a positional index would be measuring the layout.
       arrive([offer({ subscriptionOffered: false })]);
 
       expect(rowActions().length).toBe(0);
-      expect(query('.member-services__unavailable')).toBeNull();
+      expect(withheldWording())
+        .withContext('the trial says so; the subscription cell adds nothing of its own')
+        .toEqual(['No trial offered']);
+    });
+
+    it('says a service offers no trial rather than painting an empty cell', () => {
+      // QA-24. Seven of nine cells in this column were an empty `div.data-table__actions` — a full track
+      // occupied by nothing, beside a subscription cell in the same row that DOES name why it withholds
+      // its own command.
+      arrive([offer({ trialOffered: false })]);
+
+      expect(withheldWording()).toEqual(['No trial offered']);
+      expect(rowActions().length)
+        .withContext('the subscription command is still offered, so it is a statement not a lockout')
+        .toBe(1);
+    });
+
+    it('offers the trial command, and no withheld wording, when a trial IS offered', () => {
+      arrive([offer({ trialOffered: true })]);
+
+      expect(rowActions().map((action) => action.textContent?.trim())).toEqual([
+        'Subscribe',
+        'Use Trial',
+      ]);
+      expect(withheldWording()).toEqual([]);
     });
 
     it('states the refusal instead of a command when the service charges a fee', () => {
@@ -762,6 +869,217 @@ describe('MemberServicesComponent', () => {
       expect(codeInput().value).toBe('nope');
     });
 
+    it('attributes a refusal that names no field to the box it is about', () => {
+      arrive([offer()]);
+
+      const input = codeInput();
+
+      input.value = 'nope';
+      input.dispatchEvent(new Event('input'));
+      submitButton().click();
+      fixture.detectChanges();
+
+      expectRequest('POST', REDEMPTIONS_URL).flush(
+        refusal(
+          'user.service.code-not-matched',
+          400,
+          'Bad Request',
+          'The invitation code entered is not valid or does not exist.',
+        ),
+        { status: 400, statusText: 'Bad Request' },
+      );
+      fixture.detectChanges();
+
+      // QA-17. Measured against the live API: this refusal arrives with NO `errors` dictionary, because a
+      // correct-looking code that no service bears is not a shape violation. So the field-keyed lookup
+      // found nothing, the local rules had nothing to say either, and the box the operator had just been
+      // refused over carried no invalid state and no message at all.
+      expect(codeInput().getAttribute('aria-invalid'))
+        .withContext('the box the refusal is about states that it is invalid')
+        .toBe('true');
+      expect(text('.form-field__error'))
+        .withContext("and says why, in the server's own words")
+        .toContain('is not valid or does not exist');
+    });
+
+    /**
+     * ⚠ A REFUSAL DESCRIBES ONE STRING, AND MUST NOT OUTLIVE IT. Measured against the live API: after a
+     * wrong code was refused, selecting the text and deleting it left the box still carrying
+     * `aria-invalid="true"` and still showing "The invitation code entered is not valid or does not
+     * exist." — a sentence in the past tense beside an EMPTY field. An empty box is not an invalid code,
+     * and a reader who has already made the correction should not be told again that they have not.
+     */
+    it('withdraws a refusal once the operator changes what is in the box', () => {
+      arrive([offer()]);
+
+      const input = codeInput();
+
+      input.value = 'nope';
+      input.dispatchEvent(new Event('input'));
+      submitButton().click();
+      fixture.detectChanges();
+
+      expectRequest('POST', REDEMPTIONS_URL).flush(
+        refusal(
+          'user.service.code-not-matched',
+          400,
+          'Bad Request',
+          'The invitation code entered is not valid or does not exist.',
+        ),
+        { status: 400, statusText: 'Bad Request' },
+      );
+      fixture.detectChanges();
+
+      expect(codeInput().getAttribute('aria-invalid'))
+        .withContext('the refusal is reported while the refused string is still there')
+        .toBe('true');
+
+      // One keystroke of correction is enough: what is in the box is no longer what was refused.
+      const corrected = codeInput();
+
+      corrected.value = 'nope2';
+      corrected.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+
+      expect(codeInput().hasAttribute('aria-invalid'))
+        .withContext('and withdrawn the moment the string changes')
+        .toBeFalse();
+      expect(query('.form-field__error'))
+        .withContext('the sentence goes with it, rather than describing a value that is gone')
+        .toBeNull();
+    });
+
+    /**
+     * The other half of the same rule: an empty box states the LOCAL requirement rather than the server's
+     * sentence about a string that is no longer present.
+     */
+    it('states the local requirement once a refused box is emptied', () => {
+      arrive([offer()]);
+
+      const input = codeInput();
+
+      input.value = 'nope';
+      input.dispatchEvent(new Event('input'));
+      submitButton().click();
+      fixture.detectChanges();
+
+      expectRequest('POST', REDEMPTIONS_URL).flush(
+        refusal(
+          'user.service.code-not-matched',
+          400,
+          'Bad Request',
+          'The invitation code entered is not valid or does not exist.',
+        ),
+        { status: 400, statusText: 'Bad Request' },
+      );
+      fixture.detectChanges();
+
+      const emptied = codeInput();
+
+      emptied.value = '';
+      emptied.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+
+      expect(text('.form-field__error') ?? '')
+        .withContext("the field states what it needs, not what a past attempt was refused for")
+        .not.toContain('is not valid or does not exist');
+    });
+
+    /** Typing the refused string back restores the refusal, because it is still the refused string. */
+    it('restores the refusal if the same string is typed back', () => {
+      arrive([offer()]);
+
+      const input = codeInput();
+
+      input.value = 'nope';
+      input.dispatchEvent(new Event('input'));
+      submitButton().click();
+      fixture.detectChanges();
+
+      expectRequest('POST', REDEMPTIONS_URL).flush(
+        refusal(
+          'user.service.code-not-matched',
+          400,
+          'Bad Request',
+          'The invitation code entered is not valid or does not exist.',
+        ),
+        { status: 400, statusText: 'Bad Request' },
+      );
+      fixture.detectChanges();
+
+      const box = codeInput();
+
+      box.value = 'nope-changed';
+      box.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+
+      const back = codeInput();
+
+      back.value = 'nope';
+      back.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+
+      expect(codeInput().getAttribute('aria-invalid'))
+        .withContext('a code already known to be wrong is still wrong')
+        .toBe('true');
+    });
+
+    it('does not blame the code box for a refusal about a row', () => {
+      arrive([offer()]);
+
+      rowActions()[0].click();
+      fixture.detectChanges();
+
+      expectRequest('POST', SUBSCRIPTION_URL).flush(
+        refusal(
+          'user.service.disabled-forbidden',
+          403,
+          'Forbidden',
+          'This site does not offer self-service subscription management.',
+        ),
+        { status: 403, statusText: 'Forbidden' },
+      );
+      fixture.detectChanges();
+
+      // The converse of the case above, and the reason the code-scoped list is CLOSED rather than
+      // "any refusal of this panel": three of this panel's five operations are refused about a row,
+      // and attributing one of those to the invitation-code box would be a lie.
+      expect(codeInput().hasAttribute('aria-invalid'))
+        .withContext('a refused subscription says nothing about the invitation-code field')
+        .toBeFalse();
+      expect(query('.form-field__error')).toBeNull();
+    });
+
+    it('reports a shape violation the server keyed on the field, the case that already worked', () => {
+      arrive([offer()]);
+
+      const input = codeInput();
+
+      input.value = 'x';
+      input.dispatchEvent(new Event('input'));
+      submitButton().click();
+      fixture.detectChanges();
+
+      expectRequest('POST', REDEMPTIONS_URL).flush(
+        {
+          type: 'urn:dnnmigration:error:request.invalid',
+          title: 'One or more validation errors occurred.',
+          status: 400,
+          detail: 'The request could not be processed as submitted.',
+          errors: { Code: ['An RSVP Code is required.'] },
+          traceId: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
+          correlationId: '7f1c2d34-5e6f-4a7b-8c9d-0e1f2a3b4c5d',
+        },
+        { status: 400, statusText: 'Bad Request' },
+      );
+      fixture.detectChanges();
+
+      // The FIRST rung still outranks the second: a message the server keyed on this field is
+      // rendered rather than the document's own sentence.
+      expect(text('.form-field__error')).toBe('An RSVP Code is required.');
+      expect(codeInput().getAttribute('aria-invalid')).toBe('true');
+    });
+
     it('dismisses its own report without discarding the catalogue', () => {
       arrive([offer()]);
       redeem('Founders-2026');
@@ -802,6 +1120,139 @@ describe('MemberServicesComponent', () => {
       });
       fixture.detectChanges();
       settleAfterCommand([offer()]);
+    });
+  });
+
+  // =========================================================================
+  // BRINGING A REFUSAL TO THE OPERATOR
+  // =========================================================================
+
+  describe('a refused command', () => {
+    /** This panel's own live region, which is in the document whether or not it has anything to say. */
+    function liveRegion(): HTMLElement {
+      const element = query('.error-banner-live');
+
+      if (!(element instanceof HTMLElement)) {
+        throw new Error('the live region is not rendered');
+      }
+
+      return element;
+    }
+
+    it('is focusable at all, which is what the reveal depends on', () => {
+      arrive([offer()]);
+
+      // The reveal below focuses this element programmatically, and an element with no tabindex
+      // cannot take focus. Asserted separately so a change to the shared banner that removed the
+      // attribute fails HERE, naming the cause, rather than only failing the two cases after it.
+      expect(liveRegion().getAttribute('tabindex')).toBe('-1');
+      expect(liveRegion().getAttribute('role')).toBe('alert');
+      expect(liveRegion().getAttribute('aria-live')).toBe('assertive');
+    });
+
+    it('moves focus to the report, because the control that dispatched it has lost focus', () => {
+      arrive([offer()]);
+
+      const input = codeInput();
+
+      input.value = 'nope';
+      input.dispatchEvent(new Event('input'));
+      submitButton().focus();
+      submitButton().click();
+      fixture.detectChanges();
+
+      // ⚠ THE MECHANISM, WHICH IS NOT OBVIOUS. The submit control carries `[disabled]="busy()"`, so it
+      // is disabled the instant the command is dispatched - and a browser moves focus OFF a control the
+      // moment it becomes disabled. Measured against the live API, `document.activeElement` was `BODY`
+      // by the time the refusal arrived: the keyboard operator was at the top of the document and the
+      // banner reporting the refusal could be scrolled out of view entirely.
+      expect(submitButton().disabled)
+        .withContext('the premise: the control that was focused is now disabled')
+        .toBeTrue();
+
+      expectRequest('POST', REDEMPTIONS_URL).flush(
+        refusal(
+          'user.service.code-not-matched',
+          400,
+          'Bad Request',
+          'The invitation code entered is not valid or does not exist.',
+        ),
+        { status: 400, statusText: 'Bad Request' },
+      );
+      fixture.detectChanges();
+
+      expect(document.activeElement)
+        .withContext('focus lands on the assertive report rather than being left on the body')
+        .toBe(liveRegion());
+    });
+
+    it('moves focus to the report for a refused ROW command too, from the same cause', () => {
+      arrive([offer()]);
+
+      rowActions()[0].focus();
+      rowActions()[0].click();
+      fixture.detectChanges();
+
+      expect(rowActions()[0].disabled)
+        .withContext('the premise again: every row command is disabled while one is in flight')
+        .toBeTrue();
+
+      expectRequest('POST', SUBSCRIPTION_URL).flush(
+        refusal(
+          'user.service.disabled-forbidden',
+          403,
+          'Forbidden',
+          'This site does not offer self-service subscription management.',
+        ),
+        { status: 403, statusText: 'Forbidden' },
+      );
+      fixture.detectChanges();
+
+      // All four of this panel's operator-initiated commands share the cause, so all four share
+      // the remedy. Covering only the redemption would have left three ways to reach the same
+      // dead end.
+      expect(document.activeElement).toBe(liveRegion());
+    });
+
+    it('leaves focus alone when a command SUCCEEDS', () => {
+      arrive([offer()]);
+
+      rowActions()[0].click();
+      fixture.detectChanges();
+
+      expectRequest('POST', SUBSCRIPTION_URL).flush(null, {
+        status: 204,
+        statusText: 'No Content',
+      });
+      fixture.detectChanges();
+      settleAfterCommand([offer({ isSubscribed: true, subscriptionAction: 'Unsubscribe' })]);
+
+      // There is nothing to reveal on a success, and moving focus would interrupt someone who is
+      // already where they meant to be.
+      expect(document.activeElement).not.toBe(liveRegion());
+    });
+
+    it('does not reveal a refusal the operator did not provoke', () => {
+      seatIdentity(ACCOUNT_ID);
+      fixture.componentRef.setInput('accountId', ACCOUNT_ID);
+      fixture.detectChanges();
+
+      expectRequest('GET', SERVICES_URL, 'the catalogue read').flush(
+        refusal(
+          'resource.not_found',
+          404,
+          'Not Found',
+          'The requested resource does not exist.',
+        ),
+        { status: 404, statusText: 'Not Found' },
+      );
+      fixture.detectChanges();
+
+      // The reveal is gated on a COMMAND having been dispatched. A failed arrival read is reported
+      // by the banner and by the grid's own failed state, and seizing focus during a page's own
+      // loading would take it away from wherever the person had put it.
+      expect(document.activeElement).not.toBe(liveRegion());
+      expect(query('app-error-banner')?.textContent ?? '').toContain('does not exist');
     });
   });
 

@@ -81,8 +81,16 @@ internal sealed class PortalRepository : IPortalRepository
 
         if (!string.IsNullOrWhiteSpace(nameFilter))
         {
-            string pattern = LikePrefixPattern(nameFilter.Trim());
-            query = query.Where(p => EF.Functions.Like(p.PortalName, pattern, LikeEscapeCharacter));
+            string wanted = nameFilter.Trim();
+            string pattern = LikePrefixPattern(wanted);
+
+            // ⚠ FAIL CLOSED WHEN THE FILTER CANNOT FILTER. A filter made only of supplementary characters
+            // carries no weight in this schema's collation, so the comparison degrades to one that matches
+            // every row - and the screen goes on announcing an active filter over the complete record set.
+            // See CollationSafeFilter for the measurement and for the two remedies that were rejected.
+            query = CollationSafeFilter.CannotDiscriminate(wanted)
+                ? query.Where(_ => false)
+                : query.Where(p => EF.Functions.Like(p.PortalName, pattern, LikeEscapeCharacter));
         }
 
         query = ApplyOrder(query, sortBy, descending);
@@ -148,8 +156,17 @@ internal sealed class PortalRepository : IPortalRepository
             // FirstOrDefaultAsync handed back the tracked instance whenever one existed, so a caller
             // holding unsaved edits observed those edits before this change and observes them still - all
             // that has gone is the redundant SELECT that preceded them.
-            return await _dbContext.Portals
+            Portal? tracked = await _dbContext.Portals
                 .FindAsync(new object?[] { portalId }, cancellationToken)
+                .ConfigureAwait(false);
+
+            // ⚠ AND THE SAVING IS WITHDRAWN INSIDE A TRANSACTION, WHICH IS NOT A QUALIFICATION OF THE ABOVE
+            // BUT A CORRECTION TO IT. Answering from the tracker is right for a read; it is wrong for a read
+            // a caller opened a transaction to make authoritative, because no statement is issued and so no
+            // row is locked. See TransactionalRead for the amendment that was lost while this answered from
+            // memory inside a serialisable scope.
+            return await TransactionalRead
+                .InTransactionAsync(_dbContext, tracked, cancellationToken)
                 .ConfigureAwait(false);
         }
 
@@ -157,9 +174,16 @@ internal sealed class PortalRepository : IPortalRepository
         // that rewrites them, and by nothing else, so a listing does not pay for them. This path keeps its
         // query because FindAsync cannot express an Include, and a caller that asked for the aliases needs
         // them loaded whether or not the portal itself is already tracked.
-        return await _dbContext.Portals
+        Portal? withAliases = await _dbContext.Portals
             .Include(p => p.PortalAliases)
             .FirstOrDefaultAsync(p => p.PortalId == portalId, cancellationToken)
+            .ConfigureAwait(false);
+
+        // This branch DOES issue its statement, so the row is locked - but identity resolution keeps the
+        // values of an instance already in hand, so inside a transaction the values still have to be taken
+        // from what the store just returned.
+        return await TransactionalRead
+            .InTransactionAsync(_dbContext, withAliases, cancellationToken)
             .ConfigureAwait(false);
     }
 

@@ -20,12 +20,14 @@ import {
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import type { AbstractControl, ValidationErrors, ValidatorFn } from '@angular/forms';
 import { type Params, Router, RouterLink } from '@angular/router';
+import { Title } from '@angular/platform-browser';
 // `problemDetailsMessage` is deliberately NOT imported here any more: this screen no longer resolves a
 // document's sentence for itself. The banner does it, from the document and the fallback it is given — see
 // `reportFailure`.
 import { problemDetailsFieldErrors } from '../../../core/models/problem-details.model';
 import {
   failureCode,
+  missingEntityHeading,
   missingEntityMessage,
   missingEntityProblem,
   missingEntityRecoveryLabel,
@@ -345,6 +347,15 @@ const EDIT_TITLE = 'Edit Security Roles';
  * showed the same "Edit Security Roles" heading as the edit form.
  */
 const ADD_TITLE = 'Add New Role';
+
+/**
+ * The heading when the address names no role - either unreadable, or well-formed and absent.
+ *
+ * MIGRATION: net addition. The legacy screen never reached this state visibly: `EditRoles.ascx.vb:L170-L172`
+ * treated an unknown identifier as "a security violation attempt to access item not related to this
+ * Module" and redirected away silently, so there was no heading to port.
+ */
+const NOT_FOUND_TITLE = missingEntityHeading('Role');
 
 /**
  * The primary action's wording, one word per mode.
@@ -971,6 +982,20 @@ export class RoleFormComponent {
   private readonly notifications = inject(NotificationService);
   private readonly router = inject(Router);
 
+  /**
+   * The document title, moved in step with the heading when the addressed role is not there.
+   *
+   * ⚠ THE ROUTER OWNS THIS TITLE; THIS ONLY OVERRIDES IT WHILE THE RECORD IS ABSENT. The route declares
+   * `title: 'Edit Security Roles'` statically, which is right for the state the route describes and wrong
+   * for the state the screen can actually be in. Leaving it while the heading says "Role Not Found" would
+   * put the disagreement in the browser tab instead of removing it, and the tab is where a reader with
+   * several tabs open looks first.
+   *
+   * No reset is needed: Angular's title strategy re-applies the route's own title on every completed
+   * navigation, so the override cannot outlive the screen that set it.
+   */
+  private readonly documentTitle = inject(Title);
+
   /** Where the listing stood when the operator left it. */
   private readonly listReturn = inject(ListReturnStore);
 
@@ -1178,14 +1203,28 @@ export class RoleFormComponent {
   );
 
   /**
-   * The heading, which differs by mode. ⚠ AN UNREADABLE ADDRESS TAKES THE EDIT HEADING. Without the
-   * second term, `/roles/abc` showed `Add New Role` above the sentence saying the address names no role,
-   * while the route's own document title said `Edit Security Roles` — three labels disagreeing on one
-   * screen, measured in a real browser.
+   * The heading, which differs by mode - and, when there is no record, says so.
+   *
+   * ⚠ THE NOT-FOUND STATE HAS ITS OWN HEADING, AND THAT SUPERSEDES AN EARLIER COMPROMISE. Previously an
+   * unreadable address deliberately took the EDIT heading, to stop `/roles/abc` rendering "Add New Role"
+   * above a sentence saying the address names no role - three labels disagreeing on one screen. That fixed
+   * the disagreement by making the heading agree with the ROUTE rather than with the SCREEN, so both the
+   * unreadable address and a well-formed identifier naming no role ended up captioned "Edit Security
+   * Roles": the largest text on the screen asserting an action the screen could not perform, directly
+   * contradicting the banner beneath it.
+   *
+   * Both cases now take the same honest heading, because to a reader they ARE one situation - there is no
+   * role here - and the banner already distinguishes an address that was never an identifier from a record
+   * that has gone. The document title is moved with it, so the earlier concern is satisfied rather than
+   * traded away.
    */
-  protected readonly heading: Signal<string> = computed(() =>
-    this.isEditMode() || this.addressUnreadable() ? EDIT_TITLE : ADD_TITLE,
-  );
+  protected readonly heading: Signal<string> = computed(() => {
+    if (this.nothingToShow()) {
+      return NOT_FOUND_TITLE;
+    }
+
+    return this.isEditMode() ? EDIT_TITLE : ADD_TITLE;
+  });
 
   /**
    * The one-line scope statement shown beneath the title. In edit mode it NAMES THE ROLE, because the
@@ -1193,6 +1232,15 @@ export class RoleFormComponent {
    * same "Edit Security Roles" heading and only the subtitle can say which role is on screen.
    */
   protected readonly pageSubtitle: Signal<string> = computed(() => {
+    // ⚠ NO SUBTITLE OVER A RECORD THAT IS NOT THERE. This fell through to the create-mode sentence
+    // explaining what a role is FOR, so a screen reporting that a role could not be found also carried
+    // prose about grouping accounts together - copy for a form that was not on screen. The shared header
+    // collapses a blank subtitle to absent, and the state itself is the banner's to state: the subtitle
+    // slot carries a screen's SCOPE, never its status, so it has nothing to say here.
+    if (this.nothingToShow()) {
+      return '';
+    }
+
     if (this.isEditMode() === false) {
       return CREATE_SUBTITLE;
     }
@@ -1420,11 +1468,19 @@ export class RoleFormComponent {
 
     const stated = joinPhrases(terms.map((term) => `${term.caption} ${term.value}`));
 
-    // ⚠ THE CONSEQUENCE IS STATED, BECAUSE IT IS CERTAIN RATHER THAN HYPOTHETICAL. Saving replaces every
-    // value listed here, whether or not the operator typed anything, and that overwrite is deliberate
-    // parity with `EditRoles.ascx.vb:L212-L231`. Listing values while leaving their fate unsaid is what
-    // made the notice read as reassurance.
-    const consequence = `The values stored for it are ${stated}, and saving this form replaces them.`;
+    // ⚠ A PROTECTED ROLE HAS NO SAVE, SO IT IS NOT TOLD ABOUT ONE. `canSave()` is false for the two
+    // roles the portal maintains, so this screen renders no submit control for them at all - and the notice
+    // nevertheless warned that "saving this form replaces them", describing a command that was not on the
+    // screen and an overwrite that could not occur. The consequence clause is CERTAIN for an editable role
+    // and IMPOSSIBLE for a protected one, so the two cannot share a sentence.
+    const withheldSaveDisabled: boolean = this.readOnly();
+
+    // For an editable role the overwrite is certain rather than hypothetical, whether or not the operator
+    // types anything, and that is deliberate parity with `EditRoles.ascx.vb:L212-L231`. Listing values while
+    // leaving their fate unsaid is what made the notice read as reassurance.
+    const consequence = withheldSaveDisabled
+      ? `The values stored for it are ${stated}, and they cannot be changed here.`
+      : `The values stored for it are ${stated}, and saving this form replaces them.`;
 
     if (rewritten.length === 0) {
       return `${lead} ${consequence}`;
@@ -1434,10 +1490,15 @@ export class RoleFormComponent {
     // knowing what it was.
     const codes = joinPhrases(rewritten.map((term) => `${term.caption} ${term.value}`));
     const plural = rewritten.length > 1;
-    const rewriteSentence =
-      `${plural ? 'The stored codes' : 'The stored code'} ${codes} `
-      + `${plural ? 'are' : 'is'} not among the frequencies this console can set, so saving records `
-      + `${frequencyCaption(NO_FREQUENCY)} in ${plural ? 'their' : 'its'} place.`;
+    // Same rule as the consequence clause above: no save on this screen means no overwrite to warn about,
+    // and the value survives precisely BECAUSE nothing here can rewrite it.
+    const rewriteSentence = withheldSaveDisabled
+      ? `${plural ? 'The stored codes' : 'The stored code'} ${codes} `
+        + `${plural ? 'are' : 'is'} not among the frequencies this console can set, so `
+        + `${plural ? 'they cannot' : 'it cannot'} be shown or changed here.`
+      : `${plural ? 'The stored codes' : 'The stored code'} ${codes} `
+        + `${plural ? 'are' : 'is'} not among the frequencies this console can set, so saving records `
+        + `${frequencyCaption(NO_FREQUENCY)} in ${plural ? 'their' : 'its'} place.`;
 
     // ⚠ THE REWRITE CAN BE THE WHOLE NOTICE. A role whose boxes are all filled withholds nothing, so
     // there is no "these boxes stay empty" lead to give and no withheld list to state - but its unnameable
@@ -1519,6 +1580,17 @@ export class RoleFormComponent {
     // ⚠ THE BODY IS `untracked` AND THAT IS LOAD-BEARING, NOT TIDINESS. Everything below the first line is
     // imperative work that reaches into the store, and a store command reads store state on its way —
     // clearing the held failure begins by testing whether there is one.
+    // THE TAB FOLLOWS THE HEADING. Only while the record is absent; see `documentTitle`.
+    effect(() => {
+      const absent: boolean = this.nothingToShow();
+
+      untracked(() => {
+        if (absent) {
+          this.documentTitle.setTitle(NOT_FOUND_TITLE);
+        }
+      });
+    });
+
     effect(() => {
       const key = this.roleKey();
 

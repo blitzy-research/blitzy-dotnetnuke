@@ -37,7 +37,7 @@ public static class ApiResults
         "portal.tab_reference_invalid", "portal.tenant_unresolved", "portal_alias_ambiguous",
         "portal_context_incomplete", "profile_definition.validation_expression_invalid", "request.failed",
         "request.invalid", "role.paging_invalid", "role.rsvp_code_too_weak",
-        "role_assignment.expired_not_removed",
+        "role_assignment.dates_invalid", "role_assignment.expired_not_removed",
         "role_group.scope_invalid", "tab.name_reserved", "tab.paging_invalid", "tab.parent_cross_portal",
         "tab.parent_cycle",
         "tenant_path_prefix_mismatch", "user.choices.sort_unsupported", "user.create.invalid_email",

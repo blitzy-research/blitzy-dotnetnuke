@@ -1838,17 +1838,46 @@ public sealed class PortalService : IPortalService
                 "The processor credential reference must use secret:// followed by a managed-secret identifier.");
         }
 
+        // ⚠ AN UNCHANGED STORED DESIGNATION IS GRANDFATHERED, AND WITHOUT THIS SIX READABLE PORTALS COULD NOT
+        // BE SAVED AT ALL. The rule below asks whether the designated account holds a UserPortals row for the
+        // addressed portal, and asking it of a value the caller is merely ECHOING BACK made a maintenance
+        // dead end rather than a validation:
+        //
+        //   • Measured on this installation: PortalIDs 0 through 5 all designate AdministratorId 2, and no
+        //     matching UserPortals row exists for any of them - membership the migrated data never carried.
+        //     Opening Site Settings as host, changing nothing, and pressing Update was refused 400
+        //     portal.administrator_invalid. So was PUTting the exact body the GET had just returned.
+        //   • There was no submission that could have satisfied the rule short of altering data the caller
+        //     never asked to touch, and the screen offered no repair affordance, so every one of those six
+        //     tenants was unmaintainable through this API: no footer, no keyword, no page reference could be
+        //     amended, because the whole request was refused on a field it did not change.
+        //
+        // So the rule is asked only of a designation that is actually being CHANGED. A submission equal to the
+        // stored value authors nothing and is admitted on the strength of already being there; anything else -
+        // including clearing it, which the branch below still refuses - must satisfy the rule exactly as
+        // before. A NEW invalid reference therefore remains impossible to write, which is the property that
+        // matters: this admits history, not new breakage.
+        //
+        // The same reasoning, and the same shape, as the unchanged-address grandfathering on
+        // UserService.UpdateUserAsync. Recorded in MIGRATION_NOTES.md as a deliberate divergence, together
+        // with the remediation route for an orphaned designation: designate an account that does hold
+        // membership, or add the membership row.
         if (request.AdministratorId is int administratorId)
         {
-            UserPortal? membership = await _users
-                .GetMembershipAsync(portal.PortalId, administratorId, cancellationToken)
-                .ConfigureAwait(false);
+            bool designationUnchanged = portal.AdministratorId == administratorId;
 
-            if (membership is null)
+            if (!designationUnchanged)
             {
-                return Result.Failure(
-                    AdministratorReferenceInvalidCode,
-                    "The designated administrator must be an account that belongs to the addressed portal.");
+                UserPortal? membership = await _users
+                    .GetMembershipAsync(portal.PortalId, administratorId, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (membership is null)
+                {
+                    return Result.Failure(
+                        AdministratorReferenceInvalidCode,
+                        "The designated administrator must be an account that belongs to the addressed portal.");
+                }
             }
         }
         else if (portal.AdministratorId is not null)

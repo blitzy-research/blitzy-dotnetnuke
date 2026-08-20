@@ -494,7 +494,7 @@ describe('AppComponent', () => {
 
       clickSignOut();
 
-      const revocation = httpMock.expectOne(AUTH_ENDPOINTS.logout);
+      const revocation = httpMock.expectOne(AUTH_ENDPOINTS.logout());
 
       expect(revocation.request.method).toBe('POST');
       expect(revocation.request.body).toEqual({ refreshToken: 'operator-refresh-token' });
@@ -506,7 +506,7 @@ describe('AppComponent', () => {
       holdSession();
       clickSignOut();
 
-      const revocation = httpMock.expectOne(AUTH_ENDPOINTS.logout);
+      const revocation = httpMock.expectOne(AUTH_ENDPOINTS.logout());
       const address: string = revocation.request.url;
 
       // Rooted at the origin: a path, not a location.
@@ -541,7 +541,7 @@ describe('AppComponent', () => {
       expect(storeDirect).toHaveBeenCalledTimes(1);
       expect(coordinated).toHaveBeenCalledBefore(storeDirect);
 
-      httpMock.expectOne(AUTH_ENDPOINTS.logout).flush(null, { status: 204, statusText: 'No Content' });
+      httpMock.expectOne(AUTH_ENDPOINTS.logout()).flush(null, { status: 204, statusText: 'No Content' });
     });
 
     it('leaves the application unauthenticated once the revocation settles', () => {
@@ -549,7 +549,7 @@ describe('AppComponent', () => {
       expect(authStore.isAuthenticated()).toBeTrue();
 
       clickSignOut();
-      httpMock.expectOne(AUTH_ENDPOINTS.logout).flush(null, { status: 204, statusText: 'No Content' });
+      httpMock.expectOne(AUTH_ENDPOINTS.logout()).flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
 
       expect(authStore.isAuthenticated()).toBeFalse();
@@ -560,7 +560,7 @@ describe('AppComponent', () => {
     it('sends the operator to the sign-in screen, carrying no return address', () => {
       holdSession();
       clickSignOut();
-      httpMock.expectOne(AUTH_ENDPOINTS.logout).flush(null, { status: 204, statusText: 'No Content' });
+      httpMock.expectOne(AUTH_ENDPOINTS.logout()).flush(null, { status: 204, statusText: 'No Content' });
 
       expect(navigate).toHaveBeenCalledTimes(1);
 
@@ -572,7 +572,7 @@ describe('AppComponent', () => {
       clickSignOut();
 
       httpMock
-        .expectOne(AUTH_ENDPOINTS.logout)
+        .expectOne(AUTH_ENDPOINTS.logout())
         .flush({ detail: 'unreachable' }, { status: 503, statusText: 'Service Unavailable' });
       fixture.detectChanges();
 
@@ -599,7 +599,7 @@ describe('AppComponent', () => {
       holdSession();
       clickSignOut();
 
-      httpMock.expectOne(AUTH_ENDPOINTS.logout).flush(null, { status: 204, statusText: 'No Content' });
+      httpMock.expectOne(AUTH_ENDPOINTS.logout()).flush(null, { status: 204, statusText: 'No Content' });
 
       // Lets the rejected navigation settle, so the discard actually happens inside the specification
       // rather than after it.
@@ -621,7 +621,7 @@ describe('AppComponent', () => {
       // already gone by the time this line runs.
       expect(authStore.isSigningOut()).toBeTrue();
 
-      httpMock.expectOne(AUTH_ENDPOINTS.logout).flush(null, { status: 204, statusText: 'No Content' });
+      httpMock.expectOne(AUTH_ENDPOINTS.logout()).flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
 
       expect(authStore.isSigningOut()).toBeFalse();
@@ -640,7 +640,7 @@ describe('AppComponent', () => {
       control?.click();
       fixture.detectChanges();
 
-      httpMock.expectOne(AUTH_ENDPOINTS.logout).flush(null, { status: 204, statusText: 'No Content' });
+      httpMock.expectOne(AUTH_ENDPOINTS.logout()).flush(null, { status: 204, statusText: 'No Content' });
 
       expect(navigate).toHaveBeenCalledTimes(1);
     });

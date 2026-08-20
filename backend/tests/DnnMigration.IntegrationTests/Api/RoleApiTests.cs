@@ -3974,6 +3974,305 @@ public sealed class RoleApiTests
     /// <returns>The invariant representation.</returns>
     private static string Route(int value) => value.ToString(CultureInfo.InvariantCulture);
 
+    /// <summary>
+    /// Amending an existing membership with an effective date and an explicitly cleared expiry stores the
+    /// clear expiry, and the stored column is <c>NULL</c> rather than a year from the request.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THE COLUMN IS READ DIRECTLY, because the representation cannot settle this: a member the response
+    /// OMITTED and a member it published as <see langword="null"/> deserialise to the same value, and the
+    /// question is what the store holds. Measured before the split, amending a paid membership with an
+    /// effective date of 2030-01-01 and a null expiry wrote request-time plus one year - so the caller's stated
+    /// intent was discarded, the pair could be left with its start after its end and become unsaveable by the
+    /// screen that wrote it, and a LAPSED membership was silently reactivated for a further year by an operator
+    /// who had asked only to clear its end date.
+    /// </para>
+    /// <para>
+    /// The role carries genuine billing terms, because a role with none derives nothing and the case would pass
+    /// without exercising the split at all.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task AmendRoleAssignment_ClearingTheExpiry_StoresNullRatherThanADerivedYear()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        // A role with real billing terms, so the derivation has something to substitute.
+        CreateRoleRequest paid = NewRoleRequest();
+        paid.ServiceFee = 25m;
+        paid.BillingPeriod = 1;
+        paid.BillingFrequency = BillingFrequency.Year;
+
+        using HttpResponseMessage creation = await client.PostAsJsonAsync(
+            RolesRoute(_fixture.Seed.PortalId),
+            paid,
+            ApiTestFixture.Json);
+
+        creation.StatusCode.Should().Be(HttpStatusCode.Created);
+        RoleDetailDto role = await ReadDetailAsync(creation);
+
+        var membersRoute = new Uri($"/api/v1/roles/{Route(role.RoleId)}/users", UriKind.Relative);
+        var assignmentParameters = new Dictionary<string, object?>
+        {
+            ["roleId"] = role.RoleId,
+            ["userId"] = _fixture.Seed.MemberUserId,
+        };
+
+        try
+        {
+            // A NEW assignment naming no bound: the role's terms decide, which is the prefill this split keeps.
+            using HttpResponseMessage granted = await client.PostAsJsonAsync(
+                membersRoute,
+                new RoleAssignmentRequest { UserId = _fixture.Seed.MemberUserId },
+                ApiTestFixture.Json);
+
+            granted.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+            int derivedBounds = await _fixture.Database.ScalarAsync<int>(
+                @"SELECT COUNT(*) FROM [dbo].[UserRoles]
+                  WHERE [RoleId] = @roleId AND [UserId] = @userId AND [ExpiryDate] IS NOT NULL;",
+                assignmentParameters);
+
+            derivedBounds.Should().Be(
+                1,
+                "a new assignment that names no bound is exactly the case the role's terms are meant to answer");
+
+            // The AMENDMENT: a stated start, and an expiry deliberately cleared.
+            using HttpResponseMessage amended = await client.PostAsJsonAsync(
+                membersRoute,
+                new RoleAssignmentRequest
+                {
+                    UserId = _fixture.Seed.MemberUserId,
+                    EffectiveDate = new DateTime(2030, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+                    ExpiryDate = null,
+                },
+                ApiTestFixture.Json);
+
+            amended.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+            int clearedBounds = await _fixture.Database.ScalarAsync<int>(
+                @"SELECT COUNT(*) FROM [dbo].[UserRoles]
+                  WHERE [RoleId] = @roleId AND [UserId] = @userId AND [ExpiryDate] IS NULL;",
+                assignmentParameters);
+
+            clearedBounds.Should().Be(
+                1,
+                "a stated clear is an instruction, and the column must hold NULL rather than a derived year");
+
+            DateTime storedStart = await _fixture.Database.ScalarAsync<DateTime>(
+                @"SELECT [EffectiveDate] FROM [dbo].[UserRoles]
+                  WHERE [RoleId] = @roleId AND [UserId] = @userId;",
+                assignmentParameters);
+
+            storedStart.Should().Be(
+                new DateTime(2030, 1, 1, 0, 0, 0, DateTimeKind.Unspecified),
+                "the stated start is stored as stated");
+
+            // And the representation agrees with the column, so a reader of either reaches the same conclusion.
+            using HttpResponseMessage served = await client.GetAsync(new Uri(
+                $"/api/v1/roles/{Route(role.RoleId)}/users/{Route(_fixture.Seed.MemberUserId)}",
+                UriKind.Relative));
+
+            served.StatusCode.Should().Be(HttpStatusCode.OK);
+
+            RoleMembershipDto? membership = await served.Content.ReadEnvelopeAsync<RoleMembershipDto>();
+
+            membership.Should().NotBeNull();
+            membership!.ExpiryDate.Should().BeNull();
+        }
+        finally
+        {
+            using HttpResponseMessage withdrawn = await client.DeleteAsync(new Uri(
+                $"/api/v1/roles/{Route(role.RoleId)}/users/{Route(_fixture.Seed.MemberUserId)}",
+                UriKind.Relative));
+
+            withdrawn.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+            using HttpResponseMessage removed = await client.DeleteAsync(RoleRoute(
+                _fixture.Seed.PortalId,
+                role.RoleId));
+
+            removed.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        }
+    }
+
+    /// <summary>
+    /// A submitted pair whose start follows its end is refused, so a membership that can never be in force is
+    /// unreachable over HTTP.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task AssignRoleMember_WithAStartAfterItsEnd_IsRefused()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+        RoleDetailDto role = await CreateRoleAsync(client);
+
+        try
+        {
+            using HttpResponseMessage refused = await client.PostAsJsonAsync(
+                new Uri($"/api/v1/roles/{Route(role.RoleId)}/users", UriKind.Relative),
+                new RoleAssignmentRequest
+                {
+                    UserId = _fixture.Seed.MemberUserId,
+                    EffectiveDate = new DateTime(2031, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+                    ExpiryDate = new DateTime(2030, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+                },
+                ApiTestFixture.Json);
+
+            refused.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+            int stored = await _fixture.Database.ScalarAsync<int>(
+                @"SELECT COUNT(*) FROM [dbo].[UserRoles]
+                  WHERE [RoleId] = @roleId AND [UserId] = @userId;",
+                new Dictionary<string, object?>
+                {
+                    ["roleId"] = role.RoleId,
+                    ["userId"] = _fixture.Seed.MemberUserId,
+                });
+
+            stored.Should().Be(0, "nothing is staged when the pair is refused");
+        }
+        finally
+        {
+            using HttpResponseMessage removed = await client.DeleteAsync(RoleRoute(
+                _fixture.Seed.PortalId,
+                role.RoleId));
+
+            removed.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        }
+    }
+
+    /// <summary>
+    /// A role-name filter the database collation cannot weigh must match NOTHING rather than everything.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THIS IS A SAFETY TEST, NOT A TIDINESS ONE. The schema is collated
+    /// <c>SQL_Latin1_General_CP1_CI_AS</c>, which gives supplementary characters no collation weight, so
+    /// <c>N'🎉🎉🎉'</c> compares equal to the empty string and a CONTAINS match on it admits every row.
+    /// Measured against the live listing before the guard existed, searching roles for three emoji reported a
+    /// filter in force and returned EVERY role the tenant owns.
+    /// </para>
+    /// <para>
+    /// An administrator who believes the list has been narrowed to one role may amend its terms or delete it,
+    /// and deleting a role withdraws every membership it grants. Returning nothing is both honest and safe.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ListRoles_ByCharactersTheCollationCannotWeigh_MatchesNothingRatherThanEverything()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        // The unfiltered total, established first so "everything" is a measured number rather than a guess.
+        using HttpResponseMessage unfiltered = await client.GetAsync(new Uri(
+            "/api/v1/roles?pageIndex=0&pageSize=100",
+            UriKind.Relative));
+
+        unfiltered.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        PagedEnvelope<RoleListItemDto>? everything = await unfiltered.Content
+            .ReadFromJsonAsync<PagedEnvelope<RoleListItemDto>>(ApiTestFixture.Json);
+
+        everything.Should().NotBeNull();
+        everything!.Meta.TotalCount.Should()
+            .BeGreaterThan(0, "the guard is only meaningful when there are rows it could wrongly return");
+
+        PagedEnvelope<RoleListItemDto> weightless = await ListRolesAsync(
+            client,
+            "\U0001F389\U0001F389\U0001F389");
+
+        weightless.Items.Should().BeEmpty("no role name contains those characters");
+        weightless.Meta.TotalCount.Should().Be(
+            0,
+            "a filter that cannot discriminate fails closed, never open");
+        weightless.Meta.TotalCount.Should().NotBe(
+            everything.Meta.TotalCount,
+            "returning every role for a filter the administrator typed is the unsafe direction");
+    }
+
+    /// <summary>
+    /// A role-name filter MIXING weightless characters with ordinary text still discriminates on the ordinary
+    /// part, so the guard suppresses no legitimate search.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ListRoles_ByOrdinaryTextCarryingAWeightlessCharacter_StillFiltersOnTheOrdinaryPart()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        PagedEnvelope<RoleListItemDto> matched = await ListRolesAsync(
+            client,
+            "zzz-no-role-bears-this-name\U0001F389");
+
+        matched.Items.Should().BeEmpty(
+            "the ordinary part carries weight, so the filter is applied rather than treated as unable to filter");
+    }
+
+    /// <summary>
+    /// The MEMBERSHIP listing carries the same guard, so a filter the collation cannot weigh cannot offer an
+    /// administrator every member of a role while claiming to show one.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// Carried onto this listing without a report naming it, because the destructive action reachable from the
+    /// row - withdrawing a membership - is reachable from a row the operator believes was the only match.
+    /// </remarks>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ListRoleMembers_ByCharactersTheCollationCannotWeigh_MatchesNothing()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+        RoleDetailDto role = await CreateRoleAsync(client);
+
+        var membersRoute = new Uri($"/api/v1/roles/{Route(role.RoleId)}/users", UriKind.Relative);
+
+        using HttpResponseMessage assigned = await client.PostAsJsonAsync(
+            membersRoute,
+            new RoleAssignmentRequest { UserId = _fixture.Seed.MemberUserId },
+            ApiTestFixture.Json);
+
+        assigned.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        using HttpResponseMessage unfiltered = await client.GetAsync(new Uri(
+            $"/api/v1/roles/{Route(role.RoleId)}/users?pageIndex=0&pageSize=100",
+            UriKind.Relative));
+
+        unfiltered.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        PagedEnvelope<RoleMembershipDto>? everything = await unfiltered.Content
+            .ReadFromJsonAsync<PagedEnvelope<RoleMembershipDto>>(ApiTestFixture.Json);
+
+        everything.Should().NotBeNull();
+        everything!.Meta.TotalCount.Should().BeGreaterThan(0);
+
+        using HttpResponseMessage weightless = await client.GetAsync(new Uri(
+            $"/api/v1/roles/{Route(role.RoleId)}/users?pageIndex=0&pageSize=100"
+            + $"&query={Uri.EscapeDataString("\U0001F389\U0001F389\U0001F389")}",
+            UriKind.Relative));
+
+        weightless.StatusCode.Should().Be(HttpStatusCode.OK, "a search that matches nothing is not an error");
+
+        PagedEnvelope<RoleMembershipDto>? filtered = await weightless.Content
+            .ReadFromJsonAsync<PagedEnvelope<RoleMembershipDto>>(ApiTestFixture.Json);
+
+        filtered.Should().NotBeNull();
+        filtered!.Items.Should().BeEmpty();
+        filtered.Meta.TotalCount.Should().Be(0, "the membership listing fails closed for the same reason");
+
+        using HttpResponseMessage removed = await client.DeleteAsync(RoleRoute(
+            _fixture.Seed.PortalId,
+            role.RoleId));
+
+        removed.StatusCode.Should().Be(HttpStatusCode.NoContent);
+    }
+
     /// <summary>Produces a short random suffix for values that reach a unique constraint.</summary>
     /// <returns>Twelve lower-case hexadecimal characters.</returns>
     private static string Suffix() => Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture)[..12];

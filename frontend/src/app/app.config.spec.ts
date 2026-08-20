@@ -57,7 +57,13 @@ import { HttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { APP_BOOTSTRAP_LISTENER, NgZone } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { PreloadAllModules, PreloadingStrategy, Router, Scroll } from '@angular/router';
+import {
+  PreloadAllModules,
+  PreloadingStrategy,
+  ROUTER_CONFIGURATION,
+  Router,
+  Scroll,
+} from '@angular/router';
 import { firstValueFrom, of } from 'rxjs';
 import type { Observable } from 'rxjs';
 
@@ -412,6 +418,28 @@ describe('appConfig', () => {
       expect(scrollToPosition)
         .withContext("restoration is 'top', so a newly activated screen starts at the top")
         .toHaveBeenCalledWith([0, 0]);
+    });
+
+    /**
+     * ⚠ QA-19 — HOW A REFUSED NAVIGATION PUTS THE HISTORY BACK, ASSERTED ON THE CONFIGURATION RATHER
+     * THAN ON A SIMULATED BACK BUTTON. The defect is not in any guard; it is in the router's restoration
+     * mechanism, and it only shows with a real browser history that a `location` stand-in does not model.
+     * Walked with a stack of A, B, C standing on C: Back pops to B, a guard refuses, and the default
+     * `'replace'` overwrites B with C — leaving A, C, C, so an operator who chose Stay and then pressed
+     * Back and answered Leave landed on A rather than the B they aimed at. `'computed'` restores by
+     * computing how far the browser moved and undoing exactly that, so a refused navigation leaves the
+     * stack untouched, which is what "it did not happen" has to mean.
+     *
+     * Asserted from the injected configuration, so the setting cannot be dropped without failing here and
+     * naming the reason — the runtime behaviour it produces is verified separately in the browser, where a
+     * genuine history stack exists.
+     */
+    it('restores a refused navigation by computing the history delta, never by replacing', () => {
+      const configuration = TestBed.inject(ROUTER_CONFIGURATION);
+
+      expect(configuration.canceledNavigationResolution)
+        .withContext("'replace' overwrites the entry the browser already popped TO")
+        .toBe('computed');
     });
 
     it('runs change detection inside a real zone, as the polyfill configuration requires', () => {

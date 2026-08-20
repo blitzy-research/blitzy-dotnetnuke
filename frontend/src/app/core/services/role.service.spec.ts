@@ -217,6 +217,7 @@ function roleGroup(portalId: number, roleGroupId = ROLE_GROUP_ID): RoleGroup {
     portalId,
     roleGroupName: 'Paid Services',
     description: null,
+    classifiedRoleCount: 0,
   };
 }
 

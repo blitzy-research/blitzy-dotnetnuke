@@ -803,8 +803,7 @@ export class LoginComponent implements OnInit {
   ngOnInit(): void {
     this.driveOutstandingWithdrawals();
 
-    this.requestedReturnUrl = this.readQueryParameter(RETURN_URL_QUERY_KEY);
-    this._ejectedFrom.set(this.resolveEchoableAddress());
+    this.watchForEjection();
 
     if (this.store.isAuthenticated()) {
       this.leaveForReturnUrl();
@@ -815,6 +814,40 @@ export class LoginComponent implements OnInit {
     this.seedFromQueryParameters();
 
     afterNextRender(() => this.focusFirstCredentialField(), { injector: this.injector });
+  }
+
+  /**
+   * Keeps the ejection explanation in step with the return address for as long as this screen is mounted.
+   *
+   * ⚠ THE ADDRESS WAS READ ONCE, FROM THE ACTIVATION SNAPSHOT, AND THAT MADE THE EXPLANATION CONDITIONAL ON
+   * HOW THE CALLER ARRIVED RATHER THAN ON WHAT HAPPENED. A snapshot is fixed for the life of one component
+   * instance, and the router REUSES this instance when only the query string changes - so an ejection that
+   * appends `returnUrl` while this screen is already on display left `_ejectedFrom` holding whatever the
+   * first activation had recorded, which is normally nothing at all.
+   *
+   * That is not a hypothetical arrival path. It is the ordinary one for an expiring session: the caller is
+   * sitting on the sign-in form, a guard refuses a protected navigation, the guard redirects here with the
+   * address it refused, and the screen said nothing about why - so a person who had just been turned away
+   * from a page they asked for was shown a bare form with no account of it. The same is true of the reverse
+   * transition, where the parameter is REMOVED: the notice has to withdraw, or a stale sentence keeps naming
+   * an address no longer being requested.
+   *
+   * Subscribing to the parameter map rather than re-reading the snapshot is what makes the notice a function
+   * of the current address in both directions. ⚠ ONLY THE NOTICE IS RECOMPUTED - {@link
+   * LoginComponent.seedFromQueryParameters} is deliberately NOT re-run - because that seeds the credential
+   * fields from the legacy query keys, and re-seeding them on a later parameter change would overwrite a
+   * user name the operator had already typed.
+   */
+  private watchForEjection(): void {
+    this.route.queryParamMap.pipe(takeUntilDestroyed(this.destroyRef)).subscribe((parameters) => {
+      // PRESENCE, NOT EMPTINESS, exactly as {@link LoginComponent.readQueryParameter} reads it: the legacy
+      // guard is `If Not Request.QueryString("…") Is Nothing`, so a present-but-empty parameter was still
+      // present. Reading from the emitted map rather than the snapshot keeps the two in step - the snapshot
+      // is updated by the router before this emits, but depending on it would reintroduce exactly the
+      // coupling this member exists to remove.
+      this.requestedReturnUrl = parameters.get(RETURN_URL_QUERY_KEY);
+      this._ejectedFrom.set(this.resolveEchoableAddress());
+    });
   }
 
   /**

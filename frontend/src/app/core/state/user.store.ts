@@ -706,6 +706,21 @@ export class UserStore implements OnDestroy {
   /** Whether the profile declarations are being read. */
   readonly profileDefinitionsLoading = this._profileDefinitionsLoading.asReadonly();
 
+  /**
+   * Whether the tenant's profile declarations are KNOWN — read successfully at least once.
+   *
+   * ⚠ EXPOSED BECAUSE AN EMPTY DECLARATION LIST IS AMBIGUOUS WITHOUT IT, and a consumer that resolved the
+   * ambiguity the wrong way had a real defect. `profilePropertyNames()` is empty both when the tenant
+   * declares no properties and when nothing has been read yet, and those two mean opposite things to
+   * anything validating a property name against the list: "that name is not declared" versus "I cannot
+   * tell yet". The account listing reconciles its chosen search axis against this list and, on a cold
+   * entry, ran that reconciliation before the read returned - so an axis restored from the address was
+   * judged undeclared and discarded, and the selector silently disagreed with the search actually in
+   * force. This is the same flag {@link UserStore.loadProfileDefinitions} already uses to avoid re-asking
+   * the server forever, published rather than duplicated.
+   */
+  readonly profileDefinitionsKnown = this._profileDefinitionsRead.asReadonly();
+
   /** Whether the member-services catalogue is being read. */
   readonly memberServicesLoading = this._memberServicesLoading.asReadonly();
 
@@ -2319,8 +2334,23 @@ export class UserStore implements OnDestroy {
   private dispatchMemberServices(userId: number): void {
     if (this._memberServicesAccountId() !== userId) {
       this._memberServices.set([]);
-      this._lastRedemption.set(null);
     }
+
+    // ⚠ THE REDEMPTION REPORT IS DISCARDED ON EVERY READ, NOT ONLY WHEN THE ACCOUNT CHANGES. It used to
+    // sit inside the guard above, which meant it survived any re-read of the SAME account - and a re-read is
+    // exactly the moment the facts it describes may have stopped being true. Measured: redeem a code for an
+    // account, then withdraw one of the granted roles from the role-assignment screen, then come back here
+    // in-app; the catalogue re-read correctly showed the role gone while the report above it still announced
+    // that the code had just granted it. The report is a statement about a past action, and this read is the
+    // point at which nothing on this screen can vouch for it any more.
+    //
+    // Safe against the redemption path itself because of the ordering documented on `redeemServiceCode`:
+    // that method dispatches the re-read FIRST and records the fresh report immediately afterwards, so this
+    // clear runs before the report it must not destroy exists.
+    this._lastRedemption.set(null);
+
+    // The rows themselves are deliberately NOT emptied on a same-account re-read - a read that arrives while
+    // rows are on screen keeps them, and reports itself through the loading flag instead.
 
     this._memberServicesAccountId.set(userId);
     this._memberServicesLoading.set(true);

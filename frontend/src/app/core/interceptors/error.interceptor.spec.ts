@@ -894,16 +894,33 @@ describe('errorInterceptor', () => {
   });
 
   describe('an unprocessable entity', () => {
-    it('surfaces each import-validation code verbatim', async () => {
+    /**
+     * ⚠ THIS CASE USED TO ASSERT THAT ALL THREE REFUSALS STAYED ON SCREEN AT ONCE, AND THAT WAS THE
+     * DEFECT — QA-26. Three refusals of the SAME request are three answers to one question, and only the
+     * last of them is still true; stacking them left an operator reading a refusal about an attempt they
+     * had already replaced. The interceptor now scopes each report by the request's method and address, so
+     * a later answer retires the earlier one.
+     *
+     * What the case was written to prove is unchanged and still proved: each code reaches the surface
+     * VERBATIM rather than being collapsed into a generic sentence. It is proved per attempt, which is when
+     * the claim is actually about something, rather than by inspecting a queue of stale entries.
+     */
+    it('surfaces each import-validation code verbatim, one current answer at a time', async () => {
       const codes: readonly string[] = ['NotValidXml', 'NotCorrectType', 'ImportNotSupported'];
 
       for (const detail of codes) {
         const body: ProblemDetails = { title: 'Unprocessable Entity', status: 422, detail };
 
         await expectRejection(body, 422, 'Unprocessable Entity');
+
+        expect(onlyMessage())
+          .withContext(`${detail} is surfaced as the server wrote it`)
+          .toBe(detail);
       }
 
-      expect(messages()).toEqual(['NotValidXml', 'NotCorrectType', 'ImportNotSupported']);
+      expect(messages())
+        .withContext('and the two it replaced are gone, not stacked beneath it')
+        .toEqual(['ImportNotSupported']);
     });
 
     it('uses the refused-values sentence when the document carries no text of its own', async () => {

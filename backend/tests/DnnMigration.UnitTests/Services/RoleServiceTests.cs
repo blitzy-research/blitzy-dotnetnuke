@@ -3724,6 +3724,212 @@ public class RoleServiceTests
         outcome.Value[1].RoleGroupName.Should().Be("Staff");
     }
 
+    /// <summary>
+    /// A listing carries each group's classified-role count, and reports zero for a group the count omits.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// ⚠ THE ZERO IS THE POINT OF THIS TEST. The grouped query projects only groups that classify at least
+    /// one role, so an empty group is ABSENT from the count rather than present with zero - and a client
+    /// reads that absence as permission to delete. If a miss were ever surfaced as unknown, or worse as the
+    /// count of some neighbouring group, the screen would either withhold a legitimate deletion forever or
+    /// offer one the server refuses. Both are the defect this count was added to close.
+    /// </remarks>
+    [Fact]
+    public async Task ListRoleGroups_CarriesTheClassifiedCountAndReadsAnAbsentGroupAsEmpty()
+    {
+        Harness harness = Harness.Ready();
+        harness.Groups =
+        [
+            new RoleGroup { RoleGroupId = RoleGroupId, PortalId = PortalId, RoleGroupName = RoleGroupName },
+            new RoleGroup { RoleGroupId = 1, PortalId = PortalId, RoleGroupName = "Staff" },
+        ];
+
+        // Only the first group appears in the count; the second classifies nothing and so is omitted.
+        harness.GroupRoleCounts[RoleGroupId] = 3;
+
+        Result<IReadOnlyList<RoleGroupDto>> outcome = await harness.Service
+            .ListRoleGroupsAsync(PortalId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value![0].ClassifiedRoleCount.Should().Be(3);
+        outcome.Value[1].ClassifiedRoleCount.Should().Be(
+            0,
+            "a group the grouped count omits classifies nothing, which is what makes it removable");
+    }
+
+    /// <summary>
+    /// The listing asks for the whole portal's counts once, however many groups it is describing.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task ListRoleGroups_CountsTheWholePortalOnce()
+    {
+        Harness harness = Harness.Ready();
+        harness.Groups =
+        [
+            new RoleGroup { RoleGroupId = RoleGroupId, PortalId = PortalId, RoleGroupName = RoleGroupName },
+            new RoleGroup { RoleGroupId = 1, PortalId = PortalId, RoleGroupName = "Staff" },
+            new RoleGroup { RoleGroupId = 2, PortalId = PortalId, RoleGroupName = "Vendors" },
+        ];
+
+        await harness.Service.ListRoleGroupsAsync(PortalId, CancellationToken.None);
+
+        harness.Roles.Verify(
+            r => r.CountRolesByGroupAsync(PortalId, It.IsAny<CancellationToken>()),
+            Times.Once,
+            "one grouped read answers every group, so a listing does not scale with the number of groups");
+    }
+
+    /// <summary>Reading one group carries that group's count and no other group's.</summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task GetRoleGroup_CarriesOnlyItsOwnClassifiedCount()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupGroup = new RoleGroup
+        {
+            RoleGroupId = RoleGroupId,
+            PortalId = PortalId,
+            RoleGroupName = RoleGroupName,
+        };
+        harness.GroupRoleCounts[RoleGroupId] = 7;
+        harness.GroupRoleCounts[1] = 99;
+
+        Result<RoleGroupDto?> outcome = await harness.Service
+            .GetRoleGroupAsync(PortalId, RoleGroupId, CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value!.ClassifiedRoleCount.Should().Be(7);
+    }
+
+    /// <summary>A group that classifies nothing reads as zero rather than as no answer.</summary>
+    /// <returns>A task representing the assertion.</returns>
+    [Fact]
+    public async Task GetRoleGroup_ReadsAnUncountedGroupAsEmpty()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupGroup = new RoleGroup
+        {
+            RoleGroupId = RoleGroupId,
+            PortalId = PortalId,
+            RoleGroupName = RoleGroupName,
+        };
+
+        Result<RoleGroupDto?> outcome = await harness.Service
+            .GetRoleGroupAsync(PortalId, RoleGroupId, CancellationToken.None);
+
+        outcome.Value!.ClassifiedRoleCount.Should().Be(0);
+    }
+
+    /// <summary>
+    /// A group returned from its own creation classifies nothing, and says so without asking the database.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// A role cannot name a group that did not exist when the role was written, so the literal zero is more
+    /// truthful here than a query - and a stale non-zero count from some other group would withhold the
+    /// deletion of a group that has only just been made.
+    /// </remarks>
+    [Fact]
+    public async Task CreateRoleGroup_ReportsTheNewGroupAsClassifyingNothing()
+    {
+        Harness harness = Harness.Ready();
+        harness.GroupRoleCounts[RoleGroupId] = 5;
+
+        Result<RoleGroupDto> outcome = await harness.Service.CreateRoleGroupAsync(
+            PortalId,
+            new CreateRoleGroupRequest { RoleGroupName = "Brand New" },
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value!.ClassifiedRoleCount.Should().Be(0);
+        harness.Roles.Verify(
+            r => r.CountRolesByGroupAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()),
+            Times.Never,
+            "a group created by this request classifies nothing, which needs no query to establish");
+    }
+
+    /// <summary>An amended group still reports how many roles it classifies.</summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// Renaming a group does not empty it. The count has to survive the edit, because the screen that issued
+    /// the edit is the same screen that offers the deletion immediately afterwards.
+    /// </remarks>
+    [Fact]
+    public async Task UpdateRoleGroup_CarriesTheClassifiedCountThroughTheEdit()
+    {
+        Harness harness = Harness.Ready();
+        harness.LookupGroup = new RoleGroup
+        {
+            RoleGroupId = RoleGroupId,
+            PortalId = PortalId,
+            RoleGroupName = RoleGroupName,
+        };
+        harness.GroupRoleCounts[RoleGroupId] = 2;
+
+        Result<RoleGroupDto> outcome = await harness.Service.UpdateRoleGroupAsync(
+            PortalId,
+            RoleGroupId,
+            new UpdateRoleGroupRequest { RoleGroupName = "Renamed" },
+            CancellationToken.None);
+
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value!.RoleGroupName.Should().Be("Renamed");
+        outcome.Value.ClassifiedRoleCount.Should().Be(2, "renaming a group does not empty it");
+    }
+
+    /// <summary>
+    /// The count a client reads and the refusal the server issues cannot disagree.
+    /// </summary>
+    /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// ⚠ THIS IS THE WHOLE CONTRACT OF THE FIX, ASSERTED AS ONE SEQUENCE. A positive count must accompany a
+    /// refusal, and a zero count must accompany an acceptance. Asserting them separately would let the two
+    /// drift apart while both tests still passed, which is precisely the state the screen was in before: the
+    /// evidence it offered and the rule the server applied were answering different questions.
+    /// </remarks>
+    [Fact]
+    public async Task ClassifiedCountAgreesWithTheRemovalGuard()
+    {
+        Harness populated = Harness.Ready();
+        populated.LookupGroup = new RoleGroup
+        {
+            RoleGroupId = RoleGroupId,
+            PortalId = PortalId,
+            RoleGroupName = RoleGroupName,
+        };
+        populated.RolesInGroup = [StoredRole(), StoredRole()];
+        populated.GroupRoleCounts[RoleGroupId] = 2;
+
+        Result<RoleGroupDto?> populatedRead = await populated.Service
+            .GetRoleGroupAsync(PortalId, RoleGroupId, CancellationToken.None);
+        Result populatedRemoval = await populated.Service
+            .DeleteRoleGroupAsync(PortalId, RoleGroupId, CancellationToken.None);
+
+        populatedRead.Value!.ClassifiedRoleCount.Should().BePositive();
+        populatedRemoval.IsFailure.Should().BeTrue();
+        populatedRemoval.Reason!.Code.Should().Be(RoleGroupInUseCode);
+
+        Harness empty = Harness.Ready();
+        empty.LookupGroup = new RoleGroup
+        {
+            RoleGroupId = RoleGroupId,
+            PortalId = PortalId,
+            RoleGroupName = RoleGroupName,
+        };
+        empty.RolesInGroup = [];
+
+        Result<RoleGroupDto?> emptyRead = await empty.Service
+            .GetRoleGroupAsync(PortalId, RoleGroupId, CancellationToken.None);
+        Result emptyRemoval = await empty.Service
+            .DeleteRoleGroupAsync(PortalId, RoleGroupId, CancellationToken.None);
+
+        emptyRead.Value!.ClassifiedRoleCount.Should().Be(0);
+        emptyRemoval.IsSuccess.Should().BeTrue(
+            "a zero count is the one value that promises the removal will be accepted");
+    }
+
     /// <summary>Reading one group from a tenant that does not exist is refused.</summary>
     /// <returns>A task representing the assertion.</returns>
     [Fact]
@@ -4639,6 +4845,24 @@ public class RoleServiceTests
 
         public IReadOnlyList<Role> RolesInGroup { get; set; } = [];
 
+        /// <summary>
+        /// How many roles each group classifies, as the portal-wide grouped count reports it.
+        /// </summary>
+        /// <remarks>
+        /// ⚠ THIS IS STUBBED EXPLICITLY BECAUSE MOQ'S LOOSE DEFAULT FOR THIS RETURN TYPE IS NULL, NOT AN
+        /// EMPTY DICTIONARY. Moq synthesises an empty sequence for a return it recognises as enumerable, but
+        /// <see cref="IReadOnlyDictionary{TKey, TValue}"/> is not among the shapes it recognises, so an
+        /// unstubbed call hands back a completed task carrying null and the caller dereferences it. The
+        /// repository never returns null, so the harness has to model that contract rather than leave it to
+        /// a default - a null-returning collaborator is a fault in the double, not a condition production
+        /// code should defend against.
+        /// <para>
+        /// A group absent from this map classifies nothing, which is exactly what the real grouped query
+        /// reports: it projects only the groups that have at least one role.
+        /// </para>
+        /// </remarks>
+        public Dictionary<int, int> GroupRoleCounts { get; } = [];
+
         /// <summary>Gets or sets the MEMBERSHIP rows the role-membership listing reads.</summary>
         public IReadOnlyList<UserRole> RoleMembers { get; set; } = [];
 
@@ -4930,6 +5154,9 @@ public class RoleServiceTests
                     It.IsAny<int>(),
                     It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => harness.RolesInGroup);
+            harness.Roles
+                .Setup(r => r.CountRolesByGroupAsync(It.IsAny<int>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => harness.GroupRoleCounts);
 
             // Group-name uniqueness is answered over the portal's group list, so a taken name is
             // modelled by a group of that name being present in it.

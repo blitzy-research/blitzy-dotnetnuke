@@ -389,8 +389,16 @@
       could change nothing. A disabled anchor is not a thing HTML has, and a disabled BUTTON would announce a
       command that does not exist; an unfocusable marker carrying the reason is what a reader can act on.
     -->
-    <span class="role-list__row-action-withheld" [attr.title]="protectedRoleReason(row)">
-      <span aria-hidden="true">&mdash;</span>
+    <span class="role-list__row-action-withheld">
+      <!--
+        THE STATE IS VISIBLE; THE REASON IS THE ACCESSIBLE TEXT. Previously this cell held an `aria-hidden`
+        em dash plus a visually hidden sentence plus a `title` on this very span - so a screen reader heard
+        the reason, a mouse user could hover for it, and a sighted KEYBOARD user got a blank-looking cell
+        with no way to reach either. The dash is replaced by the state word and the `title` is dropped
+        rather than kept alongside it: a title on an element that already carries its own text becomes a
+        second description of the same fact, which is how one rule ends up announced twice.
+      -->
+      <span class="role-list__row-action-state">{{ protectedRoleStateLabel }}</span>
       <span class="role-list__row-action-reason">{{ protectedRoleReason(row) }}</span>
     </span>
   } @else {
@@ -457,8 +465,16 @@
       The destructive command is WITHHELD rather than refused. Confirming the destruction of the role an
       operator's own access depends on, and only then being refused, reads as a fault rather than as a rule.
     -->
-    <span class="role-list__row-action-withheld" [attr.title]="protectedRoleReason(row)">
-      <span aria-hidden="true">&mdash;</span>
+    <span class="role-list__row-action-withheld">
+      <!--
+        THE STATE IS VISIBLE; THE REASON IS THE ACCESSIBLE TEXT. Previously this cell held an `aria-hidden`
+        em dash plus a visually hidden sentence plus a `title` on this very span - so a screen reader heard
+        the reason, a mouse user could hover for it, and a sighted KEYBOARD user got a blank-looking cell
+        with no way to reach either. The dash is replaced by the state word and the `title` is dropped
+        rather than kept alongside it: a title on an element that already carries its own text becomes a
+        second description of the same fact, which is how one rule ends up announced twice.
+      -->
+      <span class="role-list__row-action-state">{{ protectedRoleStateLabel }}</span>
       <span class="role-list__row-action-reason">{{ protectedRoleReason(row) }}</span>
     </span>
   } @else {
@@ -522,6 +538,23 @@
   U+00A0 is not collapsible, so it always produces a text box and cannot be dropped. The qualifier here is
   1x1 and clipped, so a non-breaking space has no visual consequence whatsoever.
 -->
+<!--
+  THE DESCRIPTION — `roles.ascx` L48-L53, a bound column over `Description`.
+
+  ⚠ QA-20 — IT WAS THE LAST CELL ON THIS ROW STILL REPORTING AN ABSENT VALUE WITH NOTHING. Measured on the
+  live listing, one role carried no description and its cell rendered empty while the six columns beside it
+  each painted the shared mark for the same state. Nothing announced, nothing drawn, and no way for a reader
+  to tell "no description recorded" from "this cell did not render".
+-->
+<ng-template #descriptionCell let-row>
+  @if (isDescriptionAbsent(row)) {
+    <!-- The shared absent-value rendering: the same mark, colour and words as every other listing. -->
+    <app-absent-value />
+  } @else {
+    {{ row.description }}
+  }
+</ng-template>
+
 <ng-template #feeCell let-row let-column="column">
   @if (isFeeAbsent(row, column.key)) {
     <!-- The shared absent-value rendering: the same mark, colour and words as every other listing. -->

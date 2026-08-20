@@ -99,6 +99,16 @@
   color: var(--color-text-muted);
 }
 
+// WHY A CONTROL ON THIS SCREEN CANNOT BE USED. Deliberately a class of its own rather than a second
+// `lookup-note`: the two say different kinds of thing - one bounds a search result, the other explains a
+// permanently unavailable control - and sharing a class made every specification that asserted "no lookup
+// note is shown" also assert "no control has a stated reason". Same muted treatment, so nothing changes
+// for the eye.
+.role-assignment__advisory {
+  margin: var(--space-1) 0 0;
+  color: var(--color-text-muted);
+}
+
 // The dropdown the tenant's account policy can ask for instead of the name box.
 .role-assignment__choices {
   max-inline-size: mx.breakpoint('sm');

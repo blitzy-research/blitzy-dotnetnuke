@@ -3,9 +3,11 @@
 @use '../../../../styles/mixins' as mx;
 
 // ROOT
-// No colour is declared. The token vocabulary is closed at nine colours and deliberately contains no
-// base-ink member; body text inherits the user agent default, which is exactly what the legacy body rule
-// and its Normal text class did — both declared family, size and weight and no colour at all.
+// No colour is declared, and that is inheritance rather than an absent token: body text inherits, which is
+// exactly what the legacy body rule and its Normal text class did — both declared family, size and weight and
+// no colour at all. (The vocabulary does hold `--color-text`, and this comment previously said it did not and
+// attributed the omission to the vocabulary being "closed at nine colours". Both halves were wrong; neither
+// was the reason this rule declares no colour.)
 :host,
 .module-settings {
   display: grid;
@@ -486,3 +488,10 @@ h3 > .module-settings__toggle {
   font-weight: var(--font-weight-normal);
   font-style: italic;
 }
+
+// NO RULE FOR THE LOCK LEGEND, AND THAT IS DELIBERATE. The sentences explaining why a grant cannot be
+// changed are rendered with `.module-settings__notice` - this screen's existing treatment for an
+// explanatory sentence beneath a field - rather than with a block of their own. They ARE explanatory
+// sentences beneath a field, so a second treatment would be a second answer to a question this stylesheet
+// has already answered, and it would put this file over its five-kilobyte budget to say the same thing
+// twice. The budget is not raised to accommodate duplication.

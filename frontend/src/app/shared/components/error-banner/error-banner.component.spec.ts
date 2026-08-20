@@ -1251,20 +1251,23 @@ describe('ErrorBannerComponent', () => {
     it('paints only the danger band in the error colour, from ONE token', () => {
       const danger = paintOf(SERVER_FAULT);
 
-      expect(danger.color).toBe('rgb(255, 0, 0)');
-      expect(danger.border).toBe('rgb(255, 0, 0)');
+      expect(danger.color).toBe('rgb(176, 0, 0)');
+      expect(danger.border).toBe('rgb(176, 0, 0)');
 
       // The red reaches neither a refusal nor a rate-limit band, which is the point the
       // legacy provenance establishes.
       const warning = paintOf(PERMISSION_REFUSED);
       const calm = paintOf(RATE_LIMITED);
 
-      expect(warning.color).not.toBe('rgb(255, 0, 0)');
-      expect(calm.color).not.toBe('rgb(255, 0, 0)');
+      expect(warning.color).not.toBe('rgb(176, 0, 0)');
+      expect(calm.color).not.toBe('rgb(176, 0, 0)');
 
-      // And neither withdrawn candidate's value appears anywhere at all - #B30000, which was proposed for
-      // the warning band, nor #B80000, which was declared as a danger-text sibling and removed with the
-      // closed nine-colour vocabulary.
+      // And neither withdrawn candidate's value appears anywhere at all - #B30000, which was proposed for the
+      // warning band, nor #B80000, which was declared as a SEPARATE danger-text sibling and removed. Both are
+      // still absent, and the reason is worth stating because the danger ink HAS since been darkened: the
+      // obligation was discharged by re-valuing `--color-danger` itself to #B00000, so a second red was never
+      // needed. These two assertions therefore still hold, and for a better reason than when they were
+      // written - not "the vocabulary refuses a darker red" but "one darker red was enough".
       expect(danger.color).not.toBe('rgb(179, 0, 0)');
       expect(warning.color).not.toBe('rgb(179, 0, 0)');
       expect(calm.color).not.toBe('rgb(179, 0, 0)');
@@ -1276,14 +1279,14 @@ describe('ErrorBannerComponent', () => {
     it('distinguishes the three bands from one another within the closed palette', () => {
       // ⚠ THE SURFACE ALONE CANNOT SEPARATE ALL THREE, AND THIS CASE USED TO REQUIRE THAT IT DID. It
       // asserted the warning band's surface was the legacy pale yellow `rgb(255, 255, 153)`, which was
-      // reached through a tenth token that has since been withdrawn - the value is absent from the design
-      // specification's nine-colour table.
+      // reached through a hint-surface token that has since been withdrawn - that value is untokenised, for the
+      // reason recorded beside `--color-surface`, and it was never one of the colours the design table names.
       const danger = paintOf(SERVER_FAULT);
       const warning = paintOf(PERMISSION_REFUSED);
       const calm = paintOf(RATE_LIMITED);
 
       // The accent edge separates all three, from three different palette members.
-      expect(danger.accent).toBe('rgb(255, 0, 0)');
+      expect(danger.accent).toBe('rgb(176, 0, 0)');
       expect(warning.accent).toBe('rgb(0, 51, 102)');
       expect(calm.accent).toBe('rgb(105, 105, 105)');
       expect(new Set([danger.accent, warning.accent, calm.accent]).size).toBe(3);

@@ -685,23 +685,27 @@ export class FormFieldComponent implements AfterContentChecked {
     const invalid = this.hasError();
     const contributions: string[] = [];
 
-    // The bound is contributed FIRST, and whenever one exists rather than only while something is
-    // expanded, for the same reason the group references it: it has to be heard when the control is
-    // REACHED, before a keystroke is lost to a truncation that gives no feedback of its own. ⚠ OMITTING
-    // IT HERE IS NOT HARMLESS. An ARIA description on the composite group is not inherited by the
+    // The bound is contributed AHEAD OF THE HELP, and whenever one exists rather than only while
+    // something is expanded, for the same reason the group references it: it has to be heard when the
+    // control is REACHED, before a keystroke is lost to a truncation that gives no feedback of its own.
+    // ⚠ OMITTING IT HERE IS NOT HARMLESS. An ARIA description on the composite group is not inherited by the
     // control, so with the reference only on the group the bound was announced on entering the field and
     // was silent on the box being typed into - Chrome computed NO accessible description for the control
     // at all, which a runtime accessibility-tree read confirmed against a sibling that does carry one.
+    // ⚠ QA-21 / QA-24 — THE FAILURE IS NAMED FIRST. This list IS the announcement order, and the error
+    // used to be last: a reader arriving at a refused control heard the typing bound, then the whole help
+    // sentence, and only then why the value had been rejected. The rendered order was changed to match
+    // (see the paired template), and these two orders must not disagree, so the reason leads here too.
+    if (invalid) {
+      contributions.push(this.errorId());
+    }
+
     if (this.hasLimit()) {
       contributions.push(this.limitId());
     }
 
     if (this.helpExpanded()) {
       contributions.push(this.helpId());
-    }
-
-    if (invalid) {
-      contributions.push(this.errorId());
     }
 
     const controls = Array.from(

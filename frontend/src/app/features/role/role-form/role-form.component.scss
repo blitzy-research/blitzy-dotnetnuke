@@ -119,7 +119,16 @@ $control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
   display: grid;
   gap: var(--space-3);
   padding: var(--space-4);
-  border: var(--border-width) var(--border-style) var(--color-border);
+
+  // ⚠ THE COMPONENT-BOUNDARY TOKEN, AND THIS RULE IS WHY THE GLOBAL FIX WAS NOT ENOUGH ON ITS OWN. This is a
+  // real `fieldset`, so the global `fieldset` rule in `_forms.scss` already resolves the boundary token for
+  // it - but this declaration is a component override and won every cascade it entered. Measured in a real
+  // browser at 1440 and at 320: this edge painted `#DCDCDC` at 1.3713:1 against its own white fill, while the
+  // portal settings fieldset - identical markup role, no component override - painted `#767676` at 4.5422:1.
+  // Two fieldsets in the same product drawing their boundary at three-times-different weights, one of them
+  // effectively invisible. A group edge is the only thing saying where one set of fields ends and the next
+  // begins, which is component-identification information and owes 3:1; it is not decoration.
+  border: var(--border-width) var(--border-style) var(--color-border-control);
   border-radius: var(--radius-md);
   background-color: var(--color-background);
 }
@@ -135,6 +144,11 @@ $control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
 .role-form__summary {
   padding-inline: var(--space-1);
   padding-block-end: var(--space-1);
+
+  // The DECORATIVE token, deliberately, and not the boundary one used on the section edge above. This rule
+  // underlines a heading inside a region whose extent the section edge already states; it identifies nothing
+  // on its own, and the heading it sits under is bold navy at 12.61:1. Darkening it would draw a second heavy
+  // line immediately inside the first for no information gained.
   border-block-end: var(--border-width) var(--border-style) var(--color-border);
   font-size: var(--font-size-lg);
   font-weight: var(--font-weight-bold);

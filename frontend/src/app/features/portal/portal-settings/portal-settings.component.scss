@@ -73,9 +73,16 @@
   border-block-end-color: var(--color-primary);
 }
 
+// ⚠ THE COMPONENT-BOUNDARY TOKEN ON ALL FOUR UNAVAILABLE VARIANTS BELOW, NOT THE DECORATIVE ONE. A tab and a
+// disclosure toggle are both controls, and WCAG 1.4.11 covers the visual information that identifies a
+// component AND ITS STATE - so an unavailable control's edge is exactly the case it names, not decoration.
+// At --color-border these edges measured 1.3713:1 on the page fill and 1.1819:1 on the surface fill, i.e. the
+// faintest values anywhere in the product, on the controls a reader most needs to be able to find in order to
+// understand why they cannot use them. The muted ink and the cursor stay as the non-colour cues; they report
+// the state, whereas the edge reports that there is a control there at all.
 .portal-settings__tab:disabled {
   color: var(--color-text-muted);
-  border-color: var(--color-border);
+  border-color: var(--color-border-control);
   cursor: not-allowed;
 }
 
@@ -83,7 +90,7 @@
 // and hears it announced rather than finding it missing.
 .portal-settings__tab[aria-disabled='true'] {
   color: var(--color-text-muted);
-  border-color: var(--color-border);
+  border-color: var(--color-border-control);
   pointer-events: none;
 }
 
@@ -187,7 +194,7 @@
 // the second non-colour cue.
 .portal-settings__toggle[disabled] {
   color: var(--color-text-muted);
-  border-block-end-color: var(--color-border);
+  border-block-end-color: var(--color-border-control);
   cursor: not-allowed;
 }
 
@@ -195,7 +202,7 @@
 // for the reason the global layer documents.
 .portal-settings__toggle[aria-disabled='true'] {
   color: var(--color-text-muted);
-  border-block-end-color: var(--color-border);
+  border-block-end-color: var(--color-border-control);
   pointer-events: none;
 }
 
@@ -205,6 +212,21 @@
   gap: var(--space-3);
 
   box-sizing: border-box;
+}
+
+// The always-present shell that a collapsed section head names. It contributes no box of its own, so an
+// open group lays out exactly as it did when the grid was the section's direct child.
+.portal-settings__body {
+  display: contents;
+}
+
+// ⚠ `hidden` MUST BE RESTATED, BECAUSE AN AUTHOR `display` BEATS THE USER-AGENT ONE. The attribute's whole
+// effect is `display: none` from the UA stylesheet, which any author declaration of `display` overrides — and
+// both the shell above and the tab panel declare one. Without this, a closed section and an unselected tab
+// would carry the attribute, be removed from the accessibility tree, and still occupy the page.
+.portal-settings__body[hidden],
+.portal-settings__panel[hidden] {
+  display: none;
 }
 
 // The legacy fields sat in a two-column table, a width="150" label cell beside a 325 or 300 pixel control
@@ -239,17 +261,42 @@
   grid-column: 1 / -1;
 }
 
-// ⚠ #08 — AT THE NARROWEST WIDTHS THE FIELDS TAKE THE SECTION'S WHOLE MEASURE. Below `sm` every field is
-// stacked, so a control's width IS the grid's width, and the measure is genuinely scarce: at a 320px
-// viewport the page offers 305px, the shell spends 32px on its own inset and this fieldset another 24px on
-// padding, leaving 247px - against the 252px of ink (231.77px of text plus a 20.23px native arrow) that the
-// longest administrator option needs. Withdrawing the fieldset's inline padding from the grid alone, rather
-// than from the section, hands those 24px to the controls while the group head and its prose keep their
-// inset. The grid stops at the border edge, so nothing overflows and no sideways scrollbar appears: the
-// page still measures 305px against a 320px viewport.
+// ⚠ #08 — AT THE NARROWEST WIDTHS THE FIELDS TAKE ALMOST THE SECTION'S WHOLE MEASURE. Below `sm` every
+// field is stacked, so a control's width IS the grid's width, and the measure is genuinely scarce: at a
+// 320px viewport the page offers 305px, the shell spends 32px on its own inset and this fieldset another
+// 24px on padding, leaving 247px - against the 252px of ink (231.77px of text plus a 20.23px native arrow)
+// that the longest administrator option needs.
+//
+// ⚠ QA-21 — AND THE FIRST ANSWER TO THAT WENT TOO FAR. It withdrew the fieldset's inline padding from the
+// grid with `margin-inline: calc(-1 * var(--space-3))`, which cancelled the padding EXACTLY: measured at
+// both 320px and 375px, on all seven fieldsets, every label and every control rendered at x=17 - flush
+// against the inside of the 1px border, with no gutter whatsoever - while the `<legend>`, which the browser
+// positions at the padding edge and which no margin on the grid can move, stayed at x=29. So the fields
+// stuck out 12px to the LEFT of the caption naming them, and the group read as unframed. Fourteen of
+// fourteen gutter measurements were 0px against the border and -12px against the padding box.
+//
+// Narrowing the PADDING instead of cancelling it keeps both properties: the legend and the fields move
+// together, so they stay aligned, and the gutter is a real one from the spacing scale. Fourteen of fourteen
+// gutter measurements at 320px and 375px, across both tabs and all seven fieldsets, now read exactly one
+// step, with the legend and the first control and the first label all sharing an x.
+//
+// ⚠ IT IS THE SMALLEST STEP AND NOT THE SECOND, AND THE ARITHMETIC THAT SAID OTHERWISE WAS WRONG. Two
+// steps was tried first on the strength of "273px of fieldset less 2px of border and 16px of padding leaves
+// 255px against the 252px required". That sum omitted the select's OWN box: below `sm` the control keeps
+// 4px of inline padding a side and 1px of border a side, so the 255px it was given became a 245px content
+// box, and 245px less the 20.23px native arrow left 224.77px for 231.77px of text. Measured on the running
+// screen the administrator picker painted `Setup Administrator (setup_admi` and cut the closing `n)`.
+// The true requirement is 231.77 + 20.23 + 8 + 2 = 262px, which one step clears at 263px and two steps
+// does not.
+//
+// ⚠ AND ONE PIXEL IS NOT A MARGIN, WHICH IS WHY THE GUTTER IS NOT THE WHOLE ANSWER. This option is
+// operator data - a display name and a login name together - so a name three characters longer defeats any
+// gutter this screen could choose. `_forms.scss` therefore has selects report the loss with an ellipsis, so
+// a value too long for ANY width reads as truncated rather than as complete. This gutter restores the fit
+// for the data that can fit; that rule tells the truth about the data that cannot.
 @include mx.respond-below('sm') {
-  .portal-settings__grid {
-    margin-inline: calc(-1 * var(--space-3));
+  .portal-settings__section {
+    padding-inline: var(--space-1);
   }
 }
 
@@ -306,6 +353,14 @@
   // 105.05px of min-content inside a 70.06px track. Nothing about the painted value changes - a GUID that
   // fits on one line still renders on one line.
   overflow-wrap: anywhere;
+}
+
+// A READ-ONLY VALUE STATED AS TEXT, which is what a field renders in place of its box when there is no
+// value to put in one. The paragraph's default block margins are removed so the field's own vertical rhythm
+// is the only thing spacing it, exactly as the input it replaces was spaced.
+.portal-settings__readonly-value {
+  margin-block: 0;
+  align-self: center;
 }
 
 .portal-settings__actions {

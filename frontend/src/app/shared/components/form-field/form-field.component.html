@@ -104,15 +104,17 @@
     <p class="form-field__limit" data-visually-hidden [id]="limitId()">{{ limitText() }}</p>
   }
 
-  @if (helpExpanded()) {
-    <!--
-      MIGRATION: that break element is NOT reproduced. It was vertical spacing expressed as content, and
-      spacing here is the stylesheet's spacing scale instead; this template emits no break element
-      anywhere.
-    -->
-    <p class="form-field__help" [id]="helpId()">{{ helpText() }}</p>
-  }
+  <!--
+    ⚠ QA-21 / QA-24 — THE FAILURE COMES BEFORE THE INSTRUCTION, AND IT USED TO COME AFTER IT. The help
+    disclosure was emitted first, so opening Help INSERTED 35px of explanation between a control and the
+    reason it had just been refused: measured on the portal settings screen, a validation message ended up
+    151.5px below the bottom edge of the box it described, and on the membership screen the same +35px
+    displacement was measured on every field. A message that far from its control is not adjacent to it in
+    any sense a reader would recognise, and the message is the urgent one of the two.
 
+    Ordering them this way also makes the visual order match the reading order, which the previous
+    arrangement did only while Help was closed.
+  -->
   @if (hasError()) {
     <!--
       The region is removed when the field becomes valid rather than emptied or hidden, so it neither
@@ -128,5 +130,14 @@
         <p class="form-field__error" [id]="errorMessageId($index)">{{ message }}</p>
       }
     </div>
+  }
+
+  @if (helpExpanded()) {
+    <!--
+      MIGRATION: that break element is NOT reproduced. It was vertical spacing expressed as content, and
+      spacing here is the stylesheet's spacing scale instead; this template emits no break element
+      anywhere.
+    -->
+    <p class="form-field__help" [id]="helpId()">{{ helpText() }}</p>
   }
 </div>

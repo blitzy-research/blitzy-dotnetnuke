@@ -97,6 +97,21 @@ import { SubmitGuardDirective } from '../../../shared/directives/submit-guard.di
  * unreliable: on the sibling role editor two validator messages are exactly swapped relative to their own
  * operators while the resource file has them the right way round.
  */
+/**
+ * One lookup match, carrying the composed label AND the account it denotes.
+ *
+ * It extends {@link UserChoice} deliberately, so the annotated entry can be handed straight to
+ * `selectUser` and the lookup keeps ONE selection path. Annotating by projecting to a narrower shape would
+ * have required a second lookup to recover the account, which is a second place for the two to disagree.
+ */
+export interface AnnotatedUserMatch extends UserChoice {
+  /** The text the entry renders, including the membership note when one applies. */
+  readonly label: string;
+
+  /** Whether the addressed role's membership rows in hand already include this account. */
+  readonly alreadyInRole: boolean;
+}
+
 /** One entry of the account drop-down, with its label already composed. */
 export interface AccountChoiceEntry {
   /** The account the entry denotes. */
@@ -280,6 +295,24 @@ export const ROLE_ASSIGNMENT_TEXT = Object.freeze({
   accountAlreadyInRoleSuffix: ' — already in this role',
 
   /**
+   * What choosing an account that already holds the role will DO.
+   *
+   * ⚠ THIS IS STATED BECAUSE THE ALTERNATIVE - REFUSING THE CHOICE - WOULD DESTROY A LEGACY WORKFLOW.
+   * Selecting an existing member is how the legacy screen AMENDED a membership: `SecurityRoles.ascx.vb`
+   * `GetDates` at `:L279-L285` reads the existing `UserRoleInfo` and prefills the effective and expiry
+   * boxes from it, and `grdUserRoles_ItemDataBound` at `:L649-L659` relabels the commit button to
+   * `UpdateRole.Text` - a resource string that exists for no other purpose. Filtering or disabling those
+   * accounts would therefore remove the only route to changing a membership's dates.
+   *
+   * So the entry stays selectable and the CONSEQUENCE is named instead. The relabelled button implied it;
+   * an operator who had not noticed the label change had nothing telling them that a second membership was
+   * not about to be created.
+   */
+  accountAlreadyInRoleNote:
+    'This account already holds the role, so saving will update its existing membership dates rather '
+    + 'than add a second membership.',
+
+  /**
    * Confirmation for a membership WRITE. `{0}` is the account, `{1}` is the role. MIGRATION - net-new at
    * the SUCCESS band, and the omission it closes was measured.
    */
@@ -368,6 +401,26 @@ export const ROLE_ASSIGNMENT_CONTROL_ID = Object.freeze({
 
   /** The notification choice. */
   notify: 'role-assignment-notify',
+
+  /**
+   * The sentence naming what saving does when the chosen account is already a member.
+   *
+   * Given an identifier so it can be ASSOCIATED with the commit button rather than merely placed near it.
+   * The button relabels itself to "Update User Role" in this case; the association is what makes that
+   * relabelling explicable to a reader who never sees the two side by side.
+   */
+  alreadyInRoleNote: 'role-assignment-already-in-role',
+
+  /**
+   * The sentence stating why the notification choice cannot be made.
+   *
+   * ⚠ IT NEEDS AN IDENTIFIER BECAUSE IT USED TO LIVE IN A COLLAPSED DISCLOSURE ON A DISABLED CONTROL,
+   * WHICH IS THE ONE PLACE IT COULD NOT BE READ. The checkbox is disabled with the native attribute, so it
+   * takes no focus and cannot be tabbed to; the reason was bound as the field's `help`, which renders
+   * behind a toggle that starts closed. An operator therefore met a permanently unavailable control with no
+   * stated reason, and the only way to the explanation was to guess that a separate toggle held one.
+   */
+  notifyAdvisory: 'role-assignment-notify-advisory',
 } as const);
 
 /**
@@ -1210,10 +1263,7 @@ export class RoleAssignmentComponent {
    * specification.
    */
   public readonly accountChoiceEntries: Signal<readonly AccountChoiceEntry[]> = computed(() => {
-    const memberIds = new Set<number>();
-    for (const row of this.assignments()) {
-      memberIds.add(row.userId);
-    }
+    const memberIds: ReadonlySet<number> = this.membershipUserIds();
 
     return this.accountChoicesSignal().map((choice: UserChoice) => {
       // POSITIVELY KNOWN MEMBERSHIP ONLY, and the set changes nothing about that.
@@ -1226,6 +1276,64 @@ export class RoleAssignmentComponent {
         alreadyInRole: already,
       };
     });
+  });
+
+  /**
+   * The accounts whose membership of the addressed role is POSITIVELY KNOWN from the rows in hand.
+   *
+   * Factored out so the two pickers cannot disagree. They are alternative controls for the same decision -
+   * which account to act on - and the drop-down annotated membership while the lookup list did not, so
+   * which mode the tenant happened to be configured for decided whether the operator was told.
+   */
+  private readonly membershipUserIds: Signal<ReadonlySet<number>> = computed(() => {
+    const memberIds = new Set<number>();
+
+    for (const row of this.assignments()) {
+      memberIds.add(row.userId);
+    }
+
+    return memberIds;
+  });
+
+  /**
+   * The lookup matches, each carrying the same membership annotation the drop-down entries carry.
+   *
+   * ⚠ THE LOOKUP MODE PREVIOUSLY CARRIED NO ANNOTATION AT ALL. `userMatches` is a bare list of
+   * accounts, so in the mode a tenant gets when its account count is large - the mode where the operator is
+   * LEAST able to survey the membership themselves - the screen offered no indication that a match was
+   * already a member. Both pickers now answer that question the same way, from the same set.
+   */
+  public readonly annotatedUserMatches: Signal<readonly AnnotatedUserMatch[]> = computed(() => {
+    const memberIds: ReadonlySet<number> = this.membershipUserIds();
+
+    return this.userMatches().map((match: UserChoice) => {
+      const already: boolean = memberIds.has(match.userId);
+      const base = `${match.displayName} (${match.username})`;
+
+      return {
+        ...match,
+        label: already ? `${base}${ROLE_ASSIGNMENT_TEXT.accountAlreadyInRoleSuffix}` : base,
+        alreadyInRole: already,
+      };
+    });
+  });
+
+  /**
+   * Whether the account currently chosen already holds the role, so the screen can name what saving does.
+   *
+   * Derived from the resolved membership rather than from the annotation set, because it must agree with
+   * {@link actionLabel} - the label and the sentence explaining the label cannot come from two sources.
+   */
+  public readonly selectedAccountAlreadyInRole: Signal<boolean> = computed(() => {
+    const chosen: number | null = this.formStateSignal().userId;
+
+    if (chosen === null) {
+      return false;
+    }
+
+    const membership = this.selectedMembership();
+
+    return membership !== null && membership.userId === chosen;
   });
 
   /**

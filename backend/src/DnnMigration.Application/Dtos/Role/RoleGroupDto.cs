@@ -27,4 +27,23 @@ public sealed class RoleGroupDto
     /// <summary>Free-text description of the role group, or <see langword="null"/> when the group has none.</summary>
     // The legacy read path could never yield null here.
     public string? Description { get; set; }
+
+    /// <summary>How many roles this group classifies.</summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THIS MEMBER EXISTS SO A CLIENT CAN WITHHOLD A DELETION IT KNOWS WOULD BE REFUSED, and it is here
+    /// rather than inferred client-side because the only evidence a client otherwise has is the role listing
+    /// on screen - which is one page long and narrowed by whatever the operator has typed into the filter.
+    /// Filtering to a name that matches nothing empties that page, and a populated group then looked empty:
+    /// the delete command appeared, the operator confirmed it, and the server answered
+    /// <c>role_group.in_use</c>. The affordance had promised something the rule forbade.
+    /// </para>
+    /// <para>
+    /// It is the SAME quantity the removal guard tests, taken from the same predicate, so the count a screen
+    /// reads and the refusal the server issues cannot disagree. Zero means the group is genuinely empty and
+    /// removable; any positive value names how many roles must be moved or deleted first, which is the
+    /// remedy the operator has to act on rather than merely the rule they broke.
+    /// </para>
+    /// </remarks>
+    public int ClassifiedRoleCount { get; set; }
 }

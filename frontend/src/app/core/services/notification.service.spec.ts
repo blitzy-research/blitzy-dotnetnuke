@@ -195,6 +195,96 @@ describe('NotificationService', () => {
     });
   });
 
+  // =========================================================================
+  // QA-26 — SUPERSEDING BY OPERATION
+  // =========================================================================
+
+  describe('the operation scope', () => {
+    /**
+     * ⚠ THE CASE THE IDENTICAL-NEIGHBOUR COLLAPSE COULD NEVER CATCH. Two DIFFERENT sentences reporting
+     * the SAME operation are two answers to one question, and only the later one is still true. Measured on
+     * the module-import screen: choosing an oversized file and then an unreadable one left both refusals on
+     * screen at once, beside that screen's own banner, so the operator had to work out which of the two
+     * described the file they had actually selected.
+     */
+    it('retires an earlier report of the same operation, however it was worded', () => {
+      service.notify('error', 'The file is too large.', null, false, null, 'import:file');
+      service.notify('error', 'The file could not be read.', null, false, null, 'import:file');
+
+      const queue = service.notifications();
+
+      expect(queue).withContext('one operation, one current answer').toHaveSize(1);
+      expect(queue[0]?.message).toBe('The file could not be read.');
+    });
+
+    it('retires it wherever it sits, not only when it is the newest entry', () => {
+      service.notify('error', 'The file is too large.', null, false, null, 'import:file');
+      service.info('Something unrelated happened.');
+      service.notify('error', 'The file could not be read.', null, false, null, 'import:file');
+
+      const messages = service.notifications().map((entry) => entry.message);
+
+      expect(messages)
+        .withContext('the unrelated entry survives; the superseded one does not')
+        .toEqual(['Something unrelated happened.', 'The file could not be read.']);
+    });
+
+    it('keeps two different operations apart, because both are still true', () => {
+      service.notify('error', 'The save was refused.', null, false, null, 'settings:save');
+      service.notify('error', 'The delete was refused.', null, false, null, 'settings:delete');
+
+      expect(service.notifications()).toHaveSize(2);
+    });
+
+    /**
+     * The default is `null`, so nothing that has not opted in can be retired by anything — which is what
+     * makes this change invisible to every call site that was not measured to need it.
+     */
+    it('never lets an unscoped report retire another, in either direction', () => {
+      service.error('First unscoped failure.');
+      service.error('Second unscoped failure.');
+      service.notify('error', 'A scoped failure.', null, false, null, 'a:b');
+      service.error('Third unscoped failure.');
+
+      expect(service.notifications()).toHaveSize(4);
+      expect(service.notifications().every((entry) => entry.scope === null)).toBeFalse();
+    });
+
+    it('publishes the scope it was given, and null when it was given none', () => {
+      service.error('Scoped.', null, 'x:y');
+      service.error('Unscoped.');
+
+      expect(service.notifications()[0]?.scope).toBe('x:y');
+      expect(service.notifications()[1]?.scope).toBeNull();
+    });
+
+    it('carries the scope through every severity alias', () => {
+      service.success('Saved.', false, 's:1');
+      service.info('Noted.', false, 'i:1');
+      service.warning('Careful.', false, 'w:1');
+      service.error('Refused.', null, 'e:1');
+
+      expect(service.notifications().map((entry) => entry.scope)).toEqual([
+        's:1',
+        'i:1',
+        'w:1',
+        'e:1',
+      ]);
+    });
+
+    it('lets a later success retire the refusal of the same operation', () => {
+      service.error('The save was refused.', null, 'settings:save');
+      service.success('Saved.', false, 'settings:save');
+
+      const queue = service.notifications();
+
+      expect(queue).toHaveSize(1);
+      expect(queue[0]?.severity)
+        .withContext('a refusal that has since succeeded is no longer an answer to anything')
+        .toBe('success');
+    });
+  });
+
   describe('severity vocabulary', () => {
     it('expresses every member of the closed vocabulary', () => {
       ALL_SEVERITIES.forEach((severity, index) => {
@@ -422,13 +512,20 @@ describe('NotificationService', () => {
     });
   });
 
+  /**
+   * ⚠ THESE CASES ASSERT THE DELEGATION ARGUMENTS EXACTLY, so widening `notify` widened them too. Each
+   * alias now forwards the lifetime opinion and the operation scope as well — both `null` when the caller
+   * supplied neither, which is what keeps the aliases' own defaults identical to what they were. The
+   * explicit `null`s are the point rather than noise: an alias silently dropping a parameter it was given
+   * is exactly the drift this shape of assertion exists to catch.
+   */
   describe('severity aliases', () => {
     it("success() delegates to notify with 'success' and adds nothing else", () => {
       const notify = spyOn(service, 'notify').and.callThrough();
 
       service.success('Portal saved.');
 
-      expect(notify).toHaveBeenCalledOnceWith('success', 'Portal saved.', null, false);
+      expect(notify).toHaveBeenCalledOnceWith('success', 'Portal saved.', null, false, null, null);
     });
 
     it("info() delegates to notify with 'info' and adds nothing else", () => {
@@ -436,7 +533,7 @@ describe('NotificationService', () => {
 
       service.info('Import complete.');
 
-      expect(notify).toHaveBeenCalledOnceWith('info', 'Import complete.', null, false);
+      expect(notify).toHaveBeenCalledOnceWith('info', 'Import complete.', null, false, null, null);
     });
 
     it("warning() delegates to notify with 'warning' and adds nothing else", () => {
@@ -444,7 +541,14 @@ describe('NotificationService', () => {
 
       service.warning(LEGACY_ACCESS_DENIED_TEXT);
 
-      expect(notify).toHaveBeenCalledOnceWith('warning', LEGACY_ACCESS_DENIED_TEXT, null, false);
+      expect(notify).toHaveBeenCalledOnceWith(
+        'warning',
+        LEGACY_ACCESS_DENIED_TEXT,
+        null,
+        false,
+        null,
+        null,
+      );
     });
 
     it('forwards a requested reprieve, and only when it is requested', () => {
@@ -466,7 +570,7 @@ describe('NotificationService', () => {
 
       service.error('Something failed');
 
-      expect(notify).toHaveBeenCalledOnceWith('error', 'Something failed', null);
+      expect(notify).toHaveBeenCalledOnceWith('error', 'Something failed', null, false, null, null);
     });
 
     it('error() forwards a support reference when one is supplied', () => {
@@ -474,7 +578,7 @@ describe('NotificationService', () => {
 
       service.error('Something failed', 'abc123');
 
-      expect(notify).toHaveBeenCalledOnceWith('error', 'Something failed', 'abc123');
+      expect(notify).toHaveBeenCalledOnceWith('error', 'Something failed', 'abc123', false, null, null);
       expect(service.notifications()[0].reference)
         .withContext('the reference is retained as its own member, not only in the text')
         .toBe('abc123');

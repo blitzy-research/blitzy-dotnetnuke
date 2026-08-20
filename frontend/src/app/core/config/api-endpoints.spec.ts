@@ -1,6 +1,13 @@
 import { environment } from '../../../environments/environment';
 
-import { API_ENDPOINTS, AUTH_ENDPOINTS, apiUrl, isApiRequest } from './api-endpoints';
+import {
+  API_ENDPOINTS,
+  AUTH_ENDPOINTS,
+  anonymousAuthEndpoints,
+  apiUrl,
+  isAnonymousAuthEndpoint,
+  isApiRequest,
+} from './api-endpoints';
 import { adoptTenantPathBase, forgetTenantPathBase } from './tenant-path';
 
 /**
@@ -45,10 +52,10 @@ describe('the production API base', () => {
       API_ENDPOINTS.roles.forCurrentPortal.members(0),
       API_ENDPOINTS.modules.collection(),
       API_ENDPOINTS.tabs.forPortal(-1),
-      AUTH_ENDPOINTS.login,
-      AUTH_ENDPOINTS.refresh,
-      AUTH_ENDPOINTS.logout,
-      AUTH_ENDPOINTS.me,
+      AUTH_ENDPOINTS.login(),
+      AUTH_ENDPOINTS.refresh(),
+      AUTH_ENDPOINTS.logout(),
+      AUTH_ENDPOINTS.me(),
     ];
 
     for (const address of generated) {
@@ -202,6 +209,122 @@ describe('a child portal addressed beneath a path segment', () => {
   it('still requires a segment boundary after the version beneath the prefix', () => {
     expect(isApiRequest('/child/api/v10/users')).toBeFalse();
     expect(isApiRequest('/child/api/v1-preview/users')).toBeFalse();
+  });
+
+  it('COMPOSES ALL FOUR AUTHENTICATION ADDRESSES BENEATH THE PREFIX', () => {
+    // ⚠ THE ONE CASE THIS SUITE WAS MISSING, AND ITS ABSENCE COST A TENANT-ISOLATION FAILURE. These four
+    // were the only endpoints in the module held as eager module-load strings, so they were fixed while the
+    // confirmed prefix was still empty and no later confirmation could revise them. Measured through a real
+    // child-prefix alias: every other request carried the prefix and these four alone went to the root, so a
+    // caller who addressed a child portal was issued authority for PortalID -1.
+    expect(AUTH_ENDPOINTS.login()).toBe('/child/api/v1/auth/login');
+    expect(AUTH_ENDPOINTS.refresh()).toBe('/child/api/v1/auth/refresh');
+    expect(AUTH_ENDPOINTS.logout()).toBe('/child/api/v1/auth/logout');
+    expect(AUTH_ENDPOINTS.me()).toBe('/child/api/v1/auth/me');
+    expect(API_ENDPOINTS.auth.login())
+      .withContext('the grouped alias must not diverge from the standalone group')
+      .toBe('/child/api/v1/auth/login');
+  });
+
+  it('exempts the PREFIXED anonymous endpoints from carrying a bearer token', () => {
+    // The other half of the same change. While the declarations were eager and unprefixed, the interceptor's
+    // exemption test compared a prefixed candidate against an unprefixed declaration, found no match, and
+    // attached a bearer token to login and refresh - the opposite of what those endpoints require.
+    expect(isAnonymousAuthEndpoint(AUTH_ENDPOINTS.login())).toBeTrue();
+    expect(isAnonymousAuthEndpoint(AUTH_ENDPOINTS.refresh())).toBeTrue();
+    expect(isAnonymousAuthEndpoint(AUTH_ENDPOINTS.logout())).toBeTrue();
+    expect(anonymousAuthEndpoints()).toEqual([
+      '/child/api/v1/auth/login',
+      '/child/api/v1/auth/refresh',
+      '/child/api/v1/auth/logout',
+    ]);
+  });
+
+  it('still requires a bearer token on the prefixed identity read', () => {
+    // `me` is the one authentication endpoint that DOES take a bearer token, so a 401 from it is a genuine
+    // expiry worth refreshing. Exempting it would make the session unrecoverable.
+    expect(isAnonymousAuthEndpoint(AUTH_ENDPOINTS.me())).toBeFalse();
+  });
+
+  it('does not exempt the ROOT authentication addresses, which belong to another tenant', () => {
+    expect(isAnonymousAuthEndpoint('/api/v1/auth/login')).toBeFalse();
+    expect(isAnonymousAuthEndpoint('/api/v1/auth/refresh')).toBeFalse();
+  });
+});
+
+describe('the authentication addresses across a change of tenant', () => {
+  // ⚠ THIS SUITE EXISTS TO PIN *WHEN* THE ADDRESS IS COMPOSED, WHICH IS THE ROOT CAUSE RATHER THAN A
+  // SYMPTOM OF IT. Every assertion above would pass equally against an eager registry that happened to be
+  // evaluated after a prefix was adopted, so none of them can distinguish a URL fixed at module evaluation
+  // from one composed per request. `main.ts` awaits `resolveTenantPathBase` before `bootstrapApplication`,
+  // but an ES module's top-level initialisers run when the graph is EVALUATED - strictly before the first
+  // statement of `main.ts` - so the only safe shape is one that resolves later. Adopting a prefix here,
+  // long after this module was evaluated, is what proves it does.
+
+  const originalUrl = window.location.href;
+  const baseElement = document.querySelector('base');
+  const originalBaseHref = baseElement?.getAttribute('href') ?? null;
+
+  beforeEach(() => {
+    baseElement?.setAttribute('href', '/');
+    forgetTenantPathBase();
+  });
+
+  afterEach(() => {
+    history.replaceState({}, '', originalUrl);
+    forgetTenantPathBase();
+
+    if (baseElement !== null) {
+      if (originalBaseHref === null) {
+        baseElement.removeAttribute('href');
+      } else {
+        baseElement.setAttribute('href', originalBaseHref);
+      }
+    }
+  });
+
+  it('FOLLOWS A PREFIX ADOPTED AFTER THIS MODULE WAS EVALUATED', () => {
+    // Before any confirmation: the root, which is the correct answer for a single-tenant deployment and the
+    // safe default while nothing has been established.
+    expect(AUTH_ENDPOINTS.login()).toBe('/api/v1/auth/login');
+
+    adoptTenantPathBase('/acme-legal');
+
+    expect(AUTH_ENDPOINTS.login()).toBe('/acme-legal/api/v1/auth/login');
+    expect(AUTH_ENDPOINTS.refresh()).toBe('/acme-legal/api/v1/auth/refresh');
+    expect(AUTH_ENDPOINTS.logout()).toBe('/acme-legal/api/v1/auth/logout');
+    expect(AUTH_ENDPOINTS.me()).toBe('/acme-legal/api/v1/auth/me');
+  });
+
+  it('follows a REJECTED candidate back to the root, so a typo signs in against nothing prefixed', () => {
+    adoptTenantPathBase('/acme-legal');
+    expect(AUTH_ENDPOINTS.login()).toBe('/acme-legal/api/v1/auth/login');
+
+    // The empty string is a DECISION - a candidate rejected - not an absence, and the authentication
+    // addresses must follow it exactly as every other address does.
+    adoptTenantPathBase('');
+
+    expect(AUTH_ENDPOINTS.login()).toBe('/api/v1/auth/login');
+    expect(anonymousAuthEndpoints()).toEqual([
+      '/api/v1/auth/login',
+      '/api/v1/auth/refresh',
+      '/api/v1/auth/logout',
+    ]);
+  });
+
+  it('keeps the exemption set in step with the endpoints through the change', () => {
+    adoptTenantPathBase('/acme-legal');
+
+    // The set and the endpoints are one change: a stale exemption set would attach a bearer to login.
+    for (const endpoint of anonymousAuthEndpoints()) {
+      expect(isAnonymousAuthEndpoint(endpoint))
+        .withContext(`endpoint ${endpoint}`)
+        .toBeTrue();
+    }
+
+    expect(isAnonymousAuthEndpoint('/api/v1/auth/login'))
+      .withContext('the previous tenant\u2019s address must stop matching')
+      .toBeFalse();
   });
 });
 

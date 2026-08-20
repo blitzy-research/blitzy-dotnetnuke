@@ -58,6 +58,17 @@ const ROLE_LIST_ROUTE = '/roles';
 const ADD_TITLE = 'Add New Role';
 const EDIT_TITLE = 'Edit Security Roles';
 
+/**
+ * The heading when the address names no role - unreadable, or well-formed and absent.
+ *
+ * ⚠ THIS SUPERSEDES AN EARLIER COMPROMISE, DELIBERATELY. An unreadable address used to take the EDIT
+ * heading so that it agreed with the route's static document title; the cost was that a screen reporting
+ * "the role could not be found" was captioned "Edit Security Roles" - the largest text on it asserting an
+ * action it could not perform. The heading now describes the screen and the document title is moved with
+ * it, so the agreement is kept without the false caption.
+ */
+const NOT_FOUND_TITLE = 'Role Not Found';
+
 /** The sentence shown when the address names no readable role. */
 const UNREADABLE_ADDRESS_MESSAGE =
   'This address does not name a role that can be read. Return to the role list and try again.';
@@ -416,6 +427,7 @@ function roleGroup(roleGroupId = 4, overrides: Partial<RoleGroup> = {}): RoleGro
     portalId: -1,
     roleGroupName: 'Paid Services',
     description: null,
+    classifiedRoleCount: 0,
     ...overrides,
   };
 }
@@ -1638,7 +1650,8 @@ describe('RoleFormComponent', () => {
 
       expect(notifySpy)
         .withContext('the operator is told the write committed, by the party that outlived the screen')
-        .toHaveBeenCalledWith('success', ROLE_CREATED_MESSAGE, null, false);
+        // See the note on the sibling refusal case: the delegation gained three trailing arguments.
+        .toHaveBeenCalledWith('success', ROLE_CREATED_MESSAGE, null, false, null, null);
       expect(navigateSpy)
         .withContext('and is NOT dragged back to the listing they deliberately left')
         .not.toHaveBeenCalled();
@@ -1669,7 +1682,17 @@ describe('RoleFormComponent', () => {
 
       expect(notifySpy)
         .withContext('the operator is told the write did NOT commit, by the party that outlived the screen')
-        .toHaveBeenCalledWith('error', SAVE_FAILED_MESSAGE, '4d19ae7c1b8f4e2a9d6c3f5b7a091e2d');
+        // ⚠ THE DELEGATION IS ASSERTED EXACTLY, so widening `notify` widened this too. The three trailing
+        // arguments are the lifetime opinion, the self-dismissal opinion and the operation scope, all of
+        // which the deferred-outcome reporter leaves at their defaults.
+        .toHaveBeenCalledWith(
+          'error',
+          SAVE_FAILED_MESSAGE,
+          '4d19ae7c1b8f4e2a9d6c3f5b7a091e2d',
+          false,
+          null,
+          null,
+        );
       expect(notifySpy.calls.allArgs().map((args) => args[1]))
         .withContext('the server detail and any per-field message stay with the banner')
         .not.toContain('A role of that name exists.');
@@ -2169,7 +2192,15 @@ describe('RoleFormComponent', () => {
 
       answerGroups();
 
-      expect(textOf(queryOrFail<Element>(host(), 'h1'))).toBe(EDIT_TITLE);
+      expect(textOf(queryOrFail<Element>(host(), 'h1')))
+        .withContext('the heading describes the screen rather than an edit it cannot offer')
+        .toBe(NOT_FOUND_TITLE);
+
+      // And no create-mode blurb either: the subtitle slot carries a screen's SCOPE, never its status, so
+      // it has nothing to say over a record that is not there.
+      expect(host().querySelectorAll('.page-header__subtitle').length)
+        .withContext('no subtitle over a record that is not there')
+        .toBe(0);
 
       // Nothing to fill in and nothing to submit: the surface is withdrawn rather than disabled, so
       // there is no control an operator can reach at all.

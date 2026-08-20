@@ -45,7 +45,7 @@ import { FormFieldComponent } from '../../../shared/components/form-field/form-f
 import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
 import { PaginationComponent } from '../../../shared/components/pagination/pagination.component';
 import { SearchInputComponent } from '../../../shared/components/search-input/search-input.component';
-import { DateDisplayPipe } from '../../../shared/pipes/date-display.pipe';
+import { DateDisplayPipe, parseDisplayInstant } from '../../../shared/pipes/date-display.pipe';
 import { YesNoPipe } from '../../../shared/pipes/yes-no.pipe';
 
 import type { SortDirection } from '../../../core/models/paged-result.model';
@@ -936,6 +936,19 @@ export class UserListComponent implements OnInit {
   protected readonly pageTitle = PAGE_TITLE;
 
   /**
+   * Whether a wire instant names a real moment, so a value and its absent affordance can never both be
+   * withheld. The display pipe's OWN parser is asked, so the two verdicts — "paint the date" and "paint the
+   * absent mark" — come from one implementation and cannot disagree; it is also what makes the legacy
+   * null-date sentinel count as absent here, since that is exactly how the pipe treats it.
+   *
+   * @param instant The value as it arrived on the wire.
+   * @returns True when the value names a real moment.
+   */
+  protected hasInstant(instant: string | null | undefined): boolean {
+    return parseDisplayInstant(instant) !== null;
+  }
+
+  /**
    * What the grid's progress indicator says while a read is in flight. Names the collection rather than
    * saying "Loading…", so the announcement identifies WHAT is loading; the same label serves the first-read
    * placeholder and the refetch strip, so this screen has one loading vocabulary.
@@ -1378,6 +1391,24 @@ export class UserListComponent implements OnInit {
         options.push(searchFieldOption(options.length, propertyName));
       }
 
+      // ⚠ THE AXIS ACTUALLY IN FORCE IS ALWAYS ONE OF THE ENTRIES, EVEN WHEN NOTHING DECLARES IT YET, and
+      // omitting it is what let the selector contradict the listing beside it. Every option here comes from
+      // the declarations, and on a cold arrival - a search restored from the address after a lapsed session
+      // - the declarations read has not returned, so the list holds only the two account fields. The
+      // template selects by value, no value matches, and the browser falls back to showing the FIRST entry:
+      // the selector read "Username" while the request, the address and the rendered rows were all on a
+      // profile property. Nothing had gone wrong with the search - the control simply had no way to name it.
+      //
+      // Adding the axis in force closes that window rather than merely shortening it. It is a transitional
+      // entry by construction: once the declarations arrive the axis is either among them, and the guard
+      // below suppresses the duplicate, or it is genuinely undeclared, and the reconciliation effect resets
+      // the axis - which removes this entry with it.
+      const chosen: string = this._searchField();
+
+      if (!options.some((option) => option.value === chosen)) {
+        options.push(searchFieldOption(options.length, chosen));
+      }
+
       return options;
     },
   );
@@ -1460,16 +1491,43 @@ export class UserListComponent implements OnInit {
       // with the address beside it. Nothing reported overflow, because under a fixed layout a starved column is
       // not overflow - it is a column that was given nothing.
       //
-      // The nine weights are therefore scaled to sum to 71%, which is derived rather than chosen. The table is
+      // The nine weights are therefore scaled to sum to 74%, which is derived rather than chosen. The table is
       // floored at `--table-min-inline-size` (60rem = 960px), and that floor is the tightest the arithmetic
       // ever gets, so it is what the weights are solved against:
       //
-      //     960 x (1 - 0.71) - 156px = 122px
+      //     960 x (1 - 0.74) - 156px = 94px
       //
       // - a readable display name in the WORST case, every column visible at the narrowest the table goes,
-      // growing to 400px at 1920. The relative emphasis between tracks is preserved: each weight is the
-      // original scaled by 71/109, rounded to the nearest half percent.
-      width: '9%',
+      // growing to 400px at 1920.
+      //
+      // ⚠ THE SUM WAS 71% AND FOUR OF THE WEIGHTS WERE BELOW THEIR OWN CONTENT, WHICH THIS RE-SOLVE FIXES.
+      // Scaling every weight by one ratio preserved the relative emphasis between tracks and paid no attention
+      // to what any individual track actually holds, so the scaling silently undid a fix: the created-date
+      // column had been widened to hold a full timestamp and came back out of the scaling too narrow again.
+      // Measured on the rendered grid, with each requirement being the text's own width plus the cell's 8px of
+      // inline padding:
+      //
+      //     Created Date   needs 150.39  had 119.80 at 1440 - a timestamp, ellipsised to "8/14/2026 4:56:0..."
+      //     Last Login     needs 150.39  had  95.83         - the same shape, the same loss, merely hidden by
+      //                                                       default so no one had reported it
+      //     Telephone      needs  81.91  had  77.86         - the HEADING clipped, painting "Teleph..."
+      //     Username       needs 108.10  had 107.81         - short by 0.29px, which still paints an ellipsis
+      //
+      // Those four are raised to 12.75, 12.75, 7 and 9.5 percent, which clears every requirement at the widths
+      // the grid is used at. They are paid for out of the two columns that WRAP and therefore lose nothing by
+      // being narrower - the address needed 68.03 of its 101.83 and the mail address is prose - and the
+      // remainder comes off the display name's slack, which measured 544.86px while needing 229.86.
+      //
+      // ⚠ A TIMESTAMP'S REQUIREMENT IS THE WORST SHAPE IT CAN RENDER, NOT THE WIDEST VALUE IN TODAY'S DATA, and
+      // measuring only the data is how the first correction stayed 12px short. Every seeded instant happens to
+      // carry a single-digit month AND a single-digit hour - "8/14/2026 4:56:09 PM" at 135.94 - so nothing
+      // clipped and a narrower weight looked sufficient. The shape can be wider: a two-digit hour needs 143.16,
+      // and "12/31/2026 12:59:59 AM" needs 150.39. Three hours in every twelve and three months in every twelve
+      // produce one, so the weight is solved against 150.39.
+      //
+      // Adding a weighted column, or raising one, means re-checking the line above. The floor is what stops a
+      // starved slack column, and a starved slack column is invisible to every overflow measurement there is.
+      width: '9.5%',
       // ⚠ ATOMIC BECAUSE A SIGN-IN NAME IS NOT A PHRASE, AND WRAPPING ONE FRACTURES IT. The shared stylesheet
       // lets any cell break inside a word so a narrow column never overflows, which is right for prose and
       // wrong for a value read as a single token: measured at a 768 viewport, this column rendered
@@ -1598,7 +1656,11 @@ export class UserListComponent implements OnInit {
     if (visible.address === true) {
       set.push({
         key: 'address',
-        width: '8.5%',
+        // Narrowed to pay for the atomic columns that were below their own content. This column WRAPS, so what
+        // it gives up is lines rather than characters, and it still holds 77.87px at 1440 against a heading
+        // needing 68.03 - the widest thing it ever has to hold, since every value it carries is composed
+        // server-side and wraps.
+        width: '6.5%',
         label: ADDRESS_HEADING,
         headerAlign: 'center',
         bodyAlign: 'start',
@@ -1620,7 +1682,11 @@ export class UserListComponent implements OnInit {
     if (visible.telephone === true) {
       set.push({
         key: 'telephone',
-        width: '6.5%',
+        // ⚠ SIZED BY THE HEADING, WHICH IS THE THING THAT WAS CLIPPING. Every value this column carries is a
+        // formatted number narrower than the word "Telephone", and the word needs 81.91px including the
+        // cell's padding. At 6.5% it had 77.86px at 1440 and painted "Teleph..." - a truncated COLUMN NAME,
+        // which costs a reader more than a truncated value would. 7% holds it with 2px to spare.
+        width: '7%',
         atomic: true,
         label: TELEPHONE_HEADING,
         headerAlign: 'center',
@@ -1635,7 +1701,9 @@ export class UserListComponent implements OnInit {
     if (visible.email === true) {
       set.push({
         key: 'email',
-        width: '9.5%',
+        // Narrowed to pay for the atomic columns above. A mail address is prose to this grid: the cell wraps,
+        // so what this costs is lines rather than characters, and the anchor's own text stays complete.
+        width: '6%',
         // Ordered on the STORED address, not on the anchor the cell template builds from it.
         sortable: true,
         label: EMAIL_HEADING,
@@ -1660,11 +1728,18 @@ export class UserListComponent implements OnInit {
       // it had 126px of cell at the table's floor, so every row rendered "8/14/2026 4:56:1…": the seconds and
       // the meridiem were both cut, which leaves a reader unable to tell morning from evening. The full text
       // node survives in the accessibility tree, so this was a loss to SIGHTED readers only, and that is
-      // still a loss. Widened to hold the whole value at the floor with a few pixels to spare, paid for out
-      // of the address column beside it, which WRAPS and therefore loses nothing by being narrower.
+      // still a loss.
+      //
+      // ⚠ AND IT REGRESSED ONCE ALREADY, WHICH IS WHY THE NUMBER IS NOW WRITTEN DOWN WITH ITS MEASUREMENT.
+      // The first fix widened this column; a later re-scaling of all nine weights by one ratio narrowed it
+      // straight back, because a ratio cannot know what a track holds. Measured: the value is
+      // "8/14/2026 4:56:09 PM" at 127.94px, so a column holding THAT needs 135.94px with the cell's 8px of
+      // inline padding - and the worst shape the same pipe can render, "12/31/2026 12:59:59 AM", needs 150.39.
+      // 12.75% is 152.75px at 1440, which holds the worst case, and the payment comes from the address and mail
+      // columns, both of which WRAP and so lose lines rather than characters.
       set.push({
         key: 'createdDate',
-        width: '10%',
+        width: '12.75%',
         atomic: true,
         label: CREATED_DATE_HEADING,
         headerAlign: 'center',
@@ -1676,9 +1751,14 @@ export class UserListComponent implements OnInit {
 
     // `users.ascx` L68-L73. Hidden by default.
     if (visible.lastLogin === true) {
+      // ⚠ THE SAME WIDTH AS THE CREATED DATE, BECAUSE IT IS THE SAME VALUE SHAPE. This column renders a
+      // timestamp through the same date-and-time shape as the column above, so it needs the same 135.94px -
+      // and at 8% it had 95.83px at 1440, cutting more of the value than the created date's column did. It is
+      // hidden by default, which is the only reason nobody had reported it; a latent loss is still a loss, and
+      // fixing one of two identical columns would have left the grid disagreeing with itself.
       set.push({
         key: 'lastLoginDate',
-        width: '8%',
+        width: '12.75%',
         atomic: true,
         label: LAST_LOGIN_HEADING,
         headerAlign: 'center',
@@ -1997,12 +2077,37 @@ export class UserListComponent implements OnInit {
     // An effect rather than a `computed`, because this WRITES the state a person chose. A computed
     // would have to be read to take effect and would silently discard the choice on every unrelated
     // recomputation.
+    // ⚠ AND IT WAITS UNTIL THE DECLARATIONS ARE ACTUALLY KNOWN, WHICH IS THE OTHER HALF OF GETTING THIS
+    // RIGHT. `profilePropertyNames()` is empty in two completely different situations - the tenant declares
+    // no properties, and nothing has been read yet - and to a membership test those mean opposite things.
+    // Reconciling on the second one discards a perfectly good axis for being absent from a list that has
+    // not arrived.
+    //
+    // That is a COLD ENTRY, and it is exactly how an operator reaches this screen after their session
+    // lapses: a search on a profile property is restored from the address, the declarations read has not
+    // returned yet, the axis is judged undeclared and reset to the account name - while the address, the
+    // request and the rendered results all remain on the property that was searched. The selector then
+    // disagreed with the listing beside it, and the disagreement was silent and unrecoverable: the next
+    // press of Search sent the axis from the SELECTOR, so it quietly became a name search and dropped the
+    // axis parameter from the address, discarding the operator's search without ever saying so.
+    //
+    // The store already draws this distinction for its own use - `loadProfileDefinitions` consults the same
+    // flag so that a tenant declaring nothing is not re-read forever - so the flag is consulted here rather
+    // than a second mechanism invented. Once it is set the reconciliation runs exactly as before, so a
+    // property removed on the neighbouring declarations screen is still caught.
     effect(() => {
       const chosen: string = this._searchField();
+      const known: boolean = this.store.profileDefinitionsKnown();
       const declared: readonly string[] = this.store.profilePropertyNames();
 
       untracked(() => {
         if (chosen === USERNAME_SEARCH_FIELD || chosen === EMAIL_SEARCH_FIELD) {
+          return;
+        }
+
+        // Nothing is known yet, so nothing can be judged undeclared. The effect re-runs when the flag
+        // turns, which is the single revalidation the restored axis needs.
+        if (!known) {
           return;
         }
 

@@ -1,6 +1,7 @@
 import {
   ChangeDetectionStrategy,
   Component,
+  ElementRef,
   TemplateRef,
   ViewChild,
   computed,
@@ -18,7 +19,11 @@ import type { MemberService } from '../../../../core/models/user.model';
 import { AuthStore } from '../../../../core/state/auth.store';
 import type { UserOperation } from '../../../../core/state/user.store';
 import { UserStore } from '../../../../core/state/user.store';
-import { fieldErrorMessage } from '../../../../core/utils/form-errors.util';
+import {
+  failureCode,
+  fieldErrorMessage,
+  problemMessage,
+} from '../../../../core/utils/form-errors.util';
 import type {
   DataTableCellContext,
   DataTableColumn,
@@ -26,7 +31,8 @@ import type {
 import { DataTableComponent } from '../../../../shared/components/data-table/data-table.component';
 import { ErrorBannerComponent } from '../../../../shared/components/error-banner/error-banner.component';
 import { FormFieldComponent } from '../../../../shared/components/form-field/form-field.component';
-import { DateDisplayPipe } from '../../../../shared/pipes/date-display.pipe';
+import { DateDisplayPipe, parseDisplayInstant } from '../../../../shared/pipes/date-display.pipe';
+import { AbsentValueComponent } from '../../../../shared/components/absent-value/absent-value.component';
 import { FocusFirstInvalidDirective } from '../../../../shared/directives/focus-first-invalid.directive';
 import { SubmitGuardDirective } from '../../../../shared/directives/submit-guard.directive';
 
@@ -95,6 +101,23 @@ const NO_FEE_LABEL = 'Free';
 const PAYMENT_REQUIRED_LABEL = 'Payment required';
 
 /**
+ * What is rendered where a service offers this account no trial — QA-24.
+ *
+ * ⚠ SEVEN OF NINE CELLS IN THIS COLUMN WERE BLANK, AND A BLANK CELL IS NOT A STATEMENT. Measured against
+ * the live API: the trial column emitted `<div class="data-table__actions"></div>` — a wrapper with all
+ * three of its conditional branches resolving to nothing — on every row except the two that offer a trial.
+ * A reader could not tell "this service has no trial" from "this cell failed to draw", and the sibling
+ * subscription column in the same row already distinguishes those two states by naming `Payment required`
+ * where it withholds its command.
+ *
+ * ⚠ AND IT IS DELIBERATELY NOT `Free`, `—` OR `n/a`. The absent-value mark means "nothing is recorded
+ * against this term", which is a statement about DATA; this is a statement about an OFFER the tenant does
+ * not make, and the two must not be worded alike. The expiry column on the same row uses the absent mark
+ * for the former, so reusing it here would make one row say the same thing about two different facts.
+ */
+const TRIAL_NOT_OFFERED_LABEL = 'No trial offered';
+
+/**
  * The wording shown when the address names an account that is not the caller's. NET-NEW: the legacy
  * container expressed this by hiding the tab, which is not available to a routed screen that has already
  * been navigated to.
@@ -123,6 +146,43 @@ const FREQUENCY_UNITS: Readonly<Record<string, string>> = {
 };
 
 /**
+ * What is said in place of a unit noun this console has no word for — QA-24.
+ *
+ * ⚠ A COUNT WITHOUT ITS UNIT IS NOT A PERIOD, AND THE SENTENCE USED TO SIMPLY STOP. `Roles.BillingFrequency`
+ * and `Roles.TrialFrequency` are `char(1)`, so a real installation can hold a code beyond the six this
+ * console words, and the composed sentence resolved the unknown noun to the empty string and trimmed it
+ * away. Measured against the live API on the role whose stored code is `Q`: the service fee rendered
+ * `12.34 Every 3` and the trial fee `0.00 for 0` — dangling phrases that name a count and never say what
+ * it counts, while every recognised row beside them read `29.95 Every 2 Month(s)`.
+ *
+ * The code itself is named because it is the actionable part: an operator who can see WHICH code is
+ * unrecognised can correct the stored row, and the sibling role listing names it for the same reason.
+ * That listing's own wording for this state is `frequency code <c>, name unavailable`; this is the same
+ * fact worded to sit inside a sentence rather than beside a cell.
+ *
+ * @param frequency The stored one-character code.
+ * @returns The parenthesised statement that replaces the missing noun.
+ */
+function unrecognisedUnitText(frequency: string): string {
+  return `(unit code ${frequency} not recognised)`;
+}
+
+/**
+ * Joins the parts of a composed fee sentence with exactly one space between them, dropping any part that
+ * has nothing to say.
+ *
+ * ⚠ WHY THIS EXISTS RATHER THAN A TEMPLATE LITERAL. The previous composition interpolated `period ?? ''`
+ * straight into the string and trimmed the result, which removes leading and trailing space but not an
+ * INTERIOR double space — so a recognised unit with no recorded count rendered `5.00 Every  Week(s)`.
+ *
+ * @param parts The sentence fragments in order, some of which may be empty.
+ * @returns The joined sentence.
+ */
+function joinFeeParts(parts: readonly string[]): string {
+  return parts.filter((part) => part.length > 0).join(' ');
+}
+
+/**
  * The five store operations this panel performs, and the only failures its banner renders. ⚠ WHY A CLOSED
  * LIST RATHER THAN "WHATEVER FAILED LAST". The store holds ONE failure slot for every account command,
  * and this panel is mounted inside a screen that renders that slot too.
@@ -135,6 +195,37 @@ export const MEMBER_SERVICE_OPERATIONS: readonly UserOperation[] = [
   'redeemServiceCode',
 ];
 
+/**
+ * The refusal reasons that are ABOUT THE CODE FIELD, rather than about the account or the tenant.
+ *
+ * ⚠ WHY THIS LIST HAS TO EXIST AT ALL, MEASURED AGAINST THE LIVE API. A refused redemption arrives as
+ * `400` with `type: urn:dnnmigration:error:user.service.code-not-matched` and NO `errors` dictionary -
+ * the server states the reason in `detail` and names no field, because the reason is not a shape
+ * violation. So the field-keyed lookup below found nothing, the local rules had nothing to say either
+ * (a fifty-character string that is simply wrong is perfectly valid input), and the box the operator had
+ * just been refused over carried no invalid state and no message: the only report was a banner, which on
+ * a long screen was off the viewport. This list is what lets a refusal that names no field still be
+ * attributed to the one field it is about.
+ *
+ * Mirrors `UserService.cs:L356` (`user.service.code-required`) and `:L359`
+ * (`user.service.code-not-matched`) - and ONLY those two. Every other reason this panel can be refused
+ * with concerns a ROW (`user.service.not-offered-forbidden`, `user.service.payment-required-forbidden`,
+ * `user.service.trial-not-offered-forbidden`) and attributing one of those to the code box would be a
+ * lie. Spelled with underscores because {@link failureCode} folds the server's hyphens onto them.
+ */
+const CODE_SCOPED_REFUSAL_CODES: readonly string[] = Object.freeze([
+  'user.service.code_required',
+  'user.service.code_not_matched',
+]);
+
+/**
+ * The wording a code-scoped refusal falls back to when the server sent neither a detail nor a title.
+ * Never expected to be reached - both refusals above carry a sentence - but the field's message must
+ * never be the empty string while its invalid state is set, or a reader is told something is wrong and
+ * not told what.
+ */
+const CODE_REFUSED_FALLBACK_MESSAGE = 'The RSVP Code was not accepted.';
+
 /** The shape of the invitation-code form, declared so its value is fully typed. */
 interface CodeFormModel {
   readonly code: FormControl<string>;
@@ -146,6 +237,7 @@ interface CodeFormModel {
   // ⚠ EVERY SELECTOR AND PIPE THE PAIRED TEMPLATE USES MUST APPEAR HERE. Strict template checking turns an
   // element matching an unlisted component into a compilation error rather than a silent unknown element.
   imports: [
+    AbsentValueComponent,
     FocusFirstInvalidDirective,
     SubmitGuardDirective,
     ReactiveFormsModule,
@@ -160,8 +252,29 @@ interface CodeFormModel {
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class MemberServicesComponent implements OnInit {
+
+  /**
+   * Whether a wire instant names a real moment, so a value and its absent affordance can never both be
+   * withheld. The display pipe's OWN parser is asked, so "paint the date" and "paint the absent mark" come
+   * from one implementation and cannot disagree; it is also what makes the legacy null-date sentinel count as
+   * absent here, since that is exactly how the pipe treats it.
+   *
+   * @param instant The value as it arrived on the wire.
+   * @returns True when the value names a real moment.
+   */
+  protected hasInstant(instant: string | null | undefined): boolean {
+    return parseDisplayInstant(instant) !== null;
+  }
   /** The shared store. */
   private readonly store = inject(UserStore);
+
+  /**
+   * This panel's own element, and the ONLY subtree {@link revealOutcome} looks in. Scoped deliberately:
+   * this panel is mounted inside a screen that renders its own banner from the same store slot, and a
+   * document-wide query would find whichever of the two comes first in document order rather than the one
+   * that belongs to the command that was just refused.
+   */
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
 
   /**
    * The session, read for ONE question: whether the supplied account is the caller's own. Never used to
@@ -213,6 +326,28 @@ export class MemberServicesComponent implements OnInit {
   /** Whether a redemption has been submitted and not yet settled. */
   private readonly redemptionSubmitted = signal<boolean>(false);
 
+  /**
+   * Whether ANY of this panel's four operator-initiated commands is in flight - the redemption and the
+   * three row commands alike. Separate from {@link redemptionSubmitted} because the two answer different
+   * questions: that one decides whether to empty the code box, which only a redemption may do, while this
+   * one decides whether a refusal has to be brought to the operator, which is true of all four.
+   */
+  private readonly commandSubmitted = signal<boolean>(false);
+
+  /**
+   * The exact code string the server last refused, or `null` when it has refused none since this panel
+   * was created.
+   *
+   * ⚠ WHY A REFUSAL HAS TO BE PINNED TO THE STRING IT WAS ABOUT. The server's refusal lives in a store
+   * slice that survives until the next command settles, so without this the box went on carrying
+   * "The invitation code entered is not valid or does not exist." and `aria-invalid="true"` after the
+   * operator had selected the text and deleted it — measured against the live API. An empty box is not an
+   * invalid code, and a sentence in the past tense sitting beside a field in the present tense is the kind
+   * of thing a reader corrects twice. Holding the string lets the message be withdrawn the moment what is
+   * in the box stops being what was refused, and restored if they type it back.
+   */
+  private readonly refusedCode = signal<string | null>(null);
+
   // -------------------------------------------------------------------------
   // THE INVITATION-CODE FORM
   // -------------------------------------------------------------------------
@@ -243,6 +378,7 @@ export class MemberServicesComponent implements OnInit {
   protected readonly codeSuccess = CODE_SUCCESS;
   protected readonly codeMaxLength = CODE_MAX_LENGTH;
   protected readonly trialLabel = TRIAL_LABEL;
+  protected readonly trialNotOfferedLabel = TRIAL_NOT_OFFERED_LABEL;
   protected readonly expiredLabel = EXPIRED_LABEL;
   protected readonly paymentRequiredLabel = PAYMENT_REQUIRED_LABEL;
   protected readonly notOwnAccountMessage = NOT_OWN_ACCOUNT_MESSAGE;
@@ -394,6 +530,58 @@ export class MemberServicesComponent implements OnInit {
         }
       });
     });
+
+    // 3. A REFUSED COMMAND IS BROUGHT TO THE OPERATOR.
+    //
+    // ⚠ WHY THIS IS NEEDED AT ALL, AND THE MECHANISM IS NOT OBVIOUS. Every control that dispatches one of
+    // these four commands is disabled while the command is in flight - the submit button and both row
+    // buttons carry `[disabled]="busy()"` - and a browser moves focus off a control the moment it becomes
+    // disabled. So by the time a refusal arrives, focus is on the BODY: the keyboard operator is at the
+    // top of the document, the screen-reader user has lost their place, and the banner reporting the
+    // refusal may be scrolled out of view entirely on a screen as long as this one. Measured against the
+    // live API with a wrong code: `document.activeElement` was `BODY`.
+    //
+    // Runs for a refusal only. On success there is nothing to reveal and moving focus would interrupt
+    // someone who is already where they meant to be.
+    effect(() => {
+      // Both read unconditionally so this effect depends on both however the guards fall.
+      const submitted = this.commandSubmitted();
+      const settled = !this.store.saving();
+      const refusal = this.problem();
+
+      if (!submitted || !settled) {
+        return;
+      }
+
+      untracked(() => {
+        // Cleared before acting, so a redraw cannot reveal the same refusal twice.
+        this.commandSubmitted.set(false);
+
+        if (refusal !== null) {
+          this.revealOutcome();
+        }
+      });
+    });
+  }
+
+  /**
+   * Brings this panel's refusal into view and puts focus on it. SCROLLED AND FOCUSED, not one or the
+   * other: the scroll serves the reader who can see the band and the focus serves the reader who cannot,
+   * and neither substitutes for the other. `block: 'nearest'` so a banner already on screen is not moved.
+   *
+   * The live region is in the document unconditionally and carries `tabindex="-1"`, so this query cannot
+   * miss it and the focus cannot fail; the guard is kept because an element this method does not own is
+   * not something to assume the existence of.
+   */
+  private revealOutcome(): void {
+    const banner = this.host.nativeElement.querySelector<HTMLElement>('.error-banner-live');
+
+    if (banner === null) {
+      return;
+    }
+
+    banner.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+    banner.focus({ preventScroll: true });
   }
 
   // -------------------------------------------------------------------------
@@ -452,8 +640,14 @@ export class MemberServicesComponent implements OnInit {
       return;
     }
 
+    const submitted = this.codeForm.controls.code.value;
+
     this.redemptionSubmitted.set(true);
-    this.store.redeemServiceCode(key, this.codeForm.controls.code.value);
+    this.commandSubmitted.set(true);
+    // Recorded BEFORE the dispatch, and recorded whether the code turns out to be good or bad: on success
+    // the field is emptied, so the recorded string stops matching and the gate below closes by itself.
+    this.refusedCode.set(submitted);
+    this.store.redeemServiceCode(key, submitted);
   }
 
   /**
@@ -472,6 +666,8 @@ export class MemberServicesComponent implements OnInit {
     if (!row.subscriptionOffered || row.subscriptionRequiresPayment) {
       return;
     }
+
+    this.commandSubmitted.set(true);
 
     if (row.subscriptionAction === 'Unsubscribe') {
       this.store.cancelService(key, row.roleId);
@@ -494,6 +690,7 @@ export class MemberServicesComponent implements OnInit {
       return;
     }
 
+    this.commandSubmitted.set(true);
     this.store.startServiceTrial(key, row.roleId);
   }
 
@@ -503,21 +700,44 @@ export class MemberServicesComponent implements OnInit {
   }
 
   /**
-   * The validation message for the code field, or `null` when it has none. THE SERVER'S MESSAGE WINS. Its
-   * validator names this field, so a refusal that arrives with a per-field message is rendered in the
-   * server's own words; only when there is none does the local rule speak, and the local rules are the
-   * two the server also applies.
+   * The validation message for the code field, or `null` when it has none. THE SERVER'S MESSAGE WINS, and
+   * it wins in two ways rather than one.
+   *
+   * A shape violation arrives NAMING the field, and that is the first rung: the server's validator keys
+   * its message on `Code`, so it is rendered in the server's own words. A REFUSAL names no field - it is
+   * not a shape violation, it is a correct-looking code that no service bears - and that is the second
+   * rung, {@link CODE_SCOPED_REFUSAL_CODES}, which attributes such a refusal to the one field it is
+   * about. Without that rung a refused code left this box carrying no message and no invalid state, since
+   * the local rules below have nothing to say about a fifty-character string that is simply wrong.
+   *
+   * Only when the server has said nothing about this field at all — or has said it about a string the box
+   * no longer holds — does the local rule speak, and the local rules are the two the server also applies.
+   *
+   * ⚠ THE SENTENCE APPEARING BOTH HERE AND IN THE BANNER IS DELIBERATE, NOT A STUTTER. The banner is the
+   * summary a refusal is announced through and focus is moved to; this is what the operator finds when
+   * they come back to the box to correct it. Wording them differently would leave a reader wondering
+   * whether they were two different problems.
    *
    * @returns The message to show beside the field, or `null`.
    */
   protected codeMessage(): string | null {
-    const fromServer = fieldErrorMessage(this.problem(), 'code');
-
-    if (fromServer !== null) {
-      return fromServer;
-    }
-
     const control = this.codeForm.controls.code;
+    const problem = this.problem();
+
+    // ⚠ BOTH SERVER RUNGS ARE GATED ON THE FIELD STILL HOLDING WHAT WAS REFUSED. A refusal describes one
+    // particular string; once the operator has changed the string, the refusal no longer describes what
+    // they are looking at, and neither the message nor the invalid state it drives may outlive it.
+    if (control.value === this.refusedCode()) {
+      const fromServer = fieldErrorMessage(problem, 'code');
+
+      if (fromServer !== null) {
+        return fromServer;
+      }
+
+      if (CODE_SCOPED_REFUSAL_CODES.includes(failureCode(problem) ?? '')) {
+        return problemMessage(problem, CODE_REFUSED_FALLBACK_MESSAGE);
+      }
+    }
 
     if (control.valid || control.untouched) {
       return null;
@@ -665,7 +885,12 @@ function formatRecurring(
     return formatAmount(price);
   }
 
-  return `${formatAmount(price)} Every ${period ?? ''} ${FREQUENCY_UNITS[frequency] ?? ''}`.trim();
+  return joinFeeParts([
+    formatAmount(price),
+    'Every',
+    period === null ? '' : String(period),
+    FREQUENCY_UNITS[frequency] ?? unrecognisedUnitText(frequency),
+  ]);
 }
 
 /**
@@ -689,5 +914,10 @@ function formatTrial(
     return formatAmount(price);
   }
 
-  return `${formatAmount(price)} for ${period ?? ''} ${FREQUENCY_UNITS[frequency] ?? ''}`.trim();
+  return joinFeeParts([
+    formatAmount(price),
+    'for',
+    period === null ? '' : String(period),
+    FREQUENCY_UNITS[frequency] ?? unrecognisedUnitText(frequency),
+  ]);
 }

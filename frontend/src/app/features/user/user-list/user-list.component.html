@@ -308,18 +308,39 @@
   }
 </ng-template>
 
-<!-- THE CREATION INSTANT — `users.ascx` L62-L67, `DisplayDate(Membership.CreatedDate)`. -->
+<!--
+  THE CREATION INSTANT — `users.ascx` L62-L67, `DisplayDate(Membership.CreatedDate)`.
+
+  ⚠ AN ABSENT INSTANT NOW PAINTS THE SHARED MARK RATHER THAN NOTHING — QA-20. The display pipe answers the
+  empty string for an absent value, an unparseable one AND the legacy null-date sentinel alike, so a row with
+  no recorded instant rendered a cell indistinguishable from one that had failed to draw. Both sibling
+  listings already told those two states apart on every row; this one did not, and it is the same grid.
+-->
 <ng-template #createdDateCell let-row>
-  {{ row.createdDate | dateDisplay: 'datetime' }}
+  @if (hasInstant(row.createdDate)) {
+    {{ row.createdDate | dateDisplay: 'datetime' }}
+  } @else {
+    <app-absent-value />
+  }
 </ng-template>
 
 <!--
   THE LAST SIGN-IN INSTANT — `users.ascx` L68-L73, `DisplayDate(Membership.LastLoginDate)`. The same
-  formatter, the same explicit shape and the same blank-for-absent behaviour as the cell above, for the
-  same measured reasons.
+  formatter, the same explicit shape and the same absent-value affordance as the cell above, for the same
+  measured reasons.
+
+  ⚠ THIS IS THE COLUMN QA-20 NAMED FIRST, and it is the one where an empty cell was most misleading: an
+  account that has never signed in is a fact an administrator acts on, and it was being reported by an
+  absence of ink. The mark says the value is not recorded and the hidden words say so in language, which is
+  the same answer this grid already gave for an absent address and an absent telephone number in the row
+  beside it.
 -->
 <ng-template #lastLoginCell let-row>
-  {{ row.lastLoginDate | dateDisplay: 'datetime' }}
+  @if (hasInstant(row.lastLoginDate)) {
+    {{ row.lastLoginDate | dateDisplay: 'datetime' }}
+  } @else {
+    <app-absent-value />
+  }
 </ng-template>
 
 <!-- THE AUTHORISATION FLAG — `users.ascx` L74-L79. -->

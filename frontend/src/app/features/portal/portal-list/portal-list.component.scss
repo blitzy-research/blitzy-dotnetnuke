@@ -135,7 +135,8 @@
   //
   // ⚠ THE DESTRUCTIVE COMMAND IS EXCLUDED, AND THAT EXCLUSION IS LOAD-BEARING RATHER THAN TIDY. Measured
   // both ways on the same element: with a fine hover-capable pointer the danger override below wins and the
-  // command stays `rgb(255, 0, 0)`, because the two rules tie at (0,3,0) - per MATCHING COMPOUND, which for
+  // command stays the danger ink, `rgb(176, 0, 0)`, because the two rules tie at (0,3,0) - per MATCHING
+  // COMPOUND, which for
   // this rule is `.portal-list__row-command:hover` and not the whole four-selector list - and the override
   // sits later in this file, so source order elects it correctly. With NO fine pointer the override's media
   // query stops matching and it leaves the cascade ENTIRELY, at which point this rule at (0,3,0) beats the
@@ -147,8 +148,15 @@
   // which this ungated rule reintroduced for the danger command alone. Excluding the class here fixes every
   // device at once and changes nothing a fine pointer already did: the override keeps supplying the hover,
   // and where the override cannot apply the command simply keeps its resting red. The alternative -
-  // un-gating the override to match - was rejected because its own comment records the measured contrast
-  // cost of the bright danger token, and because the token itself is fixed by the design vocabulary.
+  // un-gating the override to match - was rejected because the exclusion fixes every device at once whereas
+  // un-gating fixes only the fine-pointer case, and because a sticky hover on the one command that destroys a
+  // tenant is the worst place in the product to leave that behaviour.
+  //
+  // ⚠ ONE PREMISE OF THAT REJECTION HAS SINCE CHANGED, AND IT DOES NOT CHANGE THE DECISION. It also cited the
+  // measured contrast cost of the BRIGHT danger token and said the token was fixed by the design vocabulary.
+  // The token was subsequently darkened to `#B00000` and now clears the text minimum on all three row
+  // surfaces, so neither half of that clause holds any more - see MIGRATION_NOTES.md, "The colour vocabulary
+  // is TEN values". The exclusion stands on the two reasons above, which never depended on the ratio.
   &:not(.portal-list__row-command--danger):hover {
     color: var(--color-primary-hover);
     text-decoration: underline;

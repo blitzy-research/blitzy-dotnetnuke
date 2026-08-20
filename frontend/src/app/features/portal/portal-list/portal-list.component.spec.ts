@@ -2149,6 +2149,45 @@ describe('PortalListComponent', () => {
       return queryAll<HTMLButtonElement>('th.data-table__header button.data-table__sort');
     }
 
+    /**
+     * One sort control, chosen by the heading it carries rather than by its position.
+     *
+     * ⚠ POSITION IS NOT A STABLE HANDLE ON THIS GRID, and the specifications below used to rely on it. The
+     * shared table hoists a row-header column to the front while its scroll region clips, so a column's
+     * INDEX depends on a measurement of the rendered width — which lands a frame after the first paint, and
+     * differs between this runner's zero-width host and a real viewport. A specification that clicked index 1
+     * was therefore asserting the column order incidentally, and would report an ordering defect when the
+     * only thing that had changed was where a column sits. The heading text is what the reader presses on.
+     *
+     * @param heading The visible heading text of the column to press.
+     * @returns The control, or undefined when no column carries that heading.
+     */
+    function sortControlFor(heading: string): HTMLButtonElement {
+      // ⚠ THE LABEL ELEMENT, NOT THE BUTTON'S WHOLE TEXT. A heading that currently carries the ordering also
+      // paints a direction glyph inside the same button, so its text content becomes "Title ▲" — matching the
+      // button's text would find the column before the first press and lose it afterwards, which is precisely
+      // the press these specifications need to repeat.
+      const control = sortControls().find(
+        (candidate) =>
+          (candidate.querySelector('.data-table__label')?.textContent ?? '').trim() === heading,
+      );
+
+      if (control === undefined) {
+        // Loud rather than optional. An undefined control clicked through `?.` produces no request, and the
+        // failure then surfaces as "expected one matching request, found none" several lines later — which
+        // reads as an ordering defect when the real cause is a heading that has been renamed.
+        throw new Error(
+          `no sort control is headed "${heading}"; rendered: ${sortControls()
+            .map((candidate) =>
+              (candidate.querySelector('.data-table__label')?.textContent ?? '').trim(),
+            )
+            .join(', ')}`,
+        );
+      }
+
+      return control;
+    }
+
     /** The heading cells reporting an active direction. */
     function announcedDirections(): readonly string[] {
       return queryAll<HTMLElement>('th.data-table__header')
@@ -2186,7 +2225,7 @@ describe('PortalListComponent', () => {
     it('re-reads ordered by the pressed column, from the first page', async () => {
       settleFirstPage([portalRow()], 40, 0);
 
-      sortControls()[0]?.click();
+      sortControlFor('Portal Id').click();
       await settleAddress();
 
       const ordered: TestRequest = http.expectOne((candidate) => isListingRead(candidate));
@@ -2208,7 +2247,7 @@ describe('PortalListComponent', () => {
     it('reverses on the second press and CLEARS on the third', async () => {
       settleFirstPage([portalRow()], 40, 0);
 
-      sortControls()[1]?.click();
+      sortControlFor('Title').click();
       await settleAddress();
       const ascending: TestRequest = http.expectOne((candidate) => isListingRead(candidate));
       expect(sentFilters(ascending).get('sortBy')).toBe('portalName');
@@ -2216,7 +2255,7 @@ describe('PortalListComponent', () => {
       ascending.flush(pageOf([portalRow()], 40, 0));
       fixture.detectChanges();
 
-      sortControls()[1]?.click();
+      sortControlFor('Title').click();
       await settleAddress();
       const descending: TestRequest = http.expectOne((candidate) => isListingRead(candidate));
       expect(sentFilters(descending).get('sortDir')).toBe('Descending');
@@ -2226,7 +2265,7 @@ describe('PortalListComponent', () => {
       // THE THIRD PRESS RETURNS THE LISTING TO THE SERVER'S OWN ORDER. That is the state this screen
       // arrives in - the store initialises both coordinates to null and the first request carries neither
       // parameter - and a two-step toggle made it reachable only by reloading the page.
-      sortControls()[1]?.click();
+      sortControlFor('Title').click();
       await settleAddress();
       const cleared: TestRequest = http.expectOne((candidate) => isListingRead(candidate));
       expect(sentFilters(cleared).has('sortBy')).withContext('no key is sent').toBeFalse();
@@ -2357,12 +2396,23 @@ describe('PortalListComponent', () => {
     it('flips the direction on the heading that already carries the ordering', async () => {
       settleFirstPage([portalRow()], 40);
 
-      host().querySelector<HTMLButtonElement>('thead th button')?.click();
+      // ⚠ THE SAME HEADING TWICE, AND IT IS NAMED RATHER THAN TAKEN FROM THE FRONT OF THE ROW. "The first
+      // heading that has a button" is not a stable reference on this grid: the shared table hoists a
+      // row-header column to the front while its scroll region clips, and that measurement lands a frame
+      // after the first paint. Pressing the front heading twice could therefore press two DIFFERENT columns
+      // and report a direction defect where the only change was the column order.
+      const ordered = (): HTMLButtonElement | undefined =>
+        queryAll<HTMLButtonElement>('thead th button.data-table__sort').find(
+          (control) =>
+            (control.querySelector('.data-table__label')?.textContent ?? '').trim() === 'Title',
+        );
+
+      ordered()?.click();
       await settleAddress();
       http.expectOne((candidate) => isListingRead(candidate)).flush(pageOf([portalRow()], 40));
       fixture.detectChanges();
 
-      host().querySelector<HTMLButtonElement>('thead th button')?.click();
+      ordered()?.click();
       await settleAddress();
 
       expect(addressParams()['sortdir']).toBe('Descending');

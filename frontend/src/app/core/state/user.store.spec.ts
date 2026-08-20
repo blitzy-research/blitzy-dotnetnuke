@@ -4103,6 +4103,69 @@ describe('UserStore', () => {
       expectRequest('GET', SERVICES_URL).flush(cataloguePage([]));
     });
 
+    it('discards a redemption report on a RE-READ OF THE SAME ACCOUNT, not only on a change of account', () => {
+      store.redeemServiceCode(7, 'Founders-2026');
+      expectRequest('POST', SERVICE_REDEMPTIONS_URL).flush(
+        envelope({ roles: [{ roleId: 0, roleName: 'Premium Members' }] }),
+      );
+      expectRequest('GET', SERVICES_URL).flush(cataloguePage([serviceFixture()]));
+
+      expect(store.lastRedemption())
+        .withContext('the report the redemption produced')
+        .not.toBeNull();
+
+      // QA-17. The report used to be discarded ONLY when the read named a different account, so it
+      // survived every re-read of the same one - and a re-read is precisely the moment the facts it
+      // states may have stopped being true. The scenario measured: redeem a code, withdraw one of the
+      // granted roles from the role-assignment screen, then come back here in-app. The catalogue was
+      // correctly re-read without the role while the report above it still announced that the code had
+      // just granted it.
+      store.loadMemberServices(7);
+
+      expect(store.lastRedemption())
+        .withContext('nothing on this screen can vouch for the report once the rows are re-read')
+        .toBeNull();
+
+      expectRequest('GET', SERVICES_URL).flush(cataloguePage([serviceFixture()]));
+    });
+
+    it('keeps the rows on a re-read of the same account, so only the report is discarded', () => {
+      store.loadMemberServices(7);
+      expectRequest('GET', SERVICES_URL).flush(cataloguePage([serviceFixture()]));
+
+      store.loadMemberServices(7);
+
+      // The clear that QA-17 added sits OUTSIDE the account-change guard; the row emptying stays
+      // inside it. Separating the two is the whole point: a read that arrives while rows are on
+      // screen keeps them and reports itself through the loading flag instead.
+      expect(store.memberServices().length)
+        .withContext('a re-read of the same account does not blank the grid it is refreshing')
+        .toBe(1);
+      expect(store.memberServicesLoading()).toBeTrue();
+
+      expectRequest('GET', SERVICES_URL).flush(cataloguePage([serviceFixture()]));
+    });
+
+    it('records the report AFTER the re-read it dispatches, so a first redemption keeps it', () => {
+      // The ordering inside `redeemServiceCode` is load-bearing now that the clear is unconditional:
+      // the re-read is dispatched first and the report recorded immediately afterwards. Reversing the
+      // two would destroy the report of every redemption, which is exactly what this asserts against.
+      store.redeemServiceCode(7, 'Founders-2026');
+      expectRequest('POST', SERVICE_REDEMPTIONS_URL).flush(
+        envelope({ roles: [{ roleId: 0, roleName: 'Premium Members' }] }),
+      );
+
+      expect(store.lastRedemption()?.roles.length)
+        .withContext('the redemption that dispatched the re-read survives its own clear')
+        .toBe(1);
+
+      expectRequest('GET', SERVICES_URL).flush(cataloguePage([serviceFixture()]));
+
+      expect(store.lastRedemption()?.roles.length)
+        .withContext('and survives the response arriving too')
+        .toBe(1);
+    });
+
     it('dismisses its own redemption report without touching the catalogue', () => {
       store.redeemServiceCode(7, 'Founders-2026');
       expectRequest('POST', SERVICE_REDEMPTIONS_URL).flush(

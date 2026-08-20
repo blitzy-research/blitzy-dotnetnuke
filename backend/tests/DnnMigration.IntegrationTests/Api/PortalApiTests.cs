@@ -4865,6 +4865,198 @@ public sealed class PortalApiTests
             .And.NotContain("VerifiedRegistration");
     }
 
+    /// <summary>
+    /// A tenant whose STORED administrator carries no membership row is still saveable through the settings
+    /// resource, provided the submission leaves that designation alone.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THIS IS THE EXACT ROUTE THE DEFECT WAS REPORTED THROUGH: reading the settings and putting the body
+    /// back unchanged. On the measured installation six readable tenants designate an account with no matching
+    /// UserPortals row - membership the migrated data never carried - and asking the ownership rule of a value
+    /// the caller was only echoing back refused every one of them with 400
+    /// <c>portal.administrator_invalid</c>. No submission could have satisfied the rule short of altering data
+    /// the caller never asked to touch, so no footer, keyword or page reference could be amended on any of the
+    /// six tenants.
+    /// </para>
+    /// <para>
+    /// The membership row is removed here rather than relying on a seeded absence, because the fixture seeds a
+    /// coherent installation. The row is restored before the case returns, so the ordering of this suite's
+    /// cases cannot matter.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task UpdatePortalSettings_UnchangedAdministratorWithNoMembershipRow_IsStillSaveable()
+    {
+        using HttpClient host = await _fixture.CreateHostClientAsync();
+        PortalDetailDto created = await CreatePortalAsync(host);
+        var settingsRoute = new Uri($"/api/v1/portals/{Route(created.PortalId)}/settings", UriKind.Relative);
+
+        using HttpResponseMessage read = await host.GetAsync(settingsRoute);
+        read.StatusCode.Should().Be(HttpStatusCode.OK);
+        PortalSettingsDto stored = (await read.Content.ReadEnvelopeAsync<PortalSettingsDto>())!;
+        stored.AdministratorId.Should().NotBeNull("a created portal designates the account it created");
+
+        int administratorId = stored.AdministratorId!.Value;
+        var membershipParameters = new Dictionary<string, object?>
+        {
+            ["portalId"] = created.PortalId,
+            ["userId"] = administratorId,
+        };
+
+        // Captured before the row is removed, so the restore in the finally block puts back what was there
+        // rather than an approximation of it. Authorised is NOT NULL and carries no default.
+        DateTime membershipCreated = await _fixture.Database.ScalarAsync<DateTime>(
+            "SELECT [CreatedDate] FROM [dbo].[UserPortals] WHERE [PortalId] = @portalId AND [UserId] = @userId;",
+            membershipParameters);
+        int membershipAuthorised = await _fixture.Database.ScalarAsync<int>(
+            @"SELECT CAST([Authorised] AS int) FROM [dbo].[UserPortals]
+              WHERE [PortalId] = @portalId AND [UserId] = @userId;",
+            membershipParameters);
+
+        // Reproduce the migrated shape: the designation stands, the membership row does not.
+        int removed = await _fixture.Database.ExecuteAsync(
+            "DELETE FROM [dbo].[UserPortals] WHERE [PortalId] = @portalId AND [UserId] = @userId;",
+            membershipParameters);
+
+        removed.Should().Be(1, "the arrangement only reproduces the defect if the row was there to remove");
+
+        try
+        {
+            // The body the GET just returned, put straight back - changing nothing at all.
+            using HttpResponseMessage echoed = await host.PutAsJsonAsync(
+                settingsRoute,
+                SettingsUpdateFrom(stored));
+
+            echoed.StatusCode.Should().Be(
+                HttpStatusCode.OK,
+                "a submission that echoes the stored designation authors no new reference");
+
+            // And an amendment to an unrelated field still lands, which is the maintainability the defect cost.
+            UpdatePortalSettingsRequest amended = SettingsUpdateFrom(stored);
+            amended.FooterText = "amended-under-an-orphaned-designation";
+
+            using HttpResponseMessage written = await host.PutAsJsonAsync(settingsRoute, amended);
+
+            written.StatusCode.Should().Be(HttpStatusCode.OK);
+            PortalSettingsDto updated = (await written.Content.ReadEnvelopeAsync<PortalSettingsDto>())!;
+            updated.FooterText.Should().Be("amended-under-an-orphaned-designation");
+            updated.AdministratorId.Should().Be(
+                administratorId,
+                "the grandfathered designation is preserved rather than cleared");
+
+            // A NEW invalid reference is still refused, so admitting history admits no new breakage. Built from
+            // a FRESH read rather than from `stored`, because the amendment above moved the row and its
+            // concurrency token with it - reusing the original projection would be refused 409 as a stale write
+            // before the reference rule was ever consulted, and the case would pass for the wrong reason.
+            UpdatePortalSettingsRequest reassigned = SettingsUpdateFrom(updated);
+            reassigned.AdministratorId = _fixture.Seed.MemberUserId;
+
+            using HttpResponseMessage refused = await host.PutAsJsonAsync(settingsRoute, reassigned);
+
+            refused.StatusCode.Should().Be(
+                HttpStatusCode.BadRequest,
+                "a designation the caller CHANGES is still tested against membership");
+
+            ProblemDetails? problem = await refused.Content.ReadFromJsonAsync<ProblemDetails>(
+                ApiTestFixture.Json);
+
+            problem.Should().NotBeNull();
+            problem!.Type.Should().Be("urn:dnnmigration:error:portal.administrator_invalid");
+        }
+        finally
+        {
+            await _fixture.Database.ExecuteAsync(
+                @"IF NOT EXISTS (
+                      SELECT 1 FROM [dbo].[UserPortals]
+                      WHERE [PortalId] = @portalId AND [UserId] = @userId)
+                  INSERT INTO [dbo].[UserPortals] ([UserId], [PortalId], [CreatedDate], [Authorised])
+                  VALUES (@userId, @portalId, @createdDate, @authorised);",
+                new Dictionary<string, object?>
+                {
+                    ["portalId"] = created.PortalId,
+                    ["userId"] = administratorId,
+                    ["createdDate"] = membershipCreated,
+                    ["authorised"] = membershipAuthorised != 0,
+                });
+
+            using HttpResponseMessage deleted = await host.DeleteAsync(PortalRoute(created.PortalId));
+            deleted.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        }
+    }
+
+    /// <summary>
+    /// A tenant-name filter the database collation cannot weigh must match NOTHING rather than everything.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THIS IS A SAFETY TEST, NOT A TIDINESS ONE. The schema is collated
+    /// <c>SQL_Latin1_General_CP1_CI_AS</c>, which gives supplementary characters no collation weight, so
+    /// <c>N'🎉🎉🎉'</c> compares equal to the empty string and a prefix match on it degrades to
+    /// <c>LIKE N'%'</c>. Measured against the live listing before the guard existed, searching the tenant
+    /// list for three emoji reported a filter in force and returned EVERY portal.
+    /// </para>
+    /// <para>
+    /// A host who believes the list has been narrowed to one tenant may open, amend or delete a row on that
+    /// belief, and a portal delete removes every page, module and membership it owns. Returning nothing is
+    /// both honest and safe.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ListPortals_ByCharactersTheCollationCannotWeigh_MatchesNothingRatherThanEverything()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        // The unfiltered total, established first so "everything" is a measured number rather than a guess.
+        using HttpResponseMessage unfiltered = await client.GetAsync(new Uri(
+            "/api/v1/portals?pageIndex=0&pageSize=100",
+            UriKind.Relative));
+
+        unfiltered.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        PagedEnvelope<PortalListItemDto>? everything = await unfiltered.Content
+            .ReadFromJsonAsync<PagedEnvelope<PortalListItemDto>>(ApiTestFixture.Json);
+
+        everything.Should().NotBeNull();
+        everything!.Meta.TotalCount.Should()
+            .BeGreaterThan(0, "the guard is only meaningful when there are rows it could wrongly return");
+
+        PagedEnvelope<PortalListItemDto> weightless = await FilterByNameAsync(
+            client,
+            "\U0001F389\U0001F389\U0001F389");
+
+        weightless.Items.Should().BeEmpty("no tenant name begins with those characters");
+        weightless.Meta.TotalCount.Should().Be(
+            0,
+            "a filter that cannot discriminate fails closed, never open");
+        weightless.Meta.TotalCount.Should().NotBe(
+            everything.Meta.TotalCount,
+            "returning the complete tenant list for a filter the host typed is the unsafe direction");
+    }
+
+    /// <summary>
+    /// A tenant-name filter MIXING weightless characters with ordinary text still discriminates on the
+    /// ordinary part, so the guard suppresses no legitimate search.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task ListPortals_ByOrdinaryTextCarryingAWeightlessCharacter_StillFiltersOnTheOrdinaryPart()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        PagedEnvelope<PortalListItemDto> matched = await FilterByNameAsync(
+            client,
+            "zzz-no-portal-bears-this-name\U0001F389");
+
+        matched.Items.Should().BeEmpty(
+            "the ordinary part carries weight, so the filter is applied rather than treated as unable to filter");
+    }
+
     /// <summary>Produces a short random suffix for values that reach a unique constraint.</summary>
     /// <returns>Twelve lower-case hexadecimal characters.</returns>
     private static string Suffix() => Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture)[..12];

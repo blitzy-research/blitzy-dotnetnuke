@@ -846,10 +846,26 @@ describe('UserProfileComponent', () => {
         ),
       ]);
 
+      // ⚠ THE TWO CONSTRAINTS NOW REACH THE READER BY TWO DIFFERENT ROUTES, AND THE SPLIT IS THE POINT.
+      // The FORMAT requirement is enforced by nothing the browser declares, so the only place it can be
+      // stated is the help text. The LENGTH bound is enforced by `maxlength`, which bites silently while
+      // typing, so stating it only inside a collapsed disclosure meant the one constraint that acts
+      // without warning was the one a reader had to go looking for. It travels through the shared field's
+      // `limit` input instead, which renders it as a PERMANENTLY PRESENT sentence the control's own
+      // `aria-describedby` names - announced when the box takes focus, before a keystroke is lost - and
+      // repeats it in the disclosure anyway, which is why it still appears below.
       const help = helpFor('CustomCode');
 
-      expect(help).toContain('at most 20 characters');
       expect(help).toContain('a specific format this site requires');
+      expect(help).toContain('At most 20 characters');
+
+      const bound = host().querySelector<HTMLElement>('.form-field__limit');
+
+      expect(bound?.textContent?.trim()).toBe('At most 20 characters.');
+
+      const box = controls()[0];
+
+      expect(box.getAttribute('aria-describedby')).toContain(bound?.id ?? 'missing');
     });
 
     // ⚠ U12b - A TENANT-DECLARED PROPERTY CARRIES NO CURATED WORDING, so it previously rendered no help
@@ -857,7 +873,7 @@ describe('UserProfileComponent', () => {
     it('gives a property with no curated wording a help affordance drawn from its declaration', () => {
       load([entry(declaration({ propertyDefinitionId: 9, propertyName: 'RequiredHiddenProp', length: 50 }))]);
 
-      expect(helpFor('RequiredHiddenProp')).toBe('Accepts at most 50 characters.');
+      expect(helpFor('RequiredHiddenProp')).toBe('At most 50 characters.');
     });
 
     it('bounds nothing and says nothing when the declaration bounds nothing', () => {
@@ -946,6 +962,87 @@ describe('UserProfileComponent', () => {
       load([entry(declaration({ length: 40 }))]);
 
       expect(present(controls()[0], 'the value control').getAttribute('maxlength')).toBe('40');
+    });
+
+    // ⚠ AND STATES IT WHERE IT IS HEARD BEFORE IT BITES. `maxlength` refuses keystrokes and keeps only
+    // the head of a longer pasted value in silence; the bound used to be mentioned only inside the field's
+    // HELP text, which is collapsed behind a button, so the one constraint that acts without warning was
+    // the one a reader had to go looking for. It now travels through the shared field's `limit` input,
+    // which renders a permanently present sentence the control's own `aria-describedby` names.
+    it('states the declared bound permanently, and names it from the control', () => {
+      load([entry(declaration({ length: 40 }))]);
+
+      const box = present(controls()[0], 'the value control');
+      const statement = host().querySelector<HTMLElement>('.form-field__limit');
+
+      expect((statement?.textContent ?? '').trim()).toBe('At most 40 characters.');
+      expect(box.getAttribute('aria-describedby')).toContain(statement?.id ?? 'missing');
+    });
+
+    it('states no bound when the declaration bounds nothing', () => {
+      load([entry(declaration({ length: 0 }))]);
+
+      expect(host().querySelector('.form-field__limit')).toBeNull();
+    });
+  });
+
+  // =========================================================================
+  // HOW A MESSAGE NAMES THE FIELD IT IS ABOUT
+  //
+  // ⚠ THE RAW STORED PROPERTY NAME USED TO LEAK OUT OF THREE OF THE FOUR BRANCHES. Only the required
+  // message consulted the curated wording, so a reader looking at a field captioned "Postal Code" was told
+  // "PostalCode must be 40 characters or fewer" - a spelling that appears nowhere on the screen, and for
+  // seven of the nineteen seeded properties a different word altogether.
+  // =========================================================================
+
+  describe('the subject of a validation message', () => {
+    /** The first rendered message, or the empty string. */
+    function message(): string {
+      return (host().querySelector('.form-field__error')?.textContent ?? '').trim();
+    }
+
+    /** Types an overlong value into the single rendered control. */
+    function overrun(): void {
+      const control = present(controls()[0], 'the value control');
+      control.value = 'far too long for the declared bound';
+      control.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+    }
+
+    it('names the field by its CAPTION, not by its stored name', () => {
+      load([entry(declaration({ propertyName: 'PostalCode', length: 4 }))]);
+      overrun();
+
+      expect(message())
+        .withContext('the caption the reader can see, minus its caption colon')
+        .toBe('Postal Code must be 4 characters or fewer');
+      expect(message()).not.toContain('PostalCode');
+    });
+
+    it('falls back to the stored name for a property the tenant added', () => {
+      // A tenant-declared property has no curated wording, so its own name IS the caption. The fallback
+      // must not invent one.
+      load([entry(declaration({ propertyName: 'WarehouseCode', length: 4 }))]);
+      overrun();
+
+      expect(message()).toBe('WarehouseCode must be 4 characters or fewer');
+    });
+
+    // ⚠ THE ONE BRANCH THAT DELIBERATELY DOES NOT USE THE CAPTION. The required wording comes from the
+    // legacy resource file, and three of those sentences knowingly disagree with their caption - `Cell` is
+    // captioned "Cell/Mobile:" and required as "Cell Phone is required". Those divergences are measured
+    // legacy behaviour this port preserves; routing the required branch through the caption would silently
+    // correct wording the migration notes record as intentional.
+    it('leaves the measured required wording alone, divergence and all', () => {
+      load([entry(declaration({ propertyName: 'Cell', required: true }))]);
+
+      const control = present(controls()[0], 'the value control');
+      control.value = '';
+      control.dispatchEvent(new Event('input'));
+      control.dispatchEvent(new Event('blur'));
+      fixture.detectChanges();
+
+      expect(message()).toBe('Cell Phone is required');
     });
   });
 
@@ -1884,6 +1981,80 @@ describe('UserProfileComponent', () => {
       fixture.detectChanges();
 
       expect(httpMock.match((request) => request.method === 'PUT').length).toBe(0);
+    });
+  });
+
+  // =========================================================================
+  // THE HEADING RANK OF A SECTION CAPTION, IN BOTH MODES
+  //
+  // ⚠ THE TWO MODE BRANCHES USED TO STRUCTURE THE SAME SCREEN DIFFERENTLY. Viewing a profile wrapped
+  // each section's caption in `<h2>`, so a screen-reader user had a heading per section to navigate by.
+  // EDITING the same profile - which is where an operator actually spends the time - emitted the identical
+  // control in a bare `<legend>` with no heading element at all, leaving the page with only its `h1` and
+  // the "Still required" heading. A caption that names a group of fields is a heading in both modes or in
+  // neither.
+  // =========================================================================
+
+  describe('the rank of a section caption', () => {
+    /** The text of every level-2 heading, in document order. */
+    function sectionHeadings(): readonly string[] {
+      return Array.from(host().querySelectorAll('h2')).map((node) => (node.textContent ?? '').trim());
+    }
+
+    /** Two properties in two different seeded categories, so two sections are rendered. */
+    function twoSections(): void {
+      load([
+        entry(
+          declaration({
+            propertyDefinitionId: 1,
+            propertyName: 'FirstName',
+            propertyCategory: 'Name',
+            viewOrder: 1,
+          }),
+          { propertyValue: 'Grace', lastUpdatedDate: '2024-01-01T00:00:00Z' },
+        ),
+        entry(
+          declaration({
+            propertyDefinitionId: 2,
+            propertyName: 'City',
+            propertyCategory: 'Address',
+            viewOrder: 2,
+          }),
+          { propertyValue: 'Arlington', lastUpdatedDate: '2024-01-01T00:00:00Z' },
+        ),
+      ]);
+    }
+
+    it('exposes every section caption as a level-2 heading while EDITING', () => {
+      twoSections();
+
+      const captions = sectionHeadings();
+
+      expect(captions.length).withContext('one heading per rendered section').toBe(2);
+      expect(host().querySelectorAll('legend h2').length)
+        .withContext('and the heading is the caption itself, inside the legend')
+        .toBe(2);
+
+      // The heading and the accessible name of the fieldset are the SAME text, so nothing is duplicated
+      // and the group never loses its name to the heading.
+      expect(captions).toEqual(headings());
+    });
+
+    it('exposes them identically while VIEWING, so the structure does not change with the mode', () => {
+      fixture.componentRef.setInput('mode', 'view');
+      twoSections();
+
+      expect(sectionHeadings().length).toBe(2);
+      expect(sectionHeadings()).toEqual(headings());
+    });
+
+    it('skips no level: the sections sit directly under the page heading', () => {
+      twoSections();
+
+      // Nothing on this screen may render an `h3` before an `h2` exists, and no `h4`+ appears at all -
+      // a rank that jumps says the reader missed a level that was never there.
+      expect(host().querySelectorAll('h1').length).withContext('the page heading').toBe(1);
+      expect(host().querySelectorAll('h4, h5, h6').length).toBe(0);
     });
   });
 

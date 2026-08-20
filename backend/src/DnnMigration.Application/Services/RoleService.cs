@@ -109,6 +109,17 @@ public sealed class RoleService : IRoleService
     /// </summary>
     private const string AssignmentExpiredNotRemovedCode = "role_assignment.expired_not_removed";
 
+    /// <summary>
+    /// Reported when the bounds about to be stored would leave a membership starting after it ends.
+    /// </summary>
+    /// <remarks>
+    /// Held here as well as in the boundary validator because this member is reachable without one - from the
+    /// account vertical's subscription, trial and invitation-code paths, and from a test - and because the
+    /// assertion is made on the values about to be STORED, which includes a derived pair the validator never
+    /// sees.
+    /// </remarks>
+    private const string AssignmentDatesInvalidCode = "role_assignment.dates_invalid";
+
     /// <summary>Resource kind published on an audit record describing a role.</summary>
     private const string RoleResourceType = "Role";
 
@@ -926,13 +937,61 @@ public sealed class RoleService : IRoleService
         bool bearsProtectedBounds =
             portal.AdministratorId == request.UserId && portal.AdministratorRoleId == roleId;
 
+        // ⚠ AN AMENDMENT THAT AUTHORS A BOUND IS OBEYED VERBATIM; EVERYTHING ELSE IS PREFILLED FROM THE ROLE'S
+        // TERMS. This split did not exist - every call ran through the derivation - and its absence was a
+        // data-integrity defect rather than an inconvenience.
+        //
+        // Measured on an EXISTING paid membership amended with an effective date of 2030-01-01 and an
+        // explicitly null expiry: the store received request-time plus one year. Three consequences followed
+        // from that one substitution. The caller's stated intent was discarded silently. The pair could be left
+        // with the effective date AFTER the expiry, which the editor's own cross-field rule then refuses - so
+        // the record could not be saved again by the very screen that had just written it. And a LAPSED
+        // membership was silently reactivated for a further year by an operator who had asked only to clear its
+        // end date.
+        //
+        // WHY BOTH CONDITIONS, AND NOT EITHER ALONE. Each was tried and each is insufficient:
+        //
+        //   • "A row exists, so obey the request verbatim" breaks re-subscription. Every internal caller -
+        //     service subscription, trial enrolment, and each role matched while redeeming an invitation code -
+        //     submits `new RoleAssignmentRequest { UserId = userId }` with NEITHER bound, precisely because the
+        //     role's own trial and billing terms are what should decide them. Obeying that verbatim against an
+        //     existing row leaves a paid membership with no expiry at all, which is a perpetual grant.
+        //
+        //   • "A bound was authored, so obey the request verbatim" changes CREATION as well, and creation is
+        //     where the derived bound is the legacy prefill rather than an override: an administrator entering a
+        //     start date for a new monthly membership expects the month to be applied, and the shipped tests
+        //     assert exactly that.
+        //
+        // So the derivation stays in charge of creation and of renewal, and steps aside only for an amendment
+        // whose caller stated a bound - which is the one case where a stored value is being replaced by an
+        // authored one. Recorded in MIGRATION_NOTES.md with the rest of this change.
+        bool amendsWithAuthoredBounds = existing is not null
+            && (NormalizeLegacyDateMarker(request.EffectiveDate) is not null
+                || NormalizeLegacyDateMarker(request.ExpiryDate) is not null);
+
         (DateTime? effectiveDate, DateTime? expiryDate) = bearsProtectedBounds
             ? (null, null)
-            : DeriveAssignmentDates(
-                role,
-                request.EffectiveDate,
-                request.ExpiryDate,
-                existing?.IsTrialUsed ?? false);
+            : amendsWithAuthoredBounds
+                ? (NormalizeLegacyDateMarker(request.EffectiveDate),
+                    NormalizeLegacyDateMarker(request.ExpiryDate))
+                : DeriveAssignmentDates(
+                    role,
+                    request.EffectiveDate,
+                    request.ExpiryDate,
+                    existing?.IsTrialUsed ?? false);
+
+        // ⚠ THE ORDERING IS ASSERTED HERE AS WELL AS AT THE BOUNDARY, and the duplication is deliberate.
+        // RoleAssignmentRequestValidator carries the legacy screen's own valDates rule and runs first for an
+        // HTTP caller, but this member is also reached from the account vertical and from a test, and a rule
+        // only an HTTP caller meets is not a rule. Asserted on the values ABOUT TO BE STORED rather than on
+        // the submission, so it covers the derived pair too - which is what makes a stored membership whose
+        // start follows its end unreachable by any route rather than merely unlikely.
+        if (effectiveDate is DateTime start && expiryDate is DateTime end && start > end)
+        {
+            return Result.Failure(
+                AssignmentDatesInvalidCode,
+                "The membership's effective date must fall before its expiry date.");
+        }
 
         // The legacy assignment member took the portal identifier as its first argument and the repository
         // member this one calls does NOT, because dbo.UserRoles has no PortalID column at all - the
@@ -1076,7 +1135,18 @@ public sealed class RoleService : IRoleService
             .GetRoleGroupsAsync(portalId, cancellationToken)
             .ConfigureAwait(false);
 
-        IReadOnlyList<RoleGroupDto> rows = groups.Select(RoleMappings.ToDto).ToList();
+        // ONE grouped count for the whole portal rather than one per group, so a listing read does not scale
+        // with the number of groups it describes. A group that classifies nothing is absent from the answer,
+        // which is why the lookup below defaults to zero rather than treating a miss as unknown.
+        IReadOnlyDictionary<int, int> classified = await _roles
+            .CountRolesByGroupAsync(portalId, cancellationToken)
+            .ConfigureAwait(false);
+
+        IReadOnlyList<RoleGroupDto> rows = groups
+            .Select(group => RoleMappings.ToDto(
+                group,
+                classified.TryGetValue(group.RoleGroupId, out int count) ? count : 0))
+            .ToList();
         return Result<IReadOnlyList<RoleGroupDto>>.Success(rows);
     }
 
@@ -1093,9 +1163,14 @@ public sealed class RoleService : IRoleService
 
         RoleGroup? group = await _roles.GetRoleGroupAsync(portalId, roleGroupId, cancellationToken).ConfigureAwait(false);
 
-        return group is null
-            ? Result<RoleGroupDto?>.Success(null)
-            : Result<RoleGroupDto?>.Success(RoleMappings.ToDto(group));
+        if (group is null)
+        {
+            return Result<RoleGroupDto?>.Success(null);
+        }
+
+        return Result<RoleGroupDto?>.Success(RoleMappings.ToDto(
+            group,
+            await CountClassifiedRolesAsync(portalId, group.RoleGroupId, cancellationToken).ConfigureAwait(false)));
     }
 
     /// <inheritdoc />
@@ -1143,7 +1218,10 @@ public sealed class RoleService : IRoleService
 
         _cache.InvalidatePortal(portalId);
 
-        return Result<RoleGroupDto>.Success(RoleMappings.ToDto(group));
+        // A group inserted by this very request classifies nothing, and no query is needed to know it: a role
+        // cannot name a group that did not exist when the role was written. Stating the literal is therefore
+        // more truthful than asking, not merely cheaper.
+        return Result<RoleGroupDto>.Success(RoleMappings.ToDto(group, classifiedRoleCount: 0));
     }
 
     /// <inheritdoc />
@@ -1189,7 +1267,37 @@ public sealed class RoleService : IRoleService
 
         _cache.InvalidatePortal(portalId);
 
-        return Result<RoleGroupDto>.Success(RoleMappings.ToDto(group));
+        // Renaming a group cannot change what it classifies, but the answer still has to CARRY the count:
+        // a client that refreshes its held group from this response would otherwise replace a real count
+        // with zero and offer a deletion the server would refuse.
+        return Result<RoleGroupDto>.Success(RoleMappings.ToDto(
+            group,
+            await CountClassifiedRolesAsync(portalId, group.RoleGroupId, cancellationToken).ConfigureAwait(false)));
+    }
+
+    /// <summary>
+    /// How many roles one group classifies, for a single group.
+    /// </summary>
+    /// <remarks>
+    /// A thin read over the portal-wide grouped count. Answering one group from the portal-wide query keeps
+    /// ONE definition of the quantity: a second, group-scoped query would be a second place for the
+    /// predicate to drift away from the one the removal guard applies, and the whole value of this count is
+    /// that it cannot disagree with that guard.
+    /// </remarks>
+    /// <param name="portalId">The portal that owns the group.</param>
+    /// <param name="roleGroupId">The group to count.</param>
+    /// <param name="cancellationToken">Propagates notification that the operation should stop.</param>
+    /// <returns>The number of roles the group classifies, zero when it classifies none.</returns>
+    private async Task<int> CountClassifiedRolesAsync(
+        int portalId,
+        int roleGroupId,
+        CancellationToken cancellationToken)
+    {
+        IReadOnlyDictionary<int, int> classified = await _roles
+            .CountRolesByGroupAsync(portalId, cancellationToken)
+            .ConfigureAwait(false);
+
+        return classified.TryGetValue(roleGroupId, out int count) ? count : 0;
     }
 
     /// <inheritdoc />
@@ -1235,10 +1343,17 @@ public sealed class RoleService : IRoleService
     /// Derives the effective and expiry dates of an assignment from the role's trial and billing terms.
     /// </summary>
     /// <param name="role">The role being assigned.</param>
+    /// <param name="trialUsed">Whether the member has already consumed this role's trial.</param>
     /// <param name="requestedEffectiveDate">The submitted effective date, or <see langword="null"/>.</param>
     /// <param name="requestedExpiryDate">The submitted expiry date, or <see langword="null"/>.</param>
-    /// <param name="trialUsed">Whether the member has already consumed this role's trial.</param>
     /// <returns>The dates to store.</returns>
+    /// <remarks>
+    /// ⚠ THIS IS A PREFILL, AND IT CANNOT TELL A CLEARED EXPIRY FROM AN UNSUPPLIED ONE. Both arrive here as
+    /// <see langword="null"/>, so an absent expiry is answered from the role's terms - which is right for a
+    /// creation and for a renewal, and wrong for an amendment that deliberately cleared one. Deciding which of
+    /// those a call is belongs to the caller and is done there; this member is reached only for the two cases
+    /// where the role's terms are the intended authority.
+    /// </remarks>
     private (DateTime? EffectiveDate, DateTime? ExpiryDate) DeriveAssignmentDates(
         Role role,
         DateTime? requestedEffectiveDate,
@@ -1277,7 +1392,31 @@ public sealed class RoleService : IRoleService
         // The FALL-THROUGH value, however, stays absent rather than becoming that instant, and this is a
         // PRE-EXISTING DOCUMENTED DIVERGENCE that deliberately leaves standing.
         DateTime? expiryDate = null;
-        DateTime offsetBase = now;
+
+        // ⚠ THE TERM RUNS FORWARD FROM THE LATER OF NOW AND THE STATED START. It always ran forward from now
+        // alone, and that produced a membership whose end preceded its beginning: a seven-day role granted to
+        // start in ten days' time was stored with an expiry seven days from the REQUEST, three days before it
+        // was due to open. The pair was then unsaveable by the very screen that wrote it, because the editor's
+        // cross-field rule refuses an expiry before its effective date - so the membership was wedged, which is
+        // exactly the "can create Effective > Expiry" half of the reported defect.
+        //
+        // WHY THE LATER OF THE TWO, RATHER THAN THE STATED START WHENEVER ONE IS GIVEN. Taking the start
+        // unconditionally would also change a BACKDATED grant, and a backdated grant is not defective: a
+        // seven-day role stated to have opened ten days ago would acquire an expiry three days behind us and be
+        // stored already lapsed, where the legacy value - seven days from now - is both what the installation
+        // produced and what the operator granting it means. Reading the later of the two therefore changes the
+        // outcome in the ONE case that produced the inverted pair and leaves every other case byte-identical to
+        // the legacy computation.
+        //
+        // MIGRATION: a deliberate divergence, and the legacy behaviour is worth naming rather than implying.
+        // `RoleController.vb` L496 computed `DateAdd(interval, period, Now)` unconditionally, so a legacy
+        // installation produced the same inverted pair for a future start. Offsetting from that start preserves
+        // what the role's terms actually mean - a seven-day membership lasts seven days from when it opens - and
+        // it is what makes the ordering invariant asserted before persistence satisfiable rather than merely
+        // enforced. Recorded in MIGRATION_NOTES.md.
+        DateTime offsetBase = requestedEffectiveDate is DateTime statedStart && statedStart > now
+            ? statedStart
+            : now;
 
         expiryDate = frequency switch
         {

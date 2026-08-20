@@ -8,9 +8,22 @@
 //  breakpoint widths, which live in `_mixins.scss` because a custom property is
 //  not evaluated inside a media feature query.
 //
-//  The colour vocabulary is NINE members. `#FFFF99`, the legacy pale hint
-//  surface, is deliberately not among them; see the note beside
-//  `--color-surface` below.
+//  The colour vocabulary is ELEVEN members: the NINE the design specification's
+//  colour table enumerates, plus `--color-text`, which names the body ink that
+//  was already resolving by inheritance, plus `--color-border-control`, the
+//  component-boundary token added when the two legacy border values were found
+//  to be carrying boundaries they could not identify; its own declaration below
+//  records the measurements and why the legacy two are still kept beside it.
+//  `#FFFF99`, the legacy pale hint surface, is deliberately NOT among them; see
+//  the note beside `--color-surface` below.
+//
+//  Neither addition relaxes the rule the table states. Both are values the
+//  specification is silent on, which is the case its own gaps inventory resolves
+//  by DEFINING a token; ONE table entry is re-valued rather than added to, and
+//  that one - `--color-danger` - carries its measurements on its own declaration.
+//  Every ratio the two changed members owe is asserted in `tokens.spec.ts`
+//  against this file's resolved values, so a later edit is checked against the
+//  requirement rather than against a second copy of itself.
 //
 //  This partial loads nothing, so it can never take part in a Sass load cycle.
 //  Consumers reach it with a relative `@use` — Sass modules are per-file and not
@@ -33,17 +46,72 @@
   // absorbed.
   --color-selected: #C1D2EE;
 
-  // ⚠ CONTRAST IS BELOW THE TEXT MINIMUM, KNOWINGLY, AND A DARKER SIBLING TOKEN IS REFUSED. Contrast on
-  // --color-background is 4.00:1 and on the grid stripe 3.45:1, which clears the 3:1 threshold WCAG sets
-  // for a non-text UI component and misses the 4.5:1 minimum for normal-size text; Lighthouse measured
-  // 3.446:1 independently on a role-form warning.
-  --color-danger: #FF0000;
+  // ⚠ THE DARKER SIBLING, AND IT IS NO LONGER REFUSED. This token was #FF0000 - the legacy value, measured
+  // 5 times in default.css - and the refusal recorded here was wrong on the facts:
+  //
+  //   * MEASURED FAILURES. 3.9985:1 on --color-background, 3.4463:1 on --color-surface and 2.6125:1 on
+  //     --color-selected. The 4.5:1 normal-text minimum is missed on ALL THREE, and the 3:1 non-text
+  //     threshold is missed on the third as well - so the old note's "clears 3:1 for a UI component" was
+  //     true of two surfaces out of three, not of the token.
+  //   * IT IS OVERWHELMINGLY A TEXT COLOUR. 32 of the 37 consuming declarations set `color`, not
+  //     `border-color`: validation messages, required markers, destructive row commands, negative fees,
+  //     expired qualifiers, refusal prose. Treating it as decorative chrome mis-described what it paints.
+  //   * THE THIRD SURFACE IS DELIBERATE, NOT INCIDENTAL. `.user-list__row-action--danger:hover` and its
+  //     three sibling listings paint this colour ON --color-selected, each with a comment explaining that
+  //     the selected tint is the only hover perceptible on both row surfaces. So the worst of the three
+  //     ratios is a state the product intends to render, which is why the value below has to clear 4.5:1 on
+  //     --color-selected and not merely on the two neutral surfaces.
+  //
+  // WHY #B00000 AND NOT SOMETHING DARKER OR LIGHTER. It is the LIGHTEST pure red - hue 0, exactly the hue of
+  // both #FF0000 and the legacy dark red #C00 at default.css L1018 - that clears 4.5:1 on all three
+  // surfaces with at least 5% headroom: 7.3787:1 on --color-background, 6.3597:1 on --color-surface,
+  // 4.8210:1 on --color-selected. The legacy #C00 itself was tried first and rejected on measurement: 5.89
+  // and 5.07 on the two neutral surfaces, but only 3.8461:1 on --color-selected. Continuity is therefore
+  // kept through HUE AND WEIGHT rather than through the exact byte - the red still reads as the legacy error
+  // red, one step darker - which is what the design-system rule asks for.
+  //
+  // MIGRATION: a deliberate, visible divergence from the legacy #FF0000, recorded in MIGRATION_NOTES.md. It
+  // changes no layout, no weight and no shape; every one of the 37 declarations that names this token is
+  // corrected by this one edit.
+  --color-danger: #B00000;
 
+  // 1.37:1 on --color-background. DECORATIVE ONLY, and the distinction is enforced rather than asserted:
+  // see --color-border-control below for which boundaries were moved off this token and why the rest stay.
   --color-border: #DCDCDC;
 
   // 1.61:1 on --color-background, so likewise decorative. --color-primary reads
   // at 7.85:1 on this surface, which is how the legacy header pairing rendered.
   --color-border-strong: #CCCCCC;
+
+  // THE COMPONENT-BOUNDARY TOKEN, AND THE TENTH MEMBER OF THE VOCABULARY.
+  //
+  // ⚠ WHY A THIRD BORDER VALUE RATHER THAN DARKENING THE TWO ABOVE. WCAG 1.4.11 asks 3:1 of the visual
+  // information needed to IDENTIFY a component and its state, and exempts purely decorative rules. The two
+  // legacy values were doing both jobs at once: at 1.37:1 and 1.61:1 they are fine as the grid's row rule,
+  // the empty-state panel edge, the spinner track and the notification panel edge - which is how the legacy
+  // portal drew them - and they are NOT fine as the edge that tells a reader where a fieldset, a disabled
+  // control, a read-only control or an opened help panel begins. Darkening #DCDCDC and #CCCCCC themselves
+  // would have made every decorative rule in the product heavier than the legacy design ever drew it, which
+  // trades one fidelity failure for another; splitting the role is what lets the decoration stay exactly as
+  // measured while the boundaries become identifiable.
+  //
+  // THE FIVE BOUNDARIES MOVED ONTO THIS TOKEN, each named in the reported finding: the `fieldset` edge and
+  // the disabled / aria-disabled control edge (both were --color-border, 1.37:1), and the read-only control
+  // edge, the global help-disclosure edge and the shared field's help-panel edge (all three were
+  // --color-border-strong, 1.61:1). Every one of the five sits on --color-background or --color-surface and
+  // never on --color-selected, which is what makes the two ratios below the complete obligation.
+  //
+  // WHY #767676. A PURE NEUTRAL GREY, so the hue is byte-identical to the legacy neutrals and only the
+  // weight moves - the same continuity argument the danger token makes. It is the canonical lightest neutral
+  // that also clears the 4.5:1 TEXT minimum on white, and it measures 4.5422:1 on --color-background and
+  // 3.9149:1 on --color-surface: both comfortably past 3:1 with headroom, so a later surface adjustment
+  // cannot quietly tip a boundary back under the threshold. Nothing lighter clears 3:1 on --color-surface
+  // with margin - #868686 reads 3.1380:1 there and #8A8A8A only 2.9755:1.
+  //
+  // MIGRATION: a NET ADDITION, recorded in MIGRATION_NOTES.md. The legacy stylesheet expresses no notion of
+  // a component boundary distinct from a decorative rule, so there is no legacy value to be faithful to
+  // here; what is preserved is the neutral hue and the 1px width, and what changes is the weight.
+  --color-border-control: #767676;
 
   // COLOUR — text.
 
@@ -166,12 +234,37 @@
   --dialog-max-inline-size: 90vw;
   --dialog-max-block-size: 90vh;
 
+  // ⚠ QA-26 — THE MEASURE EVERY DIALOG TAKES, RATHER THAN THE ONE ITS SENTENCE HAPPENS TO NEED. With a
+  // cap alone and no width, a `<dialog>` is sized by its content, so the seventeen confirmations in this
+  // application were seventeen different widths — the frame visibly resized between one destructive prompt
+  // and the next, and the same question asked about a long record name and a short one did not look like the
+  // same question. 28rem holds two lines of the longest confirmation sentence at the base measure; the cap
+  // above still applies on top, so at a 320px viewport the frame yields to 90vw as it always did.
+  --dialog-inline-size: 28rem;
+
+  // ⚠ THE SCRIM, WHICH WAS THE USER AGENT'S OWN UNTIL NOW. `::backdrop` is unstyled by default, so the
+  // one surface in the application that dims everything behind it was the only surface taking its colour
+  // from outside the vocabulary — Chrome paints a near-transparent black that barely separates the dialog
+  // from the grid underneath it. Derived from `--color-text` rather than written as a literal, so the
+  // scrim stays inside the eleven-colour vocabulary and changes with it; the alpha is what makes it a
+  // scrim, and 55% is enough to settle the page behind a destructive question without hiding the record
+  // the question names.
+  --dialog-backdrop-color: color-mix(in srgb, var(--color-text) 55%, transparent);
+
   // The label column of a horizontally laid-out form field.
   --field-label-inline-size: 9.375rem;
 
   // Two WIDER label measures, for the two screens whose own markup measured wider label cells.
   --field-label-inline-size-wide: 12.5rem;
   --field-label-inline-size-wider: 18.75rem;
+
+  // ⚠ A STEP BETWEEN THE BASE AND THE WIDE MEASURE, ADDED ON MEASUREMENT RATHER THAN FOR SYMMETRY. A
+  // screen that asks for the widest measure has to give some of it back where the field is narrow, and at
+  // 768 neither existing step lands: the wide step leaves the value 286px, 6.68px short of the longest
+  // option a native picker on the account-policy screen has to paint, while the base step takes the caption
+  // to 150px and wraps a 177.63px caption onto two lines to buy 43px the value does not need. 180px holds
+  // that caption outright and leaves the value 306px, 13.3px clear.
+  --field-label-inline-size-medium: 11.25rem;
 
   // THE CONTROL MEASURE STEPS, the three widths the legacy portal's own layout tables gave a control cell.
   // `lg` is the 325px cell of Website/admin/Portal/SiteSettings.ascx; `md` is the 144px cell; `sm` is the
@@ -284,6 +377,20 @@
   // its own container, which is now a named, keyboard-focusable region with a visible focus ring, rather
   // than pushing the page sideways. The document itself still never scrolls horizontally at any width.
   --table-min-inline-size: 60rem;
+
+  // The floor for a grid whose whole column set needs LESS than the floor above. It exists because the shared
+  // floor is a MINIMUM, and a minimum applied to a table that does not need it is an inflation.
+  //
+  // ⚠ THE MEASUREMENT THAT FORCED IT. The portal alias listing carries two columns — one worded command and
+  // one host name — needing 207px between them. The 60rem floor made its table 960px wide, so at a 320
+  // viewport the host name, the only data on the screen, began 214px beyond the right edge of a 271px
+  // scrollport: the visible table was three Edit buttons above an apparently empty body, and a reader had to
+  // find a scroll region before seeing any data at all. Nothing reported a fault, because a table handed more
+  // width than it needs has not overflowed anything.
+  //
+  // The value is that measured 207px requirement rounded up to the next whole rem, so the two columns always
+  // have their own content's worth of room and the table still fills any container wider than this.
+  --table-min-inline-size-compact: 14rem;
 
   // The track a COMMAND column takes: one interactive target plus the cell's own inline padding on each
   // side. Declared as a token because three listings need the same answer and because the value is derived

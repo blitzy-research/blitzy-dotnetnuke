@@ -152,10 +152,22 @@
         @if (credentialsExpanded()) {
           <div id="user-form-section-credentials" class="user-form__section-body user-form__grid">
             <!-- The sign-in name. -->
+<!--
+  ⚠ EVERY BOUNDED BOX ON THIS SCREEN NOW STATES ITS BOUND, AND UNTIL IT DID THE BOUND ONLY EVER BIT IN
+  SILENCE. Each of these controls carries `maxlength`, which stops accepting keystrokes without saying
+  anything and keeps only the head of a longer pasted value - so an operator pasting a 120-character
+  address into a 100-character box got a truncated account name and no indication that anything had been
+  dropped. `[limit]` is the shared field's own answer to exactly that, already in use on the portal
+  screens: it renders the bound as a permanently present sentence referenced by `aria-describedby`, so it
+  is announced when the box takes focus - BEFORE a keystroke is lost - and repeats it inside the help
+  disclosure for a sighted reader. The figure passed is the SAME constant the `maxlength` attribute is
+  bound to, so the stated bound and the enforced one cannot drift apart.
+-->
             <app-form-field
               label="User Name:"
               for="user-form-username"
-              help="Enter a username"
+              [limit]="maxLengths.username"
+              [help]="usernameHelp()"
               [required]="true"
               [error]="messageFor('username')"
             >
@@ -165,14 +177,30 @@
                 autocomplete="username"
                 [attr.aria-required]="true"
                 [attr.aria-invalid]="messageFor('username') ? 'true' : null"
+                [attr.aria-describedby]="isEditMode() ? usernameAdvisoryId : null"
                 [attr.maxlength]="maxLengths.username"
                 formControlName="username"
               />
             </app-form-field>
 
+<!--
+  ⚠ THE LOCK NOW SAYS WHY, IN THE FLOW, WHERE A DISABLED CONTROL CANNOT. While editing, the sign-in
+  name control is natively disabled - so it takes no focus, offers no hover, and until now carried the help
+  text "Enter a username" beside a box that cannot be typed into. The sentence is rendered as ordinary
+  visible text and named from the control's own `aria-describedby`, exactly as the tenant e-mail advisory
+  below already does, so the reason is available to a sighted reader and to the accessibility tree alike
+  rather than hidden behind a disclosure nobody has a reason to open.
+-->
+            @if (isEditMode()) {
+              <p [id]="usernameAdvisoryId" class="user-form__tenant-advisory">
+                {{ usernameFixedAdvisory }}
+              </p>
+            }
+
             <app-form-field
               label="First Name:"
               for="user-form-first-name"
+              [limit]="maxLengths.firstName"
               help="Enter a First Name"
               [required]="true"
               [error]="messageFor('firstName')"
@@ -191,6 +219,7 @@
             <app-form-field
               label="Last Name:"
               for="user-form-last-name"
+              [limit]="maxLengths.lastName"
               help="Enter a Last Name"
               [required]="true"
               [error]="messageFor('lastName')"
@@ -221,6 +250,7 @@
               <app-form-field
                 label="Display Name:"
                 for="user-form-display-name"
+                [limit]="maxLengths.displayName"
                 [help]="displayNameHelp()"
                 [required]="!displayNameReadOnly()"
                 [error]="messageFor('displayName')"
@@ -247,6 +277,7 @@
             <app-form-field
               label="Email Address:"
               for="user-form-email"
+              [limit]="maxLengths.email"
               help="Enter a valid Email address"
               [required]="true"
               [error]="messageFor('email')"
@@ -338,13 +369,24 @@
               at `User.ascx` L25 on purpose: there is no mail endpoint, so a tickable box would promise
               something the installation cannot perform.
             -->
-            <app-form-field
-              label="Notify:"
-              for="user-form-notify"
-              [help]="notifyUnavailableHelp"
-            >
-              <input id="user-form-notify" type="checkbox" formControlName="notify" />
+            <app-form-field label="Notify:" for="user-form-notify">
+              <input
+                id="user-form-notify"
+                type="checkbox"
+                [attr.aria-describedby]="notifyAdvisoryId"
+                formControlName="notify"
+              />
             </app-form-field>
+
+<!--
+  ⚠ THE SENTENCE MOVED OUT OF THE HELP DISCLOSURE ON PURPOSE, AND THE HELP INPUT IS DELIBERATELY GONE
+  RATHER THAN KEPT ALONGSIDE. This box is disabled for the whole life of the screen, so nothing about it
+  will change and there is no reason to make the explanation conditional on a button press; keeping `help`
+  as well would state the same sentence twice, once visibly and once behind a toggle.
+-->
+            <p [id]="notifyAdvisoryId" class="user-form__tenant-advisory">
+              {{ notifyUnavailableAdvisory }}
+            </p>
           </div>
           }
         </fieldset>
@@ -400,6 +442,7 @@
                 <app-form-field
                   label="Password:"
                   for="user-form-password"
+                  [limit]="credentialMaxLength"
                   help="Enter a password for this user"
                   [required]="true"
                   [error]="messageFor('password')"
@@ -410,7 +453,7 @@
                     autocomplete="new-password"
                     [attr.maxlength]="credentialMaxLength"
                     [attr.aria-required]="true"
-                    [attr.aria-invalid]="passwordMessage() ? 'true' : null"
+                    [attr.aria-invalid]="credentialInvalid('password') ? 'true' : null"
                     [attr.aria-describedby]="passwordMessage() ? passwordGroupErrorId : null"
                     [attr.aria-errormessage]="passwordMessage() ? passwordGroupErrorId : null"
                     formControlName="password"
@@ -420,6 +463,7 @@
                 <app-form-field
                   label="Confirm Password:"
                   for="user-form-confirm-password"
+                  [limit]="credentialMaxLength"
                   help="Re-Enter the password to confirm you typed it correctly"
                   [required]="true"
                   [error]="messageFor('confirmPassword')"
@@ -430,7 +474,7 @@
                     autocomplete="new-password"
                     [attr.maxlength]="credentialMaxLength"
                     [attr.aria-required]="true"
-                    [attr.aria-invalid]="passwordMessage() ? 'true' : null"
+                    [attr.aria-invalid]="credentialInvalid('confirmPassword') ? 'true' : null"
                     [attr.aria-describedby]="passwordMessage() ? passwordGroupErrorId : null"
                     [attr.aria-errormessage]="passwordMessage() ? passwordGroupErrorId : null"
                     formControlName="confirmPassword"
@@ -501,7 +545,27 @@
                 <div class="user-form__membership-row">
                   <dt class="user-form__membership-term">Created Date:</dt>
                   <dd class="user-form__membership-value">
-                    {{ createdDate() | dateDisplay: 'datetime' }}
+                  <!--
+                    ⚠ QA-20 — EVERY ONE OF THESE FIVE INSTANTS PAINTED NOTHING WHEN IT WAS ABSENT, and this is
+                    the screen where that cost the most. The display pipe answers the empty string for an
+                    absent value, an unparseable one and the legacy null-date sentinel alike, so a value row
+                    on this membership list collapsed to its own label followed by a help sentence and no
+                    value at all — "Last Login Date:" above nothing, which reads as a screen that failed to
+                    load rather than as an account that has never signed in. Both facts are ones an
+                    administrator acts on.
+
+                    THE SHARED AFFORDANCE IS USED VERBATIM, mark and words together, because a per-caller
+                    phrase is exactly the divergence it exists to end: five rows would have become five
+                    wordings. "Not recorded" is the truthful reading of all five states, including the
+                    never-locked-out sentinel — no lock-out has been recorded against the account — and the
+                    row immediately below this list reports the CURRENT locked state separately, so nothing
+                    here has to carry that meaning as well.
+                  -->
+                    @if (hasInstant(createdDate())) {
+                      {{ createdDate() | dateDisplay: 'datetime' }}
+                    } @else {
+                      <app-absent-value />
+                    }
                     <p>Date this user was created</p>
                   </dd>
                 </div>
@@ -509,7 +573,11 @@
                 <div class="user-form__membership-row">
                   <dt class="user-form__membership-term">Last Activity Date:</dt>
                   <dd class="user-form__membership-value">
-                    {{ lastActivityDate() | dateDisplay: 'datetime' }}
+                    @if (hasInstant(lastActivityDate())) {
+                      {{ lastActivityDate() | dateDisplay: 'datetime' }}
+                    } @else {
+                      <app-absent-value />
+                    }
                     <p>Date of last activity by this user</p>
                   </dd>
                 </div>
@@ -517,7 +585,11 @@
                 <div class="user-form__membership-row">
                   <dt class="user-form__membership-term">Last Login Date:</dt>
                   <dd class="user-form__membership-value">
-                    {{ lastLoginDate() | dateDisplay: 'datetime' }}
+                    @if (hasInstant(lastLoginDate())) {
+                      {{ lastLoginDate() | dateDisplay: 'datetime' }}
+                    } @else {
+                      <app-absent-value />
+                    }
                     <p>Date this user last logged in</p>
                   </dd>
                 </div>
@@ -525,7 +597,11 @@
                 <div class="user-form__membership-row">
                   <dt class="user-form__membership-term">Last Password Change:</dt>
                   <dd class="user-form__membership-value">
-                    {{ lastPasswordChangeDate() | dateDisplay: 'datetime' }}
+                    @if (hasInstant(lastPasswordChangeDate())) {
+                      {{ lastPasswordChangeDate() | dateDisplay: 'datetime' }}
+                    } @else {
+                      <app-absent-value />
+                    }
                     <p>Date the user last changed his/her password</p>
                   </dd>
                 </div>
@@ -533,7 +609,11 @@
                 <div class="user-form__membership-row">
                   <dt class="user-form__membership-term">Last Lock-out Date:</dt>
                   <dd class="user-form__membership-value">
-                    {{ lastLockoutDate() | dateDisplay: 'datetime' }}
+                    @if (hasInstant(lastLockoutDate())) {
+                      {{ lastLockoutDate() | dateDisplay: 'datetime' }}
+                    } @else {
+                      <app-absent-value />
+                    }
                     <p>Date this user was last locked out, due to repetitive failed logins</p>
                   </dd>
                 </div>

@@ -12,7 +12,7 @@ import { Router, provideRouter } from '@angular/router';
 import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
 import { NotificationService } from '../../../core/services/notification.service';
 import { RoleStore } from '../../../core/state/role.store';
-import { RoleGroupFormComponent } from './role-group-form.component';
+import { CREATE_ACTION_LABEL, RoleGroupFormComponent } from './role-group-form.component';
 
 import type { Type } from '@angular/core';
 import type { ComponentFixture } from '@angular/core/testing';
@@ -37,7 +37,11 @@ const NAME_LABEL = 'Group Name';
 const NAME_HELP = 'Enter the name of the role group.';
 const DESCRIPTION_LABEL = 'Description';
 const DESCRIPTION_HELP = 'Enter a description of the role group.';
-const SUBMIT_LABEL = 'Update';
+// ⚠ TAKEN FROM THE COMPONENT'S OWN CONSTANT, NOT RESTATED. It read 'Update' here and in the template,
+// two copies of one string - and when the label was corrected the copies disagreed and every specification
+// that pressed the control failed to find it. Importing the constant is what the file's own convention
+// asks for and makes that class of drift impossible.
+const SUBMIT_LABEL = CREATE_ACTION_LABEL;
 const CANCEL_LABEL = 'Cancel';
 
 /**
@@ -128,6 +132,7 @@ function roleGroup(roleGroupId = 0, overrides: Partial<RoleGroup> = {}): RoleGro
     portalId: -1,
     roleGroupName: 'Paid Services',
     description: null,
+    classifiedRoleCount: 0,
     ...overrides,
   };
 }

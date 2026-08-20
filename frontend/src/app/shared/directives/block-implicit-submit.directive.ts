@@ -1,14 +1,35 @@
 import { Directive, DestroyRef, ElementRef, inject } from '@angular/core';
 
 /**
- * The input types HTML calls "fields that block implicit submission" — the ones for which pressing Enter
- * asks the form to submit. Anything else (a checkbox, a radio, a button, a file chooser) has its own Enter
- * behaviour and is left entirely alone.
+ * EVERY CONTROL FROM WHICH A BROWSER WILL SUBMIT THIS FORM ON ENTER, and it is a wider set than the
+ * spec's own list.
+ *
+ * The first thirteen entries are the input types HTML itself calls "fields that block implicit
+ * submission" — the ones the specification names as asking the form to submit when Enter is pressed in
+ * them.
+ *
+ * ⚠ THE LAST THREE WERE ADDED ON MEASUREMENT, NOT ON READING. The specification describes implicit
+ * submission for text-like fields, but Chrome REQUESTS it from other form controls too, and the
+ * consequence was measured against the running application: with the first thirteen in place and the
+ * membership policy form otherwise fully guarded, pressing Enter while focus sat on the `Suppress Pager?`
+ * CHECKBOX still dispatched a genuine submit whose `defaultPrevented` was false, and the save ran —
+ * `PUT /api/v1/users/settings` left the browser and returned 200. A checkbox, a radio and a select are
+ * therefore every bit as much a submit trigger as a text box, and a guard that omits them is a guard with
+ * a hole in it on exactly the forms that carry the most switches.
+ *
+ * ⚠ NOTHING IS TAKEN AWAY FROM ANY OF THE THREE, which is what makes including them safe. A checkbox
+ * and a radio are operated with the SPACE bar, which this never touches; Enter has no per-control meaning
+ * on either. A select is operated by typing, by the arrow keys — which change its value while it is
+ * closed — and by Space or Alt+ArrowDown to open its picker; while that picker is open the browser
+ * handles the keys itself and never dispatches them to the page, so the Enter that commits a highlighted
+ * option is not reachable from here and cannot be suppressed by it.
  *
  * `textarea` is deliberately absent: Enter inserts a newline there and never submits, so there is nothing
- * to prevent and preventing it would break typing.
+ * to prevent and preventing it would break typing. So are `button`, `submit`, `reset`, `image` and
+ * `file`, each of which turns Enter into its own activation — which is precisely the behaviour the
+ * explicit Update command depends on.
  */
-const IMPLICIT_SUBMIT_FIELD_SELECTOR =
+const IMPLICIT_SUBMIT_TRIGGER_SELECTOR =
   'input:not([type]),'
   + 'input[type="text"],'
   + 'input[type="search"],'
@@ -21,7 +42,11 @@ const IMPLICIT_SUBMIT_FIELD_SELECTOR =
   + 'input[type="month"],'
   + 'input[type="week"],'
   + 'input[type="time"],'
-  + 'input[type="datetime-local"]';
+  + 'input[type="datetime-local"],'
+  // Measured submit triggers that the specification's own list does not name. See the note above.
+  + 'input[type="checkbox"],'
+  + 'input[type="radio"],'
+  + 'select';
 
 /**
  * OPT-IN SUPPRESSION OF A FORM'S IMPLICIT SUBMISSION, SO THAT ENTER IN A VALUE BOX COMMITS NOTHING.
@@ -51,7 +76,8 @@ const IMPLICIT_SUBMIT_FIELD_SELECTOR =
  *
  * What is NOT suppressed: Enter on a button, which the browser turns into a click, so both commands remain
  * fully keyboard-operable and the explicit Update is unaffected. Enter in a textarea, which inserts a
- * newline. And Enter anywhere outside this form.
+ * newline. Space on a checkbox or a radio, and every key a select answers. And Enter anywhere outside
+ * this form.
  */
 @Directive({
   selector: 'form[appBlockImplicitSubmit]',
@@ -88,7 +114,7 @@ export class BlockImplicitSubmitDirective {
         return;
       }
 
-      if (!target.matches(IMPLICIT_SUBMIT_FIELD_SELECTOR)) {
+      if (!target.matches(IMPLICIT_SUBMIT_TRIGGER_SELECTOR)) {
         return;
       }
 

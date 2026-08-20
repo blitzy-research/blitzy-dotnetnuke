@@ -148,6 +148,13 @@ const DUPLICATE_ALIAS_MESSAGE = 'The Portal Alias already exists.';
  * the server refuses a write to it and announced when an operator presses the row it belongs to. 17: THIS
  * SENTENCE HAS NO LEGACY ANTECEDENT, and it could not have one.
  */
+/**
+ * The operation the withheld-command warning reports on. ⚠ QA-26 — BOTH CALL SITES ANSWER ONE QUESTION,
+ * "why can this row not be acted on", and they are reached by two different gestures against the same row,
+ * so pressing the row and then its command queued the same warning twice.
+ */
+const CURRENT_ALIAS_SCOPE = 'portal-alias:current-alias-withheld';
+
 const CURRENT_ALIAS_MESSAGE =
   'This is the host name your request reached this portal through, so it cannot be ' +
   'changed or removed. Reach the portal through one of its other host names and try again.';
@@ -1225,8 +1232,20 @@ export class PortalAliasListComponent implements OnInit {
         // wording the legacy image already carried through `resourcekey="Edit"`.
         label: EDIT_LABEL,
         headerHidden: true,
-        // The legacy `ItemStyle Width="15px"` SNAPS to the shared grid's narrowest declared track.
-        width: 'min-content',
+        // ⚠ A DEFINITE TRACK, BECAUSE `min-content` IS SILENTLY DISCARDED HERE. The legacy
+        // `ItemStyle Width="15px"` was carried over as `min-content`, which reads as "no wider than the
+        // button needs" and is exactly the right intent — but the shared grid is `table-layout: fixed`, and a
+        // fixed layout honours only definite lengths and percentages on a column track. An intrinsic keyword
+        // is treated as `auto`, and this grid's other column is unsized, so TWO auto tracks split the table
+        // in half: measured at 52px of button, this column resolved to 480px at a 320 viewport and 599px at
+        // 1440, pushing the host name off screen at the narrow width and leaving a ~550px gutter between each
+        // row's command and the alias it acts on at the wide one. Nothing reported an error, because a column
+        // that was handed too much has not overflowed anything.
+        //
+        // The track is the shared one for a column holding a SINGLE WORDED command, which is what this
+        // column holds — "Edit", from the legacy `resourcekey="Edit"`. Not the icon track: that one is sized
+        // for a 44px glyph target, and this command's button measures 50.13px of word.
+        width: 'var(--table-command-column-text-inline-size)',
         kind: 'actions',
         cellTemplate: template,
       });
@@ -1335,7 +1354,7 @@ export class PortalAliasListComponent implements OnInit {
    */
   protected editAlias(alias: PortalAlias): void {
     if (this.rowEditable(alias) === false) {
-      this.notifications.warning(CURRENT_ALIAS_MESSAGE);
+      this.notifications.warning(CURRENT_ALIAS_MESSAGE, false, CURRENT_ALIAS_SCOPE);
 
       return;
     }
@@ -1454,7 +1473,7 @@ export class PortalAliasListComponent implements OnInit {
     }
 
     if (this.editingCurrentAlias()) {
-      this.notifications.warning(CURRENT_ALIAS_MESSAGE);
+      this.notifications.warning(CURRENT_ALIAS_MESSAGE, false, CURRENT_ALIAS_SCOPE);
 
       return;
     }

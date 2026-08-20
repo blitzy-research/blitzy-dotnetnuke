@@ -354,10 +354,21 @@ internal sealed class ModuleRepository : IModuleRepository
         if (!string.IsNullOrWhiteSpace(titleQuery))
         {
             // ModuleTitle permits null, so the null test precedes the comparison.
-            string wanted = titleQuery.Trim().ToLowerInvariant();
-            query = query.Where(placement =>
-                placement.Module.ModuleTitle != null
-                && placement.Module.ModuleTitle.ToLower().Contains(wanted));
+            string trimmed = titleQuery.Trim();
+            string wanted = trimmed.ToLowerInvariant();
+
+            // ⚠ FAIL CLOSED WHEN THE FILTER CANNOT FILTER. A filter made only of supplementary characters
+            // carries no weight in this schema's collation, so the comparison degrades to one that matches
+            // every row - and the screen goes on announcing an active filter over the complete record set.
+            // See CollationSafeFilter for the measurement and for the two remedies that were rejected.
+            //
+            // A CONTAINS comparison degrades exactly as a prefix one does, and worse: the measured module
+            // search for a single rocket returned all eight visible placements.
+            query = CollationSafeFilter.CannotDiscriminate(trimmed)
+                ? query.Where(_ => false)
+                : query.Where(placement =>
+                    placement.Module.ModuleTitle != null
+                    && placement.Module.ModuleTitle.ToLower().Contains(wanted));
         }
 
         query = ApplyPlacementOrder(query, sortBy, descending);

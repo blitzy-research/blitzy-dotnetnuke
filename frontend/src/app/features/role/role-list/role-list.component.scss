@@ -36,9 +36,11 @@
 //  which `.NormalRed` uses under the comment "text style used for error messages" at
 //  L113. Both candidate values are tokens, so the zero-hardcoded-values rule does
 //  not decide between them; the semantics do. Spending the one colour reserved for
-//  errors on a benign hover would teach a reader that hovering a link is a fault,
-//  and the raw red also falls below the 4.5:1 contrast minimum that binds on text
-//  at this size. The hover therefore resolves to the brand hover token, which is
+//  errors on a benign hover would teach a reader that hovering a link is a fault.
+//  That is the whole of the reason now. This comment also cited the red falling
+//  below the 4.5:1 minimum; the danger token has since been darkened to `#B00000`
+//  and clears it, so that clause is withdrawn and the semantic reason - which never
+//  depended on the ratio - stands alone. The hover therefore resolves to the brand hover token, which is
 //  the companion this vocabulary already designates for the brand colour. The same
 //  substitution is made and documented independently in _reset.scss and in
 //  _forms.scss, so the decision is consistent system-wide rather than local.
@@ -173,6 +175,15 @@
 
 .role-list__row-action-reason {
   @include mx.visually-hidden;
+}
+
+// THE STATE WORD IN A WITHHELD COMMAND CELL. Muted and at the small measure like the command labels it
+// stands in for, so the row does not read as if it were shouting a status; it is stating a rule, not
+// reporting a failure, so it must NOT take the danger colour.
+.role-list__row-action-state {
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-tight);
+  white-space: nowrap;
 }
 
 // THE CONDITION BEHIND AN ABSENT COMMAND, sitting in the row of filter controls where that command would be.

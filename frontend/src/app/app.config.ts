@@ -7,6 +7,7 @@ import {
   withComponentInputBinding,
   withInMemoryScrolling,
   withPreloading,
+  withRouterConfig,
 } from '@angular/router';
 
 import { APP_ROUTES } from './app.routes';
@@ -35,7 +36,7 @@ export const appConfig: ApplicationConfig = {
      */
     { provide: APP_BASE_HREF, useFactory: appBaseHref },
 
-    /** The router. All four arguments are load-bearing; each is annotated in place. */
+    /** The router. All five arguments are load-bearing; each is annotated in place. */
     provideRouter(
       APP_ROUTES,
 
@@ -52,6 +53,33 @@ export const appConfig: ApplicationConfig = {
       withInMemoryScrolling({ scrollPositionRestoration: 'top' }),
 
       withPreloading(PreloadAllModules),
+
+      /**
+       * ⚠ QA-19 — HOW A CANCELLED NAVIGATION PUTS THE HISTORY BACK, AND THE DEFAULT GETS IT WRONG FOR
+       * THE BROWSER'S OWN BACK BUTTON.
+       *
+       * The default is `'replace'`: when a guard refuses a navigation, the router calls
+       * `history.replaceState` to put the current URL back. That is right for a navigation the
+       * application initiated — nothing has moved, so overwriting the entry is a no-op — and wrong for
+       * one the operator initiated with Back, because the browser has ALREADY popped before the router
+       * sees it. Replacing then overwrites the entry that was popped TO, rather than restoring the one
+       * that was popped FROM.
+       *
+       * Walk it with a stack of A, B, C standing on C. Back pops to B and the unsaved-changes gate
+       * refuses. `'replace'` overwrites B with C, leaving A, C, C with the pointer in the middle. The
+       * operator, having chosen Stay, presses Back again and answers Leave — and lands on A, one entry
+       * farther back than the B they were aiming at. The entry they were trying to reach no longer
+       * exists, and nothing about the gate's own behaviour reveals that.
+       *
+       * `'computed'` restores by working out how far the browser moved and calling `history.go` to undo
+       * exactly that, so the stack is left as A, B, C standing on C — unchanged, which is what
+       * "the navigation did not happen" is supposed to mean. Back then reaches B, and Leave lands on B.
+       *
+       * It is set for the whole router rather than per route because the defect belongs to the
+       * restoration mechanism, not to any one screen: every route carrying `unsavedChangesGuard` has it,
+       * and so would any future guard that refuses a departure.
+       */
+      withRouterConfig({ canceledNavigationResolution: 'computed' }),
     ),
 
     /**

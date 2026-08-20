@@ -180,8 +180,8 @@ describe('cross-session isolation', () => {
       error: () => undefined,
     });
 
-    httpMock.expectOne(AUTH_ENDPOINTS.login).flush({ data: sessionFor(user), meta: null });
-    httpMock.expectOne(AUTH_ENDPOINTS.me).flush({ data: user, meta: null });
+    httpMock.expectOne(AUTH_ENDPOINTS.login()).flush({ data: sessionFor(user), meta: null });
+    httpMock.expectOne(AUTH_ENDPOINTS.me()).flush({ data: user, meta: null });
   }
 
   /** Loads one record into each of the four domain stores and queues a notification. */
@@ -298,7 +298,7 @@ describe('cross-session isolation', () => {
     portals.reloadPortals();
     expectOne(PORTALS_URL).flush(null, { status: 401, statusText: 'Unauthorized' });
     httpMock
-      .expectOne(AUTH_ENDPOINTS.refresh)
+      .expectOne(AUTH_ENDPOINTS.refresh())
       .flush(null, { status: 401, statusText: 'Unauthorized' });
   }
 
@@ -454,7 +454,7 @@ describe('cross-session isolation', () => {
       loadRecordsFor('Ann');
 
       session.signOut().subscribe({ error: () => undefined });
-      httpMock.expectOne(AUTH_ENDPOINTS.logout).flush(null, { status: 204, statusText: 'No Content' });
+      httpMock.expectOne(AUTH_ENDPOINTS.logout()).flush(null, { status: 204, statusText: 'No Content' });
 
       const recordCounts: Record<string, number> = { ...visibleRecordCounts(), notifications: 0 };
 
@@ -487,7 +487,7 @@ describe('cross-session isolation', () => {
 
       session.signOut().subscribe({ error: () => undefined });
       httpMock
-        .expectOne(AUTH_ENDPOINTS.logout)
+        .expectOne(AUTH_ENDPOINTS.logout())
         .flush(null, { status: 500, statusText: 'Server Error' });
 
       const recordCounts: Record<string, number> = { ...visibleRecordCounts(), notifications: 0 };
@@ -616,7 +616,7 @@ describe('cross-session isolation', () => {
 
       session.signOut().subscribe({ error: () => undefined });
       httpMock
-        .expectOne(AUTH_ENDPOINTS.logout)
+        .expectOne(AUTH_ENDPOINTS.logout())
         .flush(null, { status: 204, statusText: 'No Content' });
 
       // ⚠ ASSERTED AS AN INCREASE RATHER THAN AS AN EXACT COUNT, deliberately.
@@ -635,7 +635,7 @@ describe('cross-session isolation', () => {
 
       session.signOut().subscribe({ error: () => undefined });
       httpMock
-        .expectOne(AUTH_ENDPOINTS.logout)
+        .expectOne(AUTH_ENDPOINTS.logout())
         .flush(null, { status: 204, statusText: 'No Content' });
 
       expect(teardown.lastReason()).toBe('signedOut');
@@ -647,7 +647,7 @@ describe('cross-session isolation', () => {
       signIn(OPERATOR_A);
       portals.loadPortals();
       expectOne(PORTALS_URL).flush(null, { status: 401, statusText: 'Unauthorized' });
-      expectOne(AUTH_ENDPOINTS.refresh).flush(null, { status: 401, statusText: 'Unauthorized' });
+      expectOne(AUTH_ENDPOINTS.refresh()).flush(null, { status: 401, statusText: 'Unauthorized' });
 
       expect(teardown.lastReason()).toBe('renewalRefused');
       expect(tokens.session()).toBeNull();

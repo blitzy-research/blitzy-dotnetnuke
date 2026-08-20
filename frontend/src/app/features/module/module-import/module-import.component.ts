@@ -124,6 +124,16 @@ const FILE_FIELD_HELP =
  * SERVER from a folder the screen had listed, so the operator never chose a file the browser had to hold
  * and no client-side size question arose.
  */
+/**
+ * The operation every refusal of a chosen file reports on. ⚠ QA-26 — ALL FOUR REFUSALS ANSWER ONE
+ * QUESTION, which is "what happened to the file you chose", and only the latest answer is still true.
+ * Without a shared scope, choosing an oversized file and then an unreadable one left BOTH refusals on
+ * screen at once beside this screen's own banner, and the operator had to work out which of the two
+ * described the file currently selected. They differ in wording, so the queue's identical-neighbour
+ * collapse could never have caught them.
+ */
+const FILE_CHOICE_SCOPE = 'module-import:file-choice';
+
 const FILE_TOO_LARGE_MESSAGE =
   `The selected file is larger than ${formatBytes(MODULE_IMPORT_MAX_FILE_BYTES)} and was not read. `
   + 'Choose a smaller file.';
@@ -721,7 +731,7 @@ export class ModuleImportComponent {
     control.markAsTouched();
 
     if (tooLarge) {
-      this.notifications.error(FILE_TOO_LARGE_MESSAGE);
+      this.notifications.error(FILE_TOO_LARGE_MESSAGE, null, FILE_CHOICE_SCOPE);
     }
   }
 
@@ -784,7 +794,7 @@ export class ModuleImportComponent {
       this._fileTooLarge.set(true);
       this._selectedFile.set(null);
       this.form.controls.file.setValue(null);
-      this.notifications.error(FILE_TOO_LARGE_MESSAGE);
+      this.notifications.error(FILE_TOO_LARGE_MESSAGE, null, FILE_CHOICE_SCOPE);
 
       return;
     }
@@ -798,7 +808,7 @@ export class ModuleImportComponent {
     } catch {
       this._readingFile.set(false);
       this._fileReadFailed.set(true);
-      this.notifications.error(FILE_UNREADABLE_MESSAGE);
+      this.notifications.error(FILE_UNREADABLE_MESSAGE, null, FILE_CHOICE_SCOPE);
 
       return;
     }
@@ -824,7 +834,7 @@ export class ModuleImportComponent {
 
     if (content.trim().length === 0) {
       this._fileEmpty.set(true);
-      this.notifications.error(FILE_EMPTY_MESSAGE);
+      this.notifications.error(FILE_EMPTY_MESSAGE, null, FILE_CHOICE_SCOPE);
 
       return;
     }

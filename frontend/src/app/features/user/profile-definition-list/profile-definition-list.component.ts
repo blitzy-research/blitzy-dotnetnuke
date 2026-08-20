@@ -19,6 +19,7 @@ import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guar
 import { NotificationService } from '../../../core/services/notification.service';
 import { UserStore } from '../../../core/state/user.store';
 import { fieldErrorMessages, stripLegacyBreakTags } from '../../../core/utils/form-errors.util';
+import { AbsentValueComponent } from '../../../shared/components/absent-value/absent-value.component';
 import { ConfirmDialogComponent } from '../../../shared/components/confirm-dialog/confirm-dialog.component';
 import { DataTableComponent } from '../../../shared/components/data-table/data-table.component';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
@@ -694,6 +695,8 @@ const PAGE_SUBTITLE =
     ErrorBannerComponent,
     // Renders the two boolean columns as announced text in the read-only cells.
     YesNoPipe,
+    // The shared marker for a value the record simply does not carry - both nullable columns render it.
+    AbsentValueComponent,
   ],
   templateUrl: './profile-definition-list.component.html',
   styleUrl: './profile-definition-list.component.scss',
@@ -705,6 +708,23 @@ export class ProfileDefinitionListComponent implements OnInit {
   private readonly notifications = inject(NotificationService);
 
   private readonly injector = inject(Injector);
+
+  /**
+   * This screen's own element, so a reorder command can be found again after the grid re-renders.
+   *
+   * Scoped to the host rather than queried from the document, so two instances of this screen on one page
+   * could never focus each other's controls.
+   */
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+
+  /**
+   * Which control opened the editor, so closing it can put focus back there.
+   *
+   * Held as a plain field rather than a signal: nothing renders from it, it is written and read on the same
+   * interaction, and a signal would invite a template to depend on it.
+   */
+  private editorInvoker: { readonly kind: 'create' } | { readonly kind: 'edit'; readonly id: number } | null =
+    null;
 
   // CELL TEMPLATES
   // Static queries, so they are resolved before `ngOnInit` and the column set can be assembled there. Each
@@ -1229,6 +1249,26 @@ export class ProfileDefinitionListComponent implements OnInit {
     return value ?? '';
   }
 
+  /**
+   * Whether a nullable string cell has nothing to show.
+   *
+   * ⚠ AN EMPTY STRING COUNTS AS ABSENT HERE, AND `?? ''` ALONE DID NOT. Both of this screen's nullable
+   * columns render through {@link cellText}, which collapses `null` to the empty string and then paints it -
+   * so measured against the live API, all sixteen cells of `Default Value` and `Validation Expression` were an
+   * empty `<code>` box with no text, no marker and nothing in the accessibility tree. The API distinguishes
+   * the two: `validationExpression` arrives as `null` and `defaultValue` arrives as `''`. Neither is a value a
+   * reader can act on, so both resolve to the shared absent marker, and testing truthiness rather than
+   * nullness is what covers the second case.
+   *
+   * Whitespace is trimmed first: a stored value of spaces paints as an empty box just as convincingly.
+   *
+   * @param value The member as the API reported it.
+   * @returns True when there is no value to paint.
+   */
+  protected isAbsent(value: string | null): boolean {
+    return value === null || value.trim().length === 0;
+  }
+
   // Grid edits — staged locally, written on apply
 
   /**
@@ -1292,6 +1332,7 @@ export class ProfileDefinitionListComponent implements OnInit {
    */
   protected moveUp(definition: ProfilePropertyDefinition): void {
     this.move(definition, -1);
+    this.restoreFocusAfterMove(definition, 'up');
   }
 
   /**
@@ -1301,6 +1342,7 @@ export class ProfileDefinitionListComponent implements OnInit {
    */
   protected moveDown(definition: ProfilePropertyDefinition): void {
     this.move(definition, 1);
+    this.restoreFocusAfterMove(definition, 'down');
   }
 
   /**
@@ -1348,6 +1390,8 @@ export class ProfileDefinitionListComponent implements OnInit {
   // THE INLINE FORM
 
   protected openCreate(): void {
+    // Remembered so closing the editor can return focus to the control that opened it.
+    this.editorInvoker = { kind: 'create' };
     this.editing.set(null);
     this.submitAttempted.set(false);
     this.form.reset(CREATE_DEFAULTS);
@@ -1365,6 +1409,9 @@ export class ProfileDefinitionListComponent implements OnInit {
    * @param definition The declaration to edit.
    */
   protected openEdit(definition: ProfilePropertyDefinition): void {
+    // Remembered so closing the editor can return focus to this row's own command rather than to the
+    // screen's primary action, which is a different place entirely on a long list.
+    this.editorInvoker = { kind: 'edit', id: definition.propertyDefinitionId };
     this.editing.set(definition.propertyDefinitionId);
     this.submitAttempted.set(false);
     this.form.reset({
@@ -1392,6 +1439,7 @@ export class ProfileDefinitionListComponent implements OnInit {
     this.form.reset(CREATE_DEFAULTS);
     // Abandoning the form abandons the complaints it drew, so re-opening it starts clean.
     this.writeProblem.set(null);
+    this.restoreFocusAfterEditorClose();
   }
 
   /**
@@ -1892,6 +1940,7 @@ export class ProfileDefinitionListComponent implements OnInit {
         this.editing.set(null);
         this.submitAttempted.set(false);
         this.form.reset(CREATE_DEFAULTS);
+        this.restoreFocusAfterEditorClose();
       }
 
       this.notifications.notify('success', successMessage(pending));
@@ -2030,6 +2079,112 @@ export class ProfileDefinitionListComponent implements OnInit {
   }
 
   /**
+   * Puts focus back on whatever opened the editor, once the editor has closed.
+   *
+   * ⚠ THE EDITOR IS A DISCLOSURE, SO CLOSING IT DESTROYS EVERY CONTROL INSIDE IT - including whichever one
+   * held focus - and focus then falls to BODY. An operator who opened a declaration, changed nothing and
+   * pressed Cancel was returned to the top of the document, with the row they had been working on somewhere
+   * below. The same happens after a successful save, which is the more common path of the two.
+   *
+   * The destination is the control that OPENED the editor rather than a fixed anchor: a row's own Edit
+   * command for an edit, and the screen's primary action for a create. Sending an edit back to the primary
+   * action would be a different kind of displacement on a list of any length.
+   */
+  private restoreFocusAfterEditorClose(): void {
+    const invoker: { readonly kind: 'create' } | { readonly kind: 'edit'; readonly id: number } | null =
+      this.editorInvoker;
+
+    this.editorInvoker = null;
+
+    if (invoker === null) {
+      return;
+    }
+
+    afterNextRender(
+      () => {
+        const anchor: HTMLButtonElement | null =
+          invoker.kind === 'create'
+            ? (this.createTrigger?.nativeElement ?? null)
+            : this.host.nativeElement.querySelector<HTMLButtonElement>(
+                `[data-edit="${invoker.id}"]`,
+              );
+
+        // A declaration deleted while its editor was open has no command to return to, and a disabled one
+        // silently refuses focus - either way the primary action is the honest destination.
+        const target: HTMLButtonElement | null =
+          this.focusableCommand(anchor) ?? this.focusableCommand(this.createTrigger?.nativeElement ?? null);
+
+        target?.focus();
+      },
+      { injector: this.injector },
+    );
+  }
+
+  /**
+   * Puts focus back on the reorder command the operator just used, at the declaration's new position.
+   *
+   * ⚠ WITHOUT THIS, REORDERING BY KEYBOARD WAS EFFECTIVELY IMPOSSIBLE. Activating a command restages two
+   * declarations, the grid re-renders in the new order, and the activated button is destroyed with it -
+   * measured, focus fell to BODY. So every press cost the operator their place: to make a second move they
+   * had to tab back in from the top of the document, through the page chrome and every preceding row, and
+   * moving one declaration several places meant doing that once per place.
+   *
+   * The command is found again by the declaration it belongs to rather than by position, because position
+   * is precisely what changed. Where the same command no longer exists - the declaration reached an end of
+   * the list, so its button is no longer rendered - focus goes to the OPPOSITE command on the same row,
+   * which is the control that can still move it and is where the operator's attention already is. A
+   * single-row list has neither, and then nothing is moved.
+   *
+   * @param definition The declaration that was moved.
+   * @param direction The command that was activated.
+   */
+  private restoreFocusAfterMove(
+    definition: ProfilePropertyDefinition,
+    direction: 'up' | 'down',
+  ): void {
+    const identifier: number = definition.propertyDefinitionId;
+    const opposite: 'up' | 'down' = direction === 'up' ? 'down' : 'up';
+
+    afterNextRender(
+      () => {
+        const host: HTMLElement = this.host.nativeElement;
+
+        // The command that was pressed, first: an operator moving a declaration several places presses the
+        // same one repeatedly, so leaving focus on it is what makes the next press possible.
+        const preferred: HTMLButtonElement | null = host.querySelector<HTMLButtonElement>(
+          `[data-reorder="${direction}:${identifier}"]`,
+        );
+        const fallback: HTMLButtonElement | null = host.querySelector<HTMLButtonElement>(
+          `[data-reorder="${opposite}:${identifier}"]`,
+        );
+
+        const target: HTMLButtonElement | null = this.focusableCommand(preferred)
+          ?? this.focusableCommand(fallback);
+
+        target?.focus();
+      },
+      { injector: this.injector },
+    );
+  }
+
+  /**
+   * Narrows a candidate command to one that can actually take focus.
+   *
+   * A disabled control silently refuses `focus()` and leaves the active element wherever it was - which,
+   * after a re-render, is the document body. Testing first means the fallback is reached instead.
+   *
+   * @param candidate The command, or `null` when it is not rendered.
+   * @returns The command when it can take focus, or `null`.
+   */
+  private focusableCommand(candidate: HTMLButtonElement | null): HTMLButtonElement | null {
+    if (candidate === null || candidate.disabled || !candidate.isConnected) {
+      return null;
+    }
+
+    return candidate;
+  }
+
+  /**
    * Assembles the twelve columns, in the legacy grid's own order. The order is theirs: four commands
    * first, then eight data columns.
    *
@@ -2045,7 +2200,17 @@ export class ProfileDefinitionListComponent implements OnInit {
         headerHidden: true,
         headerAlign: 'center',
         bodyAlign: 'center',
-        width: 'min-content',
+        // ⚠ THE FOUR COMMAND COLUMNS ASKED FOR `min-content` AND GOT AN EVEN TWELFTH INSTEAD. `min-content` is
+        // not a length, and a fixed table layout discards it and falls back to the automatic share - so every
+        // one of this grid's twelve columns resolved to exactly 99.83px at 1440 and 80px at the 960px floor,
+        // measured. That starved the columns carrying text to fund four columns holding a 44px icon button
+        // each: `Validation Expression` needed 163.91px and had 99.83, `Default Value` needed 102.19, and the
+        // ten-character `PostalCode` needed 85.56px against a 72px content box at every width from 320 up to
+        // about 1366, so the one value that identifies a row was cut on most desktops. The token is one
+        // interactive target plus the cell's own inline padding, and it resolves in the fixed algorithm exactly
+        // as written; the four together now hold 208px instead of 399px, and the 191px reclaimed covers the
+        // whole 66px deficit nearly three times over.
+        width: 'var(--table-command-column-inline-size)',
         kind: 'actions',
         cellTemplate: this.requireTemplate(this.editCommandTemplate, 'editCommand'),
       },
@@ -2058,7 +2223,7 @@ export class ProfileDefinitionListComponent implements OnInit {
         headerHidden: true,
         headerAlign: 'center',
         bodyAlign: 'center',
-        width: 'min-content',
+        width: 'var(--table-command-column-inline-size)',
         kind: 'actions',
         cellTemplate: this.requireTemplate(this.deleteCommandTemplate, 'deleteCommand'),
       },
@@ -2070,7 +2235,7 @@ export class ProfileDefinitionListComponent implements OnInit {
         headerHidden: true,
         headerAlign: 'center',
         bodyAlign: 'center',
-        width: 'min-content',
+        width: 'var(--table-command-column-inline-size)',
         kind: 'actions',
         cellTemplate: this.requireTemplate(this.moveDownCommandTemplate, 'moveDownCommand'),
       },
@@ -2080,7 +2245,7 @@ export class ProfileDefinitionListComponent implements OnInit {
         headerHidden: true,
         headerAlign: 'center',
         bodyAlign: 'center',
-        width: 'min-content',
+        width: 'var(--table-command-column-inline-size)',
         kind: 'actions',
         cellTemplate: this.requireTemplate(this.moveUpCommandTemplate, 'moveUpCommand'),
       },
@@ -2091,16 +2256,24 @@ export class ProfileDefinitionListComponent implements OnInit {
         key: 'propertyName',
         // ⚠ ATOMIC BECAUSE A PROPERTY NAME IS NOT A PHRASE, AND WRAPPING ONE FRACTURES IT. The shared stylesheet
         // lets any cell break inside a word so a narrow column can never overflow, which is right for prose
-        // and wrong for a value read as a single token. Measured before this line: `PostalCode` painted as `PostalCod` + `e` at a 768 viewport.
-        // This grid declares no percentage anywhere and the four command columns ask for `min-content`, which
-        // wins nothing under a fixed table layout - so all twelve columns collapse to an even one-twelfth share,
-        // 80px at 768 and 86.5px at 1280, and no column here can ever be wider than that. The nine-character
-        // names survive 80px; the ten-character one does not.
-        // Marked atomic the value stays on one line and a column too narrow to hold it ellipsises instead, so
-        // what shows is a recognisable prefix rather than two fragments that read as corruption. The whole
-        // value stays in the accessibility tree and in the DOM either way, so this shortens what is painted
-        // and hides nothing. No width changes - see the note on the width above for why rebalancing is not
-        // the remedy here.
+        // and wrong for a value read as a single token. Measured before this line: `PostalCode` painted as
+        // `PostalCod` + `e` at a 768 viewport. Marked atomic the value stays on one line and a column too
+        // narrow to hold it ellipsises instead, so what shows is a recognisable prefix rather than two
+        // fragments that read as corruption.
+        //
+        // ⚠ AND THE WIDTH IS NOW DECLARED, WHICH IS THE ACTUAL REMEDY. Ellipsising is the fallback, not the
+        // fix: an earlier note here recorded that all twelve columns collapse to an even twelfth and concluded
+        // that rebalancing was not the remedy. That was wrong, and the measurement is what settles it - this
+        // name needs 85.56px and the even share gave it a 72px content box at every width from 320 to about
+        // 1366, so the row's own identifier was cut on most desktops while 297px of table width sat unused in
+        // the columns beside it.
+        //
+        // 11.5% is 110.4px at the 960px floor against a requirement of 85.56px, and the surplus is deliberate
+        // rather than slack: the built-in set stops at ten characters but this catalogue is EXTENSIBLE, so the
+        // longest name a tenant can declare is not knowable from the data. It is also the largest weight on the
+        // grid by construction - a column that merely describes a property must not out-weigh the value the row
+        // is identified by, and at 9.5% the `Default Value` heading's 11% did exactly that.
+        width: '11.5%',
         atomic: true,
         rowHeader: true,
         label: NAME_HEADING,
@@ -2112,6 +2285,8 @@ export class ProfileDefinitionListComponent implements OnInit {
       // 5. `dnn:textcolumn DataField="PropertyCategory"`, heading `Category.Header`.
       {
         key: 'propertyCategory',
+        // Weighted from the measured requirement: needs 73.03px; 76.8px at the 960px floor.
+        width: '8%',
         label: CATEGORY_HEADING,
         headerAlign: 'center',
         bodyAlign: 'start',
@@ -2121,6 +2296,8 @@ export class ProfileDefinitionListComponent implements OnInit {
       // 6. `asp:TemplateColumn HeaderText="DataType"`.
       {
         key: 'dataType',
+        // Weighted from the measured requirement: needs 74.41px; 76.8px at the floor.
+        width: '8%',
         label: DATA_TYPE_HEADING,
         headerAlign: 'center',
         bodyAlign: 'start',
@@ -2130,6 +2307,8 @@ export class ProfileDefinitionListComponent implements OnInit {
 
       {
         key: 'length',
+        // Weighted from the measured requirement: needs 58.00px; 60px at the floor.
+        width: '6.25%',
         label: LENGTH_HEADING,
         headerAlign: 'center',
         bodyAlign: 'end',
@@ -2140,6 +2319,8 @@ export class ProfileDefinitionListComponent implements OnInit {
       // text only, so a `null` would need formatting anyway.
       {
         key: 'defaultValue',
+        // Weighted from the measured requirement: needs 102.19px; 105.6px at the floor.
+        width: '11%',
         label: DEFAULT_VALUE_HEADING,
         headerAlign: 'center',
         bodyAlign: 'start',
@@ -2148,6 +2329,18 @@ export class ProfileDefinitionListComponent implements OnInit {
       },
       {
         key: 'validationExpression',
+        // ⚠ THE ONE COLUMN ON THIS GRID THAT DECLARES NO WIDTH, AND ONE MUST NOT. Under `table-layout: fixed`
+        // the percentages resolve against the table width and whatever is LEFT OVER goes to the columns that
+        // declared nothing - so a length on a command column is only honoured while some other column can
+        // absorb the slack. Leaving this one unweighted is what lets the four 3.25rem command tracks resolve
+        // exactly as written.
+        //
+        // It is the right column to carry the slack on its own merits too: it holds regular expressions, the
+        // longest and least predictable values on the screen, and it was the worst-starved column before this
+        // change - measured needing 163.91px against a 99.83px share at 1440, its heading wrapping onto two
+        // lines and clipping outright at narrower widths. The declared weights sum to 57.25%, so it receives
+        // 202.4px at the 960px floor and 304.1px at a 1440 viewport, comfortably above its requirement at
+        // both.
         label: VALIDATION_EXPRESSION_HEADING,
         headerAlign: 'center',
         bodyAlign: 'start',
@@ -2159,6 +2352,8 @@ export class ProfileDefinitionListComponent implements OnInit {
       // two columns the operator edits IN PLACE, and the reason this screen has a batch to apply at all.
       {
         key: 'required',
+        // Weighted from the measured requirement: needs 73.00px; 74.4px at the floor.
+        width: '7.75%',
         label: REQUIRED_HEADING,
         headerAlign: 'center',
         bodyAlign: 'center',
@@ -2167,6 +2362,8 @@ export class ProfileDefinitionListComponent implements OnInit {
       },
       {
         key: 'visible',
+        // Weighted from the measured requirement: needs 62.84px; 64.8px at the floor.
+        width: '6.75%',
         label: VISIBLE_HEADING,
         headerAlign: 'center',
         bodyAlign: 'center',

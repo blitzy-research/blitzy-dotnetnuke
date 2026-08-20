@@ -569,6 +569,51 @@ describe('MembershipSettingsComponent', () => {
     return host().querySelector<E>(selector);
   }
 
+  /**
+   * Finds a declaration that only applies below a breakpoint, returning it with the query that guards it.
+   * `getComputedStyle` cannot see it: the harness renders at a single width, so a rule inside a `max-width`
+   * query either applies to everything it measures or to nothing, and either way the query itself is
+   * invisible. Reading the sheet keeps the assertion about what was authored.
+   *
+   * @param selectorText A fragment the rule's selector must contain.
+   * @param property The property to read.
+   * @returns The declaration and its guarding condition, or `null` when there is none.
+   */
+  function narrowWidthRuleFor(
+    selectorText: string,
+    property: string,
+  ): { condition: string; value: string } | null {
+    for (const sheet of Array.from(document.styleSheets)) {
+      let rules: CSSRule[] = [];
+
+      try {
+        rules = Array.from(sheet.cssRules);
+      } catch {
+        continue;
+      }
+
+      for (const rule of rules) {
+        if (!(rule instanceof CSSMediaRule)) {
+          continue;
+        }
+
+        for (const inner of Array.from(rule.cssRules)) {
+          if (!(inner instanceof CSSStyleRule) || !inner.selectorText.includes(selectorText)) {
+            continue;
+          }
+
+          const value = inner.style.getPropertyValue(property);
+
+          if (value !== '') {
+            return { condition: rule.conditionText, value };
+          }
+        }
+      }
+    }
+
+    return null;
+  }
+
   function queryAll<E extends Element>(selector: string): readonly E[] {
     return Array.from(host().querySelectorAll<E>(selector));
   }
@@ -2600,6 +2645,247 @@ describe('MembershipSettingsComponent', () => {
     });
   });
 
+  describe('the Enter key', () => {
+    /** The one form on this screen. */
+    function formElement(): HTMLFormElement {
+      return queryOrFail<HTMLFormElement>(host(), 'form');
+    }
+
+    /**
+     * Presses Enter in one control the way a browser delivers it, and answers whether the default action
+     * survived. A form's implicit submission IS the default action of that keystroke, so a cancelled
+     * default is exactly what "Enter commits nothing" means.
+     *
+     * @param name The setting's control name.
+     * @returns True when the keystroke's default action was cancelled.
+     */
+    function pressEnterIn(name: string): boolean {
+      const control = field<HTMLElement>(name);
+      const event = new KeyboardEvent('keydown', {
+        key: 'Enter',
+        bubbles: true,
+        cancelable: true,
+      });
+
+      control.dispatchEvent(event);
+      fixture.detectChanges();
+
+      return event.defaultPrevented;
+    }
+
+    it('commits nothing when pressed in a value box', () => {
+      arrive();
+      type('recordsPerPage', '25');
+
+      // QA-16. This screen renders a real `button[type="submit"]` above twelve other entry controls, so
+      // Enter in any of them dispatched a genuine submit and the save ran - and this save is the one
+      // that rewrites every account's display name when the format field changes. The keystroke could
+      // therefore commit a change the operator had not asked to commit.
+      expect(pressEnterIn('recordsPerPage'))
+        .withContext('the implicit submission is cancelled')
+        .toBeTrue();
+
+      // The proof that matters is not the flag but the absence of a request: teardown verifies that
+      // nothing unexpected was sent, and this states it at the point of the keystroke.
+      expect(httpMock.match(() => true))
+        .withContext('nothing is sent')
+        .toHaveSize(0);
+      expect(navigateSpy)
+        .withContext('and the screen does not leave, which is what a successful save does')
+        .not.toHaveBeenCalled();
+    });
+
+    it('still commits when the explicit Update is pressed, so nothing is taken away', () => {
+      arrive();
+      type('recordsPerPage', '25');
+
+      submitForm();
+
+      expectRequest('PUT', SETTINGS_URL).flush(writeReport());
+      fixture.detectChanges();
+      answerWriteFollowUp(settings());
+    });
+
+    /**
+     * Presses a key on an arbitrary element and answers whether the default action survived.
+     *
+     * @param target The element to press the key on.
+     * @param key The key to press. Defaults to Enter.
+     * @returns True when the keystroke's default action was cancelled.
+     */
+    function pressOn(target: Element, key = 'Enter'): boolean {
+      const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+
+      target.dispatchEvent(event);
+      fixture.detectChanges();
+
+      return event.defaultPrevented;
+    }
+
+    /**
+     * ⚠ THIS CASE ASSERTED THE OPPOSITE UNTIL IT WAS MEASURED, AND THE OLD ASSERTION WAS THE DEFECT.
+     * It read "leaves Enter alone on a checkbox, which has its own behaviour", on the reasoning that the
+     * specification's list of "fields that block implicit submission" names no checkbox. The specification
+     * is not the whole story: Chrome requests implicit submission from a checkbox too, and with every value
+     * box guarded, pressing Enter on `Suppress Pager?` on the running screen still dispatched a submit
+     * whose `defaultPrevented` was false — `PUT /api/v1/users/settings` left the browser and returned 200.
+     * On a screen of fourteen switches that is the same silent commit QA-16 was raised about, reached by a
+     * different control.
+     */
+    it('commits nothing when pressed on a checkbox, which the browser also submits from', () => {
+      arrive();
+
+      const boxes = queryAll<HTMLInputElement>('input[type="checkbox"]');
+
+      expect(boxes.length)
+        .withContext('the screen renders switches, so this is not passing on an empty set')
+        .toBeGreaterThan(0);
+
+      for (const box of boxes) {
+        expect(pressOn(box))
+          .withContext(`Enter on ${box.id} must not ask this form to submit`)
+          .toBeTrue();
+      }
+
+      expect(httpMock.match(() => true)).withContext('nothing is sent').toHaveSize(0);
+      expect(navigateSpy).withContext('and the screen does not leave').not.toHaveBeenCalled();
+    });
+
+    /** A select is the third measured trigger, and this screen has six of them. */
+    it('commits nothing when pressed on a select', () => {
+      arrive();
+
+      const pickers = queryAll<HTMLSelectElement>('select');
+
+      expect(pickers.length)
+        .withContext('the screen renders pickers, so this is not passing on an empty set')
+        .toBeGreaterThan(0);
+
+      for (const picker of pickers) {
+        expect(pressOn(picker))
+          .withContext(`Enter on ${picker.id} must not ask this form to submit`)
+          .toBeTrue();
+      }
+
+      expect(httpMock.match(() => true)).withContext('nothing is sent').toHaveSize(0);
+    });
+
+    /**
+     * ⚠ NOTHING IS TAKEN AWAY FROM THE CONTROLS THAT WERE ADDED TO THE GUARD, which is what makes adding
+     * them safe. A checkbox is operated with the SPACE bar and a select answers Space, the arrow keys and
+     * typing; cancelling any of those would turn the fix into a regression that left switches unusable
+     * from the keyboard.
+     */
+    it('leaves every key a switch or a picker is actually operated with alone', () => {
+      arrive();
+
+      const box = queryAll<HTMLInputElement>('input[type="checkbox"]')[0];
+      const picker = queryAll<HTMLSelectElement>('select')[0];
+
+      for (const key of [' ', 'ArrowDown', 'ArrowUp', 'Tab', 'Escape', 'a']) {
+        expect(pressOn(box, key))
+          .withContext(`${key} must reach the checkbox untouched`)
+          .toBeFalse();
+        expect(pressOn(picker, key))
+          .withContext(`${key} must reach the select untouched`)
+          .toBeFalse();
+      }
+    });
+
+    /**
+     * ⚠ AND ENTER ON A COMMAND STAYS A CLICK. The browser turns Enter on a focused button into an
+     * activation, and that is the only way a keyboard operator reaches Update or Cancel at all.
+     */
+    it('leaves Enter on a command entirely alone', () => {
+      arrive();
+
+      const commands = queryAll<HTMLButtonElement>('button');
+
+      expect(commands.length).toBeGreaterThan(0);
+
+      for (const control of commands) {
+        expect(pressOn(control))
+          .withContext(`Enter must still activate ${control.textContent?.trim() ?? 'this command'}`)
+          .toBeFalse();
+      }
+    });
+
+    it('declares the suppression on the form rather than relying on a handler', () => {
+      arrive();
+
+      // The attribute IS the directive's selector, so its presence is what wires the behaviour at all.
+      // Asserted separately so removing it fails here, naming the cause.
+      expect(formElement().hasAttribute('appBlockImplicitSubmit')).toBeTrue();
+    });
+  });
+
+  // ---------------------------------------------------------------------------------------------------
+  // PROOF 7b — THE MEASURE THE CAPTIONS AND THE VALUES SHARE
+  // ---------------------------------------------------------------------------------------------------
+
+  describe('the caption and value tracks', () => {
+    /**
+     * ⚠ THIS SCREEN ASKS FOR THE WIDEST CAPTION TRACK IN THE TOKEN SET, AND BELOW `lg` THAT COSTS THE
+     * VALUE MORE THAN THE CAPTION GAINS. The shared field caps its caption at `min(token, 45%)`, so at 768
+     * the 300px resolved to 225.891px of a 502px field and left the value 260.109px — measured on the
+     * running screen, 21.6px short of the longest redirect option, which painted
+     * `No redirect (stay on the current pa` and clipped `ge)` with no ellipsis. A wrapped caption stays
+     * wholly readable; a clipped value does not, and a native select cannot even report the loss, since
+     * `scrollWidth` equals `clientWidth` for a label it never scrolls.
+     */
+    it('yields the caption track to the value below the wide breakpoint', () => {
+      arrive();
+
+      const narrowed = narrowWidthRuleFor(':host', '--field-label-inline-size')
+        ?? narrowWidthRuleFor('[_nghost', '--field-label-inline-size');
+
+      expect(narrowed)
+        .withContext('the screen narrows its caption track, and only below a breakpoint')
+        .not.toBeNull();
+      expect(narrowed?.value)
+        .withContext('expressed in the label vocabulary rather than as a raw length')
+        .toContain('--field-label-inline-size-medium');
+      expect(narrowed?.value)
+        .withContext('and it is the step below, not the one the wide arrangement uses')
+        .not.toContain('wider');
+
+      // ⚠ THE STEP ABOVE THIS ONE WAS TRIED AND RE-MEASURED SHORT. `--field-label-inline-size-wide` leaves
+      // the value 286px against the 292.68px the longest option needs, because the arrow reserve on this
+      // select is 25.393px rather than the 14.393px first estimated. Stated as its own assertion so a
+      // regression to it fails here naming the reason rather than only failing a pixel measurement
+      // somewhere else.
+      expect(narrowed?.value)
+        .withContext('and specifically not the wide step, which was measured 6.68px short')
+        .not.toContain('--field-label-inline-size-wide');
+      expect(narrowed?.condition)
+        .withContext('withdrawn above the step, so wide viewports keep the roomy caption')
+        .toContain('max-width');
+    });
+
+    /**
+     * ⚠ A CLOSED SELECT WHOSE LABEL DOES NOT FIT MUST SAY SO. The values at risk here and on the portal
+     * screen are operator data of unbounded length — display names, login names, page titles — so no
+     * width this application can choose guarantees a fit at 320px, and a hard clip renders an incomplete
+     * value that reads as a complete one. Asserted on a real select with the global sheet loaded, because
+     * this is a global rule and every picker in the application depends on it.
+     */
+    it('has every picker report a clipped label rather than cut it silently', () => {
+      arrive();
+
+      const pickers = queryAll<HTMLSelectElement>('select');
+
+      expect(pickers.length)
+        .withContext('the screen renders pickers, so this is not passing on an empty set')
+        .toBeGreaterThan(0);
+
+      for (const picker of pickers) {
+        expect(getComputedStyle(picker).textOverflow)
+          .withContext(`${picker.id} must signal a label it could not paint in full`)
+          .toBe('ellipsis');
+      }
+    });
+  });
+
   // ---------------------------------------------------------------------------------------------------
   // PROOF 8 — THE RENDERED DOCUMENT
   // ---------------------------------------------------------------------------------------------------
@@ -2623,6 +2909,28 @@ describe('MembershipSettingsComponent', () => {
       expect(panel?.getAttribute('aria-labelledby'))
         .withContext('named by its own heading, so the region is deliberate')
         .toBe('member-services-heading');
+    });
+
+    it('makes the nested caption perceivably smaller than the section it sits under', () => {
+      arrive();
+
+      const sectionHeading = queryOrFail<HTMLElement>(host(), 'h2.membership-settings__section-heading');
+      const groupCaption = queryOrFail<HTMLElement>(host(), 'legend h3');
+
+      const sectionSize = Number.parseFloat(getComputedStyle(sectionHeading).fontSize);
+      const captionSize = Number.parseFloat(getComputedStyle(groupCaption).fontSize);
+
+      // ⚠ QA-24 — THE STEP WAS ONE PIXEL. The section heading renders at the 15px every section heading in
+      // this application uses and the caption rendered at 14px, which is also the BODY size — so the caption
+      // matched the text it was captioning and conveyed no rank at all. Asserted as a measured step rather
+      // than as two token names, because a token could be repointed without the hierarchy changing.
+      expect(captionSize).toBeLessThanOrEqual(sectionSize - 2);
+      expect(captionSize)
+        .withContext('and never below the smallest step the vocabulary publishes')
+        .toBeGreaterThanOrEqual(12);
+      expect(getComputedStyle(groupCaption).fontWeight)
+        .withContext('still bold, which is what keeps it reading as a caption rather than small print')
+        .toBe('700');
     });
 
     it('renders no table, because there is no grid on this screen', () => {

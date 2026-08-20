@@ -1247,11 +1247,15 @@ export class ModuleListComponent implements OnInit {
         headerHidden: true,
         headerAlign: 'center',
         bodyAlign: 'center',
-        // ⚠ EVERY COLUMN OF THIS GRID DECLARES A WIDTH, AND THE COMMAND TRACK IS A LENGTH RATHER THAN
-        // `min-content`. A fixed table layout cannot use `min-content` - it is not a length - so it fell back
-        // to the automatic share and made this hidden-label column as wide as a title column, while the tracks
-        // that carry real text were starved: names broke mid-word at 1440 and every track resolved near 49px at
-        // 375. The token is one interactive target plus the cell's own padding.
+        // ⚠ THE COMMAND TRACK IS A LENGTH RATHER THAN `min-content`. A fixed table layout cannot use
+        // `min-content` - it is not a length - so it fell back to the automatic share and made this
+        // hidden-label column as wide as a title column, while the tracks that carry real text were starved:
+        // names broke mid-word at 1440 and every track resolved near 49px at 375. The token is one interactive
+        // target plus the cell's own padding.
+        //
+        // This length is only honoured because exactly ONE column on the grid declares no width and absorbs the
+        // remainder - the title, for the reasons set out on it. Weighting all ten would leave nothing to give
+        // back and this 144px would be renegotiated silently.
         width: 'var(--table-commands-column-inline-size)',
         kind: 'actions',
         cellTemplate: this.requireTemplate(this.rowCommandsTemplate, 'rowCommands'),
@@ -1261,7 +1265,9 @@ export class ModuleListComponent implements OnInit {
       //    of the five names the endpoint's allow-list accepts.
       {
         key: SORTABLE_KEY.moduleId,
-        width: '6%',
+        // Trimmed from 6% to fund the identity column below. The value is a small integer and the heading is
+        // two characters plus a sort indicator: 39px of requirement against 43.2px at the 960px floor.
+        width: '4.5%',
         atomic: true,
         label: COLUMN_LABEL.moduleId,
         sortable: true,
@@ -1274,7 +1280,22 @@ export class ModuleListComponent implements OnInit {
       {
         kind: 'template',
         key: SORTABLE_KEY.moduleTitle,
-        width: '18%',
+        // ⚠ THE ONE COLUMN ON THIS GRID THAT DECLARES NO WIDTH, AND THE ROLE MOVED HERE FROM THE DEFINITION
+        // NAME BELOW. Under `table-layout: fixed` the percentages resolve against the table width and the
+        // remainder goes to whichever column declared nothing, so exactly one must abstain or the 144px command
+        // token is silently renegotiated. The question is only WHICH, and the previous answer was the wrong one:
+        // the leftover is the SMALLEST share on the grid, not the largest, so handing it to the row-identity
+        // column starved the value a reader identifies a placement by. Measured at 1024, and by the same
+        // arithmetic at every viewport sitting on the 960px floor: the identity received 76.83px against a
+        // 117.41px requirement and six of eight identities painted an ellipsis, while this column held 172.8px
+        // for prose that wraps perfectly well in less.
+        //
+        // A title is the right column to carry a variable share on its own merits. It is the only PROSE column
+        // here - the values are sentences a tenant writes, not tokens - it is not atomic, so it wraps instead of
+        // clipping when it is tight, and it is the one column whose ideal width genuinely has no upper bound.
+        // At the floor it now takes 134.4px, comfortably above the 70.5px its own sorted heading needs, and at a
+        // 1440 viewport it takes 203.42px against the 215.63px it held before: a difference of twelve pixels on
+        // wrapping prose, in exchange for the identity column no longer being cut at all.
         label: COLUMN_LABEL.moduleTitle,
         sortable: true,
         headerAlign: 'center',
@@ -1289,15 +1310,23 @@ export class ModuleListComponent implements OnInit {
         // lets any cell break inside a word so a narrow column can never overflow, which is right for prose
         // and wrong for a value read as a single token. Measured before this line: `Announcements` painted as `Announcem` + `ents` at a 1280
         // viewport and `Announce` + `ments` at 768, and `Text/HTML` as `Text/HTM` + `L` - the break falling after
-        // the `M`, not at the slash. This is the one column on this grid that declares no width, so it absorbs
-        // the leftover after the others claim 77% and the commands column takes a fixed 144px: about 9.1% of the
-        // table, 94.81px at 1280 and 76.83px at 768. It is the NARROWEST non-atomic column here, not the widest,
-        // and it is a `<th>` row header so it also renders two pixels larger than the body cells beside it.
-        // Marked atomic the value stays on one line and a column too narrow to hold it ellipsises instead, so
-        // what shows is a recognisable prefix rather than two fragments that read as corruption. The whole
-        // value stays in the accessibility tree and in the DOM either way, so this shortens what is painted
-        // and hides nothing. No width changes - see the note on the width above for why rebalancing is not
-        // the remedy here.
+        // the `M`, not at the slash. Marked atomic the value stays on one line and a column too narrow to hold it
+        // ellipsises instead, so what shows is a recognisable prefix rather than two fragments that read as
+        // corruption.
+        //
+        // ⚠ AND IT NOW DECLARES A WIDTH, WHICH IS THE ACTUAL REMEDY. An earlier note here recorded that this was
+        // the unweighted column, observed that it was consequently "the NARROWEST non-atomic column here, not
+        // the widest", and concluded that rebalancing was not the remedy. The first two statements were correct
+        // and the conclusion did not follow: this is the ROW HEADER, hoisted to the leading position and pinned
+        // sticky at narrow widths precisely so a reader can identify a row before scrolling - so it being the
+        // first value cut is the exact opposite of that intent. Measured at 1024: 76.83px of track against a
+        // 117.41px requirement, and six of eight identities ellipsised. Ellipsising is the fallback for a value
+        // that cannot be accommodated, not a substitute for accommodating it.
+        //
+        // 13.5% is 129.6px at the 960px floor. This cell carries a 1px separator border in its pinned state on
+        // top of the shared 4px inline padding, so its chrome is 9px rather than 8px, leaving 120.6px of content
+        // against the 108.41px that `Announcements`, the widest definition name here, actually needs.
+        width: '13.5%',
         atomic: true,
         rowHeader: true,
         label: COLUMN_LABEL.friendlyName,
@@ -1317,7 +1346,10 @@ export class ModuleListComponent implements OnInit {
       // 5. The installed PACKAGE's programmatic name. Not sortable, for the same reason.
       {
         key: 'moduleName',
-        width: '13%',
+        // Raised from 13%, because the same measurement that starved the identity column showed this one short
+        // as well: `QA_Announcements` needs 127.97px and 13% gave 124.8px at the 960px floor, which is why three
+        // package names ellipsised at 1024. 14% is 134.4px.
+        width: '14%',
         // ⚠ ATOMIC BECAUSE A PACKAGE NAME IS NOT A PHRASE, AND WRAPPING ONE FRACTURES IT. The shared stylesheet
         // lets any cell break inside a word so a narrow column can never overflow, which is right for prose
         // and wrong for a value read as a single token. Measured before this line: `QA_Announcements` painted as `QA_Announcement` + `s` at a 768
@@ -1338,7 +1370,9 @@ export class ModuleListComponent implements OnInit {
       // 6. The all-pages flag.
       {
         key: 'allTabs',
-        width: '6%',
+        // Trimmed to fund the identity column. The heading wraps to `All` / `Pages`, so its requirement is the
+        // longest word at about 40px, and the body values are `Yes` and `No`: 52.8px at the floor.
+        width: '5.5%',
         label: COLUMN_LABEL.allTabs,
         headerAlign: 'center',
         bodyAlign: 'center',
@@ -1362,7 +1396,9 @@ export class ModuleListComponent implements OnInit {
       // `portals.ascx:L44-L45`.
       {
         key: 'moduleOrder',
-        width: '6%',
+        // Trimmed to fund the identity column, but only to 5.5%: the `Order` heading needs 48.86px and 5.25%
+        // would have left 42.4px of content. 5.5% is 52.8px, so the heading holds on one line.
+        width: '5.5%',
         atomic: true,
         label: COLUMN_LABEL.moduleOrder,
         headerAlign: 'center',

@@ -957,6 +957,67 @@ describe('ProfileDefinitionListComponent', () => {
         .toBe(command ?? null);
     });
 
+    // =======================================================================
+    // THE MOVE THAT DESTROYS THE CONTROL THAT PERFORMED IT
+    //
+    // ⚠ THE CASE ABOVE PASSES ON ITS OWN, AND PASSING IT WAS NOT ENOUGH. A row keeps its element across
+    // a move, so a command that is still rendered afterwards still holds focus - which is every move
+    // EXCEPT the one that reaches an end of the list. A declaration moved into last place no longer renders
+    // a Move Down at all: the control the operator just pressed is destroyed, and measured at runtime focus
+    // fell to BODY. The cost is paid on exactly the press an operator is most likely to make, because
+    // moving something to the end is the ordinary reason to press the same command repeatedly, and
+    // recovering meant tabbing in from the top of the document through every preceding row.
+    // =======================================================================
+
+    it('moves focus to the opposite command when the one pressed is destroyed', async () => {
+      arrive();
+
+      // Nickname, Website, Biography. Two presses of Nickname's Move Down puts it last, and its Move Down
+      // is then not rendered.
+      buttonsNamed('Move Down').at(0)?.click();
+      fixture.detectChanges();
+
+      expect(renderedNames()).toEqual(['Website', 'Nickname', 'Biography']);
+
+      const second: HTMLButtonElement | undefined = buttonsNamed('Move Down').at(1);
+
+      second?.focus();
+      second?.click();
+      fixture.detectChanges();
+      // Awaited, because the restore is deferred to the next render on purpose - the destination does not
+      // exist until the grid has re-rendered in the new order.
+      await fixture.whenStable();
+
+      expect(renderedNames()).toEqual(['Website', 'Biography', 'Nickname']);
+
+      const moved: HTMLTableRowElement | undefined = query<HTMLTableRowElement>('tbody tr').at(2);
+      const upOnMovedRow: HTMLButtonElement | null =
+        moved?.querySelector<HTMLButtonElement>('button[data-reorder^="up:"]') ?? null;
+
+      expect(document.activeElement)
+        .withContext('not BODY: the control that can still move it, on the row it moved')
+        .toBe(upOnMovedRow);
+      expect(moved?.querySelector('button[data-reorder^="down:"]'))
+        .withContext('the precondition - the pressed command really is gone')
+        .toBeNull();
+    });
+
+    it('keeps focus on the SAME command when it survives, so repeated presses work', async () => {
+      arrive();
+
+      const command: HTMLButtonElement | undefined = buttonsNamed('Move Down').at(0);
+      const identifier: string | null = command?.getAttribute('data-reorder') ?? null;
+
+      command?.focus();
+      command?.click();
+      fixture.detectChanges();
+      await fixture.whenStable();
+
+      expect((document.activeElement as HTMLElement | null)?.getAttribute('data-reorder'))
+        .withContext('the same declaration, the same direction - found by identity, not by position')
+        .toBe(identifier);
+    });
+
     it('replaces every row element when the catalogue itself is re-read', () => {
       // ⚠ THE STABILITY IS PER DECLARATION AND NOT PER SCREEN, so a genuinely different catalogue must not
       // be forced into the previous one's elements. A re-read reporting a DIFFERENT set of declarations is
@@ -1599,6 +1660,99 @@ describe('ProfileDefinitionListComponent', () => {
     });
   });
 
+  // =========================================================================
+  // WHAT THE EDITOR OWES THE KEYBOARD AND THE ACCESSIBILITY TREE
+  //
+  // Two defects of the same shape: information and orientation both existed on screen, and neither was
+  // reachable by the people who most needed them.
+  // =========================================================================
+
+  describe('the editor disclosure and its guidance', () => {
+    /** Every hint span the editor renders, with the id it publishes. */
+    function hints(): readonly { readonly id: string; readonly text: string }[] {
+      return query<HTMLElement>('.profile-definitions__form-hint')
+        .filter((node) => node.id !== '')
+        .map((node) => ({ id: node.id, text: (node.textContent ?? '').trim() }));
+    }
+
+    // ⚠ A SENTENCE BESIDE A CONTROL IS NOT A SENTENCE ABOUT IT. Nine spans explained what each field
+    // accepts, and every one of them was an unassociated neighbour: a screen reader announced the control,
+    // its name and its state, and stopped - there is no way for it to know that the span alongside was
+    // meant as guidance. Reaching them meant leaving the field, reading forward and coming back.
+    it('associates every hint with the control it explains', () => {
+      arrive();
+      press(ADD_LABEL);
+
+      const published: readonly { readonly id: string; readonly text: string }[] = hints();
+
+      expect(published.length)
+        .withContext('one identified hint per field the editor guides')
+        .toBe(9);
+
+      for (const hint of published) {
+        expect(hint.text.length).withContext(`${hint.id} says something`).toBeGreaterThan(0);
+
+        const owner: HTMLElement | undefined = query<HTMLElement>(
+          `[aria-describedby~="${hint.id}"]`,
+        ).at(0);
+
+        expect(owner)
+          .withContext(`${hint.id} is named by the control it explains`)
+          .toBeDefined();
+      }
+    });
+
+    it('publishes no dangling description, which is worse than none at all', () => {
+      arrive();
+      press(ADD_LABEL);
+
+      for (const control of query<HTMLElement>('[aria-describedby]')) {
+        for (const reference of (control.getAttribute('aria-describedby') ?? '').trim().split(/\s+/)) {
+          expect(query<HTMLElement>(`#${reference}`).length)
+            .withContext(`${reference} names an element that exists`)
+            .toBe(1);
+        }
+      }
+    });
+
+    // ⚠ CLOSING THE EDITOR USED TO PUT THE OPERATOR AT THE TOP OF THE DOCUMENT. The editor holds focus,
+    // and closing it destroys the element holding it - measured, focus fell to BODY. The destination is
+    // the control that OPENED it, so an operator returns to where they were rather than to the top of a
+    // list of any length.
+    it('returns focus to the row command that opened it', async () => {
+      arrive();
+
+      const edit: HTMLButtonElement | undefined = buttonsNamed('Edit').at(1);
+      const identifier: string | null = edit?.getAttribute('data-edit') ?? null;
+
+      expect(identifier).withContext('the command names the declaration it opens').not.toBeNull();
+
+      edit?.focus();
+      edit?.click();
+      fixture.detectChanges();
+
+      press(CANCEL_LABEL);
+      await fixture.whenStable();
+
+      expect((document.activeElement as HTMLElement | null)?.getAttribute('data-edit'))
+        .withContext('the row the operator was working on, not the top of the screen')
+        .toBe(identifier);
+    });
+
+    it('returns focus to the primary action when THAT is what opened it', async () => {
+      // The destination follows the invoker rather than a fixed anchor: sending an edit back to the
+      // primary action would be its own kind of displacement.
+      arrive();
+
+      press(ADD_LABEL);
+      press(CANCEL_LABEL);
+      await fixture.whenStable();
+
+      expect(document.activeElement)
+        .toBe(buttonsNamed(ADD_LABEL).at(0) ?? null);
+    });
+  });
+
   // The duplicate-name refusal, and the defect around it
 
   describe('a refused create', () => {
@@ -2119,9 +2273,268 @@ describe('ProfileDefinitionListComponent', () => {
     });
   });
 
+  // ===================================================================================================
+  // A VALUE THE DECLARATION SIMPLY DOES NOT CARRY — QA-20
+  // ===================================================================================================
+
+  describe('the two nullable columns', () => {
+    /** The cells of one column, by its heading position among the eight data headings. */
+    function cellsOf(heading: string): readonly HTMLTableCellElement[] {
+      const headings = query<HTMLTableCellElement>('thead th').map((cell) =>
+        (cell.textContent ?? '').trim(),
+      );
+      const index = headings.indexOf(heading);
+
+      expect(index).withContext(`the ${heading} column is rendered`).toBeGreaterThan(-1);
+
+      return query<HTMLTableRowElement>('tbody tr').map(
+        (row) => Array.from(row.querySelectorAll<HTMLTableCellElement>('th,td'))[index],
+      );
+    }
+
+    it('marks an absent default value instead of painting an empty box', () => {
+      // ⚠ THE MEASURED DEFECT. Both columns rendered through a helper that collapses `null` to the empty
+      // string and then paints it, so every cell of both columns was an empty `<code>` box: no text, no
+      // marker, and nothing in the accessibility tree. Sixteen of them on the live catalogue.
+      arrive([definition({ propertyDefinitionId: 21, propertyName: 'Nickname', defaultValue: '' })]);
+
+      const cell = cellsOf('Default Value')[0];
+
+      expect(cell.querySelector('app-absent-value'))
+        .withContext('the shared marker, not an empty box')
+        .not.toBeNull();
+      expect((cell.textContent ?? '').trim().length)
+        .withContext('and it paints something a reader can see')
+        .toBeGreaterThan(0);
+    });
+
+    it('marks an absent validation expression the same way', () => {
+      arrive([
+        definition({ propertyDefinitionId: 22, propertyName: 'Nickname', validationExpression: null }),
+      ]);
+
+      expect(cellsOf('Validation Expression')[0].querySelector('app-absent-value')).not.toBeNull();
+    });
+
+    it('treats the EMPTY STRING as absent, not only null', () => {
+      // ⚠ THE DISTINCTION THE API ACTUALLY DRAWS, AND TESTING NULLNESS ALONE WOULD HAVE MISSED HALF OF IT.
+      // Measured against the live endpoint: `validationExpression` arrives as `null` and `defaultValue` arrives
+      // as `''`. Neither is a value a reader can act on.
+      arrive([
+        definition({
+          propertyDefinitionId: 23,
+          propertyName: 'Nickname',
+          defaultValue: '',
+          validationExpression: '',
+        }),
+      ]);
+
+      expect(cellsOf('Default Value')[0].querySelector('app-absent-value')).not.toBeNull();
+      expect(cellsOf('Validation Expression')[0].querySelector('app-absent-value')).not.toBeNull();
+    });
+
+    it('treats a value of nothing but whitespace as absent, because it paints as an empty box too', () => {
+      arrive([
+        definition({ propertyDefinitionId: 24, propertyName: 'Nickname', defaultValue: '   ' }),
+      ]);
+
+      expect(cellsOf('Default Value')[0].querySelector('app-absent-value')).not.toBeNull();
+    });
+
+    it('paints a RECORDED value in its code box and adds no marker', () => {
+      // The counterpart, and the regression that matters: a real value must not acquire the marker.
+      arrive([
+        definition({
+          propertyDefinitionId: 25,
+          propertyName: 'Nickname',
+          defaultValue: 'none',
+          validationExpression: '^\\w+$',
+        }),
+      ]);
+
+      const value = cellsOf('Default Value')[0];
+      const expression = cellsOf('Validation Expression')[0];
+
+      expect(value.querySelector('app-absent-value')).toBeNull();
+      expect((value.querySelector('code')?.textContent ?? '').trim()).toBe('none');
+      expect(expression.querySelector('app-absent-value')).toBeNull();
+      expect((expression.querySelector('code')?.textContent ?? '').trim()).toBe('^\\w+$');
+    });
+  });
+
+  // ===================================================================================================
+  // THE COLUMN TRACKS — QA-4b/4c
+  //
+  // ⚠ EVERY FIGURE HERE WAS MEASURED IN A BROWSER, NOT CHOSEN. Before these weights existed, the four command
+  // columns declared `min-content`, which a fixed table layout DISCARDS — so all twelve columns resolved to an
+  // even twelfth: 99.83px at a 1440 viewport and 80px at the 960px floor. That funded four columns holding a
+  // 44px icon button each out of the columns carrying text, and the row's own identifier was the casualty:
+  // `PostalCode` needs 85.56px and had a 72px content box at every width from 320 up to about 1366.
+  // ===================================================================================================
+
+  describe('the column tracks', () => {
+    /** The shared floor every listing is at or above, so a track's narrowest real size is a percentage of it. */
+    const FLOOR_PX = 960;
+
+    /** The command track token: one interactive target plus the cell's own inline padding. */
+    const COMMAND_TRACK = 'var(--table-command-column-inline-size)';
+
+    /**
+     * The widest content each weighted column has to hold, measured in Chrome at a 1198px table with a
+     * uniform 8.00px of cell chrome (4px padding each side, zero border under `border-collapse: collapse`).
+     */
+    const MEASURED_NEED_PX: Readonly<Record<string, number>> = {
+      '11.5%': 85.56, // Name — driven by `PostalCode`, the longest built-in property name
+      '8%': 74.41, // Category 73.03 and DataType 74.41 share a weight; the larger governs
+      '6.25%': 58.0, // Length — heading-driven
+      '11%': 102.19, // Default Value — heading-driven
+      '7.75%': 73.0, // Required — heading-driven
+      '6.75%': 62.84, // Visible — checkbox plus gap plus "Yes"
+    };
+
+    /** The declared `inline-size` of every rendered column track, in column order. */
+    function tracks(): readonly string[] {
+      return query<HTMLTableColElement>('colgroup col').map((col) => col.style.inlineSize);
+    }
+
+    it('sizes the four command columns with the shared token, never an intrinsic keyword', () => {
+      arrive();
+
+      const declared = tracks();
+
+      expect(declared.length).toBe(12);
+      expect(declared.slice(0, 4))
+        .withContext('Edit, Delete, Move Down and Move Up')
+        .toEqual([COMMAND_TRACK, COMMAND_TRACK, COMMAND_TRACK, COMMAND_TRACK]);
+
+      // The regression that matters: `min-content` and `max-content` are not lengths, so the fixed table
+      // algorithm ignores them and falls back to the automatic share. Neither may reappear on any track here.
+      for (const track of declared) {
+        expect(track)
+          .withContext('an intrinsic keyword resolves to nothing under a fixed table layout')
+          .not.toMatch(/min-content|max-content/);
+      }
+    });
+
+    it('leaves EXACTLY ONE column unweighted, so the command tracks are honoured at all', () => {
+      arrive();
+
+      // Under `table-layout: fixed` the percentages resolve against the table width and the remainder goes to
+      // whichever columns declared nothing. With every column weighted there is no remainder to give, and a
+      // declared length on a command column is silently renegotiated. With more than one unweighted column the
+      // remainder is split and the widest value's column no longer receives it.
+      const unweighted = tracks().filter((track) => track === '');
+
+      expect(unweighted.length)
+        .withContext('the single slack absorber — the validation expression column')
+        .toBe(1);
+      expect(tracks().at(-3))
+        .withContext('and it is that column, third from the end, ahead of Required and Visible')
+        .toBe('');
+    });
+
+    it('gives every weighted column at least its measured requirement at the shared floor', () => {
+      arrive();
+
+      for (const track of tracks()) {
+        if (track === '' || track === COMMAND_TRACK) {
+          continue;
+        }
+
+        const need = MEASURED_NEED_PX[track];
+
+        expect(need)
+          .withContext(`every declared weight is one this case knows the requirement for: ${track}`)
+          .toBeDefined();
+
+        const resolved = (Number.parseFloat(track) / 100) * FLOOR_PX;
+
+        expect(resolved)
+          .withContext(`${track} resolves to ${String(resolved)}px, and needs ${String(need)}px`)
+          .toBeGreaterThanOrEqual(need);
+      }
+    });
+
+    it('leaves the unweighted column more than its own requirement once the rest have taken theirs', () => {
+      arrive();
+
+      const declared = tracks();
+      const commands = declared.filter((track) => track === COMMAND_TRACK).length;
+
+      // The token is `--table-command-column-inline-size`, 3.25rem against a 16px root.
+      const commandPx = commands * 3.25 * 16;
+      const weightedPx = declared
+        .filter((track) => track.endsWith('%'))
+        .reduce((total, track) => total + (Number.parseFloat(track) / 100) * FLOOR_PX, 0);
+
+      const absorbed = FLOOR_PX - commandPx - weightedPx;
+
+      // The validation expression was the worst-starved column before this change: 163.91px of regular
+      // expression against a 99.83px share, its heading wrapping onto two lines at 1440 and clipping outright
+      // below that.
+      expect(absorbed)
+        .withContext(`the slack absorber receives ${String(absorbed)}px at the floor, and needs 163.91px`)
+        .toBeGreaterThanOrEqual(163.91);
+    });
+
+    it('makes the identity column the widest weighted track on the grid', () => {
+      arrive();
+
+      const percentages = tracks()
+        .filter((track) => track.endsWith('%'))
+        .map((track) => Number.parseFloat(track));
+
+      // A reader identifies a row by its property name, so no column that merely describes the property may
+      // out-weigh it. The unweighted expression column is excluded by construction — it takes the remainder.
+      //
+      // ⚠ THIS CAUGHT A REAL MISALLOCATION. At the first pass the name was weighted 9.5% purely to its measured
+      // requirement, which put it BEHIND the 11% that the `Default Value` heading needs — so the widest track on
+      // the grid belonged to a column describing the property rather than to the property itself. Sizing an
+      // extensible identifier to the longest value the built-in set happens to contain is the narrower mistake
+      // underneath that: a tenant may declare a far longer name than `PostalCode`.
+      expect(Math.max(...percentages))
+        .withContext('the property name carries the largest declared weight')
+        .toBe(11.5);
+      expect(percentages.filter((weight) => weight === 11.5).length)
+        .withContext('and carries it alone, so the identity column is unambiguously the widest')
+        .toBe(1);
+    });
+  });
+
   // The four row commands — the most of any grid in this application
 
   describe('the row commands', () => {
+    it('paints the delete command in the danger hue, as every sibling listing does', () => {
+      // ⚠ THE ONE DESTRUCTIVE CONTROL ACROSS SIX LISTINGS THAT WAS NOT MARKED AS ONE. Measured at runtime, this
+      // grid's delete command computed the PRIMARY hue while all five siblings paint the danger token. The cause
+      // was structural: all four commands here share one class, so the delete button had no class of its own and
+      // fell through to the generic button chrome. Its glyph is a bare multiplication sign, so hue was the only
+      // signal separating "remove this property permanently" from "move it up one place".
+      arrive();
+
+      const remove = query<HTMLButtonElement>('.profile-definitions__row-action--danger');
+
+      expect(remove.length)
+        .withContext('one destructive command per deletable row, and three of these rows are deletable')
+        .toBe(3);
+
+      for (const button of remove) {
+        expect(button.classList.contains('profile-definitions__row-action'))
+          .withContext('the danger class is additive, so the shared target sizing still applies')
+          .toBeTrue();
+        expect((button.textContent ?? '').trim()).toContain('Delete');
+      }
+
+      // And it is only the destructive one: the other three commands must not borrow the hue.
+      for (const button of query<HTMLButtonElement>('.profile-definitions__row-action')) {
+        const label = (button.textContent ?? '').trim();
+
+        expect(button.classList.contains('profile-definitions__row-action--danger'))
+          .withContext(`${label} is destructive only if it deletes`)
+          .toBe(label.includes('Delete'));
+      }
+    });
+
     /**
      * The commands of one row, in document order, as their ACCESSIBLE names. Read from the visually
      * hidden span rather than from the button's whole text, because the button also carries a decorative
@@ -2945,8 +3358,19 @@ describe('ProfileDefinitionListComponent', () => {
 
       // `Null.NullString` IS the empty string, so "" means "no rule" and is NOT the same as a rule that
       // refuses everything. Rendering both as blank would erase a real distinction.
-      expect(cells.at(0)).toBe('');
-      expect(cells.at(1)).toBe('(?!)');
+      //
+      // ⚠ AND "NO RULE" IS NOW SAID RATHER THAN LEFT BLANK, WHICH IS THE SAME DISTINCTION DRAWN BETTER. This
+      // case previously required an empty cell for the absent rule, which made the distinction rest entirely on
+      // one cell being empty — and an empty cell reads as a rendering failure, not as a fact. It carries the
+      // shared marker now: the two rows are still unmistakably different, and the difference is legible instead
+      // of inferred.
+      expect(cells.at(0))
+        .withContext('no rule at all, stated')
+        .toContain('not recorded');
+      expect(cells.at(0)).not.toBe('(?!)');
+      expect(cells.at(1))
+        .withContext('a rule that refuses everything is a real value and is painted verbatim')
+        .toBe('(?!)');
     });
 
     it('renders a help string containing markup as plain text', () => {

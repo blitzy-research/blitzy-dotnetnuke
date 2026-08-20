@@ -428,21 +428,21 @@ function isWithheldFromOwner(value: UserProfileValue): boolean {
  * @returns The sentence, or the empty string when the declaration bounds nothing.
  */
 function declaredConstraintsSentence(definition: ProfilePropertyDefinition): string {
-  const parts: string[] = [];
-
-  if (definition.length > 0) {
-    parts.push(`at most ${definition.length} characters`);
-  }
-
-  if ((definition.validationExpression ?? '').trim().length > 0) {
-    parts.push('a specific format this site requires');
-  }
-
-  if (parts.length === 0) {
+  // ⚠ THE DECLARED LENGTH IS DELIBERATELY NO LONGER STATED HERE, AND MOVING IT IS THE FIX RATHER THAN A
+  // TIDY-UP. This sentence reaches the reader through the field's HELP text, which is collapsed behind a
+  // disclosure - so the one constraint that bites while typing was the one constraint a person had to go
+  // looking for. `maxlength` refuses keystrokes and keeps only the head of a longer pasted value without
+  // saying anything, so a reader who never opened help lost the tail of an address and was told nothing.
+  // The shared field's `limit` input exists for exactly this: it renders the bound as a permanently
+  // present sentence that the control's own `aria-describedby` names, announced when the box takes focus,
+  // and repeats it inside the disclosure anyway. The length therefore travels through `[limit]`, and what
+  // remains here is the FORMAT requirement, which no native attribute enforces and which nothing else
+  // would state.
+  if ((definition.validationExpression ?? '').trim().length === 0) {
     return '';
   }
 
-  return `Accepts ${parts.join(' and ')}.`;
+  return 'Accepts a specific format this site requires.';
 }
 
 /**
@@ -1089,7 +1089,9 @@ export class UserProfileComponent {
    * @returns The label without its trailing colon.
    */
   protected reachLabel(value: UserProfileValue): string {
-    return this.labelFor(value).replace(/:$/, '');
+    // One implementation of "the caption, as a sentence would name it", shared with the validation
+    // messages. Two copies of the same de-punctuation would be two places for the wording to drift.
+    return this.messageSubjectFor(value);
   }
 
   /**
@@ -1312,8 +1314,16 @@ export class UserProfileComponent {
       return LEGACY_PROFILE_WORDING[name]?.required ?? `${name} is required`;
     }
 
+    // ⚠ THE REMAINING THREE MESSAGES NAME THE FIELD THE READER CAN SEE, AND THEY USED NOT TO. Only the
+    // required branch above consulted the curated wording; every other branch interpolated the RAW stored
+    // property name, so a reader looking at a field captioned "Postal Code" was told "PostalCode must be
+    // 40 characters or fewer" - a name that appears nowhere on the screen, and for seven of the nineteen
+    // seeded properties a name that differs from the caption. The subject of a message has to be the thing
+    // it is about, spelled the way the screen spells it.
+    const subject = this.messageSubjectFor(value);
+
     if (control.hasError('maxlength')) {
-      return `${name} must be ${value.definition.length} characters or fewer`;
+      return `${subject} must be ${value.definition.length} characters or fewer`;
     }
 
     // Worded to match the server's own refusal for the same rule — `Profile property "X" does not match the
@@ -1321,10 +1331,43 @@ export class UserProfileComponent {
     // the server are told the same thing rather than being left to wonder whether they are two different
     // problems.
     if (control.hasError('tenantPattern')) {
-      return `${name} does not match the format it requires`;
+      return `${subject} does not match the format it requires`;
     }
 
-    return `${name} is not valid`;
+    return `${subject} is not valid`;
+  }
+
+  /**
+   * How a message should NAME one property: the caption the reader can see, without its trailing colon.
+   *
+   * The curated labels are authored as captions - every one of the nineteen ends in a colon, because that
+   * is how the legacy screens punctuated a field caption - and a colon inside a sentence reads as a
+   * mistake. Stripping it here rather than storing two spellings keeps one source of wording, so a caption
+   * and the message about it cannot drift apart. It also matches what the reader actually sees: the shared
+   * form field normalises the same trailing colon out of every caption it displays (the legacy screens
+   * punctuated their labels six different ways), so the rendered label is `Postal Code` and a message
+   * naming `Postal Code:` would be quoting a spelling that appears nowhere on the screen.
+   *
+   * ⚠ THE REQUIRED BRANCH DELIBERATELY DOES NOT USE THIS. Its wording comes from the legacy resource file
+   * rather than from the label, and three of those sentences knowingly disagree with their caption - most
+   * visibly `Cell`, captioned "Cell/Mobile:" and required as "Cell Phone is required". Those divergences
+   * are measured legacy behaviour that this port preserves; routing the required branch through here would
+   * silently correct wording the migration notes record as intentional.
+   *
+   * @param value The property.
+   * @returns The subject to name in a message.
+   */
+  private messageSubjectFor(value: UserProfileValue): string {
+    const curated: string | undefined =
+      LEGACY_PROFILE_WORDING[value.definition.propertyName]?.label;
+
+    if (curated === undefined) {
+      return value.definition.propertyName;
+    }
+
+    const trimmed: string = curated.trim();
+
+    return trimmed.endsWith(':') ? trimmed.slice(0, -1) : trimmed;
   }
 
   /**

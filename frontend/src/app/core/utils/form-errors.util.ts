@@ -479,6 +479,26 @@ export function missingEntityMessage(entity: string): string {
 }
 
 /**
+ * The HEADING a detail screen shows when the record it was addressed at is not there.
+ *
+ * ⚠ A DETAIL SCREEN MUST NOT KEEP ITS EDIT HEADING OVER A RECORD THAT DOES NOT EXIST. Measured on the
+ * role editor: a well-formed identifier naming no role rendered "Edit Security Roles" above a banner saying
+ * the role could not be found - the largest text on the screen asserting an action the screen could not
+ * perform, and contradicting the only other thing on it. The heading states the situation instead, and the
+ * recovery link beside it states the way out.
+ *
+ * Shared rather than authored per screen so that every detail screen naming this state names it the same
+ * way, and so the wording sits beside {@link missingEntityMessage} and
+ * {@link missingEntityRecoveryLabel} which it has to agree with.
+ *
+ * @param entity The record's noun, capitalised as a heading.
+ * @returns The shared heading for a record that is not there.
+ */
+export function missingEntityHeading(entity: string): string {
+  return `${entity} Not Found`;
+}
+
+/**
  * A SYNTHESISED 404 DOCUMENT CARRYING `message`, so a missing record is stated by the shared banner -
  * the application's single assertive owner for a failure - rather than by a paragraph the screen
  * authors for itself. ⚠ THE DISTINCTION IS AUDIBLE, NOT COSMETIC. A paragraph that appears inside a

@@ -139,6 +139,83 @@ tbody > tr:nth-child(even) {
   background-color: var(--color-surface);
 }
 
+// THE PINNED IDENTITY COLUMN. Published here, beside the zebra and selected rules it has to restate, and
+// opted into by the shared grid emitting `data-identity-pinned` on its container while the region ACTUALLY
+// clips - the same conditional discipline the `[data-table-scroll]` block below already follows.
+//
+// ⚠ THE MEASURED DEFECT. At 320px every listing resolves to a 271px scrollport against a 968px table, hiding
+// 697px, and four of six put their row commands first - so the opening view was command columns and blank
+// icon-only headings with the record's identity off screen entirely: the member-services name began 8px past
+// the trailing edge, profile definitions 54px past, modules 108px past, and the portal-alias grid 214px past,
+// showing nothing but a column of identical "Edit" buttons with no indication of WHICH host name each would
+// edit. The grid hoists the identity column to the front while it clips; this keeps it in view once the reader
+// scrolls away from it.
+[data-identity-pinned='true'] {
+  thead th[data-row-identity='true'],
+  tbody th[scope='row'] {
+    position: sticky;
+
+    // ⚠ MINUS THE SCROLLPORT'S OWN INLINE PADDING, AND A ZERO OFFSET LEFT A MEASURABLE LEAK. A sticky offset
+    // of zero holds the cell at the scrollport's CONTENT edge - measured, x=21 inside a container whose visible
+    // box begins at x=16 - while a scrollport CLIPS at its padding box, x=17. The 4px strip between the two is
+    // inside the scroll area, so content scrolling underneath was still painted and hit-testable in it: with the
+    // role grid scrolled fully right, all ten rows leaked the `Trial Every` column's value into the strip
+    // immediately left of the pinned name, and `elementFromPoint` there returned the scrolled-under cell.
+    // Offsetting by exactly that padding lets the cell's own opaque fill reach the clipping edge, which covers
+    // the strip visually AND for hit-testing. It changes nothing at rest: the offset only binds once the cell
+    // would otherwise scroll past the threshold, so at scroll position zero the column stays where it was.
+    inset-inline-start: calc(-1 * var(--space-1));
+
+    // ⚠ AN OPAQUE FILL IS MANDATORY, NOT COSMETIC. A sticky cell paints over its siblings as they pass
+    // beneath it and a cell's default background is transparent, so without a fill the identity would be
+    // overprinted by every value scrolling under it - unreadable at the moment it matters most. The row's fill
+    // lives on the `tr`, which a sticky child does not inherit as a paint source, so each state restates it.
+    background-color: var(--color-background);
+
+    // ⚠ AND IT MUST BE A BACKGROUND RATHER THAN A SHADOW. Covering the strip described above with a spread-free
+    // `box-shadow` on the cell was tried first and is INERT: this table computes `border-collapse: collapse`,
+    // and under Chromium's collapsed-border table painting model a shadow declared on a `td` or `th` is never
+    // rasterised. It appeared in computed style and painted nothing, which is the most expensive kind of wrong
+    // - so the offset above moves the cell's real background over the strip instead.
+
+    // ⚠ A TRAILING EDGE, BECAUSE STICKINESS IS OTHERWISE INVISIBLE: text stops and other text starts in the
+    // same plane with nothing saying one column is held still. The BOUNDARY token, not the decorative one -
+    // this edge is the only thing identifying where the held column ends.
+    border-inline-end: var(--border-width) var(--border-style) var(--color-border-control);
+  }
+
+  // The heading band sits above the values, and above the pinned column where the two intersect.
+  thead th[data-row-identity='true'] {
+    z-index: 2;
+  }
+
+  tbody th[scope='row'] {
+    z-index: 1;
+  }
+
+  // The stripe and the tint, restated on the pinned cell only. Matched on the same `:nth-child(even)` and the
+  // same ARIA attribute the rules above use, so the pinned column can never disagree with its own row about
+  // which state it is in - and a row not ANNOUNCED as selected still cannot be PAINTED as selected.
+  tbody > tr:nth-child(even) > th[scope='row'] {
+    background-color: var(--color-surface);
+  }
+
+  tbody > tr[aria-selected='true'] > th[scope='row'] {
+    background-color: var(--color-selected);
+  }
+}
+
+@media (forced-colors: active) {
+  // Forced colours replace the fills above with the user's own, so the overprinting they prevent would
+  // return. The edge is what survives, and it is doubled so the held column still reads as held.
+  [data-identity-pinned='true'] {
+    thead th[data-row-identity='true'],
+    tbody th[scope='row'] {
+      border-inline-end-width: calc(2 * var(--border-width));
+    }
+  }
+}
+
 // THE ZEBRA FALLBACK FOR FORCED COLOURS, and without it the row tracking cue disappears entirely. A forced
 // colour scheme replaces every background with the user's own, so the alternating surface above - the sole
 // device that lets an eye follow one record across a wide grid - collapses to a single flat colour. The
@@ -184,6 +261,16 @@ th[aria-sort='descending'] {
   background-color: var(--color-surface);
 }
 
+// ⚠ A SORTABLE HEADING SURRENDERS ITS BLOCK PADDING TO THE CONTROL INSIDE IT. The control is floored to the
+// pointer target below, and with the cell's own four-pixel padding still in force that floor would resolve to
+// a fifty-two-pixel heading band rather than a forty-four-pixel one - paying eight pixels on every listing
+// for space the control does not use. The padding is therefore moved INTO the button, which is where a press
+// has to land anyway. A heading that is not sortable keeps its padding and its natural height; the row's
+// height is set by the tallest cell in it, so the band resolves to exactly the floor.
+th[aria-sort] {
+  padding-block: 0;
+}
+
 // A real button rather than a click handler on the cell, because only a button is reachable by keyboard and
 // announced as operable.
 th[aria-sort] > button {
@@ -191,14 +278,35 @@ th[aria-sort] > button {
   color: inherit;
   background-color: transparent;
   border-width: 0;
-  padding: 0;
   cursor: pointer;
+
+  // ⚠ THE POINTER TARGET, AND IT WAS MEASURABLY ABSENT. This control carried `padding: 0` and no block floor
+  // of any kind, so its height was whatever its own line box came to - about eighteen pixels, which is not
+  // merely short of the forty-four this token set treats as the floor for a real control but short of the
+  // twenty-four that applies to everything. It is the only button in the application that had no floor at
+  // all: `_forms.scss` floors every entry control and every action, and the choice controls take the compact
+  // token under the standard's inline-control carve-out with that exemption stated. A column sort is a
+  // standalone command, not an inline control, so it takes the full floor.
+  //
+  // The block padding released by the cell above is restated here, so the label keeps the same distance from
+  // the band's edges that it had while the padding lived on the cell.
+  padding-block: var(--space-1);
+  padding-inline: 0;
+  min-block-size: var(--target-size-min);
 
   // Inline-level on purpose. An inline-level box is positioned by the text alignment of the cell around it,
   // so the button lands centred under a column header and at the start edge under a header a component has
   // re-aligned, without this file restating either alignment.
   display: inline-flex;
-  align-items: baseline;
+
+  // ⚠ CENTRED RATHER THAN BASELINE-ALIGNED, AND THE FLOOR ABOVE IS WHY. Baseline alignment positions this
+  // box's contents against the surrounding text's baseline, which is fine in a box that is exactly as tall
+  // as its contents and wrong in one held open to the target floor: the label and the arrow sat pinned to
+  // the top of a forty-four-pixel box with the remainder empty beneath them. Centring keeps the pair
+  // together and centres them in the band. The two items remain aligned with EACH OTHER, which is what the
+  // baseline was doing that mattered - a one-character arrow and a label share a centre line as readily as
+  // a baseline.
+  align-items: center;
   gap: var(--space-1);
 
   // ⚠ THE ITEMS STAY ON ONE LINE, AND THIS REPLACES A `wrap` THAT IS NO LONGER DOING ANY WORK. Wrapping was
@@ -289,6 +397,49 @@ td[data-atomic='true'] {
   overflow: hidden;
   text-overflow: ellipsis;
   font-variant-numeric: tabular-nums;
+}
+
+// THE RECOVERY OF A CUT VALUE, and it is the missing half of the rule above.
+//
+// ⚠ AN ELLIPSIS IS A CUE, NOT AN ANSWER. The rule above is right to keep an indivisible value whole, and its
+// ellipsis is right to say "this is truncated rather than short" — but measured at 1440 on the account
+// listing, twelve cut cells carried no `title`, no `tabindex`, no `aria-label` and no copy of the value
+// anywhere else on the row, so the value was recoverable only through the accessibility tree. A hundred-
+// character sign-in name showed eleven characters and a fifty-character role name about thirteen.
+//
+// The grid marks a cell `data-truncated` only when it is ACTUALLY cut, and gives it a `title` for a pointer
+// and a focus stop for a keyboard. This rule is what the focus stop then reveals: the value UNWRAPS IN PLACE,
+// growing its own row, rather than floating over its neighbours. Deliberately so — the cell clips, so an
+// overlay would have to escape it and would then overprint adjacent values, and a reader recovering one value
+// should not lose sight of the two beside it.
+//
+// ⚠ THE REVEAL IS KEYED TO `:focus-visible` AND NOT TO `:hover`. Hover would reflow the table under a moving
+// pointer on every atomic cell it crossed, which is worse than the truncation; the pointer is served by the
+// `title` instead, which costs no layout at all.
+//
+// ⚠ `:focus-within` IS HERE FOR THE SORTABLE HEADINGS, AND WITHOUT IT THEY HAD NO KEYBOARD ROUTE AT ALL. A cut
+// heading is given a focus stop only when nothing inside it can take one, because a sortable heading already
+// holds a focusable sort button and a stop on the cell around it would put two stops on one heading. That
+// leaves the sortable case: the button takes the focus, the `th` never matches `:focus-visible`, and before
+// this selector the reveal simply never fired for it — the very column names most likely to be cut, since a
+// sort indicator takes 16px of the label's room. `:focus-within` matches the `th` when its button is focused,
+// so both kinds of cut heading reveal on exactly one stop.
+th[data-truncated='true']:focus-visible,
+th[data-truncated='true']:focus-within,
+td[data-truncated='true']:focus-visible {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  overflow: visible;
+}
+
+// The label inside a revealed heading owns the clipping, so lifting it from the cell alone changes nothing:
+// `overflow: hidden` plus `text-overflow: ellipsis` live on the label. Both are released together.
+th[data-truncated='true']:focus-visible .data-table__label,
+th[data-truncated='true']:focus-within .data-table__label {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  overflow: visible;
+  text-overflow: clip;
 }
 
 // THE ATOMIC VALUE — the same protection for one run of text INSIDE a cell that carries more than one thing.

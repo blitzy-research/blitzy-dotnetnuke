@@ -220,6 +220,9 @@ function aRoleGroup(overrides: Partial<RoleGroup> = {}): RoleGroup {
     portalId: -1,
     roleGroupName: 'Site Groups',
     description: '',
+    // The default group classifies NOTHING, which is the only value that makes it removable. A spec that
+    // needs a populated group states the count it needs, because that is the fact the affordance turns on.
+    classifiedRoleCount: 0,
     ...overrides,
   };
 }
@@ -2299,26 +2302,77 @@ describe('RoleStore', () => {
 
   describe('the group-delete affordance, and the conflict that overrules it', () => {
     /**
-     * Selects a real group and settles the role listing under it.
+     * Selects a real group and settles both the group listing and the role listing under it.
+     *
+     * ⚠ THE GROUP LISTING IS SEEDED HERE BECAUSE THE AFFORDANCE READS THE GROUP'S OWN COUNT, NOT THE
+     * ROLE PAGE. The two arguments are deliberately independent: `roles` is what the operator SEES, and
+     * `classifiedRoleCount` is what the group actually HOLDS. They diverge in real use the instant a filter
+     * is applied, and every specification below that matters is a specification about that divergence.
      *
      * @param roleGroupId The group to narrow to.
-     * @param roles The roles the listing answers with.
+     * @param roles The roles the listing answers with - what is on screen.
+     * @param classifiedRoleCount How many roles the group holds tenant-wide - what the server counts.
      */
-    function givenGroupSelected(roleGroupId: number, roles: readonly RoleListItem[]): void {
+    function givenGroupSelected(
+      roleGroupId: number,
+      roles: readonly RoleListItem[],
+      classifiedRoleCount = 0,
+    ): void {
+      store.loadRoleGroups();
+      expectGet(ROLE_GROUPS_URL)
+        .flush(envelopeOf([aRoleGroup({ roleGroupId, classifiedRoleCount })]));
       store.setGroupFilter({ kind: 'Group', roleGroupId });
       expectGet(ROLES_URL).flush(pageOf(roles, roles.length));
     }
 
-    it('offers the deletion when a real group is selected and its listing is empty', () => {
-      givenGroupSelected(0, []);
+    it('offers the deletion when the selected group classifies nothing', () => {
+      givenGroupSelected(0, [], 0);
 
       expect(store.canDeleteSelectedGroup()).toBeTrue();
     });
 
     it('withholds the deletion while the selected group still classifies a role', () => {
-      givenGroupSelected(0, [aRoleListItem({ roleId: 0 })]);
+      givenGroupSelected(0, [aRoleListItem({ roleId: 0 })], 1);
 
       expect(store.canDeleteSelectedGroup()).toBeFalse();
+    });
+
+    it('withholds the deletion when a filter has emptied the page of a group that still holds roles', () => {
+      // ⚠ THIS IS THE DEFECT, ASSERTED DIRECTLY. The operator narrows a populated group by a term that
+      // matches none of its roles. The page is empty, so the old rule - `items.length === 0` - concluded
+      // the group was empty and offered the deletion; the server then refused it with `role_group.in_use`.
+      // The page being empty is not evidence about the group, and this specification exists to keep it
+      // from being treated as evidence ever again.
+      givenGroupSelected(0, [], 3);
+
+      expect(store.canDeleteSelectedGroup())
+        .withContext('an empty PAGE says nothing about whether the GROUP is empty')
+        .toBeFalse();
+    });
+
+    it('offers the deletion for an empty group even while its page shows rows', () => {
+      // The converse, and it has to hold too: if page contents could WITHHOLD the command they could also
+      // withhold it wrongly, stranding a genuinely empty group as undeletable. Only the count decides.
+      givenGroupSelected(0, [aRoleListItem({ roleId: 0 })], 0);
+
+      expect(store.canDeleteSelectedGroup()).toBeTrue();
+    });
+
+    it('withholds the deletion while the group record is not resolved', () => {
+      // A read in flight, or a group another administrator has just removed. Neither state can promise the
+      // deletion would succeed, so the command is withheld: being wrong here costs a confirmed destructive
+      // action that fails, and being cautious costs a refresh.
+      store.setGroupFilter({ kind: 'Group', roleGroupId: 0 });
+      expectGet(ROLES_URL).flush(pageOf([], 0));
+
+      expect(store.selectedRoleGroup()).toBeNull();
+      expect(store.canDeleteSelectedGroup()).toBeFalse();
+    });
+
+    it('names how many roles the group holds, so the remedy is quantified', () => {
+      givenGroupSelected(0, [], 3);
+
+      expect(store.selectedRoleGroupRoleCount()).toBe(3);
     });
 
     it('withholds the deletion for either pseudo-intent, which names no group to act on', () => {
@@ -2336,7 +2390,7 @@ describe('RoleStore', () => {
     });
 
     it('issues the deletion even while the affordance withholds it, because the server decides', () => {
-      givenGroupSelected(0, [aRoleListItem({ roleId: 0 })]);
+      givenGroupSelected(0, [aRoleListItem({ roleId: 0 })], 1);
 
       expect(store.canDeleteSelectedGroup()).toBeFalse();
 
@@ -2378,8 +2432,13 @@ describe('RoleStore', () => {
       expect(store.selectedRoleGroupId()).toBeNull();
     });
 
-    it('surfaces a conflict on the deletion verbatim, and refreshes the stale affordance', () => {
-      givenGroupSelected(0, []);
+    it('surfaces a conflict on the deletion verbatim, and corrects the affordance from the re-read', () => {
+      // ⚠ THE PREMISE HERE IS A RACE, NOT A STALE FILTER. The group genuinely classified nothing when it
+      // was read, so offering the deletion was correct; another administrator moved a role into it before
+      // the write landed. That is the residual case the server's guard exists for, and it is why the guard
+      // remains the authority even now that the client's evidence is sound - the client cannot hold a lock
+      // over a decision it does not own. The re-read then carries the new count and the command withdraws.
+      givenGroupSelected(0, [], 0);
 
       expect(store.canDeleteSelectedGroup()).toBeTrue();
 
@@ -2395,7 +2454,7 @@ describe('RoleStore', () => {
         );
 
       expectGet(ROLE_GROUPS_URL)
-        .flush(envelopeOf([aRoleGroup({ roleGroupId: 0 })]));
+        .flush(envelopeOf([aRoleGroup({ roleGroupId: 0, classifiedRoleCount: 1 })]));
       expectGet(ROLES_URL).flush(pageOf([aRoleListItem({ roleId: 0 })], 1));
 
       const failure: RoleStoreFailure = present(store.failure(), 'the held failure');

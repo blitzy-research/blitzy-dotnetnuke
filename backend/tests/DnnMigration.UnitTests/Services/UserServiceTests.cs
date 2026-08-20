@@ -120,6 +120,9 @@ public class UserServiceTests
 
     private const string PersistenceConflictCode = "persistence.conflict";
 
+    /// <summary>The code every refusal that means "this account moved under you" is reported under.</summary>
+    private const string ConcurrencyConflictCode = "user.concurrency_conflict";
+
     private const string DeleteAdministratorProtectedCode = "user.delete.administrator-protected";
 
     private const string DeleteSuperUserProtectedCode = "user.delete.superuser-protected";
@@ -2306,36 +2309,58 @@ public class UserServiceTests
     /// remedy is to reload and resubmit.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// ⚠ THE FAULT THIS INJECTS, AND THE CODE IT EXPECTS, BOTH CHANGED WITH THE AMENDMENT PATH, and the
+    /// earlier shape of this test is worth recording because it described a mechanism that no longer exists.
+    /// It used to inject a stand-in named for the persistence assembly's own concurrency type and expect
+    /// <c>persistence.conflict</c>, because the service recognised a competing write by walking the inner
+    /// exception chain looking for that type NAME.
+    /// <para>
+    /// The amendment now runs inside a serialisable transaction, so the store's refusal is translated once, by
+    /// the unit of work, into the Domain's own <see cref="ConcurrencyConflictException"/> - and this path
+    /// catches that type directly rather than sniffing names. It also reports the refusal under the SAME code
+    /// the stale-token branch uses: the two detect one event at two moments, both mean the record moved, and
+    /// a caller that had to distinguish them would be reacting to which microsecond it arrived in.
+    /// </para>
+    /// </remarks>
     [Fact]
     public async Task UpdateUser_ReportsACompetingWriteAsAConflict()
     {
         Harness harness = Harness.Ready();
-        harness.CommitFault = new DbUpdateConcurrencyException();
+        harness.CommitFault = ConcurrencyConflictException.ForLostUpdate(null);
 
         Result<UserDetailDto> outcome = await harness.Service
             .UpdateUserAsync(PortalId, UserId, ValidUpdateRequest(), CancellationToken.None);
 
         outcome.IsFailure.Should().BeTrue();
-        outcome.Reason!.Code.Should().Be(PersistenceConflictCode);
-        outcome.Reason!.Message.Should()
-            .Be("The account was changed by another request; reload it and try again.");
+        outcome.Reason!.Code.Should().Be(ConcurrencyConflictCode);
+        outcome.Reason!.Message.Should().Be(
+            $"Account {UserId} was changed by someone else after you read it, so nothing was written. "
+            + "Reload the account to see the current values, then apply your change again.");
     }
 
     /// <summary>
-    /// A conflict wrapped in another exception is still recognised, because the store may surface it
-    /// through a wrapper rather than directly.
+    /// A store failure that is NOT a competing write is left to propagate, so a genuine fault is never
+    /// dressed up as a conflict the caller could retry away.
     /// </summary>
     /// <returns>A task representing the assertion.</returns>
+    /// <remarks>
+    /// The companion to the test above, and the reason the catch is narrowed to one type rather than widened
+    /// to a name search. A conflict tells the caller "reload and resubmit"; answering that to a caller whose
+    /// write failed for any other reason would send them round a loop that cannot succeed and would hide the
+    /// fault from the log that has to carry it.
+    /// </remarks>
     [Fact]
-    public async Task UpdateUser_RecognisesAWrappedConflict()
+    public async Task UpdateUser_LeavesAnUnrelatedStoreFailureToPropagate()
     {
         Harness harness = Harness.Ready();
-        harness.CommitFault = new InvalidOperationException("wrapped", new DbUpdateConcurrencyException());
+        harness.CommitFault = new InvalidOperationException("not a competing write");
 
-        Result<UserDetailDto> outcome = await harness.Service
+        Func<Task> amend = () => harness.Service
             .UpdateUserAsync(PortalId, UserId, ValidUpdateRequest(), CancellationToken.None);
 
-        outcome.Reason!.Code.Should().Be(PersistenceConflictCode);
+        await amend.Should().ThrowAsync<InvalidOperationException>()
+            .WithMessage("not a competing write");
     }
 
     /// <summary>A fault that is not a conflict is not absorbed, because retrying would not help.</summary>

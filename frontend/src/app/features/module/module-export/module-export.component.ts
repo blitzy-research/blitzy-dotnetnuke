@@ -15,6 +15,8 @@ import { Router } from '@angular/router';
 import { fieldErrorMessage, isValidationProblemDetails } from '../../../core/utils/form-errors.util';
 import { NotificationService } from '../../../core/services/notification.service';
 import { ModuleStore } from '../../../core/state/module.store';
+import { ListReturnStore } from '../../../core/state/list-return.store';
+import { MODULE_LIST_ROUTE } from '../../../core/config/app-routes.config';
 import { ErrorBannerComponent } from '../../../shared/components/error-banner/error-banner.component';
 import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
 import { LoadingSpinnerComponent } from '../../../shared/components/loading-spinner/loading-spinner.component';
@@ -126,6 +128,24 @@ const STALE_MODULE_MESSAGE =
  */
 const STALE_EXPORT_MESSAGE =
   'The export finished after you moved to a different module, so the file was not downloaded. Please export again.';
+
+/**
+ * What one of this screen's own sentences reports.
+ *
+ * `refusal` - the action the operator asked for did not happen. `outcome` - it happened, and this is what it
+ * produced. The two are announced through different channels, so the distinction has to be carried rather
+ * than inferred from the wording.
+ */
+type ExportNoticeTone = 'refusal' | 'outcome';
+
+/** One screen-level sentence and the channel it belongs in. */
+interface ExportNotice {
+  /** The sentence. */
+  readonly message: string;
+
+  /** What it reports. */
+  readonly tone: ExportNoticeTone;
+}
 
 /**
  * What the progress indicator announces while the module is being read. MIGRATION: NET-NEW, because the
@@ -344,6 +364,12 @@ function nonBlankFileName(control: AbstractControl<string>): ValidationErrors | 
 })
 export class ModuleExportComponent {
   private readonly store = inject(ModuleStore);
+
+  /**
+   * Where the module listing was left, so a Cancel that has no module-scoped destination returns the
+   * operator to the page, sort and filter they came from rather than to the top of an unfiltered list.
+   */
+  private readonly listReturn = inject(ListReturnStore);
   private readonly notifications = inject(NotificationService);
   private readonly router = inject(Router);
   private readonly destroyRef = inject(DestroyRef);
@@ -404,7 +430,24 @@ export class ModuleExportComponent {
    * Private, and reaches the template only through {@link ModuleExportComponent.statusMessage}, so the
    * template can neither write it nor render it ahead of a refusal that should outrank it.
    */
-  private readonly _notice = signal<string | null>(null);
+  private readonly _notice = signal<ExportNotice | null>(null);
+
+  /**
+   * Raises one screen-level sentence, classified by what it reports.
+   *
+   * ⚠ THE TONE IS A REQUIRED ARGUMENT, WHICH IS THE POINT. This screen used to announce every sentence
+   * below through one polite region, so "your export did not happen" and "your export produced an empty
+   * document" were delivered identically and neither interrupted - while a server refusal of the SAME
+   * action went to the assertive banner. An operator who pressed Export and was told politely that it had
+   * been refused could sit waiting for a download that was never coming. Naming the tone at each call site
+   * makes the classification a decision the compiler insists on rather than one a region's role implies.
+   *
+   * @param message The sentence.
+   * @param tone Whether it reports a refused action or a completed one.
+   */
+  private raiseNotice(message: string, tone: ExportNoticeTone): void {
+    this._notice.set({ message, tone });
+  }
 
   /**
    * The refusal whose wording this screen owns, or null when there is none.
@@ -431,7 +474,33 @@ export class ModuleExportComponent {
    * empty on a successful response, and an address that resolved to no module. Everything the server refuses
    * structurally goes to the banner below instead, which is a richer surface.
    */
-  protected readonly notice = this._notice.asReadonly();
+  protected readonly notice = computed<string | null>(() => this._notice()?.message ?? null);
+
+  /**
+   * The sentence reporting that the action did NOT happen, or null when none is being reported.
+   *
+   * Announced assertively, because it answers a question the operator is actively waiting on. Rendered
+   * conditionally rather than kept mounted: `role="alert"` announces on insertion, which is exactly when
+   * this becomes true.
+   */
+  protected readonly refusalNotice = computed<string | null>(() => {
+    const raised: ExportNotice | null = this._notice();
+
+    return raised !== null && raised.tone === 'refusal' ? raised.message : null;
+  });
+
+  /**
+   * The sentence reporting a completed action's outcome, or null when none is being reported.
+   *
+   * Stays POLITE, and that is a distinction rather than an oversight: an export that ran and found nothing
+   * to write is a real answer the legacy screen also reported, not a failure, and interrupting for it would
+   * make an ordinary outcome read as a fault.
+   */
+  protected readonly outcomeNotice = computed<string | null>(() => {
+    const raised: ExportNotice | null = this._notice();
+
+    return raised !== null && raised.tone === 'outcome' ? raised.message : null;
+  });
 
   /**
    * The problem document to present in the shared error banner, or null when there is nothing to present.
@@ -613,7 +682,7 @@ export class ModuleExportComponent {
 
         // An address that names no module is reported immediately rather than on the first attempt to
         // export, because there is nothing the operator can do on this screen to repair it.
-        this._notice.set(NO_MODULE_ADDRESSED_MESSAGE);
+        this.raiseNotice(NO_MODULE_ADDRESSED_MESSAGE, 'refusal');
       });
     });
 
@@ -794,7 +863,7 @@ export class ModuleExportComponent {
     const id: number = this.moduleId();
 
     if (!Number.isInteger(id)) {
-      this._notice.set(NO_MODULE_ADDRESSED_MESSAGE);
+      this.raiseNotice(NO_MODULE_ADDRESSED_MESSAGE, 'refusal');
 
       return;
     }
@@ -813,7 +882,7 @@ export class ModuleExportComponent {
     //   possibly help, for a module that does not exist. A condition the operator cannot repair outranks one
     //   they can.
     if (detail === null) {
-      this._notice.set(NO_MODULE_ADDRESSED_MESSAGE);
+      this.raiseNotice(NO_MODULE_ADDRESSED_MESSAGE, 'refusal');
 
       return;
     }
@@ -823,7 +892,7 @@ export class ModuleExportComponent {
     // otherwise supply `moduleName` for the composed filename while the request below carries a different
     // identifier. The result is module B's data delivered under module A's filename.
     if (detail.moduleId !== id) {
-      this._notice.set(STALE_MODULE_MESSAGE);
+      this.raiseNotice(STALE_MODULE_MESSAGE, 'refusal');
 
       return;
     }
@@ -874,14 +943,89 @@ export class ModuleExportComponent {
    * redirected to the current page's own address, which returned the operator to the portal page that was
    * hosting the module - a page assembled by the server from skins and containers, and a concept with no
    * counterpart here. The module's administration screen is the closest destination that exists, so that is
-   * where this goes; when the address named no module there is no module-scoped destination at all and it
-   * returns to the application root. The destination is expressed as a path, not as an import of a
-   * neighbouring screen.
+   * where this goes. The destination is expressed as a path, not as an import of a neighbouring screen.
+   *
+   * ⚠ THE FALLBACK IS THE MODULE LISTING, NOT THE APPLICATION ROOT. When the address names no module there
+   * is no module-scoped destination, and this used to navigate to `/` - dropping the operator at the top of
+   * the console, having abandoned the listing they came from, with nothing said about why. The sibling
+   * import screen already returns to the listing and already restores the coordinate it was left at, so
+   * that is the destination and the mechanism reused here: a Cancel now lands somewhere the operator was,
+   * on both screens, rather than somewhere neither of them started.
    */
   protected cancel(): void {
     const id: number = this.moduleId();
 
-    void this.router.navigate(Number.isInteger(id) ? ['/modules', id, 'settings'] : ['/']);
+    if (Number.isInteger(id)) {
+      void this.router.navigate(['/modules', id, 'settings']);
+
+      return;
+    }
+
+    void this.router.navigate([MODULE_LIST_ROUTE], {
+      queryParams: this.listReturn.coordinateFor(MODULE_LIST_ROUTE),
+    });
+  }
+
+  /**
+   * Which failed operation the recovery control would re-attempt, or null when nothing is recoverable.
+   *
+   * ⚠ THIS SCREEN HAD NO RECOVERY AT ALL, which is the defect. A refused module read left the filename
+   * unprepopulated and the confirming action disabled, and a refused export left the banner reporting a
+   * failure with no control able to re-attempt anything - so on both paths the only way forward was to
+   * navigate away and come back. The sibling import screen has offered a retry for exactly this reason;
+   * export now offers the same one, resolved to whichever operation actually failed rather than to a single
+   * hard-coded command.
+   */
+  protected readonly retryableOperation = computed<'loadModule' | 'exportModule' | null>(() => {
+    // Read through `problem()` rather than the store, so the control is offered only for a failure this
+    // screen is actually PRESENTING: the store holds one failure slot shared across every module command,
+    // and a listing's failure on another screen must not put a retry button on this one.
+    if (this.problem() === null) {
+      return null;
+    }
+
+    const failure: ModuleStoreFailure | null = this.store.failure();
+
+    if (failure === null) {
+      return null;
+    }
+
+    return failure.operation === 'loadModule' || failure.operation === 'exportModule'
+      ? failure.operation
+      : null;
+  });
+
+  /**
+   * Re-attempts the failed operation.
+   *
+   * A refused READ is retried by reading again; a refused EXPORT by submitting again, which re-runs the
+   * screen's own guards first, so a retry cannot deliver a document for a module the address no longer
+   * names.
+   */
+  protected onRetry(): void {
+    const operation: 'loadModule' | 'exportModule' | null = this.retryableOperation();
+
+    if (operation === null) {
+      return;
+    }
+
+    if (operation === 'exportModule') {
+      this.submit();
+
+      return;
+    }
+
+    const id: number = this.moduleId();
+
+    if (!Number.isInteger(id)) {
+      this.raiseNotice(NO_MODULE_ADDRESSED_MESSAGE, 'refusal');
+
+      return;
+    }
+
+    this._notice.set(null);
+    this.store.clearFailure();
+    this.store.loadModule(id);
   }
 
   /**
@@ -969,7 +1113,7 @@ export class ModuleExportComponent {
       return;
     }
 
-    this._notice.set(NO_MODULE_ADDRESSED_MESSAGE);
+    this.raiseNotice(NO_MODULE_ADDRESSED_MESSAGE, 'refusal');
   }
 
   /**
@@ -1000,7 +1144,7 @@ export class ModuleExportComponent {
     if (exportedModuleId !== this.moduleId()) {
       this.pendingFileName = null;
       this.pendingExportModuleId = null;
-      this._notice.set(STALE_EXPORT_MESSAGE);
+      this.raiseNotice(STALE_EXPORT_MESSAGE, 'refusal');
 
       return;
     }
@@ -1015,7 +1159,7 @@ export class ModuleExportComponent {
     // document distinct from an absent one, and that distinction is what this branch consumes. A file
     // containing nothing is reported rather than downloaded.
     if (content.length === 0) {
-      this._notice.set(NO_CONTENT_MESSAGE);
+      this.raiseNotice(NO_CONTENT_MESSAGE, 'outcome');
 
       return;
     }

@@ -55,6 +55,24 @@ export interface AppNotification {
    * operator has to quote, and removing them on a timer would destroy the only record of a failure.
    */
   readonly selfDismisses: boolean | null;
+
+  /**
+   * The operation this entry reports on, or `null` when it reports on nothing in particular.
+   *
+   * ⚠ QA-26 — WHAT MAKES TWO REPORTS THE SAME REPORT, WHEN THEIR WORDING DIFFERS. The queue already
+   * collapses an entry identical to the one before it, which handles the operator pressing the same
+   * refused command twice. It does nothing for the case that was actually reported: two DIFFERENT
+   * failures of the SAME operation, which is what the import screen produces when a file is refused for
+   * being too large and the next one is refused for being unreadable. Both are the answer to "what
+   * happened to the file you chose", only one of them is still true, and both were on screen at once
+   * beside the screen's own banner.
+   *
+   * A scope names the operation rather than the sentence, so a newer report of one operation SUPERSEDES
+   * the older one wherever it sits in the queue rather than only when it is adjacent and identical.
+   * Entries carrying `null` are unscoped and never supersede anything — which is the existing behaviour,
+   * so every call site that does not opt in is unaffected.
+   */
+  readonly scope: string | null;
 }
 
 /**
@@ -183,6 +201,7 @@ export class NotificationService {
     reference: string | null = null,
     survivesNavigation = false,
     selfDismisses: boolean | null = null,
+    scope: string | null = null,
   ): void {
     // The bound is applied BEFORE the emptiness test, so a message that is only whitespace is still
     // recognised as blank after truncation.
@@ -204,9 +223,22 @@ export class NotificationService {
       reference: quoted,
       survivesNavigation,
       selfDismisses,
+      scope,
     };
 
-    this._notifications.update((queue) => {
+    this._notifications.update((rawQueue) => {
+      // ⚠ QA-26 — A NEWER REPORT OF ONE OPERATION RETIRES THE OLDER ONE, WHEREVER IT SITS. Applied before
+      // the adjacency test below, and independently of it: the two answer different questions. That one asks
+      // "is this the same sentence again", which catches a command pressed twice; this one asks "is this the
+      // same operation again", which catches two DIFFERENT outcomes of one operation - the case that leaves a
+      // stale refusal on screen beside a newer one. An unscoped entry supersedes nothing, so every existing
+      // call site keeps exactly the behaviour it had.
+      //
+      // A superseded entry's exemption from the navigation sweep goes with it, since an id no longer in the
+      // queue can never be swept and the set is only consulted for entries that are.
+      const queue =
+        scope === null ? rawQueue : rawQueue.filter((existing) => existing.scope !== scope);
+
       // ⚠ THE LIFETIME OPINION IS PART OF THE COMPARISON. Two entries wording the same sentence at the same
       // severity are still different reports when one of them expires and the other does not, and
       // collapsing them would silently impose the FIRST one's lifetime on the second - so a refusal raised
@@ -238,8 +270,8 @@ export class NotificationService {
    * @param message The statement to present.
    * @param survivesNavigation Whether the statement must outlive the next change of screen.
    */
-  success(message: string, survivesNavigation = false): void {
-    this.notify('success', message, null, survivesNavigation);
+  success(message: string, survivesNavigation = false, scope: string | null = null): void {
+    this.notify('success', message, null, survivesNavigation, null, scope);
   }
 
   /**
@@ -248,8 +280,8 @@ export class NotificationService {
    * @param message The statement to present.
    * @param survivesNavigation Whether the statement must outlive the next change of screen.
    */
-  info(message: string, survivesNavigation = false): void {
-    this.notify('info', message, null, survivesNavigation);
+  info(message: string, survivesNavigation = false, scope: string | null = null): void {
+    this.notify('info', message, null, survivesNavigation, null, scope);
   }
 
   /**
@@ -261,8 +293,8 @@ export class NotificationService {
    * @param message The statement to present.
    * @param survivesNavigation Whether the statement must outlive the next change of screen.
    */
-  warning(message: string, survivesNavigation = false): void {
-    this.notify('warning', message, null, survivesNavigation);
+  warning(message: string, survivesNavigation = false, scope: string | null = null): void {
+    this.notify('warning', message, null, survivesNavigation, null, scope);
   }
 
   /**
@@ -273,8 +305,8 @@ export class NotificationService {
    * @param message The already-composed, display-ready plain-text message.
    * @param reference The support reference to quote, or `null` when there is none.
    */
-  error(message: string, reference: string | null = null): void {
-    this.notify('error', message, reference);
+  error(message: string, reference: string | null = null, scope: string | null = null): void {
+    this.notify('error', message, reference, false, null, scope);
   }
 
   /**

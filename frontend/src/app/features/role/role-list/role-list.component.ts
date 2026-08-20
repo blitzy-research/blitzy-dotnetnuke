@@ -383,6 +383,15 @@ const EDIT_ROLE_LABEL = 'Edit';
 /** `Roles.ascx.resx` &rarr; `UserRoles.Text`; the accessible name of the row membership command. */
 const MANAGE_USERS_LABEL = 'Manage Users';
 
+/**
+ * The state a protected row reports in place of a command it does not offer.
+ *
+ * One word, because it shares a narrow command column with two others. The full reason travels as the row's
+ * own accessible text, which names WHICH role and WHY. MIGRATION: net addition - the legacy simply rendered
+ * nothing in these cells.
+ */
+const PROTECTED_ROLE_STATE_LABEL = 'Protected';
+
 /** `Roles.ascx.resx` &rarr; `AddContent.Action`. */
 const ADD_ROLE_LABEL = 'Add New Role';
 
@@ -754,6 +763,13 @@ export class RoleListComponent implements OnInit {
   private feeCellTemplate?: TemplateRef<DataTableCellContext<RoleListItem>>;
 
   /**
+   * Description cell. A template rather than a bound field because an absent description has to paint the
+   * shared mark AND expose its clipped expansion, which is two elements, and a bound field emits one string.
+   */
+  @ViewChild('descriptionCell', { static: true })
+  private descriptionCellTemplate?: TemplateRef<DataTableCellContext<RoleListItem>>;
+
+  /**
    * Period cell, shared by the billing and trial period columns. A template rather than a bound value
    * because an absent period now renders a MARK plus its clipped expansion rather than an empty string —
    * see {@link absentValueMark} for the inconsistency that forced it.
@@ -920,6 +936,13 @@ export class RoleListComponent implements OnInit {
    *
    * Returns `null` when no real group is chosen, because then no removal is expected and an explanation for
    * an absence nobody noticed is just noise.
+   *
+   * ⚠ THE COUNT IS THE SERVER'S, AND IT IS NAMED. Two things follow from that, and both were defects
+   * before. First, the sentence survives filtering: it used to disappear at exactly the moment the filter
+   * emptied the page, which is the moment the false Delete command appeared, so the operator lost the
+   * explanation and gained an affordance that could not work. Second, it quantifies the remedy - a group
+   * that classifies one role is one move away from being removable, and a group that classifies forty is
+   * not, and "still has roles in it" said nothing about which.
    */
   protected readonly groupRemovalWithheldReason = computed<string | null>(() => {
     if (this.canRemoveSelectedGroup()) {
@@ -932,7 +955,16 @@ export class RoleListComponent implements OnInit {
       return null;
     }
 
-    return `${chosen.roleGroupName} still has roles in it, so it cannot be deleted. Move or delete its roles first.`;
+    const classified: number = chosen.classifiedRoleCount;
+    const roles: string = classified === 1 ? '1 role' : `${classified} roles`;
+
+    return (
+      // "contains", not "classifies". The server's refusal says "classifies" and the count travels as
+      // `classifiedRoleCount`, but that is internal vocabulary; an operator reading a filter row wants the
+      // plain relation between a group and the roles in it.
+      `${chosen.roleGroupName} still contains ${roles}, so it cannot be deleted. ` +
+      'Move or delete those roles first.'
+    );
   });
 
   /** The prompt in the filter box, naming what the server actually matches on. */
@@ -1256,8 +1288,17 @@ export class RoleListComponent implements OnInit {
   /** Maximum length accepted by the group-description input. */
   protected readonly groupDescriptionMaxLength = GROUP_DESCRIPTION_MAX_LENGTH;
 
-  /** Accessible name of the inline edit affordance: `SharedResources.resx` `Edit.Text`. */
-  protected readonly editGroupLabel = EDIT_ROLE_LABEL;
+  /**
+   * Accessible name of the inline group-edit affordance.
+   *
+   * ⚠ IT NAMES ITS OBJECT, BECAUSE ITS SIBLING DOES. This reused the row command's bare `Edit.Text`
+   * while the button immediately beside it announced itself as "Delete role group" - so of the two group
+   * commands sharing one row, one said what it acted on and the other did not, and a reader tabbing the
+   * filter row met "Edit" with nothing to say WHICH of the several editable things on this screen it meant.
+   * The ROW commands are unambiguous because each is named with its own role ("Edit QA Free Members"); this
+   * one carried no such qualifier.
+   */
+  protected readonly editGroupLabel = 'Edit role group';
 
   /**
    * Accessible name of the group-removal affordance. the legacy `cmdDelete` image button carried NEITHER
@@ -1303,8 +1344,31 @@ export class RoleListComponent implements OnInit {
    * @returns The explanation an operator reads instead of a refusal.
    */
   protected protectedRoleReason(row: RoleListItem): string {
-    return `${row.roleName} is required by this site, so it cannot be edited or deleted.`;
+    // The purpose is named because the two protected roles are protected for DIFFERENT reasons, and the
+    // server says which: it refuses with "Role N is the portal's designated administrators role" or
+    // "... designated registered members role". Saying only "required by this site" made the two rows
+    // indistinguishable and told the operator nothing they could act on.
+    const purpose: string = row.roleId === this.portals.administratorRoleId()
+      ? 'administrators'
+      : 'registered members';
+
+    return `${row.roleName} is this site's designated ${purpose} role, `
+      + 'so it cannot be edited or deleted.';
   }
+
+  /**
+   * The word rendered IN the command cell of a protected row.
+   *
+   * ⚠ A CELL THAT RENDERS ONLY AN EM DASH IS A CELL THAT SAYS NOTHING. The dash was marked
+   * `aria-hidden`, the reason beside it was visually hidden, and the only carrier left for a sighted
+   * operator was a `title` on a `<span>` - an element that takes no focus, so the tooltip was unreachable
+   * by keyboard and the cell read as empty or broken rather than as governed by a rule. Naming the STATE in
+   * the cell costs one word and makes the rule visible at a glance.
+   *
+   * The word is the server's own: both writes are refused with `role.protected`, so the screen and the
+   * refusal speak one vocabulary rather than two.
+   */
+  protected readonly protectedRoleStateLabel = PROTECTED_ROLE_STATE_LABEL;
 
   /** Header action: `AddContent.Action`. */
   protected readonly addRoleLabel = ADD_ROLE_LABEL;
@@ -1759,21 +1823,41 @@ export class RoleListComponent implements OnInit {
       // headings being ellipsised — "Public", "Auto", and both wrapped lines of "Billing Every", "Billing
       // Period", "Trial Every" and "Trial Period" — because each of those columns had been given less room
       // than its own heading text needs once the 24px of fixed heading overhead is taken out. The width had
-      // to come from somewhere on the same grid, and a name is the right place to take it from: a role name
-      // WRAPS and stays wholly legible at a narrower measure, whereas a clipped heading is simply gone from
-      // the screen. The full arithmetic, and the two separate mechanisms by which a heading is lost, are
-      // recorded once on the shared column contract rather than restated here.
+      // to come from somewhere on the same grid, and a name was the place it was taken from. The full
+      // arithmetic, and the two separate mechanisms by which a heading is lost, are recorded once on the
+      // shared column contract rather than restated here.
+      //
+      // ⚠ AND THE REASONING ABOVE CONTAINED ONE FALSE PREMISE, WHICH IS WHY 3.5% OF IT IS BEING REPAID. It
+      // says a role name "WRAPS and stays wholly legible at a narrower measure". It does not: this column is
+      // `atomic` — the annotation immediately below says so, and says why — so its cells do not wrap, they
+      // ELLIPSISE. The donation was therefore not a trade of wrapping against clipping; it was a trade of one
+      // clipped thing for another. Measured on the rendered grid at 1440, SEVEN of ten role names painted with
+      // an ellipsis in a 125.78px track, the longest needing 315.77px.
+      //
+      // The repayment comes from the four columns that measurement showed holding genuine surplus rather than
+      // from the description, so the slack column keeps every pixel it had:
+      //
+      //     Fee     6% -> 5.5%   heading needs 49.85, had 57.59 at the floor
+      //     Trial   7.5% -> 6%   heading needs 54.85, had 72.00
+      //     Public  8% -> 7%     heading needs 53.01 of word, had 76.80
+      //     Auto    6.5% -> 6%   heading needs 42.15 of word, had 62.39
+      //
+      // None of those four is atomic, so what the reduction costs them is a heading laid out on two lines or a
+      // sort indicator sitting under its label — never a character. The 3.5% they release takes this column
+      // from 125.78px to 167.72px at 1440 and from 100.80px to 134.40px at the floor, which holds the common
+      // role names outright; the exceptional ones stay recoverable through the shared grid's truncation
+      // affordance.
       {
         key: 'roleName',
-        width: '10.5%',
+        width: '14%',
         // ⚠ ATOMIC BECAUSE A ROLE NAME IS NOT A PHRASE, AND WRAPPING ONE FRACTURES IT. The shared stylesheet
         // lets any cell break inside a word so a narrow column never overflows, which is right for prose and
         // wrong for a value read as a single token: measured at a 768 viewport, this column rendered
         // `Administrators` as `Administrator` + `s`, in a 100.80px track.
         // Marked atomic the value stays on one line and a column too narrow to hold it ellipsises instead, so
         // what is on screen is a recognisable prefix rather than two fragments that read as corruption. The
-        // whole value stays in the accessibility tree either way. No width changes - the grid's weights are
-        // derived as a set and still sum to the same total.
+        // whole value stays in the accessibility tree either way. The weights are derived as a set and still
+        // sum to the same total after the repayment recorded above.
         atomic: true,
         rowHeader: true,
         // Ordering: the key IS the endpoint's own sort name. See the sortability note on `columns`.
@@ -1784,15 +1868,22 @@ export class RoleListComponent implements OnInit {
         field: 'roleName',
       },
 
-      // 4. `asp:boundcolumn DataField="Description"`. Nullable on the contract; the shared
-      // table renders an absent value as empty rather than as the word "null".
+      // 4. `asp:boundcolumn DataField="Description"`. Nullable on the contract.
+      //
+      // ⚠ QA-20 — AN ABSENT DESCRIPTION PAINTED NOTHING, AND THIS GRID DISAGREED WITH ITSELF ABOUT IT. Four
+      // other columns on this very row — both fees, both periods, both frequencies — already answered an
+      // absent value with the shared mark and its clipped words, while this one rendered an empty cell that a
+      // reader could not tell from a cell that had failed to draw. It was the last column here bound as a
+      // plain field, which is why it was the last one still doing it: a field column emits one string and
+      // cannot emit a mark plus a hidden sentence.
       {
         key: 'description',
         sortable: true,
         label: DESCRIPTION_HEADING,
         headerAlign: 'center',
         bodyAlign: 'start',
-        field: 'description',
+        kind: 'template',
+        cellTemplate: this.requireTemplate(this.descriptionCellTemplate, 'descriptionCell'),
         // ⚠ THE ONE COLUMN ON THIS GRID THAT DECLARES NO WIDTH, AND ONE MUST NOT.
         //
         // Under `table-layout: fixed` the leftover after the percentage tracks goes to whichever columns did
@@ -1806,7 +1897,9 @@ export class RoleListComponent implements OnInit {
       // 5. Template column over `FormatPrice(ServiceFee)`.
       {
         key: 'serviceFee',
-        width: '6%',
+        // Reduced by half a point to repay the name column. The heading wraps rather than clipping, and it
+        // still has 52.80px at the table's floor against the 49.85px it needs.
+        width: '5.5%',
         sortable: true,
         label: FEE_HEADING,
         headerAlign: 'center',
@@ -1818,7 +1911,13 @@ export class RoleListComponent implements OnInit {
       // 6. Template column over `FormatPeriod(BillingPeriod)`. The COUNT, before its unit.
       {
         key: 'billingPeriod',
-        width: '8%',
+        // ⚠ FUNDS THE PUBLIC/AUTO CORRECTION, AND CAN AFFORD TO. This heading is TWO WORDS, so the
+        // shared label box wraps it rather than ellipsising it - measured: "Billing Every" wants 90.86px
+        // in a 52.8px box and simply takes two lines. A narrower track therefore costs a line of heading
+        // height and no text, which is exactly the trade the single-word headings beside it CANNOT make.
+        // Its values are one or two characters wide, so nothing in the body is at risk either. Taken from
+        // here rather than from the description slack, which a specification holds at a fixed budget.
+        width: '7.5%',
         sortable: true,
         label: BILLING_EVERY_HEADING,
         headerAlign: 'center',
@@ -1830,7 +1929,13 @@ export class RoleListComponent implements OnInit {
       // 7. `asp:boundcolumn DataField="BillingFrequency"`, with the bare item style noted above.
       {
         key: 'billingFrequency',
-        width: '8%',
+        // ⚠ FUNDS THE PUBLIC/AUTO CORRECTION, AND CAN AFFORD TO. This heading is TWO WORDS, so the
+        // shared label box wraps it rather than ellipsising it - measured: "Billing Every" wants 90.86px
+        // in a 52.8px box and simply takes two lines. A narrower track therefore costs a line of heading
+        // height and no text, which is exactly the trade the single-word headings beside it CANNOT make.
+        // Its values are one or two characters wide, so nothing in the body is at risk either. Taken from
+        // here rather than from the description slack, which a specification holds at a fixed budget.
+        width: '7.75%',
         sortable: true,
         label: BILLING_PERIOD_HEADING,
         headerAlign: 'center',
@@ -1843,7 +1948,9 @@ export class RoleListComponent implements OnInit {
       // reading "Trial"; verified at `roles.ascx` L55.
       {
         key: 'trialFee',
-        width: '7.5%',
+        // Reduced to repay the name column: this was the largest single surplus on the grid, 50.99px at 1440,
+        // for a heading of one short word. 57.60px remains at the floor against 54.85px needed.
+        width: '6%',
         sortable: true,
         label: TRIAL_HEADING,
         headerAlign: 'center',
@@ -1867,7 +1974,13 @@ export class RoleListComponent implements OnInit {
       // 10. `asp:boundcolumn DataField="TrialFrequency"`, the second bare item style.
       {
         key: 'trialFrequency',
-        width: '8%',
+        // ⚠ FUNDS THE PUBLIC/AUTO CORRECTION, AND CAN AFFORD TO. This heading is TWO WORDS, so the
+        // shared label box wraps it rather than ellipsising it - measured: "Billing Every" wants 90.86px
+        // in a 52.8px box and simply takes two lines. A narrower track therefore costs a line of heading
+        // height and no text, which is exactly the trade the single-word headings beside it CANNOT make.
+        // Its values are one or two characters wide, so nothing in the body is at risk either. Taken from
+        // here rather than from the description slack, which a specification holds at a fixed budget.
+        width: '7.5%',
         sortable: true,
         label: TRIAL_PERIOD_HEADING,
         headerAlign: 'center',
@@ -1878,7 +1991,18 @@ export class RoleListComponent implements OnInit {
 
       {
         key: 'isPublic',
-        width: '8%',
+        // ⚠ RAISED BACK, BECAUSE THE PREDICTION IN THE COMMENT THIS REPLACES WAS MEASURED WRONG. It read
+        // "a single 45.01px word that still fits outright ... costs a line of heading height and no text at
+        // all", and that holds at a wide viewport where the table takes the container's width. It does NOT
+        // hold at the table's own 60rem minimum, which is what 768 and 320 both collapse to: 7% of 960px is
+        // 67.2px, and after the cell padding and the 12px sort-indicator gutter the label box measures
+        // 43.19px against a 45.01px word. Over by 1.82px - and because the ellipsis glyph takes width of its
+        // own, that 1.82px cost SEVERAL characters, painting the heading as "Pu…".
+        //
+        // A single-word heading cannot wrap its way out of this the way "Billing Every" does, so the width
+        // has to hold it. 7.75% of 960px is 74.4px, leaving the label box about 50px for a 45.01px word.
+        // Repaid from `description`, which declares no width and absorbs the remainder by design.
+        width: '7.75%',
         // Ordered on the STORED boolean, not on the announced word the pipe produces from it.
         sortable: true,
         label: PUBLIC_HEADING,
@@ -1889,6 +2013,10 @@ export class RoleListComponent implements OnInit {
       },
       {
         key: 'autoAssignment',
+        // Raised for the same measured reason as "Public" beside it, and the claim that "the word itself fits
+        // at every width" was wrong in the same way: at the table's 60rem minimum the label box measured
+        // 33.59px against a 34.15px word, so "Auto" painted as "A…" - a heading reduced to one letter by a
+        // 0.56px shortfall. 6.5% of 960px gives the box about 38px. Repaid from `description`.
         width: '6.5%',
         sortable: true,
         label: AUTO_HEADING,
@@ -2295,6 +2423,18 @@ export class RoleListComponent implements OnInit {
    * @param key Which of the two fee columns is being drawn.
    * @returns True when the stored amount is absent or the legacy marker.
    */
+  /**
+   * Whether a role's description is absent. Null and whitespace-only both count: the contract admits null,
+   * and a description of spaces is not a description — collapsing the two here is what stops one row saying
+   * "not recorded" while the next says nothing at all for the same practical state.
+   *
+   * @param row The role being rendered.
+   * @returns True when there is no description to show.
+   */
+  protected isDescriptionAbsent(row: RoleListItem): boolean {
+    return row.description === null || row.description.trim().length === 0;
+  }
+
   protected isFeeAbsent(role: RoleListItem, key: string): boolean {
     return this.formatPrice(key === 'trialFee' ? role.trialFee : role.serviceFee) === '';
   }

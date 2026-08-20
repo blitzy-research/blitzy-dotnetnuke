@@ -32,6 +32,7 @@ import {
   NOTIFY_UNAVAILABLE_ADVISORY,
   PASSWORD_MIN_LENGTH,
   PASSWORD_MIN_NON_ALPHANUMERIC,
+  USERNAME_FIXED_ADVISORY,
   UserFormComponent,
   passwordRulesValidator,
 } from './user-form.component';
@@ -1310,20 +1311,14 @@ describe('UserFormComponent', () => {
 
       expect(notifyField).withContext('the control sits in a labelled field').not.toBeNull();
 
-      const help: HTMLButtonElement | null =
-        (notifyField as HTMLElement).querySelector<HTMLButtonElement>('.form-field__help-toggle');
-
-      expect(help).withContext('the notify field offers a help affordance').not.toBeNull();
-      expect((notifyField as HTMLElement).textContent ?? '')
-        .withContext('and says nothing until asked, like every other field')
-        .not.toContain(NOTIFY_UNAVAILABLE_ADVISORY);
-
-      (help as HTMLButtonElement).click();
-      fixture.detectChanges();
-
-      expect((notifyField as HTMLElement).textContent ?? '')
-        .withContext('the reason the box cannot act, stated where the box is')
+      // The sentence sits BESIDE the field rather than inside it, because it explains a control that can
+      // never act - see the disabled-switch spec for why a disclosure was the wrong home for it.
+      expect(host().textContent ?? '')
+        .withContext('the reason the box cannot act, stated without being asked for')
         .toContain(NOTIFY_UNAVAILABLE_ADVISORY);
+      expect((box as HTMLInputElement).getAttribute('aria-describedby'))
+        .withContext('and named by the control it explains')
+        .toBe('user-form-notify-unavailable-advisory');
 
       fillCreationForm();
       press(CREATE_SUBMIT_LABEL);
@@ -2855,12 +2850,24 @@ describe('UserFormComponent', () => {
       expect(notify.disabled).withContext('no wire field exists to carry the choice').toBeTrue();
       expect(notify.checked).toBeFalse();
 
+      // ⚠ THE REASON IS NOW STATED WITHOUT BEING ASKED FOR, AND THAT REVERSAL IS THE FIX. It used to
+      // live inside the field's help disclosure, which is collapsed until somebody presses a button - and
+      // this control is NATIVELY DISABLED, so it takes no focus and shows no hover affordance, leaving a
+      // reader with an unexplained dead box and no route to the explanation. "Revealed on demand, exactly
+      // like every other field" was the wrong standard to hold it to: every other field on this screen can
+      // be used, and this one never can, so there is no decision for the disclosure to inform.
       expect(host().textContent ?? '')
-        .withContext('help is revealed on demand, exactly like every other field')
-        .not.toContain(NOTIFY_UNAVAILABLE_ADVISORY);
+        .withContext('the reason is in the flow, not behind a disclosure')
+        .toContain(NOTIFY_UNAVAILABLE_ADVISORY);
       expect(notify.closest('.form-field')?.querySelector('.form-field__help-toggle'))
-        .withContext('but the affordance that reveals it is offered')
-        .not.toBeNull();
+        .withContext('and no disclosure is offered, because there is nothing left to reveal')
+        .toBeNull();
+      expect(notify.getAttribute('aria-describedby'))
+        .withContext('the control names the sentence that explains it')
+        .toBe('user-form-notify-unavailable-advisory');
+      expect(
+        host().querySelector('#user-form-notify-unavailable-advisory')?.textContent?.trim(),
+      ).toBe(NOTIFY_UNAVAILABLE_ADVISORY);
     });
 
     it('returns every control to its initial value on a reset, never to null', () => {
@@ -3630,7 +3637,10 @@ describe('UserFormComponent', () => {
 
       const shown = helpTextFor(CONTROL_ID.displayName);
 
-      expect(shown).toBe(
+      // The shared field APPENDS the declared bound to whatever help it is given, so the assertion is on
+      // the curated sentence rather than on the whole string - the bound is a separate obligation, proved
+      // by the bound spec below.
+      expect(shown).toContain(
         'This site composes display names from a set format, so this value cannot be changed here.',
       );
       expect(shown)
@@ -3681,7 +3691,7 @@ describe('UserFormComponent', () => {
 
       expect(input.readOnly).toBeFalse();
       expect(input.disabled).toBeFalse();
-      expect(helpTextFor(CONTROL_ID.displayName)).toBe('Provide a Display Name');
+      expect(helpTextFor(CONTROL_ID.displayName)).toContain('Provide a Display Name');
     });
 
     it('treats a format of only whitespace as no format at all', () => {
@@ -3690,6 +3700,181 @@ describe('UserFormComponent', () => {
       fixture.detectChanges();
 
       expect(field<HTMLInputElement>(CONTROL_ID.displayName).readOnly).toBeFalse();
+    });
+  });
+
+  // =========================================================================
+  // WHAT AN UNUSABLE CONTROL AND A BOUNDED BOX HAVE TO SAY FOR THEMSELVES
+  //
+  // Three separate ways this screen used to withhold something a reader needed, all of the same shape:
+  // information existed, and the only route to it was one a reader could not take.
+  // =========================================================================
+
+  describe('the explanations an unusable control owes the reader', () => {
+    /** The sentence text of one advisory paragraph, or null when the paragraph is not rendered. */
+    function advisory(id: string): string | null {
+      const node = query<HTMLElement>(`#${id}`);
+
+      return node === null ? null : (node.textContent ?? '').trim();
+    }
+
+    /** The help text one field reveals, opening its disclosure first. */
+    function helpFor(controlId: string): string {
+      const wrapper = field<HTMLElement>(controlId).closest('app-form-field');
+      const toggle = wrapper?.querySelector<HTMLButtonElement>('.form-field__help-toggle');
+
+      toggle?.click();
+      fixture.detectChanges();
+
+      return (wrapper?.querySelector('.form-field__help')?.textContent ?? '').trim();
+    }
+
+    it('says WHY the sign-in name cannot be changed, in the flow, while editing', () => {
+      arriveEditing(account(7));
+
+      const box = field<HTMLInputElement>(CONTROL_ID.username);
+
+      // The precondition that makes the explanation necessary: a natively disabled control takes no focus
+      // and offers no hover, so `title` and a collapsed disclosure are both unreachable by definition.
+      expect(box.disabled).withContext('the lock itself is unchanged').toBeTrue();
+      expect(advisory('user-form-username-fixed-advisory'))
+        .withContext('and it now says why')
+        .toBe(USERNAME_FIXED_ADVISORY);
+      expect(box.getAttribute('aria-describedby'))
+        .withContext('named by the control it explains, so the accessibility tree carries it too')
+        .toContain('user-form-username-fixed-advisory');
+    });
+
+    // ⚠ THE ADVISORY ALONE LEFT A CONTRADICTION STANDING. Adding "the sign-in name is fixed" beside a box
+    // that still offered the help text "Enter a username" gave one reader two statements about one control,
+    // one of which it cannot obey. The imperative is withdrawn where it does not apply; the declared bound
+    // stays, because that sentence is true in both modes.
+    it('withdraws the instruction to enter a name from the box that cannot take one', () => {
+      arriveEditing(account(7));
+
+      const shown: string = helpFor(CONTROL_ID.username);
+
+      expect(shown)
+        .withContext('nothing tells the reader to type into a box that refuses typing')
+        .not.toContain('Enter a username');
+      expect(shown)
+        .withContext('but the bound is still stated, because it is still true')
+        .toContain('At most 100 characters');
+    });
+
+    it('keeps the instruction while the field can actually be used', () => {
+      create();
+
+      expect(helpFor(CONTROL_ID.username)).toContain('Enter a username');
+    });
+
+    it('says nothing about a lock that is not in force, while creating', () => {
+      create();
+
+      expect(field<HTMLInputElement>(CONTROL_ID.username).disabled)
+        .withContext('the name IS editable while creating')
+        .toBeFalse();
+      expect(advisory('user-form-username-fixed-advisory'))
+        .withContext('so no explanation is owed, and none is given')
+        .toBeNull();
+      expect(field<HTMLInputElement>(CONTROL_ID.username).getAttribute('aria-describedby') ?? '')
+        .not.toContain('user-form-username-fixed-advisory');
+    });
+
+    // ⚠ ONE ASSERTION PER BOUNDED BOX, because the defect was per-box: `maxlength` refuses keystrokes
+    // and keeps only the head of a longer pasted value in SILENCE, so every box that declares one owes
+    // the reader the figure BEFORE it bites. The shared field renders it as a permanently present
+    // sentence its `aria-describedby` names; a box that stated nothing is a box that truncates in silence.
+    it('states the bound on EVERY box that enforces one', () => {
+      create();
+
+      const declared: readonly { readonly id: string; readonly bound: number }[] = [
+        { id: CONTROL_ID.username, bound: 100 },
+        { id: CONTROL_ID.firstName, bound: 50 },
+        { id: CONTROL_ID.lastName, bound: 50 },
+        { id: CONTROL_ID.displayName, bound: 128 },
+        { id: CONTROL_ID.email, bound: 256 },
+        { id: CONTROL_ID.password, bound: 256 },
+        { id: CONTROL_ID.confirmPassword, bound: 256 },
+      ];
+
+      for (const { id, bound } of declared) {
+        const box = field<HTMLInputElement>(id);
+        const statement = box
+          .closest('app-form-field')
+          ?.querySelector<HTMLElement>('.form-field__limit');
+
+        expect(box.getAttribute('maxlength'))
+          .withContext(`${id} enforces its bound`)
+          .toBe(String(bound));
+        expect((statement?.textContent ?? '').trim())
+          .withContext(`${id} states the same bound it enforces`)
+          .toBe(`At most ${bound} characters.`);
+        expect(box.getAttribute('aria-describedby'))
+          .withContext(`${id} names the statement, so it is heard on focus`)
+          .toContain(statement?.id ?? 'missing');
+      }
+    });
+  });
+
+  // =========================================================================
+  // THE CREDENTIAL PAIR, AND WHICH OF THEM IS ANNOUNCED AS INVALID
+  // =========================================================================
+
+  describe('the credential pair\'s invalid state', () => {
+    it('flags BOTH boxes while the group rule is speaking', () => {
+      create();
+
+      // Touch one and submit, which is what licenses the group rule to speak at all.
+      type(CONTROL_ID.password, 'Str0ngPass');
+      type(CONTROL_ID.confirmPassword, 'different');
+      press(CREATE_SUBMIT_LABEL);
+
+      expect(field<HTMLInputElement>(CONTROL_ID.password).getAttribute('aria-invalid'))
+        .withContext('the rule spans the pair, so it speaks for the pair')
+        .toBe('true');
+      expect(field<HTMLInputElement>(CONTROL_ID.confirmPassword).getAttribute('aria-invalid'))
+        .withContext('and the confirmation is not exempt from it')
+        .toBe('true');
+    });
+
+    // ⚠ THE REGRESSION THIS PINS. Both boxes used to read the GROUP message alone, unlike every other
+    // control on the screen, which reads its own. That is not merely inconsistent: when a per-field
+    // message and the group message were BOTH live and the per-field one then cleared, the shared field
+    // withdrew the `aria-invalid` it had contributed - correctly, for a state it owned - and Angular did
+    // not restore the template binding, because its bound value had not changed. The attribute vanished
+    // while the message beside the control was still on screen. Reading both sources in one expression is
+    // what makes that impossible.
+    it('flags a box from its OWN message, with the group silent', () => {
+      create();
+      fillCreationForm();
+      press(CREATE_SUBMIT_LABEL);
+
+      const request = expectRequest('POST', USERS_URL, 'the creation');
+
+      request.flush(
+        {
+          type: 'urn:dnnmigration:error:request.invalid',
+          title: PROBLEM_TITLE[400],
+          status: 400,
+          errors: { confirmPassword: ['The confirmation does not match.'] },
+        },
+        { status: 400, statusText: 'Bad Request' },
+      );
+      fixture.detectChanges();
+
+      expect(field<HTMLInputElement>(CONTROL_ID.confirmPassword).getAttribute('aria-invalid'))
+        .withContext('its own message is enough to flag it')
+        .toBe('true');
+    });
+
+    it('flags neither box while neither source is speaking', () => {
+      create();
+
+      expect(field<HTMLInputElement>(CONTROL_ID.password).getAttribute('aria-invalid')).toBeNull();
+      expect(
+        field<HTMLInputElement>(CONTROL_ID.confirmPassword).getAttribute('aria-invalid'),
+      ).toBeNull();
     });
   });
 

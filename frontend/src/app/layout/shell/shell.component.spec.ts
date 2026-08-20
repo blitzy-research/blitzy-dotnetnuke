@@ -407,6 +407,42 @@ describe('ShellComponent', () => {
       // the runner's own. What CAN be asserted is the single condition that prevents it.
       expect(activation.defaultPrevented).withContext('skip link default action').toBeTrue();
     });
+
+    it('BRINGS THE REGION\u2019S START INTO VIEW, not merely the region', () => {
+      // ⚠ MOVING FOCUS IS NOT ENOUGH, AND THE CASE ABOVE CANNOT TELL THE DIFFERENCE. `focus()` scrolls only
+      // when the element is not already within the viewport, and `<main>` is the tallest element on every
+      // screen - so from a deep scroll position the region was still intersecting the viewport, the platform
+      // judged no scroll necessary, and focus landed on a landmark whose beginning and `h1` stayed above the
+      // top edge. The runner's viewport cannot be made shorter than the region reliably, so the two calls
+      // are observed directly: the position must be STATED rather than left to the platform.
+      const region = requireElement('main');
+      const scrolled = spyOn(region, 'scrollIntoView');
+      const focused = spyOn(region, 'focus').and.callThrough();
+
+      requireElement('a.shell__skip-link').click();
+
+      expect(focused).toHaveBeenCalledWith({ preventScroll: true });
+      expect(scrolled).toHaveBeenCalledWith(
+        jasmine.objectContaining({ block: 'start' }) as unknown as ScrollIntoViewOptions,
+      );
+    });
+
+    it('takes the focus WITHOUT letting the platform choose the scroll position', () => {
+      // The ordering of the two is load-bearing: focusing with the platform's own scroll and then correcting
+      // it would scroll twice, and the first of those is the one that lands the heading under the pinned
+      // header band. `preventScroll` is what makes the explicit call the only scroll that happens.
+      const region = requireElement('main');
+      const focused = spyOn(region, 'focus').and.callThrough();
+      spyOn(region, 'scrollIntoView');
+
+      requireElement('a.shell__skip-link').click();
+
+      expect(focused).toHaveBeenCalledTimes(1);
+      expect(focused.calls.mostRecent().args[0]?.preventScroll).toBeTrue();
+      expect(document.activeElement)
+        .withContext('the region must still receive the focus')
+        .toBe(region);
+    });
   });
 
   describe('tab order', () => {
@@ -556,7 +592,7 @@ describe('ShellComponent', () => {
 
       expect(banner().signingOut).toBeTrue();
 
-      httpMock.expectOne(AUTH_ENDPOINTS.logout).flush(null, { status: 204, statusText: 'No Content' });
+      httpMock.expectOne(AUTH_ENDPOINTS.logout()).flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
 
       expect(banner().signingOut).toBeFalse();
@@ -599,7 +635,7 @@ describe('ShellComponent', () => {
         expect(confirmSpy)
           .withContext('the question is put once, in the application\u2019s own words')
           .toHaveBeenCalledOnceWith(UNSAVED_CHANGES_PROMPT);
-        expect(httpMock.match(AUTH_ENDPOINTS.logout))
+        expect(httpMock.match(AUTH_ENDPOINTS.logout()))
           .withContext('\u26a0 NOTHING IRREVERSIBLE HAPPENED: no credential was revoked')
           .toEqual([]);
         expect(tokens.accessToken())
@@ -617,7 +653,7 @@ describe('ShellComponent', () => {
         expect(confirmSpy).toHaveBeenCalledTimes(1);
 
         httpMock
-          .expectOne(AUTH_ENDPOINTS.logout)
+          .expectOne(AUTH_ENDPOINTS.logout())
           .flush(null, { status: 204, statusText: 'No Content' });
         fixture.detectChanges();
 
@@ -638,7 +674,7 @@ describe('ShellComponent', () => {
           .not.toHaveBeenCalled();
 
         httpMock
-          .expectOne(AUTH_ENDPOINTS.logout)
+          .expectOne(AUTH_ENDPOINTS.logout())
           .flush(null, { status: 204, statusText: 'No Content' });
         fixture.detectChanges();
 
@@ -675,7 +711,7 @@ describe('ShellComponent', () => {
 
       clickSignOut();
 
-      const revocation = httpMock.expectOne(AUTH_ENDPOINTS.logout);
+      const revocation = httpMock.expectOne(AUTH_ENDPOINTS.logout());
 
       expect(revocation.request.method).toBe('POST');
 
@@ -691,7 +727,7 @@ describe('ShellComponent', () => {
       holdSession();
       clickSignOut();
 
-      httpMock.expectOne(AUTH_ENDPOINTS.logout).flush(null, { status: 204, statusText: 'No Content' });
+      httpMock.expectOne(AUTH_ENDPOINTS.logout()).flush(null, { status: 204, statusText: 'No Content' });
 
       expect(endSession).toHaveBeenCalledTimes(1);
     });
@@ -702,7 +738,7 @@ describe('ShellComponent', () => {
       expect(authStore.isAuthenticated()).toBeTrue();
 
       clickSignOut();
-      httpMock.expectOne(AUTH_ENDPOINTS.logout).flush(null, { status: 204, statusText: 'No Content' });
+      httpMock.expectOne(AUTH_ENDPOINTS.logout()).flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
 
       expect(authStore.isAuthenticated()).toBeFalse();
@@ -714,7 +750,7 @@ describe('ShellComponent', () => {
       holdSession();
       clickSignOut();
 
-      httpMock.expectOne(AUTH_ENDPOINTS.logout).flush(null, { status: 204, statusText: 'No Content' });
+      httpMock.expectOne(AUTH_ENDPOINTS.logout()).flush(null, { status: 204, statusText: 'No Content' });
 
       expect(navigate).toHaveBeenCalledOnceWith(['/login']);
     });
@@ -724,7 +760,7 @@ describe('ShellComponent', () => {
       clickSignOut();
 
       httpMock
-        .expectOne(AUTH_ENDPOINTS.logout)
+        .expectOne(AUTH_ENDPOINTS.logout())
         .flush({ title: 'Refused' }, { status: 500, statusText: 'Server Error' });
       fixture.detectChanges();
 
@@ -747,7 +783,7 @@ describe('ShellComponent', () => {
       // ⚠ COUNTED, BECAUSE "EXACTLY ONE" IS THE WHOLE CLAIM. `expectOne` does enforce it - it throws on a
       // second match - but it asserts by throwing, so the runner records no expectation and reports this
       // spec as claiming nothing.
-      const revocations = httpMock.match(AUTH_ENDPOINTS.logout);
+      const revocations = httpMock.match(AUTH_ENDPOINTS.logout());
 
       expect(revocations)
         .withContext('two gestures in one tick, one revocation')

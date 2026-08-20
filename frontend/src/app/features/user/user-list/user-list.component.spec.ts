@@ -1837,7 +1837,14 @@ describe('UserListComponent', () => {
       answerListing(pageOf([userRow(8)]));
       settleOutcome();
 
-      expect(notifySpy).toHaveBeenCalledWith('success', USER_DELETED_MESSAGE, null, false);
+      expect(notifySpy).toHaveBeenCalledWith(
+        'success',
+        USER_DELETED_MESSAGE,
+        null,
+        false,
+        null,
+        null,
+      );
     });
 
     it('re-reads the SAME page after a removal, never the first', async () => {
@@ -2004,7 +2011,14 @@ describe('UserListComponent', () => {
       fixture.detectChanges();
       settleOutcome();
 
-      expect(notifySpy).toHaveBeenCalledWith('success', USER_DELETED_MESSAGE, null, false);
+      expect(notifySpy).toHaveBeenCalledWith(
+        'success',
+        USER_DELETED_MESSAGE,
+        null,
+        false,
+        null,
+        null,
+      );
       // The PAINTED banner, not merely the element: the element is always mounted, so asserting its
       // presence would now hold whether or not the re-read failure was reported at all.
       expect(query('app-error-banner .error-banner'))
@@ -2651,7 +2665,14 @@ describe('UserListComponent', () => {
       answerListing(pageOf([]));
       settleOutcome();
 
-      expect(notifySpy).toHaveBeenCalledWith('success', USER_DELETED_MESSAGE, null, false);
+      expect(notifySpy).toHaveBeenCalledWith(
+        'success',
+        USER_DELETED_MESSAGE,
+        null,
+        false,
+        null,
+        null,
+      );
     });
 
     it('retains a tenant identifier of minus one on the row it renders', () => {
@@ -2738,6 +2759,29 @@ describe('UserListComponent', () => {
 
   describe('the sentinel date', () => {
     /**
+     * Asserts that a date cell states its absence through the SHARED component rather than through emptiness,
+     * and that no year-one date reaches the screen.
+     *
+     * Structural rather than text-matched, on the same terms as the profile-value section above: the mark and
+     * its expansion belong to one component, and naming its elements is what keeps this specification true if
+     * the wording is ever revised.
+     *
+     * @param heading The column heading whose cell to inspect.
+     */
+    function expectAbsentInstant(heading: string): void {
+      const cell = cellUnder(heading);
+      const absent = queryOrFail<HTMLElement>(cell, 'app-absent-value');
+
+      expect(queryOrFail<HTMLElement>(absent, 'span.absent-value__mark').getAttribute('aria-hidden'))
+        .withContext('the mark is decoration')
+        .toBe('true');
+      expect(
+        (queryOrFail<HTMLElement>(absent, 'span.absent-value__description').textContent ?? '').trim(),
+      ).toBe('not recorded');
+      expect(textIn(cell)).withContext('and no date in the year one anywhere').not.toContain('0001');
+    }
+
+    /**
      * Paints one row carrying the given instants and returns the two date cells as text.
      *
      * @param createdDate The creation instant, or null.
@@ -2753,32 +2797,38 @@ describe('UserListComponent', () => {
       return [textIn(cellUnder(CREATED_DATE_HEADING)), textIn(cellUnder(LAST_LOGIN_HEADING))];
     }
 
-    it('renders the sentinel instant as nothing at all', () => {
-      // ⚠ PARITY, NOT A DIVERGENCE, AND IT MUST NOT BE REPORTED AS ONE. `DisplayDate` seeded its result
-      // with `Null.NullString` and returned `""` when `Null.IsNull` recognised the instant, so the legacy
-      // cell was ALREADY BLANK. Rendering `01/01/0001` would be the change in behaviour.
-      const [created, lastLogin] = dateCells('0001-01-01T00:00:00Z', '0001-01-01T00:00:00Z');
+    it('renders the sentinel instant as the shared absent value, never as a year-one date', () => {
+      // ⚠ THIS EXPECTATION CHANGED, AND THE HALF OF IT THAT MATTERS DID NOT. What must never appear is a
+      // date in the year one: `DisplayDate` seeded its result with `Null.NullString` and returned `""` when
+      // `Null.IsNull` recognised the instant, so `01/01/0001` would be the real behavioural change, and that
+      // is still asserted below.
+      //
+      // What changed is what appears INSTEAD. An empty cell was defended here as legacy parity, and as
+      // parity it was correct — but QA-20 found the consequence: on a grid where an absent address and an
+      // absent telephone number both paint the shared mark, these two columns alone painted nothing, so one
+      // row disagreed with itself about how it reports a missing value and a reader could not tell an
+      // unrecorded instant from a cell that failed to draw. The affordance is the same one used by every
+      // other listing, and the divergence from the blank legacy cell is recorded in MIGRATION_NOTES.
+      dateCells('0001-01-01T00:00:00Z', '0001-01-01T00:00:00Z');
 
-      expect(created).toBe('');
-      expect(lastLogin).toBe('');
-      expect(created).not.toContain('0001');
-      expect(lastLogin).not.toContain('0001');
+      expectAbsentInstant(CREATED_DATE_HEADING);
+      expectAbsentInstant(LAST_LOGIN_HEADING);
     });
 
-    it('renders the sentinel DATE with a non-zero time component as nothing either', () => {
-      const [created, lastLogin] = dateCells('0001-01-01T13:45:30Z', '0001-01-01T23:59:59Z');
+    it('renders the sentinel DATE with a non-zero time component the same way', () => {
+      dateCells('0001-01-01T13:45:30Z', '0001-01-01T23:59:59Z');
 
-      expect(created).toBe('');
-      expect(lastLogin).toBe('');
-      expect(created).not.toContain('0001');
-      expect(lastLogin).not.toContain('0001');
+      expectAbsentInstant(CREATED_DATE_HEADING);
+      expectAbsentInstant(LAST_LOGIN_HEADING);
     });
 
     it('renders an absent instant identically to the sentinel', () => {
-      const [created, lastLogin] = dateCells(null, null);
+      dateCells(null, null);
 
-      expect(created).toBe('');
-      expect(lastLogin).toBe('');
+      // The two states are told apart in STORAGE and deliberately not on screen: "no instant recorded" is
+      // the same fact to a reader whichever way the database spells it.
+      expectAbsentInstant(CREATED_DATE_HEADING);
+      expectAbsentInstant(LAST_LOGIN_HEADING);
     });
 
     it('refuses an unparseable instant at the boundary rather than rendering one', () => {
@@ -3538,22 +3588,38 @@ describe('UserListComponent', () => {
       const headers: readonly Element[] = queryAll<Element>('thead th');
       const tracks: readonly HTMLTableColElement[] = queryAll<HTMLTableColElement>('colgroup col');
 
-      // ⚠ ADDRESSED BY POSITION AND CROSS-CHECKED BY HEADING, NOT MATCHED BY HEADING TEXT. Three of this
-      // grid's headings contain the word "Name" - "Username", "First Name" and "Last Name" all do - so a
-      // substring search for the display-name column's own heading, which is the bare word "Name", finds the
-      // sign-in column first and silently asserts the wrong track. That is how the first draft of this case
-      // failed against a correct implementation.
+      // ⚠ FOUND BY EXACT HEADING TEXT, WHICH IS NEITHER A SUBSTRING SEARCH NOR A FIXED POSITION, and both of
+      // those have already failed here. A SUBSTRING search for the display-name column's heading — the bare
+      // word "Name" — matches "Username", "First Name" and "Last Name" too, and silently asserted the wrong
+      // track; that is how the first draft of this case failed against a correct implementation. A fixed
+      // POSITION then replaced it, and the shared grid has since begun hoisting the row-header column to the
+      // front while its scroll region clips, so an index is only stable while a width measurement comes out
+      // one particular way. An exact match is unambiguous for all four of these headings and survives both.
+      const indexOf = (heading: string): number => {
+        const found = headers.findIndex((cell) => textIn(cell) === heading);
+
+        if (found < 0) {
+          throw new Error(
+            `no heading reads exactly "${heading}"; rendered: ${headers
+              .map((cell) => textIn(cell))
+              .join(', ')}`,
+          );
+        }
+
+        return found;
+      };
       const atomicAt = (index: number): boolean => headers[index]?.getAttribute('data-atomic') === 'true';
       const headingAt = (index: number): string => textIn(headers[index] as Element);
 
-      expect(headingAt(3)).toBe(USERNAME_HEADING);
-      expect(atomicAt(3)).withContext('a sign-in name is one token').toBeTrue();
-
-      expect(headingAt(4)).toBe(FIRST_NAME_HEADING);
-      expect(atomicAt(4)).withContext('a given name is one token').toBeTrue();
-
-      expect(headingAt(5)).toBe(LAST_NAME_HEADING);
-      expect(atomicAt(5)).withContext('a family name is one token').toBeTrue();
+      expect(atomicAt(indexOf(USERNAME_HEADING)))
+        .withContext('a sign-in name is one token')
+        .toBeTrue();
+      expect(atomicAt(indexOf(FIRST_NAME_HEADING)))
+        .withContext('a given name is one token')
+        .toBeTrue();
+      expect(atomicAt(indexOf(LAST_NAME_HEADING)))
+        .withContext('a family name is one token')
+        .toBeTrue();
 
       // ⚠ THE COUNTERPART, AND THE REASON THIS IS NOT A BLANKET RULE. Found as the one track that declares no
       // width - the column absorbing the slack - so this stays true if the set is ever reordered. It is the
@@ -3565,6 +3631,74 @@ describe('UserListComponent', () => {
       expect(atomicAt(flexible))
         .withContext('the flexible column holds a phrase and should wrap')
         .toBeFalse();
+    });
+
+    // ⚠ THE MEASURED WIDTH REQUIREMENTS, WRITTEN DOWN SO A RESCALE CANNOT QUIETLY UNDO THEM AGAIN — QA-4c.
+    //
+    // This is not a style preference being frozen. Four of this grid's atomic tracks were narrower than their
+    // own content, and one of the four had been widened once already and then narrowed straight back when every
+    // weight was scaled by a single ratio — a ratio cannot know what a track holds. The numbers below are the
+    // rendered measurements: each column's content width plus the 8px of inline padding a cell contributes.
+    //
+    //     Created Date   135.94   a full timestamp, "8/14/2026 4:56:09 PM"
+    //     Last Login     135.94   the same shape through the same pipe
+    //     Telephone       81.91   the HEADING, which is wider than any number it holds
+    //     Username       108.10   an ordinary sign-in name; the 100-character fixture is deliberately not sized for
+    //
+    // Judged against the table at 1198px, which is what a 1440 viewport resolves to on this screen, because
+    // that is the width QA measured the losses at.
+    it('gives every atomic track at least the width its own content needs', () => {
+      arrive();
+
+      const headers: readonly Element[] = queryAll<Element>('thead th');
+      const tracks: readonly HTMLTableColElement[] = queryAll<HTMLTableColElement>('colgroup col');
+      const tableWidth = 1198;
+      const required: Readonly<Record<string, number>> = {
+        [CREATED_DATE_HEADING]: 135.94,
+        // The same value shape through the same pipe, so the same requirement. It is hidden by default on a
+        // real tenant, which is the only reason nobody reported it; the policy this fixture arrives with shows
+        // every column, so it is measured here.
+        [LAST_LOGIN_HEADING]: 135.94,
+        [TELEPHONE_HEADING]: 81.91,
+        [USERNAME_HEADING]: 108.1,
+      };
+
+      for (const [heading, needs] of Object.entries(required)) {
+        const index = headers.findIndex((cell) => textIn(cell) === heading);
+
+        expect(index).withContext(`"${heading}" is rendered`).toBeGreaterThanOrEqual(0);
+
+        const declared = tracks[index]?.style.inlineSize ?? '';
+        const weight = Number.parseFloat(declared);
+
+        expect(declared).withContext(`"${heading}" declares a percentage`).toMatch(/%$/);
+        expect((weight / 100) * tableWidth)
+          .withContext(`"${heading}" needs ${needs}px and declares ${declared}`)
+          .toBeGreaterThanOrEqual(needs);
+      }
+    });
+
+    it('keeps the weights inside the floor that protects the flexible column', () => {
+      // The other half of the arithmetic, and the half that bites silently: under a fixed layout a starved
+      // slack column has not overflowed anything, so no measurement reports it. Measured before the floor was
+      // derived, the display name resolved to 0.0625px, its characters wrapped one per line and rows grew to
+      // 398-414px tall. The table is floored at 60rem (960px) and the three command tracks take 156px, so the
+      // weights must leave the slack column a readable measure at that width.
+      arrive();
+
+      const tracks: readonly HTMLTableColElement[] = queryAll<HTMLTableColElement>('colgroup col');
+      const weights: readonly number[] = tracks
+        .map((track) => track.style.inlineSize)
+        .filter((declared) => declared.endsWith('%'))
+        .map((declared) => Number.parseFloat(declared));
+      const commandTracks = 3;
+      const slackAtTheFloor =
+        960 * (1 - weights.reduce((total, weight) => total + weight, 0) / 100) -
+        commandTracks * 52;
+
+      expect(slackAtTheFloor)
+        .withContext('the display name stays readable with every column visible at the narrowest width')
+        .toBeGreaterThan(90);
     });
 
     it('names the table for a screen reader without painting a heading', () => {
@@ -4010,6 +4144,95 @@ describe('UserListComponent', () => {
   });
 
   describe('the chosen axis and what is still declared', () => {
+    // =======================================================================
+    // A COLD ARRIVAL, WITH THE DECLARATIONS STILL ON THE WIRE
+    //
+    // ⚠ THE RECONCILIATION USED TO JUDGE AN AXIS UNDECLARED BEFORE ANYTHING HAD BEEN DECLARED. An empty
+    // declaration list means two opposite things - "this tenant declares none" and "nothing has been read
+    // yet" - and a membership test cannot tell them apart. On the cold entry an operator reaches after
+    // their session lapses, the axis is restored from the address, the read has not returned, and the axis
+    // is reset to the account name while the address, the request and the rendered results all stay on the
+    // property that was searched. The disagreement was silent AND destructive: the next press of Search
+    // sent the SELECTOR's axis, so the search quietly became a name search and the axis parameter vanished
+    // from the address.
+    // =======================================================================
+
+    it('keeps a restored profile-property axis while the declarations are still outstanding', async () => {
+      await enterAt(`/users?${SEARCH_BY_QUERY_KEY}=${encodeURIComponent(SECOND_PROPERTY_NAME)}&${FILTER_QUERY_KEY}=A`);
+      create();
+      answerSettings();
+
+      // The declarations read is deliberately LEFT OUTSTANDING. This IS the cold-entry state.
+      const read: TestRequest = expectListRead('the restored read');
+
+      expect(paramOf(read, PROFILE_PROPERTY_NAME_PARAM))
+        .withContext('the request was always right; it was the selector that disagreed with it')
+        .toBe(SECOND_PROPERTY_NAME);
+      expect(paramOf(read, PROFILE_PROPERTY_VALUE_PARAM)).toBe('A');
+
+      read.flush(pageOf([userRow()]));
+      fixture.detectChanges();
+
+      const selector = queryOrFail<HTMLSelectElement>(host(), `#${SEARCH_FIELD_CONTROL_ID}`);
+
+      expect(selector.value)
+        .withContext('the selector holds the restored axis rather than being reset to the default')
+        .toBe(SECOND_PROPERTY_NAME);
+
+      // And it survives the read arriving, which is the single revalidation the restored axis needs.
+      answerDefinitions();
+
+      expect(queryOrFail<HTMLSelectElement>(host(), `#${SEARCH_FIELD_CONTROL_ID}`).value)
+        .withContext('a declared axis is confirmed, not replaced')
+        .toBe(SECOND_PROPERTY_NAME);
+    });
+
+    it('sends the restored axis on the next search rather than silently switching to the name', async () => {
+      // THE CONSEQUENCE THE DISAGREEMENT HAD. Pressing Search without touching anything must repeat the
+      // search the operator is looking at.
+      await enterAt(`/users?${SEARCH_BY_QUERY_KEY}=${encodeURIComponent(SECOND_PROPERTY_NAME)}&${FILTER_QUERY_KEY}=A`);
+      create();
+      answerSettings();
+      expectListRead('the restored read').flush(pageOf([userRow()]));
+      fixture.detectChanges();
+      answerDefinitions();
+
+      await typeSearch('Ar');
+
+      const next: TestRequest = expectListRead('the search pressed after the restore');
+
+      expect(paramOf(next, PROFILE_PROPERTY_NAME_PARAM))
+        .withContext('still the property axis')
+        .toBe(SECOND_PROPERTY_NAME);
+      expect(paramOf(next, PROFILE_PROPERTY_VALUE_PARAM)).toBe('Ar');
+      expect(carries(next, USER_NAME_PARAM))
+        .withContext('and never the account name, which is what it silently became')
+        .toBeFalse();
+      expect(addressParams()[SEARCH_BY_QUERY_KEY])
+        .withContext('the address keeps the axis it arrived with')
+        .toBe(SECOND_PROPERTY_NAME);
+
+      next.flush(pageOf([userRow()]));
+      fixture.detectChanges();
+    });
+
+    it('still resets an axis the declarations, once read, do not declare', async () => {
+      // THE NEGATIVE CONTROL. Waiting must not become never: an axis that is genuinely undeclared - an
+      // address kept from before the property was removed - is still corrected, just not before the
+      // evidence arrives.
+      await enterAt(`/users?${SEARCH_BY_QUERY_KEY}=Nonexistent%20Property&${FILTER_QUERY_KEY}=A`);
+      create();
+      answerSettings();
+      expectListRead('the restored read').flush(pageOf([userRow()]));
+      fixture.detectChanges();
+
+      answerDefinitions();
+
+      expect(queryOrFail<HTMLSelectElement>(host(), `#${SEARCH_FIELD_CONTROL_ID}`).value)
+        .withContext('once the declarations are known, an undeclared axis IS reset')
+        .toBe('Username');
+    });
+
     it('falls back to the account name when the chosen property stops being declared', async () => {
       arrive();
       chooseAxis(ODD_PROPERTY_NAME);

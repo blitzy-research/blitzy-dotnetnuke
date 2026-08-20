@@ -8,6 +8,12 @@
 // default border, the default inner padding, and the system canvas background and text colour.
 .confirm-dialog {
   box-sizing: border-box;
+
+  // ⚠ QA-26 — A SETTLED WIDTH, NOT A CAP ALONE. A `<dialog>` with only a maximum is sized by its
+  // content, so every confirmation in the application was as wide as its own sentence and the frame
+  // resized between one destructive prompt and the next. The cap still applies over the top, which is what
+  // keeps the narrow-viewport behaviour exactly as it was.
+  inline-size: var(--dialog-inline-size);
   max-inline-size: var(--dialog-max-inline-size);
 
   // ⚠ ANCHORED NEAR THE TOP RATHER THAN CENTRED, AND A MEASUREMENT IS WHY. A modal dialog takes its
@@ -39,6 +45,19 @@
     display: flex;
     flex-direction: column;
   }
+}
+
+// ⚠ QA-26 — THE SCRIM IS THE APPLICATION'S, NOT THE USER AGENT'S. `::backdrop` is unstyled by default,
+// so this was the one surface in the product whose colour came from outside the token vocabulary. It is
+// styled here rather than globally because `::backdrop` matches only the top-layer element it belongs to,
+// and this component owns the only element this application puts in the top layer.
+//
+// `color-mix` against `--color-text` keeps the scrim inside the vocabulary: it is the palette's own black
+// at 55%, so it cannot drift from the palette and it is not a literal. The alpha is the whole point — a
+// scrim that hid the page would hide the record the question names, and the earlier top-anchoring fix in
+// this file exists precisely so that record stays visible.
+.confirm-dialog::backdrop {
+  background-color: var(--dialog-backdrop-color);
 }
 
 // The padded interior, and the element that makes the frame above click-safe. It is a flex column so the
@@ -123,7 +142,12 @@
   }
 
   &:disabled {
-    border-color: var(--color-border);
+    // ⚠ THE COMPONENT-BOUNDARY TOKEN. `_forms.scss` already resolves it for `button:disabled` globally; this
+    // component override was reintroducing --color-border, which against the surface fill this same rule sets
+    // measures 1.1819:1 - the faintest pairing in the product, on the buttons of the dialog that deletes a
+    // tenant. While a destructive confirmation is in flight both buttons disable, and at that weight the two
+    // controls stopped being locatable as controls at all rather than merely reading as unavailable.
+    border-color: var(--color-border-control);
     background-color: var(--color-surface);
     color: var(--color-text-muted);
     cursor: not-allowed;

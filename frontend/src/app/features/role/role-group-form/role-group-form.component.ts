@@ -102,7 +102,19 @@ export const NETWORK_UNAVAILABLE_MESSAGE =
  */
 export const UNEXPECTED_FAILURE_MESSAGE = 'The request could not be completed.';
 
-export const UPDATE_ACTION_LABEL = 'Update';
+/**
+ * The label on the commit action.
+ *
+ * ⚠ THIS SCREEN ONLY EVER CREATES, SO THE LABEL SAYS SO. The legacy `EditGroups.ascx` was a dual-mode
+ * screen - it carried `cmdUpdate`, `cmdCancel` AND `cmdDelete` under the title "Edit Role Group" - and its
+ * commit link was declared `text="Update"` with no resource override, one label serving both the create and
+ * the edit path. Only the create path was migrated: `role-groups/new` is the sole role-group route, editing
+ * a group happens inline on the listing instead, and this screen's own title reads "Add New Role Group"
+ * while its progress spinner reads "Adding role group…". Carrying "Update" across therefore left the
+ * primary button contradicting the heading above it and the spinner beside it, and telling the operator
+ * they were about to modify something that does not yet exist.
+ */
+export const CREATE_ACTION_LABEL = 'Add Role Group';
 
 export const CANCEL_ACTION_LABEL = 'Cancel';
 
@@ -413,7 +425,7 @@ export class RoleGroupFormComponent {
 
   readonly descriptionInputId = DESCRIPTION_INPUT_ID;
 
-  readonly updateActionLabel = UPDATE_ACTION_LABEL;
+  readonly createActionLabel = CREATE_ACTION_LABEL;
 
   readonly cancelActionLabel = CANCEL_ACTION_LABEL;
 

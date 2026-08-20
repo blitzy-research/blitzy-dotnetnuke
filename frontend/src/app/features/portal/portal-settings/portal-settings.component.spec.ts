@@ -576,6 +576,20 @@ describe('PortalSettingsComponent', () => {
   }
 
   /** Shows the advanced tab, where four of the six disclosures live. */
+  /**
+   * Types a value into a bound control the way a browser delivers it, so the reactive form and every
+   * derivation over it see the change. Never a programmatic `setValue`: that bypasses the DOM the
+   * derivations are read through.
+   *
+   * @param control The control to type into.
+   * @param value The value to leave in it.
+   */
+  function typeInto(control: HTMLInputElement, value: string): void {
+    control.value = value;
+    control.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+  }
+
   function showAdvanced(): void {
     invoke<void>('selectTab', 'advanced');
     fixture.detectChanges();
@@ -3096,32 +3110,57 @@ describe('PortalSettingsComponent', () => {
         .toBeGreaterThan(0);
     });
 
-    // ⚠ THE NARROWEST WIDTH, WHERE THE MEASURE IS GENUINELY SCARCE and the fix is therefore a reclamation
-    // rather than a resize. A 320px viewport offers the page 305px, the shell spends 32px on its own inset and
-    // this fieldset another 24px on padding, leaving 247px against the 252px of ink the longest administrator
-    // option needs. Withdrawing the fieldset's inline padding from the GRID alone hands those 24px to the
-    // controls while the group head and its prose keep their inset - measured afterwards at 253px, and the
-    // whole value painted. The declaration is asserted from the stylesheet because the harness runs at one
-    // width and cannot enter the query it lives in.
-    it('hands the section inset to the fields at the narrowest widths', () => {
+    // ⚠ THE NARROWEST WIDTH, WHERE THE MEASURE IS GENUINELY SCARCE. A 320px viewport offers the page 305px,
+    // the shell spends 32px on its own inset and this fieldset another 24px on padding, leaving 247px against
+    // the 252px of ink the longest administrator option needs.
+    //
+    // ⚠ AND THE FIRST ANSWER TO THAT WENT TOO FAR — QA-21. It withdrew the fieldset's inline padding from
+    // the GRID with a negative margin, which is what this case used to require; measured on the running
+    // screen at both 320px and 375px, on all seven fieldsets, that cancelled the padding EXACTLY and every
+    // label and control rendered flush against the inside of the 1px border, while the `<legend>` — which
+    // the browser positions at the padding edge, where no margin on the grid can reach it — stayed 12px in.
+    // Fourteen of fourteen gutter measurements were 0px. Narrowing the PADDING moves the legend and the
+    // fields together and leaves a real gutter from the spacing scale. The declaration is asserted from the
+    // stylesheet because the harness runs at one width and cannot enter the query it lives in.
+    //
+    // ⚠ IT IS THE SMALLEST STEP, AND THIS CASE USED TO REQUIRE THE SECOND ON ARITHMETIC THAT WAS WRONG.
+    // "273px less 2px of border and 16px of padding still clears the 252px" omitted the select's own box:
+    // the control keeps 4px of inline padding a side and 1px of border a side below this step, so 255px
+    // became a 245px content box and 245px less the 20.23px native arrow left 224.77px for 231.77px of
+    // text. Measured on the running screen the administrator picker painted `Setup Administrator
+    // (setup_admi` and cut the closing `n)`. The real requirement is 262px, which one step clears at 263px
+    // and two steps does not — so the assertion follows the measurement rather than the sum.
+    it('narrows the section inset at the narrowest widths rather than cancelling it', () => {
       arrive(0);
       showAdvanced();
       ensureSectionOpen('other');
 
-      const reclamation = narrowWidthRuleFor('.portal-settings__grid', 'margin-inline');
+      const narrowed = narrowWidthRuleFor('.portal-settings__section', 'padding-inline');
 
-      expect(reclamation)
-        .withContext('the grid reclaims the padding, and only below a breakpoint')
+      expect(narrowed)
+        .withContext('the section narrows its inset, and only below a breakpoint')
         .not.toBeNull();
-      expect(reclamation?.value)
-        .withContext('a negative inset, sized from the fieldset padding it cancels')
-        .toContain('-1');
-      expect(reclamation?.value)
-        .withContext('and expressed in the spacing vocabulary rather than as a raw length')
-        .toContain('--space-3');
-      expect(reclamation?.condition)
-        .withContext('withdrawn above the step, so wider viewports keep the inset')
+      expect(narrowed?.value)
+        .withContext('expressed in the spacing vocabulary rather than as a raw length')
+        .toContain('--space-1');
+      // ⚠ THE CANCELLATION IS EXCLUDED BY ITS FORM, NOT BY A SUBSTRING. This asserted `not.toContain('-1')`
+      // while the value was `var(--space-2)`, and the moment the step narrowed to `var(--space-1)` the
+      // guard failed on the TOKEN'S OWN NAME rather than on anything negative. What the rejected fix
+      // actually wrote was `calc(-1 * var(--space-3))`, so excluding `calc(` excludes the whole family of
+      // reclamations while admitting every plain step in the scale.
+      expect(narrowed?.value)
+        .withContext('and it is a real gutter, never a computed cancellation')
+        .not.toContain('calc(');
+      expect((narrowed?.value ?? '').trim().startsWith('-'))
+        .withContext('nor a negative length')
+        .toBeFalse();
+      expect(narrowed?.condition)
+        .withContext('withdrawn above the step, so wider viewports keep the full inset')
         .toContain('max-width');
+
+      expect(narrowWidthRuleFor('.portal-settings__grid', 'margin-inline'))
+        .withContext('the negative reclamation is gone, not merely reduced')
+        .toBeNull();
     });
 
     // ⚠ THE STARVED MIDDLE OF THE RANGE. The field grid used to take its second column from a viewport query,
@@ -3130,6 +3169,36 @@ describe('PortalSettingsComponent', () => {
     // spends 150px on its label and 16px on its gap, left a 211px control track - NARROWER than the 247px the
     // same control gets on a 320px phone, and 59px short of the ink its longest option needs. The clipping was
     // therefore WORST in the middle of the range, and a 320/768/1440 sweep passed straight over it.
+    /**
+     * ⚠ THE UNIT NOTE IS TWO TEXT NODES AND MUST READ AS ONE SENTENCE PAIR. The restated reading is
+     * appended inside the same element from a control-flow block, and the block's own indentation collapses
+     * to a single space in front of it — so the interpolation supplying another produced
+     * `Pacific Time.␣␣This site is set to`. HTML folds the pair when painting, which is exactly why this
+     * has to be asserted on the text rather than looked for on the screen: the reader an assistive
+     * technology gives this to sees both spaces, and so does every claim made about this copy.
+     */
+    it('composes the unit note and the restated reading with a single space between them', () => {
+      arrive(0);
+      showAdvanced();
+      ensureSectionOpen('other');
+
+      const note = required(
+        host().querySelector('#portal-settings-timeZoneOffset-unit'),
+        'the time-zone unit note',
+      );
+      const text = note.textContent ?? '';
+
+      expect(text)
+        .withContext('the reading is present, so this is not passing on an empty note')
+        .toContain('This site is set to');
+      expect(text.includes('  '))
+        .withContext('and nothing in it is separated by two spaces')
+        .toBeFalse();
+      expect(/[^\s]\s{2,}This site is set to/.test(text))
+        .withContext('specifically not the join between the rule and the reading')
+        .toBeFalse();
+    });
+
     it('never takes a second field column at the cost of starving the control track', () => {
       arrive(0);
       showAdvanced();
@@ -3917,12 +3986,40 @@ describe('PortalSettingsComponent', () => {
       completeSave(write);
     });
 
-    it('renders an unread home directory as an empty box rather than as a marker', () => {
+    it('states an unread home directory rather than painting an empty box', () => {
       arrive(0, { settings: settingsBody({ homeDirectory: null }) });
       showAdvanced();
 
-      // A dash inside a text box would read as a stored value one character long.
-      expect(required(inputById('homeDirectory'), 'the home-directory box').value).toBe('');
+      // ⚠ THIS EXPECTATION IS INVERTED FROM WHAT IT WAS, AND ITS ORIGINAL REASON SURVIVES INTACT. It used to
+      // assert an EMPTY BOX, on the ground that a dash inside a text box would read as a stored value one
+      // character long — which is true, and is why the marker is still not put inside a box. QA-20 recorded
+      // the other half of it: an empty read-only box is not a statement either, and this field then said
+      // nothing at all about a portal with no recorded path.
+      //
+      // The box is therefore REPLACED by the shared absent-value affordance, not filled with it. Nothing is
+      // given up: the control was read-only and held no value, so there is no editing and no value to lose.
+      expect(inputById('homeDirectory'))
+        .withContext('no box, because there is nothing to put in one')
+        .toBeNull();
+
+      const stated = required(
+        host().querySelector<HTMLElement>('.portal-settings__readonly-value'),
+        'the stated absence',
+      );
+
+      expect(stated.querySelector('app-absent-value'))
+        .withContext('stated through the shared affordance, like every other absent value')
+        .not.toBeNull();
+    });
+
+    it('renders a recorded home directory in its read-only box, with no marker', () => {
+      arrive(0, { settings: settingsBody({ homeDirectory: 'Portals/0' }) });
+      showAdvanced();
+
+      // The counterpart: the marker must appear ONLY where nothing would otherwise be painted, and the box
+      // must still be there — with its label still pointing at it — whenever there is a path to show.
+      expect(required(inputById('homeDirectory'), 'the home-directory box').value).toBe('Portals/0');
+      expect(host().querySelector('.portal-settings__readonly-value app-absent-value')).toBeNull();
     });
 
     it('says why the home directory cannot be changed, and where the processor password went', () => {
@@ -4056,7 +4153,7 @@ describe('PortalSettingsComponent', () => {
       ).toBe('true');
     });
 
-    it('names the body a toggle controls, and drops the reference when there is no body', () => {
+    it('names the body a toggle controls, open or closed, and the reference always resolves', () => {
       const siteDetails = required(sectionToggle('Site Details'), 'the site-details toggle');
       const controlled = siteDetails.getAttribute('aria-controls');
 
@@ -4065,13 +4162,78 @@ describe('PortalSettingsComponent', () => {
 
       showAdvanced();
 
-      // A closed group's body is REMOVED, so naming it would point at an element that does not
-      // exist. The attribute is omitted entirely rather than left dangling.
+      // ⚠ THIS USED TO REQUIRE THE ATTRIBUTE TO BE ABSENT — QA-21. The reasoning was sound given the
+      // structure: a closed group's body was REMOVED, so naming it would have dangled. What was measured
+      // on the running screen is what the reasoning could not see — two of five section heads and the
+      // whole unselected tab carried no reference while the three open ones did, one control pattern
+      // emitting two different attribute sets. The structure was changed instead: the body is now a
+      // permanent shell carrying `hidden`, so the reference is unconditional AND still resolves.
+      const other = required(sectionToggle('Other Settings'), 'the other-settings toggle');
+      const otherControlled = other.getAttribute('aria-controls');
+
+      expect(otherControlled).toBe('portal-settings-section-other');
+      expect(query(`#${otherControlled ?? 'missing'}`))
+        .withContext('the shell of a CLOSED group is still in the document')
+        .not.toBeNull();
+    });
+
+    it('hides a closed body rather than destroying it, and creates none of its controls', () => {
+      showAdvanced();
+
+      const shell = required(
+        query<HTMLElement>('#portal-settings-section-payment'),
+        'the payment shell',
+      );
+
+      // The shell exists so the head can name it; `hidden` is what keeps it out of the accessibility
+      // tree and out of the layout, and its CONTENT is still created on demand — so no control of a
+      // closed group is in the document and nothing about focus or validation changes.
+      expect(shell.hasAttribute('hidden')).withContext('closed').toBeTrue();
+      expect(shell.querySelectorAll('input,select,textarea').length)
+        .withContext('a closed group creates none of its controls')
+        .toBe(0);
+
+      ensureSectionOpen('payment');
+
+      const opened = required(
+        query<HTMLElement>('#portal-settings-section-payment'),
+        'the payment shell once open',
+      );
+
+      expect(opened.hasAttribute('hidden')).withContext('open').toBeFalse();
+      expect(opened.querySelectorAll('input,select,textarea').length).toBeGreaterThan(0);
+    });
+
+    it('lets both tabs name their own panel, whichever is selected', () => {
+      const basicTab = required(query<HTMLElement>('#portal-settings-tab-basic'), 'the basic tab');
+      const advancedTab = required(
+        query<HTMLElement>('#portal-settings-tab-advanced'),
+        'the advanced tab',
+      );
+
+      // ⚠ QA-21. Only the selected panel used to exist, so the unselected tab's `aria-controls` was
+      // withheld and the two tabs swapped attribute sets on every selection. A tab is required to name
+      // its panel; both shells are permanent now, so both references hold at all times.
+      expect(basicTab.getAttribute('aria-controls')).toBe('portal-settings-panel-basic');
+      expect(advancedTab.getAttribute('aria-controls')).toBe('portal-settings-panel-advanced');
+      expect(query('#portal-settings-panel-basic')).not.toBeNull();
+      expect(query('#portal-settings-panel-advanced')).not.toBeNull();
+
       expect(
-        required(sectionToggle('Other Settings'), 'the other-settings toggle').hasAttribute(
-          'aria-controls',
-        ),
-      ).toBeFalse();
+        required(query<HTMLElement>('#portal-settings-panel-advanced'), 'the advanced panel')
+          .hasAttribute('hidden'),
+      )
+        .withContext('the unselected panel is hidden rather than referenced-but-absent')
+        .toBeTrue();
+
+      showAdvanced();
+
+      expect(basicTab.getAttribute('aria-controls')).toBe('portal-settings-panel-basic');
+      expect(advancedTab.getAttribute('aria-controls')).toBe('portal-settings-panel-advanced');
+      expect(
+        required(query<HTMLElement>('#portal-settings-panel-basic'), 'the basic panel')
+          .hasAttribute('hidden'),
+      ).toBeTrue();
     });
 
     // 5 rather than 4: Payment Settings is a fifth disclosure on the advanced tab.
@@ -4455,6 +4617,155 @@ describe('PortalSettingsComponent', () => {
     it('sits outside the width-capped control wrapper, which is sized for a numeric offset', () => {
       // 9rem is right for an offset in minutes and far too narrow for two sentences of prose.
       expect(note().closest('.portal-settings__control')).toBeNull();
+    });
+
+    // ⚠ QA-21 — THE STORED FIGURE RESTATED IN HOURS AND MINUTES. The legacy screen never asked for this
+    // number: `sitesettings.ascx:L390` is a `DropDownList` whose options come from
+    // `Website/App_GlobalResources/TimeZones.xml` and read `(UTC -08:00) Pacific Time (US & Canada);
+    // Tijuana` against the stored key `-480`, so an operator picked a NAMED zone and the unit could not be
+    // misread. Asking for raw minutes instead makes a value that looks like an hours offset
+    // indistinguishable from one — measured on the running screen, the box read `-8` directly beside a
+    // note declaring the unit to be minutes and citing −480 for Pacific Time.
+    it('restates the offset in hours and minutes, in the note that declares the unit', () => {
+      const input = required(
+        query<HTMLInputElement>('input[formcontrolname="timeZoneOffset"]'),
+        'the offset input',
+      );
+
+      typeInto(input, '-480');
+
+      expect(note().textContent ?? '')
+        .withContext('the whole-hour case reads as a whole hour')
+        .toContain('This site is set to UTC \u221208:00.');
+
+      typeInto(input, '-8');
+
+      expect(note().textContent ?? '')
+        .withContext('and the eight-MINUTE case can no longer be read as eight hours')
+        .toContain('This site is set to UTC \u221200:08.');
+
+      typeInto(input, '345');
+
+      expect(note().textContent ?? '')
+        .withContext('a zone that is not a whole number of hours keeps its remainder')
+        .toContain('This site is set to UTC +05:45.');
+
+      typeInto(input, '0');
+
+      expect(note().textContent ?? '')
+        .withContext('zero is signed, as the legacy option list spelled it')
+        .toContain('This site is set to UTC +00:00.');
+    });
+
+    it('withholds the restatement while the box is blank or not yet a number', () => {
+      const input = required(
+        query<HTMLInputElement>('input[formcontrolname="timeZoneOffset"]'),
+        'the offset input',
+      );
+
+      typeInto(input, '');
+
+      expect(note().textContent ?? '')
+        .withContext('restating nothing would be noise')
+        .not.toContain('This site is set to');
+
+      typeInto(input, 'abc');
+
+      // Restating an unreadable value would compete with the validation message about to appear.
+      expect(note().textContent ?? '').not.toContain('This site is set to');
+      expect(note().textContent ?? '')
+        .withContext('the rule itself still stands')
+        .toContain('in minutes');
+    });
+  });
+
+  // ---------------------------------------------------------------------------------------------------
+  // QA-21 — THE SITE-DETAILS GRID, THE IDENTIFIER AND THE FIXED PATH
+  // ---------------------------------------------------------------------------------------------------
+
+  describe('the read-only values and the Site Details rows', () => {
+    beforeEach(() => {
+      arrive(0);
+    });
+
+    it('gives every Site Details field its own row, so no cell is left stranded', () => {
+      const body = required(
+        query<HTMLElement>('#portal-settings-section-siteDetails'),
+        'the site-details body',
+      );
+      const fields = Array.from(body.querySelectorAll('app-form-field'));
+
+      // ⚠ THE MIXTURE IS WHAT WAS WRONG. Two of these five were `--wide` and three were not, so the
+      // auto-placing two-column grid resolved them as Title at (1,1) with (1,2) EMPTY — the spanning
+      // Description could not fit beside it — and then the GUID stranded at (4,2) with nothing above or
+      // below it, presenting a read-only identifier as a second, unheaded column. One field per row is
+      // also what the legacy screen was: `sitesettings.ascx` L44-L70 is a table of single rows.
+      expect(fields.length).withContext('Title, Description, Keywords, Copyright, GUID').toBe(5);
+
+      for (const field of fields) {
+        expect(field.classList.contains('portal-settings__field--wide'))
+          .withContext(`${field.textContent?.trim().slice(0, 24) ?? ''} takes its own row`)
+          .toBeTrue();
+      }
+    });
+
+    it('renders the site identifier as static text rather than as a live region', () => {
+      const guid = required(query<HTMLElement>('#portal-settings-guid'), 'the identifier');
+
+      // ⚠ IT WAS AN `<output>`, AND AN `<output>` IS A LIVE REGION — HTML-AAM maps it to `role="status"`,
+      // which carries an implicit `aria-live="polite"`; Chrome's accessibility tree reported exactly that.
+      // A site's identifier never changes, so nothing here has any business being announced.
+      expect(guid.tagName).toBe('P');
+      expect(guid.getAttribute('role')).toBeNull();
+      expect(guid.getAttribute('aria-live')).toBeNull();
+      expect(guid.classList.contains('portal-settings__readonly-value'))
+        .withContext('the same rendering the fixed home directory already uses')
+        .toBeTrue();
+    });
+
+    it('does not point a label at the identifier, which is not a control', () => {
+      const labelled = queryAll<HTMLLabelElement>('label[for="portal-settings-guid"]');
+
+      // A `<label for>` may only name a labelable element. The shared field names its own group instead,
+      // which is the arrangement it already provides for the fixed home directory on the other tab.
+      expect(labelled.length).toBe(0);
+    });
+
+    it('describes the fixed home directory rather than instructing an operator to type into it', () => {
+      showAdvanced();
+
+      const help = required(
+        query<HTMLElement>('#portal-settings-section-pages'),
+        'the page-management body',
+      );
+      const text = help.textContent ?? '';
+
+      // ⚠ THE LEGACY RESOURCE WAS ALREADY WRONG. `SiteSettings.ascx.resx` `plHomeDirectory.Help` reads
+      // "Enter the Home Directory for this site", and the box it described was declared `Enabled="False"`
+      // at `sitesettings.ascx:L290` — so the legacy told an operator to type into a control it had itself
+      // disabled. This screen renders no control there at all.
+      expect(text).not.toContain('Enter the Home Directory');
+    });
+
+    it('projects the fixed-path explanation into the field it explains', () => {
+      showAdvanced();
+
+      const notice = required(
+        query<HTMLElement>('#portal-settings-homeDirectory-fixed'),
+        'the fixed-path notice',
+      );
+      const field = required(
+        notice.closest('app-form-field'),
+        'the field enclosing the fixed-path notice',
+      );
+
+      // As a sibling it was its own item in the two-column settings grid, so it was laid out in the
+      // OPPOSITE column from the value it explains — measured at 1440, the caption at x=214 and this
+      // sentence at x=719. The wiring was always right; only a sighted reader was misled.
+      expect(field.textContent ?? '').toContain('Home Directory');
+      expect(notice.classList.contains('form-note'))
+        .withContext('the same shared class the time-zone unit note uses')
+        .toBeTrue();
     });
   });
   // ---------------------------------------------------------------------------------------------------

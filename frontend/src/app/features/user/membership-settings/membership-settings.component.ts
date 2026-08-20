@@ -36,6 +36,7 @@ import { ErrorBannerComponent } from '../../../shared/components/error-banner/er
 import { FormFieldComponent } from '../../../shared/components/form-field/form-field.component';
 import { LoadingSpinnerComponent } from '../../../shared/components/loading-spinner/loading-spinner.component';
 import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
+import { BlockImplicitSubmitDirective } from '../../../shared/directives/block-implicit-submit.directive';
 import { FocusFirstInvalidDirective } from '../../../shared/directives/focus-first-invalid.directive';
 import { SubmitGuardDirective } from '../../../shared/directives/submit-guard.directive';
 import { UnsavedChangesTracker } from '../../../core/guards/unsaved-changes.guard';
@@ -676,6 +677,7 @@ function displayNameFormatRules(control: AbstractControl): ValidationErrors | nu
   selector: 'app-membership-settings',
   standalone: true,
   imports: [
+    BlockImplicitSubmitDirective,
     FocusFirstInvalidDirective,
     SubmitGuardDirective,
     ReactiveFormsModule,

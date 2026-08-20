@@ -2,9 +2,11 @@ import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed, discardPeriodicTasks, fakeAsync, tick } from '@angular/core/testing';
 import { ActivatedRoute, Router, convertToParamMap, provideRouter } from '@angular/router';
+import { BehaviorSubject } from 'rxjs';
 
 import type { TestRequest } from '@angular/common/http/testing';
 import type { ComponentFixture } from '@angular/core/testing';
+import type { ParamMap } from '@angular/router';
 
 import type { CurrentUser, LoginResponse } from '../../../core/models/auth.model';
 import type {
@@ -284,14 +286,25 @@ describe('LoginComponent', () => {
   let relativeNavigateSpy: jasmine.Spy;
 
   /**
-   * The query parameters the activated-route double will report. Mutated by a case BEFORE the component
-   * is created, because the component reads the SNAPSHOT exactly once - which is the direct analogue of
-   * the legacy `If Page.IsPostBack = False Then` guard at `Login.ascx.vb:L104`.
+   * The query parameters the activated-route double will report. Seeded by a case BEFORE the component is
+   * created, and revised WHILE IT IS MOUNTED through {@link changeQueryParams}.
+   *
+   * The credential-seeding keys are still read from the snapshot exactly once, which is the direct analogue
+   * of the legacy `If Page.IsPostBack = False Then` guard at `Login.ascx.vb:L104`. The RETURN ADDRESS is not:
+   * it is read from the parameter stream for as long as the screen is mounted, because a guard may eject a
+   * caller onto a sign-in form that is already on display.
    */
   let queryParams: Record<string, string>;
 
+  /**
+   * The parameter stream the activated-route double publishes, created on first access so that a case may
+   * seed {@link queryParams} after the module is configured. Null until the component asks for it.
+   */
+  let queryParamChanges: BehaviorSubject<ParamMap> | null;
+
   beforeEach(async () => {
     queryParams = {};
+    queryParamChanges = null;
     mounted = null;
 
     // ⚠ ORDER IS LOAD-BEARING: the real client FIRST, then the testing backend that displaces it. Reversing
@@ -313,6 +326,17 @@ describe('LoginComponent', () => {
               get queryParamMap() {
                 return convertToParamMap({ ...queryParams });
               },
+            },
+            // ⚠ A STREAM AS WELL AS A SNAPSHOT, because the two answer different questions. The router
+            // REUSES one component instance when only the query string changes, so a snapshot cannot report
+            // an ejection that happens while this screen is already on display - and that is the ordinary
+            // arrival path for an expiring session.
+            get queryParamMap() {
+              queryParamChanges ??= new BehaviorSubject<ParamMap>(
+                convertToParamMap({ ...queryParams }),
+              );
+
+              return queryParamChanges.asObservable();
             },
           },
         },
@@ -354,8 +378,26 @@ describe('LoginComponent', () => {
 
   /** Creates the screen and runs the first change detection. */
   function create(): void {
+    // ⚠ THE PARAMETER STREAM IS DISCARDED FOR EACH NEW COMPONENT, and it has to be. A fresh instance is a
+    // fresh ACTIVATION, so it must observe the parameters seeded for it - and several cases below create more
+    // than once inside a single case. Retaining the stream across creations replayed the FIRST case's
+    // parameters to every later instance, which is a harness fault that reads exactly like a component one.
+    queryParamChanges = null;
+
     fixture = TestBed.createComponent(LoginComponent);
     mounted = fixture;
+    fixture.detectChanges();
+  }
+
+  /**
+   * Revises the query string of the MOUNTED screen, as a guard does when it ejects a caller onto a sign-in
+   * form that is already on display.
+   *
+   * @param next The complete parameter set the address now carries.
+   */
+  function changeQueryParams(next: Record<string, string>): void {
+    queryParams = next;
+    queryParamChanges?.next(convertToParamMap({ ...next }));
     fixture.detectChanges();
   }
 
@@ -3053,6 +3095,87 @@ describe('LoginComponent', () => {
         fixture.detectChanges();
 
         expect((notice()?.textContent ?? '').trim()).toBe(ejectionNoticeFor('/portals'));
+      });
+
+      it('APPEARS WHEN A GUARD EJECTS A CALLER ONTO THE FORM ALREADY ON DISPLAY', () => {
+        // ⚠ THE MEASURED DEFECT, AND EVERY CASE ABOVE MISSES IT. All of them arrange the address before the
+        // component exists, so they exercise a FRESH REDIRECTED MOUNT - and the notice worked for that. The
+        // router REUSES one component instance when only the query string changes, and the return address was
+        // read from the activation snapshot exactly once, so the ordinary arrival path for an expiring
+        // session explained nothing: the caller is sitting on the sign-in form, a guard refuses a protected
+        // navigation, the guard redirects here with the address it refused, and the screen said nothing at
+        // all about why they had been turned away.
+        create();
+
+        expect(notice()).withContext('nothing to explain yet').toBeNull();
+
+        changeQueryParams({ [RETURN_URL_QUERY_KEY]: '/users/5' });
+
+        const shown = notice();
+
+        expect(shown).withContext('the later ejection is explained too').not.toBeNull();
+        expect((shown?.textContent ?? '').trim()).toBe(ejectionNoticeFor('/users/5'));
+        expect(shown?.getAttribute('role'))
+          .withContext('still polite: being asked to sign in is a step, not a fault')
+          .toBe('status');
+      });
+
+      it('names the NEW address when a second ejection replaces the first', () => {
+        queryParams = { [RETURN_URL_QUERY_KEY]: '/portals' };
+
+        create();
+
+        expect((notice()?.textContent ?? '').trim()).toBe(ejectionNoticeFor('/portals'));
+
+        changeQueryParams({ [RETURN_URL_QUERY_KEY]: '/roles/0/users' });
+
+        expect((notice()?.textContent ?? '').trim())
+          .withContext('a stale sentence naming the previous address would misdescribe the ejection')
+          .toBe(ejectionNoticeFor('/roles/0/users'));
+      });
+
+      it('WITHDRAWS when the requested address is removed from the address', () => {
+        queryParams = { [RETURN_URL_QUERY_KEY]: '/portals' };
+
+        create();
+
+        expect(notice()).not.toBeNull();
+
+        changeQueryParams({});
+
+        expect(notice())
+          .withContext('nothing is being requested any more, so there is nothing to explain')
+          .toBeNull();
+      });
+
+      it('still refuses to quote a hostile address that arrives while mounted', () => {
+        // The judgement must not weaken on the later path: it is the same attacker-supplied string arriving
+        // by a different route.
+        create();
+
+        changeQueryParams({ [RETURN_URL_QUERY_KEY]: '//evil.test/portals' });
+
+        expect((notice()?.textContent ?? '').trim()).toBe(EJECTION_NOTICE_WITHOUT_ADDRESS);
+        expect(host().outerHTML).not.toContain('evil.test');
+      });
+
+      it('does NOT re-seed the credential fields when the address changes', () => {
+        // ⚠ THE BOUND ON THE FIX. Only the notice is recomputed. Re-running the legacy query-key seeding on a
+        // later parameter change would overwrite a user name the operator had already typed - trading a
+        // missing sentence for lost input, which is the worse of the two.
+        create();
+
+        type(LOGIN_CONTROL_IDS.username, 'typed-by-the-operator');
+
+        changeQueryParams({
+          [RETURN_URL_QUERY_KEY]: '/users/5',
+          [USERNAME_QUERY_KEY]: 'seeded-account',
+        });
+
+        expect(requiredControl(LOGIN_CONTROL_IDS.username).value)
+          .withContext('what the operator typed survives a later ejection')
+          .toBe('typed-by-the-operator');
+        expect(notice()).withContext('and the ejection is still explained').not.toBeNull();
       });
     });
 

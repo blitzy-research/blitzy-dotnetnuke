@@ -108,7 +108,14 @@
               reasons, and the first is decisive on its own:
             -->
             <ul class="role-assignment__matches" [attr.aria-label]="text.matchesLabel">
-              @for (match of userMatches(); track match.userId) {
+              <!--
+                THE ANNOTATED LABEL, AND THE ENTRY STAYS SELECTABLE. Choosing an account that already holds
+                the role is how a membership's dates are AMENDED - the legacy screen prefilled the boxes
+                from the existing row and relabelled its commit button `UpdateRole.Text` for exactly this
+                case - so disabling or hiding these entries would remove the only route to that workflow.
+                What was missing was the marking, not a restriction.
+              -->
+              @for (match of annotatedUserMatches(); track match.userId) {
                 <li class="role-assignment__match">
                   @if (match.userId === formState().userId) {
                     <button
@@ -116,14 +123,14 @@
                       type="button"
                       aria-pressed="true"
                       (click)="clearSelectedUser()"
-                    >{{ match.displayName }} ({{ match.username }})</button>
+                    >{{ match.label }}</button>
                   } @else {
                     <button
                       class="role-assignment__match-action"
                       type="button"
                       aria-pressed="false"
                       (click)="selectUser(match)"
-                    >{{ match.displayName }} ({{ match.username }})</button>
+                    >{{ match.label }}</button>
                   }
                 </li>
               }
@@ -188,18 +195,29 @@
 
     <!-- The notification choice is RETAINED, because the assignment contract carries a notify member. -->
     <div class="role-assignment__notify">
+      <!--
+        ⚠ THE REASON IS VISIBLE AND ASSOCIATED, NOT TUCKED INTO THE HELP DISCLOSURE. This sentence used to
+        be bound as the field's `[help]`, which renders behind a toggle that starts CLOSED - and the control
+        it explains is disabled with the native attribute, so it takes no focus and cannot be tabbed to.
+        Between the two, the only permanently unavailable control on the screen was also the only one whose
+        reason an operator had no route to. The `[help]` binding is REMOVED rather than kept alongside this,
+        so the sentence is stated once rather than twice, and `aria-describedby` names it from the control
+        so it is announced with it.
+      -->
       <app-form-field
         [label]="text.notifyLabel"
         [for]="controlId.notify"
-        [help]="text.notifyHelp"
       >
         <input
           class="role-assignment__notify-control"
           type="checkbox"
           [id]="controlId.notify"
           formControlName="notify"
+          [attr.aria-describedby]="controlId.notifyAdvisory"
         />
       </app-form-field>
+
+      <p class="role-assignment__advisory" [id]="controlId.notifyAdvisory">{{ text.notifyHelp }}</p>
     </div>
 
     <!-- The action RELABELS itself, and only one of the two legacy relabel branches is live in this mode. -->
@@ -209,7 +227,24 @@
         type="submit"
         [disabled]="!canSubmit()"
           [attr.aria-busy]="saving() ? 'true' : null"
+          [attr.aria-describedby]="selectedAccountAlreadyInRole() ? controlId.alreadyInRoleNote : null"
       >{{ actionLabel() }}</button>
+
+      <!--
+        WHAT SAVING WILL DO, when the chosen account is already a member. The button relabels itself to
+        "Update User Role" for this case - the legacy did the same, from `UpdateRole.Text` - but a relabelled
+        button only tells an operator who noticed the previous label. The consequence is named instead, and
+        ASSOCIATED with the button so a reader meets it when they reach the control rather than only if they
+        happen to sweep past it.
+
+        The entry that leads here is deliberately still selectable: amending a membership's dates is what
+        choosing an existing member is FOR.
+      -->
+      @if (selectedAccountAlreadyInRole()) {
+        <p class="role-assignment__lookup-note" [id]="controlId.alreadyInRoleNote">{{
+          text.accountAlreadyInRoleNote
+        }}</p>
+      }
 
       <!--
         ⚠ WHY THE ACTION IS UNAVAILABLE, NOT MERELY THAT IT IS. A disabled control states that something is

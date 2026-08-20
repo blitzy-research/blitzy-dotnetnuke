@@ -9,7 +9,11 @@ fieldset {
   // The user agent applies `min-inline-size: min-content` to every fieldset.
   min-inline-size: 0;
 
-  border: var(--border-width) var(--border-style) var(--color-border);
+  // ⚠ THE COMPONENT-BOUNDARY TOKEN, NOT THE DECORATIVE ONE. A fieldset edge is the only thing that tells a
+  // reader where one group of fields ends and the next begins, so it is information needed to identify a
+  // component rather than a rule drawn for looks. At --color-border it measured 1.37:1 and was, in the
+  // reported words, faint to the point of not being there.
+  border: var(--border-width) var(--border-style) var(--color-border-control);
   border-radius: var(--radius-sm);
   padding: var(--space-3);
 
@@ -25,20 +29,6 @@ legend {
   color: var(--color-primary);
 }
 
-// ⚠ AT THE NARROWEST WIDTHS A SELECT YIELDS HALF ITS INNER GUTTER TO THE VALUE IT EXISTS TO DISPLAY. A
-// closed native select paints its label inside its content box and Chrome reserves roughly 20px of that box
-// for the chevron, so the gutter competes directly with the text. Below `sm` the measure is genuinely scarce
-// - a 320px viewport leaves a field about 271px - and the portal administrator option, a display name and a
-// login name together, measures 231.77px: with the full gutter it fitted by under a pixel, which is not a
-// margin at all. Halving the gutter buys 8px of real headroom.
-//
-// This shifts nothing on the page. Every control is `border-box`, so trimming padding changes what is
-// readable inside the box without changing the box, and no other element moves.
-@include mx.respond-below('sm') {
-  select {
-    padding-inline: var(--space-1);
-  }
-}
 
 //  2. LABELS
 
@@ -154,6 +144,46 @@ textarea {
   }
 }
 
+// ⚠ AT THE NARROWEST WIDTHS A SELECT YIELDS HALF ITS INNER GUTTER TO THE VALUE IT EXISTS TO DISPLAY. A
+// closed native select paints its label inside its content box and Chrome reserves roughly 21px of that box
+// for the chevron, so the gutter competes directly with the text. Below `sm` the measure is genuinely
+// scarce — a 320px viewport leaves a field about 263px — and the portal administrator option, a display
+// name and a login name together, measures 230.95px: with the full gutter it does not fit at all. Halving
+// the gutter buys 8px of real headroom.
+//
+// ⚠⚠ AND IT HAD TO BE MOVED HERE TO WORK AT ALL, WHICH IS WHY THE MEASUREMENT ABOVE IS A CORRECTION.
+// This rule was authored ABOVE the base entry-control block, and the two selectors weigh the same — both
+// are a bare `select` at (0,0,1) — so the base `padding-inline: var(--space-2)` won on source order and
+// this override never applied to a single pixel. Measured on the running screen at 320px, the
+// administrator select reported `padding-inline-start: 8px`, not 4px, which is what exposed it. A rule
+// inside a media query does not outrank anything; it only narrows when it is asked.
+//
+// This shifts nothing on the page. Every control is `border-box`, so trimming padding changes what is
+// readable inside the box without changing the box, and no other element moves.
+@include mx.respond-below('sm') {
+  select {
+    padding-inline: var(--space-1);
+  }
+}
+
+// ⚠ A CLOSED SELECT WHOSE LABEL DOES NOT FIT MUST SAY SO, and nothing else in the platform will say it
+// for us. The text in a closed native select is clipped hard by default, so `Setup Administrator
+// (setup_admin)` painted `Setup Administrator (setup_admi` — a string that reads as a complete value and
+// is not one. Worse, the loss is undetectable from script: a select never scroll-overflows its own label,
+// so `scrollWidth` equals `clientWidth` to the pixel and the truncation-recovery measurement the shared
+// table uses cannot see it. It has to be read off the rendered pixels.
+//
+// The values at risk are operator data of unbounded length — display names, login names, page titles — so
+// no width this application can choose guarantees a fit at 320px. An ellipsis costs nothing when the label
+// fits, and when it does not it turns a silent lie into a visible truncation whose full text is one press
+// away in the picker and always complete in the control's accessible value. Verified in the rendered
+// pixels: three 4×5px baseline marks, a real U+2026.
+//
+// Declared after the base block for the same source-order reason recorded above.
+select {
+  text-overflow: ellipsis;
+}
+
 // The opacity reset is an accessibility measure, not a cosmetic one: some engines apply a partial default
 // opacity to placeholder text, which would silently multiply this colour's 5.49:1 contrast down to an
 // unknown, much lower ratio. Pinning it to full opacity is what makes the measured figure the real one.
@@ -218,6 +248,57 @@ input[type='radio'] {
   }
 }
 
+//  4b. THE FILE CONTROL
+
+// ⚠ MEASURED AT ABOUT TWENTY-TWO PIXELS TALL, which is half the pointer-target floor the rest of this file
+// enforces and below the twenty-four-pixel minimum that applies to everything. The cause is directly above:
+// `[type='file']` is one of the types EXCLUDED from the entry-control rule, so it inherited neither the
+// floored block size nor the chrome, and a native file control draws at whatever height the platform picks.
+// The exclusion itself is kept — a file control is not a text box and styling it as one misrepresents it —
+// so the target is restored here instead, in the one place global control styling belongs.
+//
+// The whole box is the target, not just the button: in Chromium a press anywhere inside a file control opens
+// the picker, so flooring the control's own block size floors the target. The internal button is floored as
+// well, because it is what a reader aims at and a 22px button inside a 44px box still reads as the target.
+input[type='file'] {
+  // The chrome the entry-control rule would have given it, so the control reads as a control rather than as
+  // loose text beside a small grey button. Every value is the same token that rule uses.
+  inline-size: var(--size-full);
+  max-inline-size: var(--size-full);
+  min-inline-size: 0;
+  padding-block: var(--space-1);
+  padding-inline: var(--space-2);
+  border: var(--border-width) var(--border-style) var(--color-primary);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-background);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+
+  // THE FLOOR. Stated on the control, so the press target is the control.
+  min-block-size: var(--target-size-min);
+  cursor: pointer;
+
+  &:hover {
+    border-color: var(--color-primary-hover);
+  }
+}
+
+// The internal button. `::file-selector-button` is the standard pseudo-element for it, and it takes the same
+// treatment the application's own secondary buttons take so that the one native control on the screen does
+// not look imported from another application.
+input[type='file']::file-selector-button {
+  min-block-size: var(--target-size-min);
+  margin-inline-end: var(--space-2);
+  padding-block: var(--space-1);
+  padding-inline: var(--space-2);
+  border: var(--border-width) var(--border-style) var(--color-primary);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-surface);
+  color: var(--color-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
 //  5. ACTIONS — button
 
 // The hover state does not reuse the danger colour, which is the hue the legacy command link turned on
@@ -272,9 +353,10 @@ button {
 // instead, i.e. a different species in a different place from its three siblings.
 //
 // The distinction is carried by WEIGHT and by weight alone. A filled primary would have to invent a colour
-// treatment this vocabulary does not declare, and the token set is closed at nine colours; weight is already a
-// declared axis, costs no contrast, and cannot shift layout because the box is floored on both axes for every
-// button in the application.
+// treatment this vocabulary does not declare - it holds no filled-button surface and no on-primary ink, and
+// the one time a colour was added it was added to discharge a contrast obligation, not to invent a treatment.
+// Weight is already a declared axis, costs no contrast, and cannot shift layout because the box is floored on
+// both axes for every button in the application.
 .form-action--primary {
   font-weight: var(--font-weight-bold);
 }
@@ -367,46 +449,54 @@ textarea[aria-invalid='true'] {
 
 //  8. STATE — disabled and read-only
 
-// The rendered contrast here is low, and it is never the sole indicator: the native `disabled` attribute
-// always accompanies it, so assistive technology and keyboard users are told independently, and the cursor
-// is a second non-colour signal for sighted mouse users.
+// ⚠ THE BOUNDARY NOW CARRIES THE COMPONENT-BOUNDARY TOKEN, and the note that used to stand here - that the
+// low contrast was acceptable because the `disabled` attribute and the cursor said the same thing - answered
+// the wrong question. Those two signals report the STATE; the edge is what reports that there is a control
+// there at all, and at --color-border it measured 1.37:1 against this fill. A control whose only outline is
+// invisible is not a control a sighted reader can find, whatever its state announces. The two non-colour
+// signals remain, and remain the reason the state itself is never colour-only.
 input:disabled,
 select:disabled,
 textarea:disabled,
 button:disabled {
   color: var(--color-text-muted);
   background-color: var(--color-surface);
-  border-color: var(--color-border);
+  border-color: var(--color-border-control);
   cursor: not-allowed;
 
   &:hover {
-    border-color: var(--color-border);
+    border-color: var(--color-border-control);
   }
 }
 
 // The aria-disabled form looks disabled but stays focusable and stays in the tab order, which is the reason
 // to prefer it: a control a keyboard user can reach and hear announced as unavailable beats one that has
-// silently vanished.
+// silently vanished. Its edge is held to the same obligation as the native form above - MORE so, since this
+// one is still a tab stop and a reader arriving on it needs to see what they have landed on.
 input[aria-disabled='true'],
 select[aria-disabled='true'],
 textarea[aria-disabled='true'],
 button[aria-disabled='true'] {
   color: var(--color-text-muted);
   background-color: var(--color-surface);
-  border-color: var(--color-border);
+  border-color: var(--color-border-control);
   pointer-events: none;
 }
 
 // Read-only is NOT disabled and must not look identical to it. A read-only control still holds real data,
 // is still focusable, is still copyable and is still submitted, so its text keeps full contrast and only
 // the surface changes.
+//
+// ⚠ AND ITS EDGE IS A COMPONENT BOUNDARY, not decoration. At --color-border-strong it measured 1.61:1
+// against this same secondary fill - the state the reported finding names as "faint readonly boundaries" -
+// which left a focusable, copyable, submitted control with no visible extent.
 input[readonly],
 textarea[readonly] {
   background-color: var(--color-surface);
-  border-color: var(--color-border-strong);
+  border-color: var(--color-border-control);
 
   &:hover {
-    border-color: var(--color-border-strong);
+    border-color: var(--color-border-control);
   }
 }
 
@@ -439,9 +529,15 @@ textarea[readonly] {
 
   // ⚠ THE BORDER NAMES A TOKEN AND NO LONGER INHERITS `currentColor`, for the reason recorded on the shared
   // field's own help panel: inherited it computed BLACK, which is not in the colour vocabulary, and it changed
-  // with whatever text enclosed the panel. The STRONG border token is the one named, for the reason recorded
-  // there too — this panel's fill is the same secondary surface that some sections are already filled with.
-  border: var(--border-width) var(--border-style) var(--color-border-strong);
+  // with whatever text enclosed the panel.
+  //
+  // THE COMPONENT-BOUNDARY TOKEN, superseding --color-border-strong. The earlier correction moved this edge
+  // from #DCDCDC to #CCCCCC because the panel's own fill is the secondary surface and the panel could open
+  // INSIDE a section filled with that same surface - a real problem, and 1.61:1 was not enough to solve it.
+  // This is a disclosure surface whose whole purpose is to be recognised as separate from the form beneath
+  // it, so its edge is information needed to identify a component; at 4.5422:1 on the page background and
+  // 3.9149:1 on the secondary surface it now separates the panel on either fill rather than nearly doing so.
+  border: var(--border-width) var(--border-style) var(--color-border-control);
   border-radius: var(--radius-sm);
 
   // The middle step of the elevation scale — a help panel is a transient disclosure surface, above the inline
@@ -455,10 +551,11 @@ textarea[readonly] {
   color: inherit;
 
   // The help surface resolves to `--color-surface`, the neutral secondary surface, NOT to a dedicated
-  // hint colour: the legacy pale yellow `#FFFF99` is not tokenised, because the colour vocabulary is
-  // closed at nine. Inherited black measures 18.10:1 against this surface, so the fill still separates
-  // guidance from content without a colour of its own.
-  // rather than approximated by the neutral secondary surface.
+  // hint colour: the legacy pale yellow `#FFFF99` is deliberately not tokenised, for the reason recorded
+  // beside `--color-surface` in `_tokens.scss`. Note that this is NOT the same reason as "the vocabulary is
+  // closed" - that claim was withdrawn when the danger ink was darkened and a boundary token added; the hint
+  // surface is untokenised on its own merits, not by an arithmetic bound. Inherited black measures 18.10:1
+  // against this surface, so the fill still separates guidance from content without a colour of its own.
   background-color: var(--color-surface);
 
   // Help text is authored prose of arbitrary length and may contain a long path
@@ -467,6 +564,16 @@ textarea[readonly] {
 }
 
 // A SECTION HEADING INSIDE A LEGEND
+// ⚠ THIS RULE IS WHAT LETS A FIELD-SET CAPTION BE A HEADING AT NO VISUAL COST, AND IT MUST NOT BE TIDIED
+// AWAY. A caption naming a group of fields is a heading - a screen-reader user navigates a long form by
+// them - but it is also the field set's accessible name, so the two have to be the same element. Nesting
+// the heading inside the legend satisfies both, and this rule is what stops it LOOKING like a heading:
+// without `font: inherit` an `<h2>` here would jump to the level-2 step and repaint in the heading ink,
+// so adding the landmark would silently resize three captions on the profile screen and two on each
+// account form. Measured after the profile screen's edit branch gained its `<h2>`: every caption still
+// renders at the legend's own 14px/700 in the brand ink, identical to a plain legend. That is the
+// intended outcome - the semantic rank lands, the appearance does not move - and it is why the heading
+// level is chosen for its position in the document outline rather than for how large it draws.
 legend > h1,
 legend > h2,
 legend > h3,

@@ -451,9 +451,32 @@ describe('ModuleExportComponent', () => {
     );
   }
 
-  /** The screen-level sentence in the polite live region, or null when the region is not rendered. */
+  /**
+   * The screen-level sentence this screen is raising, or null when it is raising none.
+   *
+   * ⚠ TWO REGIONS, NOT ONE, and the selector spans both deliberately. A REFUSAL - the action did not happen -
+   * is announced assertively, matching the banner and the sibling import screen; an OUTCOME - the action ran,
+   * and this is what it produced - stays polite. Only one of the two can hold a sentence at a time, because
+   * both are projections of one signal, so the first match in document order is the sentence being raised.
+   * Callers that care WHICH channel it came through assert on the region directly.
+   */
   function notice(): string | null {
-    return textOf('p[role="status"]');
+    return textOf('p[role="alert"], p[role="status"]');
+  }
+
+  /** The sentence in the assertive region, or null when it holds none. */
+  function refusalNotice(): string | null {
+    return textOf('.module-export__notice-refusal');
+  }
+
+  /** The sentence in the polite region, or null when it holds none. */
+  function outcomeNotice(): string | null {
+    return textOf('.module-export__notice-outcome');
+  }
+
+  /** The recovery control, or null when none is offered. */
+  function retryControl(): HTMLButtonElement | null {
+    return q<HTMLButtonElement>('.module-export__retry');
   }
 
   /** The sentence the shared error banner is presenting, or null when it is presenting none. */
@@ -1394,6 +1417,12 @@ describe('ModuleExportComponent', () => {
 
       expect(notice()).toBe(EXPECTED_NO_CONTENT_MESSAGE);
       expect(notice()).toContain('specified');
+
+      // ⚠ AND IT STAYS POLITE, which is the distinction the two channels exist to draw. An export that ran
+      // and found nothing to write is a real answer the legacy screen also reported, not a failure, so
+      // interrupting for it would make an ordinary outcome read as a fault.
+      expect(outcomeNotice()).toBe(EXPECTED_NO_CONTENT_MESSAGE);
+      expect(refusalNotice()).withContext('a completed action is not announced as a refusal').toBeNull();
       expect(createdObjectUrls).toEqual([]);
       expect(downloadAttempts).toEqual([]);
       expect(raisedNotifications()).toEqual([]);
@@ -1445,6 +1474,57 @@ describe('ModuleExportComponent', () => {
       expect(notice()).toBe(EXPECTED_NO_MODULE_MESSAGE);
       expect(fieldMessages()).toEqual([]);
       httpMock.expectNone({ method: 'POST', url: `/api/v1/modules/${MODULE_ID}/export` });
+    });
+
+    it('offers a retry for a refused READ, and re-reads the module when it is pressed', () => {
+      // ⚠ THIS SCREEN HAD NO RECOVERY AT ALL. A refused read left the filename unprepopulated and the
+      // confirming action disabled, with nothing on screen able to re-attempt anything - so the only way
+      // forward was to navigate away and come back. The sibling import screen has offered exactly this.
+      addressModule(String(MODULE_ID));
+      expectModuleRead().flush(problemOf(404, 'No such module.'), {
+        status: 404,
+        statusText: 'Not Found',
+      });
+      fixture.detectChanges();
+
+      const retry: HTMLButtonElement | null = retryControl();
+
+      expect(retry).withContext('a presented failure offers a way to re-attempt it').not.toBeNull();
+
+      retry!.click();
+      fixture.detectChanges();
+
+      // The retry re-issues the READ, which is the operation that failed.
+      expectModuleRead().flush({ data: moduleOf({ moduleId: MODULE_ID }) });
+      fixture.detectChanges();
+
+      // The failure surface and the screen's own sentence are both cleared by the successful re-read.
+      expect(bannerMessage()).toBeNull();
+      expect(notice()).toBeNull();
+      expect(retryControl()).withContext('a healthy screen offers no recovery control').toBeNull();
+    });
+
+    it('announces a refused action assertively and a completed one politely', () => {
+      addressModule(String(MODULE_ID));
+      expectModuleRead().flush(problemOf(404, 'No such module.'), {
+        status: 404,
+        statusText: 'Not Found',
+      });
+      fixture.detectChanges();
+
+      submitForm();
+
+      // ⚠ "YOUR EXPORT DID NOT HAPPEN" IS NOT A POLITE SENTENCE. Every message this screen raised went
+      // through one polite region, so a refusal was announced without interrupting while a SERVER refusal of
+      // the same action went to the assertive banner - and an operator who pressed Export could go on
+      // waiting for a download that was never coming.
+      expect(refusalNotice()).toBe(EXPECTED_NO_MODULE_MESSAGE);
+      expect(outcomeNotice()).withContext('a refusal is not raised politely').toBeNull();
+
+      const assertive: HTMLElement | null = q<HTMLElement>('.module-export__notice-refusal');
+
+      expect(assertive?.getAttribute('role')).toBe('alert');
+      expect(assertive?.getAttribute('aria-live')).toBe('assertive');
     });
 
     it('presents a refused READ through the banner and stays silent in the live region', () => {
@@ -1779,12 +1859,17 @@ describe('ModuleExportComponent', () => {
       expect(navigateSpy).toHaveBeenCalledWith(['/modules', MODULE_ID, 'settings']);
     });
 
-    it('returns to the application root when the address named no module', () => {
+    it('returns to the module listing, not the application root, when the address named no module', () => {
       addressModule('not-a-module');
 
       requireActionButton(EXPECTED_CANCEL_LABEL).click();
 
-      expect(navigateSpy).toHaveBeenCalledWith(['/']);
+      // ⚠ THIS USED TO NAVIGATE TO `/`. There is no module-scoped destination when the address names no
+      // module, and the old answer was the top of the console - abandoning the listing the operator came
+      // from, with nothing said about why. The sibling import screen already returns to the listing and
+      // already restores the coordinate it was left at, so a Cancel now lands somewhere the operator was
+      // on both screens rather than somewhere neither of them started.
+      expect(navigateSpy).toHaveBeenCalledWith(['/modules'], { queryParams: {} });
     });
   });
 

@@ -391,6 +391,100 @@ public sealed class RoleRepositoryTests
         }
     }
 
+    /// <summary>
+    /// The grouped count reports one entry per populated group, omits empty groups, ignores ungrouped roles
+    /// and is confined to the tenant asked about.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ EVERY CLAUSE HERE IS LOAD-BEARING FOR THE AFFORDANCE THIS COUNT GOVERNS. A screen offers a group
+    /// deletion when and only when the count is zero, so an over-count withholds a legitimate removal
+    /// forever and an under-count offers one the server refuses with <c>role_group.in_use</c>. The four
+    /// clauses are the four ways the count could be wrong: counting a neighbouring group's roles, reporting
+    /// an empty group as unknown rather than as empty, folding the large population of ungrouped roles into
+    /// some group, and leaking another tenant's roles into this tenant's answer.
+    /// </para>
+    /// <para>
+    /// The ungrouped clause matters more than it looks: in a real portal MOST roles belong to no group at
+    /// all, so a predicate that admitted a null group would swamp every count it produced.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task CountRolesByGroupAsync_CountsPopulatedGroupsOnlyWithinTheTenant()
+    {
+        int portalId = await CreatePortalAsync();
+        int otherPortalId = await CreatePortalAsync();
+        string marker = Suffix();
+
+        int populatedGroup = await CreateGroupAsync(portalId, FormattableString.Invariant($"Populated {marker}"));
+        int emptyGroup = await CreateGroupAsync(portalId, FormattableString.Invariant($"Empty {marker}"));
+        int otherTenantGroup = await CreateGroupAsync(
+            otherPortalId,
+            FormattableString.Invariant($"Elsewhere {marker}"));
+
+        int first = await CreateRoleAsync(
+            portalId,
+            FormattableString.Invariant($"A {marker}"),
+            roleGroupId: populatedGroup);
+        int second = await CreateRoleAsync(
+            portalId,
+            FormattableString.Invariant($"B {marker}"),
+            roleGroupId: populatedGroup);
+        int ungrouped = await CreateRoleAsync(portalId, FormattableString.Invariant($"C {marker}"));
+        int elsewhere = await CreateRoleAsync(
+            otherPortalId,
+            FormattableString.Invariant($"D {marker}"),
+            roleGroupId: otherTenantGroup);
+
+        try
+        {
+            using IServiceScope scope = _fixture.Services.CreateScope();
+            IRoleRepository roles = scope.ServiceProvider.GetRequiredService<IRoleRepository>();
+
+            IReadOnlyDictionary<int, int> counts = await roles.CountRolesByGroupAsync(portalId);
+
+            counts.Should().ContainKey(populatedGroup);
+            counts[populatedGroup].Should().Be(2, "both grouped roles belong to this group");
+
+            counts.Should().NotContainKey(
+                emptyGroup,
+                "a group that classifies nothing is absent rather than present with zero, and a caller "
+                + "reads that absence as zero");
+
+            counts.Should().NotContainKey(
+                otherTenantGroup,
+                "the portal is a condition on the count, not merely on the group listing");
+
+            counts.Values.Sum().Should().Be(
+                2,
+                "the ungrouped role is counted nowhere - most roles in a real portal belong to no group, so "
+                + "admitting a null group would swamp every count");
+
+            // A tenant with no groups at all yields an empty answer rather than a null one, which is the
+            // contract the service's TryGetValue default depends on.
+            (await roles.CountRolesByGroupAsync(UnknownPortalId)).Should().NotBeNull().And.BeEmpty();
+
+            // The other tenant's own answer is complete and independent.
+            IReadOnlyDictionary<int, int> otherCounts = await roles.CountRolesByGroupAsync(otherPortalId);
+            otherCounts[otherTenantGroup].Should().Be(1);
+            otherCounts.Should().NotContainKey(populatedGroup);
+        }
+        finally
+        {
+            await RemoveRoleAsync(first);
+            await RemoveRoleAsync(second);
+            await RemoveRoleAsync(ungrouped);
+            await RemoveRoleAsync(elsewhere);
+            await RemoveGroupAsync(populatedGroup);
+            await RemoveGroupAsync(emptyGroup);
+            await RemoveGroupAsync(otherTenantGroup);
+            await RemovePortalAsync(portalId);
+            await RemovePortalAsync(otherPortalId);
+        }
+    }
+
     /// <summary>Groups are created, read, listed, checked for duplicates and removed.</summary>
     /// <returns>A task representing the test.</returns>
     [Fact]

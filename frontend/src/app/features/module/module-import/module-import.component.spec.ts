@@ -430,6 +430,14 @@ function unreadableFile(name = 'gone.xml'): File {
   return file;
 }
 
+/**
+ * The operation key every refusal of a chosen file carries. ⚠ QA-26 — RESTATED HERE RATHER THAN IMPORTED,
+ * because the component keeps it private and a scope is part of what these assertions are about: all four
+ * refusals answer one question, "what happened to the file you chose", so a newer refusal must retire the
+ * older one instead of stacking beside it.
+ */
+const FILE_CHOICE_SCOPE = 'module-import:file-choice';
+
 describe('ModuleImportComponent', () => {
   let fixture: ComponentFixture<ModuleImportComponent>;
   let mounted: ComponentFixture<ModuleImportComponent> | null;
@@ -1115,7 +1123,14 @@ describe('ModuleImportComponent', () => {
 
       await submit();
 
-      expect(notifySpy).toHaveBeenCalledWith('error', FILE_EMPTY_MESSAGE, null);
+      expect(notifySpy).toHaveBeenCalledWith(
+        'error',
+        FILE_EMPTY_MESSAGE,
+        null,
+        false,
+        null,
+        FILE_CHOICE_SCOPE,
+      );
       httpMock.expectNone(() => true);
     });
 
@@ -1169,7 +1184,14 @@ describe('ModuleImportComponent', () => {
 
       httpMock.expectNone(() => true);
 
-      expect(notifySpy).toHaveBeenCalledWith('error', FILE_UNREADABLE_MESSAGE, null);
+      expect(notifySpy).toHaveBeenCalledWith(
+        'error',
+        FILE_UNREADABLE_MESSAGE,
+        null,
+        false,
+        null,
+        FILE_CHOICE_SCOPE,
+      );
 
       // The choice is LEFT IN PLACE so the operator can re-pick rather than starting again.
       expect(requiredControl<HTMLInputElement>('module-import-file')).not.toBeNull();
@@ -1193,7 +1215,14 @@ describe('ModuleImportComponent', () => {
       call.flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
 
-      expect(notifySpy).toHaveBeenCalledWith('success', IMPORT_SUCCEEDED_MESSAGE, null, true);
+      expect(notifySpy).toHaveBeenCalledWith(
+        'success',
+        IMPORT_SUCCEEDED_MESSAGE,
+        null,
+        true,
+        null,
+        null,
+      );
 
       // ⚠ AND THE CONFIRMATION SURVIVES THE NAVIGATION IT IS RAISED WITH. This screen announces and then
       // leaves for the listing in the same task, and the shell retires notifications on a completed
@@ -1298,7 +1327,14 @@ describe('ModuleImportComponent', () => {
       call.flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
 
-      expect(notifySpy).toHaveBeenCalledWith('success', IMPORT_SUCCEEDED_MESSAGE, null, true);
+      expect(notifySpy).toHaveBeenCalledWith(
+        'success',
+        IMPORT_SUCCEEDED_MESSAGE,
+        null,
+        true,
+        null,
+        null,
+      );
     });
 
     it('sends NOTHING when the TARGET MODULE is changed while the document is being read', async () => {
@@ -1383,7 +1419,14 @@ describe('ModuleImportComponent', () => {
       call.flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
 
-      expect(notifySpy).toHaveBeenCalledOnceWith('success', IMPORT_SUCCEEDED_MESSAGE, null, true);
+      expect(notifySpy).toHaveBeenCalledOnceWith(
+        'success',
+        IMPORT_SUCCEEDED_MESSAGE,
+        null,
+        true,
+        null,
+        null,
+      );
     });
 
     it('a refused re-entry changes NOTHING on screen', async () => {
@@ -1397,7 +1440,14 @@ describe('ModuleImportComponent', () => {
 
       await submit();
 
-      expect(notifySpy).toHaveBeenCalledWith('error', FILE_UNREADABLE_MESSAGE, null);
+      expect(notifySpy).toHaveBeenCalledWith(
+        'error',
+        FILE_UNREADABLE_MESSAGE,
+        null,
+        false,
+        null,
+        FILE_CHOICE_SCOPE,
+      );
 
       const messagesAfterFailure = fieldMessages();
 
@@ -1407,7 +1457,14 @@ describe('ModuleImportComponent', () => {
       // fails the same way — which is the behaviour the "lets a second attempt succeed" case relies on.
       await submit();
 
-      expect(notifySpy).toHaveBeenCalledWith('error', FILE_UNREADABLE_MESSAGE, null);
+      expect(notifySpy).toHaveBeenCalledWith(
+        'error',
+        FILE_UNREADABLE_MESSAGE,
+        null,
+        false,
+        null,
+        FILE_CHOICE_SCOPE,
+      );
       expect(fieldMessages()).toEqual(messagesAfterFailure);
       httpMock.expectNone(() => true);
     });
@@ -1440,7 +1497,14 @@ describe('ModuleImportComponent', () => {
       call.flush(null, { status: 204, statusText: 'No Content' });
       fixture.detectChanges();
 
-      expect(notifySpy).toHaveBeenCalledWith('success', IMPORT_SUCCEEDED_MESSAGE, null, true);
+      expect(notifySpy).toHaveBeenCalledWith(
+        'success',
+        IMPORT_SUCCEEDED_MESSAGE,
+        null,
+        true,
+        null,
+        null,
+      );
     });
 
     it('leaves the two choices INTACT through a lock-and-release cycle', async () => {
@@ -1512,7 +1576,14 @@ describe('ModuleImportComponent', () => {
       fixture.detectChanges();
 
       expect(severitiesAnnouncedFor(IMPORT_SUCCEEDED_MESSAGE)).toEqual(['success']);
-      expect(notifySpy).toHaveBeenCalledWith('success', IMPORT_SUCCEEDED_MESSAGE, null, true);
+      expect(notifySpy).toHaveBeenCalledWith(
+        'success',
+        IMPORT_SUCCEEDED_MESSAGE,
+        null,
+        true,
+        null,
+        null,
+      );
 
       expect(navigateSpy).toHaveBeenCalledOnceWith([MODULE_LIST_ROUTE], { queryParams: {}, replaceUrl: true });
     });
@@ -1670,7 +1741,14 @@ describe('ModuleImportComponent', () => {
 
       // The code ends in a fragment the status mapper sends to 500, so this is the shape a genuine
       // import failure takes rather than an invented one.
-      expect(notifySpy).not.toHaveBeenCalledWith('success', IMPORT_SUCCEEDED_MESSAGE, null, true);
+      expect(notifySpy).not.toHaveBeenCalledWith(
+        'success',
+        IMPORT_SUCCEEDED_MESSAGE,
+        null,
+        true,
+        null,
+        null,
+      );
       expect(navigateSpy).not.toHaveBeenCalled();
       expect(query('.error-banner')).not.toBeNull();
     });
@@ -1893,6 +1971,50 @@ describe('ModuleImportComponent', () => {
       expect(rendered).toContain('app-page-header');
       expect(rendered).toContain('app-form-field');
       expect(rendered).toContain('app-error-banner');
+    });
+
+    it('floors the document control at the pointer target on both the box and its button', () => {
+      arrive();
+
+      const input = requireElement<HTMLInputElement>(root(), 'input[type="file"]');
+
+      // ⚠ MEASURED AT ABOUT TWENTY-TWO PIXELS TALL, which is half the floor this token set applies to every
+      // other control and below the twenty-four that applies to everything. The cause was an exclusion:
+      // `[type='file']` is one of the types the global entry-control rule skips, so it inherited neither the
+      // floored block size nor the chrome, and a native file control draws at whatever height the platform
+      // picks. In Chromium a press ANYWHERE inside a file control opens the picker, so flooring the
+      // control's own block size is what floors the target.
+      const floor: number = Number.parseFloat(
+        getComputedStyle(document.documentElement).getPropertyValue('--target-size-min'),
+      );
+
+      expect(floor).withContext('the target token resolves').toBeGreaterThan(0);
+
+      // The token is in rem; resolve it against the root font size the same way the browser does.
+      const rootFontSize: number = Number.parseFloat(
+        getComputedStyle(document.documentElement).fontSize,
+      );
+      const flooredPx: number = floor * rootFontSize;
+
+      const style: CSSStyleDeclaration = getComputedStyle(input);
+
+      expect(Number.parseFloat(style.minBlockSize) || Number.parseFloat(style.minHeight))
+        .withContext('the control itself carries the floor')
+        .toBeGreaterThanOrEqual(flooredPx - 0.5);
+
+      expect(input.getBoundingClientRect().height)
+        .withContext('and renders at least that tall')
+        .toBeGreaterThanOrEqual(flooredPx - 0.5);
+
+      // The internal button is floored too, because it is what a reader aims at and a 22px button inside a
+      // 44px box still reads as the target.
+      const button: CSSStyleDeclaration = getComputedStyle(input, '::file-selector-button');
+      const buttonFloor: number =
+        Number.parseFloat(button.minBlockSize) || Number.parseFloat(button.minHeight);
+
+      expect(buttonFloor)
+        .withContext('the internal button carries the floor as well')
+        .toBeGreaterThanOrEqual(flooredPx - 0.5);
     });
 
     it('offers exactly one document control, wrapped and natively named', () => {

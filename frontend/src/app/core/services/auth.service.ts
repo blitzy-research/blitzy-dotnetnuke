@@ -56,7 +56,7 @@ export class AuthService {
     selector?: LoginPortalSelector | null,
   ): Observable<LoginResponse> {
     return this.http
-      .post<unknown>(AUTH_ENDPOINTS.login, request, {
+      .post<unknown>(AUTH_ENDPOINTS.login(), request, {
         // The tenant selector travels as a QUERY parameter, not in the body: the endpoint resolves the
         // tenant from the arrival host and admits `?portalId=` only as the fallback for a host with no
         // alias row.
@@ -79,7 +79,7 @@ export class AuthService {
   refresh(request: RefreshTokenRequest): Observable<LoginResponse> {
     return this.http
       // Reported by the lifecycle owner. See the note at the head of this class.
-      .post<unknown>(AUTH_ENDPOINTS.refresh, request, { context: presentedInContext() })
+      .post<unknown>(AUTH_ENDPOINTS.refresh(), request, { context: presentedInContext() })
       .pipe(map((body) => LOGIN_RESPONSE(body, RESPONSE_ROOT)));
   }
 
@@ -94,7 +94,7 @@ export class AuthService {
   logout(request: RefreshTokenRequest): Observable<void> {
     // Reported by the lifecycle owner, which announces the outstanding revocation. See the note at
     // the head of this class.
-    return this.http.post<void>(AUTH_ENDPOINTS.logout, request, {
+    return this.http.post<void>(AUTH_ENDPOINTS.logout(), request, {
       context: presentedInContext(),
     });
   }
@@ -118,7 +118,7 @@ export class AuthService {
           };
 
     return this.http
-      .get<unknown>(AUTH_ENDPOINTS.me, options)
+      .get<unknown>(AUTH_ENDPOINTS.me(), options)
       .pipe(map((body) => CURRENT_USER_RESPONSE(body, RESPONSE_ROOT)));
   }
 }

@@ -10,7 +10,20 @@
   .form-field {
     display: grid;
 
-    grid-template-columns: minmax(0, var(--field-label-inline-size)) var(--grid-track-fluid);
+    // ⚠ QA-24 — THE CAPTION COLUMN IS CAPPED AT A SHARE OF THE FIELD, NOT ONLY AT A LENGTH. The
+    // declaration was `minmax(0, var(--field-label-inline-size))` against a fluid second track, and with
+    // one `fr` track the fixed one always takes its full growth limit and the fluid one absorbs the
+    // shortfall alone. Measured on the membership screen at 768px, where that screen widens the shared
+    // caption track to 300px: the field is 534px wide, so the caption took 300px and the VALUE collapsed
+    // to 218px - narrower than the caption describing it, and the redirect pickers rendered "No redirect
+    // (stay on th". The term/value relationship reads backwards at that point.
+    //
+    // 45% keeps the value column the wider of the two at every width, and it changes NOTHING wherever
+    // 45% of the field already exceeds the declared caption size - for a 300px caption that is any field
+    // from 667px wide, so every measurement at 1024 and above is untouched.
+    grid-template-columns:
+      minmax(0, min(var(--field-label-inline-size), 45%))
+      var(--grid-track-fluid);
     column-gap: var(--space-4);
 
     // The label sits on the same text baseline as the first line of the control
@@ -191,13 +204,16 @@
   // outside the closed colour vocabulary entirely — because this panel opens inside ordinary body text rather
   // than beside a muted or branded run.
   //
-  // THE STRONG BORDER TOKEN, NOT THE ORDINARY ONE, AND THAT IS A MEASURED CORRECTION. This panel is filled
-  // with the secondary surface, and so is the role form's Advanced section — so inside that section the panel
-  // was drawn on a fill identical to its own container, leaving a 1px #DCDCDC edge and a 12%-black shadow as
-  // the only things separating them. Measured at runtime it read as barely raised. #CCCCCC is the next step in
-  // the same closed vocabulary and separates the panel on either surface, so the panel is legible whether it
-  // opens on the page background or inside a filled section.
-  border: var(--border-width) var(--border-style) var(--color-border-strong);
+  // THE COMPONENT-BOUNDARY TOKEN, AND THIS IS THE SECOND MEASURED CORRECTION TO THE SAME EDGE. This panel is
+  // filled with the secondary surface, and so is the role form's Advanced section — so inside that section the
+  // panel was drawn on a fill identical to its own container, leaving a 1px edge and a 12%-black shadow as the
+  // only things separating them. The first correction moved that edge from #DCDCDC to #CCCCCC, which was the
+  // right diagnosis and an insufficient remedy: #CCCCCC measures 1.61:1 on the page background and 1.38:1 on
+  // the secondary surface, so "barely raised" was improved rather than fixed. A disclosure panel exists to be
+  // recognised as separate from what it explains, which makes its edge information needed to identify a
+  // component — 3:1 territory, not decoration — and --color-border-control reads 4.5422:1 and 3.9149:1 on the
+  // two fills this panel can open on.
+  border: var(--border-width) var(--border-style) var(--color-border-control);
   border-radius: var(--radius-sm);
   background-color: var(--color-surface);
   color: inherit;
@@ -307,10 +323,25 @@
 // onto the next line, which is the separation this exists to prevent. A grid row cannot wrap, so the caption
 // absorbs the shortfall by reflowing inside its own `minmax(0, max-content)` track and the box stays put.
 :host(.form-field--inline) {
+  // ⚠ QA-24 — THE THIRD TRACK IS WHAT STOPS THE HELP PANEL RESIZING THE CAPTION, AND `min-inline-size: 0`
+  // ALONE DID NOT. A grid item that spans several tracks contributes its intrinsic size to those tracks, so
+  // the panel - whose sentence is far longer than any switch caption - drove the sizing of the
+  // content-measured caption track it spans. Zeroing its MINIMUM removed only half of that: measured in the
+  // 350px cell this arrangement is designed for, opening the help still moved the box, now 40px to the LEFT,
+  // because the panel's MAX-content contribution pushed the pair past the cell and the caption track, whose
+  // floor is 0, absorbed the shortfall.
+  //
+  // CSS Grid resolves this properly: an item spanning a track with a FLEXIBLE sizing function does not
+  // contribute to the intrinsic sizing of the content-measured tracks it also spans. A third `1fr` track
+  // therefore both absorbs the panel and takes it out of the caption's sizing altogether - and it absorbs
+  // the row's slack, which is what `justify-content: start` was doing before.
+  //
+  // GRID RATHER THAN FLEX remains the guarantee, for the reason set out above: a flex row would answer a
+  // shortfall by wrapping the box onto the next line, which is the separation this arrangement exists to
+  // prevent.
   .form-field {
     display: grid;
-    grid-template-columns: minmax(0, max-content) minmax(0, auto);
-    justify-content: start;
+    grid-template-columns: minmax(0, max-content) minmax(0, max-content) minmax(0, 1fr);
     column-gap: var(--space-2);
     row-gap: var(--space-1);
     align-items: baseline;
@@ -329,8 +360,19 @@
   // Both span the full width rather than sitting under the control, because here the control column is one
   // checkbox wide: a help panel or an error indented to start after the caption would have almost no measure
   // to render in.
+  //
+  // ⚠ QA-24 — AND BOTH ARE FLOORED AT ZERO, WHICH IS WHAT STOPS OPENING HELP MOVING THE CHECKBOX. A grid
+  // item's automatic minimum size is its own min-content contribution, and a spanning item distributes that
+  // contribution across the tracks it spans - so these two, whose caption-length sentences are far longer
+  // than a switch caption, inflated the content-sized track above. Measured on the membership screen:
+  // opening the help of `Suppress Pager?` widened track 1 from 115.16px to 176.953px and jogged the
+  // checkbox and its own Help button 61.79px to the RIGHT, so the control moved out from under the pointer
+  // that had just opened the explanation. `min-inline-size: 0` withdraws the contribution; the panels still
+  // span the full field and simply wrap inside whatever measure the row already had.
   .form-field__help,
   .form-field__errors {
     grid-column: 1 / -1;
+
+    min-inline-size: 0;
   }
 }

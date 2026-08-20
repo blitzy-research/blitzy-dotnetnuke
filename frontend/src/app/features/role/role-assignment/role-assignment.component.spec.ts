@@ -3762,6 +3762,10 @@ describe('RoleAssignmentComponent', () => {
               portalId: -1,
               roleGroupName: 'Paid Services',
               description: null,
+              // The server sends the classified-role count on every group path, and the decoder REQUIRES
+              // it: a response without it is a contract break, not something to be defaulted past. A
+              // group created by this very request classifies nothing.
+              classifiedRoleCount: 0,
             },
             meta: null,
           },
@@ -4962,13 +4966,26 @@ describe('RoleAssignmentComponent (store delegation)', () => {
     expect(notifyBox.disabled).toBeTrue();
     expect(notifyBox.checked).toBeFalse();
 
-    // And the reason is beside it, before the decision, behind the shared field's own help affordance.
-    const field = notifyBox.closest('app-form-field');
-    field?.querySelector<HTMLButtonElement>('.form-field__help-toggle')?.click();
-    fixture.detectChanges();
+    // ⚠ AND THE REASON IS VISIBLE AND ASSOCIATED, NOT BEHIND THE HELP AFFORDANCE. It used to be bound as
+    // the field's `help`, which renders behind a toggle that starts CLOSED - on a control that is disabled
+    // with the native attribute and therefore takes no focus and cannot be tabbed to. The one permanently
+    // unavailable control on the screen was the one whose reason an operator had no route to. It is now a
+    // paragraph of its own, named from the control by `aria-describedby`, and the `help` binding is gone
+    // so the sentence is stated once rather than twice.
+    const advisoryId = notifyBox.getAttribute('aria-describedby');
 
-    expect(field?.querySelector('.form-field__help')?.textContent ?? '').toContain(
-      'no mail endpoint',
-    );
+    expect(advisoryId).withContext('the control names its reason').not.toBeNull();
+
+    const advisory = (fixture.nativeElement as HTMLElement).querySelector(`#${advisoryId}`);
+
+    expect(advisory).withContext('and the reason it names is in the document').not.toBeNull();
+    expect(advisory?.textContent ?? '').toContain('no mail endpoint');
+
+    // No help disclosure on this field any more, so the sentence cannot be stated twice.
+    const field = notifyBox.closest('app-form-field');
+
+    expect(field?.querySelector('.form-field__help-toggle'))
+      .withContext('the reason is not also hidden behind a toggle')
+      .toBeNull();
   });
 });

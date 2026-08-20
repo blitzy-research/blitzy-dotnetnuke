@@ -811,9 +811,9 @@ public class MappingTests
         Assert.Throws<ArgumentNullException>(() => RoleMappings.ToMembership(withoutRole));
     }
 
-    /// <summary>The group projection carries all four of its columns.</summary>
+    /// <summary>The group projection carries all four of its columns and the count supplied alongside them.</summary>
     [Fact]
-    public void RoleGroupToDto_CarriesAllFourColumns()
+    public void RoleGroupToDto_CarriesAllFourColumnsAndTheClassifiedCount()
     {
         RoleGroup group = new()
         {
@@ -823,12 +823,33 @@ public class MappingTests
             Description = "Tiers that carry a charge",
         };
 
-        RoleGroupDto dto = RoleMappings.ToDto(group);
+        RoleGroupDto dto = RoleMappings.ToDto(group, 4);
 
         dto.RoleGroupId.Should().Be(6);
         dto.PortalId.Should().Be(-1);
         dto.RoleGroupName.Should().Be("Paid Tiers");
         dto.Description.Should().Be("Tiers that carry a charge");
+        dto.ClassifiedRoleCount.Should().Be(
+            4,
+            "the count is not a column on the row, so the projection can only carry the one it is handed");
+    }
+
+    /// <summary>A count is carried verbatim, including the zero that alone means the group may be removed.</summary>
+    /// <param name="classifiedRoleCount">The count handed to the projection.</param>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(11)]
+    public void RoleGroupToDto_CarriesTheCountVerbatim(int classifiedRoleCount)
+    {
+        RoleGroup group = new()
+        {
+            RoleGroupId = 6,
+            PortalId = -1,
+            RoleGroupName = "Paid Tiers",
+        };
+
+        RoleMappings.ToDto(group, classifiedRoleCount).ClassifiedRoleCount.Should().Be(classifiedRoleCount);
     }
 
     /// <summary>A new role is anchored to the tenant the route named and takes every term from the request.</summary>
@@ -1013,7 +1034,7 @@ public class MappingTests
 
         Assert.Throws<ArgumentNullException>(() => { _ = RoleMappings.ToListItem(null!); });
         Assert.Throws<ArgumentNullException>(() => { _ = RoleMappings.ToDetail(null!); });
-        Assert.Throws<ArgumentNullException>(() => { _ = RoleMappings.ToDto(null!); });
+        Assert.Throws<ArgumentNullException>(() => { _ = RoleMappings.ToDto(null!, 0); });
         Assert.Throws<ArgumentNullException>(() => { _ = RoleMappings.ToNewRole(-1, null!); });
         Assert.Throws<ArgumentNullException>(() => RoleMappings.ApplyUpdate(
             null!,
@@ -3811,7 +3832,7 @@ public class MappingTests
 
         RoleMappings.ToListItem(role).Should().BeEquivalentTo(RoleMappings.ToListItem(role));
         RoleMappings.ToDetail(role).Should().BeEquivalentTo(RoleMappings.ToDetail(role));
-        RoleMappings.ToDto(group).Should().BeEquivalentTo(RoleMappings.ToDto(group));
+        RoleMappings.ToDto(group, 2).Should().BeEquivalentTo(RoleMappings.ToDto(group, 2));
 
         ModuleMappings.ToListItem(module, placement, AnnouncementsCatalogue).Should()
             .BeEquivalentTo(ModuleMappings.ToListItem(module, placement, AnnouncementsCatalogue));

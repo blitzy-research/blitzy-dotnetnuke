@@ -18,7 +18,16 @@
     addressed to a client, not to an operator. This states the same fact in the operator's terms and, where
     this console has the screen that owns those settings, takes them to it.
   -->
-  <div class="module-settings__administered" role="note">
+  <!--
+    ⚠ THE ASSERTIVE CHANNEL, AND `role="note"` WAS THE WRONG ONE. This block does not annotate the screen,
+    it REPLACES it: the operator asked for a settings form, waited for a read, and got a wall. `note` is a
+    static structural role that announces nothing on insertion, so a screen-reader user was left on a screen
+    whose form had silently never arrived, with no statement that it would not. The pair below is the same
+    one `app-error-banner` uses - the application's one assertive channel - so a boundary and a refusal are
+    announced through the same mechanism rather than two. `alert` announces on insertion, which is exactly
+    when this fact becomes true.
+  -->
+  <div class="module-settings__administered" role="alert" aria-live="assertive">
     <p class="module-settings__administered-message">{{ administrativeMessage }}</p>
 
     @if (administeringScreen(); as owner) {
@@ -263,15 +272,42 @@
                           }
 
                           @if (permissionGridPresent()) {
-                            <div class="module-settings__permission-grid-scroll">
+                            <!--
+                              ⚠ THE PUBLISHED SCROLLER CONTRACT, NOT A BARE OVERFLOW BOX. This grid is as
+                              wide as the module type declares permissions - one column per key - so on a
+                              narrow viewport it clips exactly as a listing does, and it used to clip in
+                              silence: no role, no name, no tab stop, so a keyboard user could not scroll
+                              it at all and the columns past the edge were unreachable. `styles/_tables.scss`
+                              already publishes `[data-table-scroll]` - the overflow behaviour, the
+                              contained overscroll and the focus ring - and the shared grid already
+                              establishes that the role, the name and the tab stop are emitted ONLY while
+                              the region actually clips. Both are reused verbatim here rather than restated,
+                              so the two scrollers on this application cannot drift apart.
+                            -->
+                            <div
+                              class="module-settings__permission-grid-scroll"
+                              data-table-scroll
+                              [attr.tabindex]="permissionScrollerClips() ? 0 : null"
+                              [attr.role]="permissionScrollerClips() ? 'region' : null"
+                              [attr.aria-labelledby]="
+                                permissionScrollerClips() ? permissionGridCaptionId : null
+                              "
+                            >
                               <table class="module-settings__permission-grid">
                                 <!--
                                   A CAPTION RATHER THAN A HEADING, so the table carries its own name in the
                                   accessibility tree instead of borrowing the field's. The legacy grid's
                                   first column header was the literal `&nbsp;` (`PermissionsGrid.vb:L490`),
                                   which named nothing; a column of role names is given the name it holds.
+
+                                  It carries an identifier because the scrolling region borrows it as its
+                                  own name, exactly as the shared grid's region does - so the region and
+                                  the table it wraps can never describe themselves differently.
                                 -->
-                                <caption [attr.data-visually-hidden]="true">
+                                <caption
+                                  [id]="permissionGridCaptionId"
+                                  [attr.data-visually-hidden]="true"
+                                >
                                   {{ permissionGridCaption }}
                                 </caption>
 
@@ -318,8 +354,7 @@
                                             ⚠ THE LABEL IS VISUALLY HIDDEN, NOT ABSENT. A grid of bare
                                             checkboxes announces "checkbox, checked" with nothing to
                                             distinguish one from another, and `aria-label` alone would not
-                                            give the box a clickable label. The `title` repeats the reason a
-                                            locked box cannot be changed, so a pointer user is told too.
+                                            give the box a clickable label.
                                           -->
                                           <label
                                             [for]="permissionCellId(row, cell)"
@@ -327,12 +362,22 @@
                                           >
                                             {{ permissionCellLabel(row, cell) }}
                                           </label>
+                                          <!--
+                                            ⚠ THE REASON IS ASSOCIATED TEXT, NOT A `title` ON A DISABLED
+                                            BOX. A disabled checkbox takes no focus and no hover
+                                            affordance, so a `title` on it was the one place the
+                                            explanation could not be reached: keyboard users never landed
+                                            on it, and it is advisory content no screen reader is obliged
+                                            to announce. It now points at a sentence printed once below
+                                            the grid, which every user can read and which `aria-describedby`
+                                            reaches whether or not the box is focusable.
+                                          -->
                                           <input
                                             type="checkbox"
                                             [id]="permissionCellId(row, cell)"
                                             [checked]="cell.allowAccess"
                                             [disabled]="!cell.editable"
-                                            [attr.title]="cell.lockedReason"
+                                            [attr.aria-describedby]="permissionCellDescribedBy(cell)"
                                             (change)="
                                               onPermissionCellToggle(
                                                 row,
@@ -348,6 +393,30 @@
                                 </tbody>
                               </table>
                             </div>
+
+                            <!--
+                              ⚠ VISIBLE, NOT VISUALLY HIDDEN. Removing the `title` took the explanation
+                              away from pointer users, so printing it is what stops that being a
+                              regression: the reasons a box is locked are now stated on the page for
+                              everyone, and each locked box points at the sentence that applies to it.
+                              Only the reasons actually in play are printed.
+                            -->
+                            @for (entry of permissionLockLegend(); track entry.id) {
+                              <!--
+                                ⚠ THE SCREEN'S OWN NOTE TREATMENT, NOT A BESPOKE LEGEND STYLE. These are
+                                explanatory sentences beneath a field, which is exactly what
+                                `.module-settings__notice` already presents, so reusing it keeps one answer
+                                to one question and adds no new rule. The attribute is how a test
+                                identifies them; the class is how they are painted.
+                              -->
+                              <p
+                                class="module-settings__notice"
+                                data-permission-lock
+                                [id]="entry.id"
+                              >
+                                {{ entry.sentence }}
+                              </p>
+                            }
                           }
 
                           <!--

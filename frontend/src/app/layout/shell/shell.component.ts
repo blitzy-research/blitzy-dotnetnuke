@@ -341,6 +341,31 @@ export class ShellComponent {
     return `${this.location.prepareExternalUrl(pathAndQuery)}${SKIP_LINK_FRAGMENT}`;
   }
 
+  /**
+   * Moves focus to the main landmark AND brings its start into view, which are two separate things.
+   *
+   * ⚠ FOCUS ALONE DID NOT SCROLL, AND FROM A DEEP SCROLL POSITION THAT MADE THE SKIP LINK DO NOTHING
+   * VISIBLE. `HTMLElement.focus()` scrolls only when the element is not already within the viewport, and
+   * `<main>` is the tallest element on every screen - so on a long page scrolled well down, the region was
+   * still intersecting the viewport, the platform judged no scroll necessary, and focus landed on a landmark
+   * whose beginning and `h1` remained above the top edge. A keyboard or screen-reader user who activated
+   * "Skip to main content" was therefore placed at the main region while still looking at the middle of it,
+   * which is the one outcome the affordance exists to prevent.
+   *
+   * The two calls are ordered and both arguments are load-bearing:
+   *
+   *   - `focus({ preventScroll: true })` takes the focus without letting the platform choose a scroll
+   *     position. `tabindex="-1"` on the region is what makes the call effective at all; without it a
+   *     `<main>` is not focusable and focus would stay on the link.
+   *   - `scrollIntoView({ block: 'start' })` then states the position explicitly - the region's START,
+   *     rather than the `'nearest'` default, which is precisely the answer that did nothing when the region
+   *     already straddled the viewport. It honours the document's `scroll-padding-block-start`
+   *     (`_reset.scss`), so the heading clears the pinned header band instead of landing beneath it, and it
+   *     is instantaneous because no `scroll-behavior: smooth` is declared anywhere in the stylesheet.
+   *
+   * @param event The activation event, whose default navigation is suppressed so the in-page fragment
+   * cannot reload the document and discard the in-memory session.
+   */
   protected focusMainRegion(event: Event): void {
     event.preventDefault();
 
@@ -348,9 +373,12 @@ export class ShellComponent {
       `#${MAIN_REGION_ID}`,
     );
 
-    // `tabindex="-1"` on the region is what makes this call effective; without it a
-    // `<main>` is not focusable and focus would stay on the link.
-    mainRegion?.focus();
+    if (mainRegion === null) {
+      return;
+    }
+
+    mainRegion.focus({ preventScroll: true });
+    mainRegion.scrollIntoView({ block: 'start', inline: 'nearest' });
   }
 
   /** Sends the operator to the sign-in screen. */

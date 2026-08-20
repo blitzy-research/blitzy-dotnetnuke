@@ -53,7 +53,8 @@ import {
   LoadingSpinnerComponent,
 } from '../../../shared/components/loading-spinner/loading-spinner.component';
 import { PageHeaderComponent } from '../../../shared/components/page-header/page-header.component';
-import { DateDisplayPipe } from '../../../shared/pipes/date-display.pipe';
+import { DateDisplayPipe, parseDisplayInstant } from '../../../shared/pipes/date-display.pipe';
+import { AbsentValueComponent } from '../../../shared/components/absent-value/absent-value.component';
 import {
   FocusFirstInvalidDirective,
   INVALID_CONTROL_SELECTOR,
@@ -404,6 +405,17 @@ export const NOTIFY_UNAVAILABLE_ADVISORY =
   'Unavailable: this installation exposes no mail endpoint, so no notification e-mail can be sent.';
 
 /**
+ * Why the sign-in name cannot be edited on an existing account. ⚠ THIS SENTENCE EXISTS BECAUSE THE LOCK
+ * WAS PREVIOUSLY UNEXPLAINED. `ManageUsers.ascx.vb` renders the sign-in name as a LABEL rather than a box
+ * once an account exists - the legacy screen did not offer the field at all - and this port keeps the
+ * field visible but disabled so the value stays readable in place. A disabled box with the help text
+ * "Enter a username" beside it states the opposite of the truth, and a disabled control takes no focus and
+ * no hover, so there was nowhere the reason could be reached from.
+ */
+export const USERNAME_FIXED_ADVISORY =
+  'The sign-in name is fixed once the account exists and cannot be changed here.';
+
+/**
  * Advisory raised after authorising an account. `ManageUsers.ascx.vb` shows that authorising ALSO sent
  * mail — `Mail.SendMail(User, MessageType.UserRegistrationPublic, PortalSettings)`.
  */
@@ -681,6 +693,7 @@ const PAGE_SUBTITLE =
   selector: 'app-user-form',
   standalone: true,
   imports: [
+    AbsentValueComponent,
     FocusFirstInvalidDirective,
     SubmitGuardDirective,
     ReactiveFormsModule,
@@ -697,6 +710,19 @@ const PAGE_SUBTITLE =
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class UserFormComponent {
+
+  /**
+   * Whether a wire instant names a real moment, so a value and its absent affordance can never both be
+   * withheld. The display pipe's OWN parser is asked, so "paint the date" and "paint the absent mark" come
+   * from one implementation and cannot disagree; it is also what makes the legacy null-date sentinel count as
+   * absent here, since that is exactly how the pipe treats it.
+   *
+   * @param instant The value as it arrived on the wire.
+   * @returns True when the value names a real moment.
+   */
+  protected hasInstant(instant: string | null | undefined): boolean {
+    return parseDisplayInstant(instant) !== null;
+  }
   /**
    * Registers this screen's unsaved-entry probe with the application's tracker. ⚠ WHY A REGISTRATION
    * RATHER THAN A ROUTE-LEVEL READ. Leaving a screen happens two ways and only one of them is a router
@@ -951,7 +977,44 @@ export class UserFormComponent {
 
   protected readonly credentialAdvisory = RANDOM_PASSWORD_ADVISORY;
 
-  protected readonly notifyUnavailableHelp = NOTIFY_UNAVAILABLE_ADVISORY;
+  /**
+   * The two unavailability sentences, and the identifiers the controls they explain point at.
+   *
+   * ⚠ EACH IS RENDERED AS VISIBLE ASSOCIATED TEXT RATHER THAN AS THE FIELD'S HELP, AND THE DIFFERENCE IS
+   * THE WHOLE FIX. Both controls are NATIVELY DISABLED - `notify` for the life of the screen because the
+   * installation has no mail endpoint, `username` while editing because the sign-in name is fixed - and a
+   * natively disabled control takes no focus and shows no hover affordance. The reason therefore could not
+   * be reached: the notify sentence sat inside the field's help disclosure, which is collapsed until
+   * somebody presses a button they have no reason to press, and the username lock had no sentence at all.
+   * Rendering the sentence in the flow and naming it from the control's own `aria-describedby` follows the
+   * precedent already set on this screen by the tenant e-mail advisory, and puts the explanation where
+   * both a sighted reader and the accessibility tree can see it.
+   */
+  protected readonly notifyUnavailableAdvisory = NOTIFY_UNAVAILABLE_ADVISORY;
+
+  /** @see UserFormComponent.notifyUnavailableAdvisory */
+  protected readonly usernameFixedAdvisory = USERNAME_FIXED_ADVISORY;
+
+  /** @see UserFormComponent.notifyUnavailableAdvisory */
+  protected readonly notifyAdvisoryId = 'user-form-notify-unavailable-advisory';
+
+  /** @see UserFormComponent.notifyUnavailableAdvisory */
+  protected readonly usernameAdvisoryId = 'user-form-username-fixed-advisory';
+
+  /**
+   * The help text on the sign-in name field, which is EMPTY while the field is locked.
+   *
+   * ⚠ AN IMPERATIVE BESIDE A CONTROL THAT CANNOT BE OBEYED IS WORSE THAN NO HELP AT ALL, and this field
+   * carried one: "Enter a username", offered on the edit branch where the box is natively disabled. Adding
+   * the advisory beside it fixed the missing explanation but left the contradiction standing - the same
+   * reader could reach both "the sign-in name is fixed" and "enter a username" about one box. The
+   * instruction is withdrawn where it does not apply rather than reworded, because there is nothing to
+   * instruct: the declared bound still travels through `limit`, so the disclosure keeps stating the bound
+   * and loses only the sentence that was untrue.
+   */
+  protected usernameHelp(): string {
+    return this.isEditMode() ? '' : 'Enter a username';
+  }
 
   /** Whether a read or a write for this screen is outstanding. */
   protected readonly loading: Signal<boolean> = computed<boolean>(
@@ -2070,6 +2133,28 @@ export class UserFormComponent {
     }
 
     return '';
+  }
+
+  /**
+   * Whether ONE of the two credential controls is currently reporting a failure, from EITHER source.
+   *
+   * ⚠ THE TWO SOURCES HAVE TO BE READ TOGETHER, AND READING ONLY THE GROUP'S IS WHAT LEFT A FIELD
+   * UNFLAGGED WHILE THE FORM WAS INVALID. Both credential inputs used to key `aria-invalid` off
+   * `passwordMessage()` alone - the GROUP rule - while every other control on the screen keys off its own
+   * `messageFor(...)`. The two sources are not interchangeable: the group rule spans the pair, and a
+   * per-field message can arrive on its own from the server. When both were live and then the field's own
+   * message cleared, the shared `form-field` withdrew the `aria-invalid` it had contributed - correctly,
+   * for a state it owned - and Angular did not restore the consumer's binding, because the bound value
+   * (`passwordMessage()`, still truthy) had not changed. The attribute vanished while the message beside
+   * the control was still on screen, which is precisely the state a screen-reader user cannot see.
+   * Reading both sources in one expression means the attribute is present whenever ANY message is, so
+   * neither owner can withdraw what the other still needs.
+   *
+   * @param controlName The credential control to report on.
+   * @returns True while the control should be announced as invalid.
+   */
+  protected credentialInvalid(controlName: 'password' | 'confirmPassword'): boolean {
+    return this.messageFor(controlName).length > 0 || this.passwordMessage().length > 0;
   }
 
   /** @returns A plain-text message, or the empty string. */

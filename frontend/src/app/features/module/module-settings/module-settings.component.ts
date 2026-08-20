@@ -7,6 +7,7 @@ import {
   ChangeDetectionStrategy,
   Component,
   DestroyRef,
+  ElementRef,
   EventEmitter,
   Input,
   Output,
@@ -789,6 +790,54 @@ const PERMISSION_GRID_INHERITED_HINT =
   + 'Saving with inheritance on withdraws any View grants this module holds.';
 
 /**
+ * Explains a grant the SERVER withheld for a reason this client does not model.
+ *
+ * The administrator rule and the inheritance rule each have their own sentence above, and each is only
+ * reached when this client can positively establish that rule applies. Anything else the server locks is
+ * genuinely unexplained here, so the sentence says that rather than asserting a reason that may be false:
+ * describing every withheld grant as an administrator row was the defect this constant exists to end.
+ */
+const PERMISSION_GRID_WITHHELD_HINT =
+  'This grant is managed outside this screen and cannot be changed here.';
+
+/**
+ * The slack allowed before the permission scroller is reported as clipping.
+ *
+ * `scrollWidth` and `clientWidth` are INTEGER properties, so a table a fraction of a pixel wider than its
+ * container rounds to a difference of one. Reporting that as hidden content would put a focus stop and a
+ * landmark on a grid with nothing to scroll. The shared grid uses the same value for the same reason.
+ */
+const PERMISSION_SCROLLER_TOLERANCE_PX = 1;
+
+/**
+ * Why one grant cannot be changed. A CLOSED set, because each member has to carry its own true sentence:
+ * collapsing them into one string is what let every withheld grant be described as an administrator row.
+ */
+type PermissionLockKind = 'administrator' | 'inherited' | 'withheld';
+
+/**
+ * The sentence for each lock, in the order the legend presents them.
+ *
+ * ⚠ ONE ELEMENT PER REASON, NOT ONE PER CELL. A grid this wide can hold hundreds of locked boxes, and
+ * repeating the sentence into each of them would put the same paragraph in the document hundreds of times.
+ * Every cell bearing a reason points at the single element that states it.
+ */
+const PERMISSION_LOCK_SENTENCES: readonly { readonly kind: PermissionLockKind; readonly sentence: string }[] = [
+  { kind: 'administrator', sentence: PERMISSION_GRID_ADMINISTRATOR_HINT },
+  { kind: 'inherited', sentence: PERMISSION_GRID_INHERITED_HINT },
+  { kind: 'withheld', sentence: PERMISSION_GRID_WITHHELD_HINT },
+];
+
+/** One entry of the grid's lock legend: a reason actually in play, and the element that states it. */
+interface PermissionLockLegendEntry {
+  /** The identifier every cell bearing this reason points at. */
+  readonly id: string;
+
+  /** The sentence. */
+  readonly sentence: string;
+}
+
+/**
  * One rendered cell of the grant grid: the server's facts, reconciled with the operator's unsaved edits
  * and with the live state of the inheritance switch.
  */
@@ -805,8 +854,13 @@ interface PermissionCellView {
   /** Whether the box may be ticked. */
   readonly editable: boolean;
 
-  /** Why it may not, or `null` when it may. */
-  readonly lockedReason: string | null;
+  /**
+   * Why it may not, or `null` when it may.
+   *
+   * A KIND rather than a sentence, so the reason can be stated once in the legend and pointed at, and so a
+   * cell can never bear a reason that does not apply to it.
+   */
+  readonly lock: PermissionLockKind | null;
 }
 
 /** One rendered row of the grant grid, for a role or for an individually named account. */
@@ -886,6 +940,23 @@ const NO_CACHE_DEFAULT = -1;
 const FORBIDDEN_STATUS = 403;
 
 /** The status an unresolved identifier arrives with. */
+/**
+ * Names the operation a refusal is an answer to, so a later answer supersedes an earlier one.
+ *
+ * ⚠ QA-26 — THIS SCREEN REPORTS THROUGH THREE DIFFERENT BRANCHES AND THEY ALL ANSWER ONE QUESTION. A
+ * not-found, a conflict and an unattributable failure of the SAME operation word themselves differently, so
+ * the queue's identical-neighbour collapse never saw them as related; running one operation twice therefore
+ * left two differently-worded refusals on screen at once, next to this screen's own banner. Scoped per
+ * operation rather than per screen, because a refused save and a refused delete really are two things the
+ * operator needs to see together.
+ *
+ * @param operation The operation being reported on.
+ * @returns The scope key for that operation.
+ */
+function operationScope(operation: string): string {
+  return `module-settings:${operation}`;
+}
+
 const NOT_FOUND_STATUS = 404;
 
 /** The status a rejected write arrives with. */
@@ -1014,6 +1085,9 @@ export class ModuleSettingsComponent {
 
   /** Bounds the catalogue subscription to this component's lifetime. */
   private readonly destroyRef = inject(DestroyRef);
+
+  /** This screen's own element, so the permission scroller can be measured. */
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
 
   // -----------------------------------------------------------------------------------------------------
   // THE FORM
@@ -2620,6 +2694,68 @@ export class ModuleSettingsComponent {
   });
 
   /**
+   * Re-measures the permission scroller whenever the grid's geometry can have changed.
+   *
+   * Reads the row and column counts rather than the grid object, because those are what change the table's
+   * width: a column set arriving, or the grid being re-read after a save. The viewport half is covered
+   * separately by {@link observePermissionScroller}, since a window resize changes the answer without
+   * changing any of these.
+   */
+  private readonly measureGridOnChange = effect(() => {
+    const present: boolean = this.permissionGridPresent();
+    const columns: number = this.permissionColumns().length;
+    const rows: number = this.permissionRows().length;
+
+    untracked(() => {
+      if (!present || columns === 0 || rows === 0) {
+        this.permissionScrollerClipsSignal.set(false);
+
+        return;
+      }
+
+      this.schedulePermissionScrollerMeasurement();
+    });
+  });
+
+  /**
+   * Watches the viewport and the scroller's own box for changes the effect above cannot see.
+   *
+   * ⚠ BOUND ONCE, IN A FIELD INITIALISER, and observing THIS SCREEN'S ELEMENT rather than the scroller. The
+   * scroller does not exist until the grid has been read, so an observer bound to it would have to be
+   * rebound on every read and unbound on every failure; the host is present for the component's whole life
+   * and its subtree resizes whenever the grid inside it does.
+   */
+  private readonly observePermissionScroller: void = ((): void => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const onViewportChange = (): void => {
+      this.schedulePermissionScrollerMeasurement();
+    };
+
+    window.addEventListener('resize', onViewportChange, { passive: true });
+
+    this.destroyRef.onDestroy(() => {
+      window.removeEventListener('resize', onViewportChange);
+    });
+
+    if (typeof ResizeObserver === 'undefined') {
+      return;
+    }
+
+    const observer = new ResizeObserver(() => {
+      this.schedulePermissionScrollerMeasurement();
+    });
+
+    observer.observe(this.host.nativeElement);
+
+    this.destroyRef.onDestroy(() => {
+      observer.disconnect();
+    });
+  })();
+
+  /**
    * The grant grid as it should be rendered: the server's rows and cells, reconciled with the operator's
    * unsaved edits and with the LIVE state of the inheritance switch.
    *
@@ -2703,6 +2839,116 @@ export class ModuleSettingsComponent {
     () => this.declaredPermissionKeysState().kind === 'ready' && this.permissionColumns().length === 0,
   );
 
+  /** Whether the permission scroller is actually clipping its table. */
+  private readonly permissionScrollerClipsSignal = signal(false);
+
+  /**
+   * Whether the permission scroller is actually clipping, which is what decides whether it declares itself
+   * a region, takes a tab stop and borrows the table's name.
+   *
+   * ⚠ CONDITIONAL, EXACTLY AS THE SHARED GRID'S REGION IS. A grant grid that fits contributes no landmark
+   * and no focus stop, because naming a region that cannot scroll puts an unusable stop on the page. This
+   * matches `data-table.component`'s `isHorizontallyScrollable`, and deliberately so: the two scrollers now
+   * behave identically, which is the whole point of reusing the published `[data-table-scroll]` contract
+   * rather than leaving this one a bare overflow box reachable by pointer alone.
+   */
+  protected readonly permissionScrollerClips = this.permissionScrollerClipsSignal.asReadonly();
+
+  /** The identifier of the grid's caption, which names the scrolling region as well as the table. */
+  protected readonly permissionGridCaptionId = `${this.controlId('permissions')}-grid-caption`;
+
+  /** Set while a measurement is already queued, so a burst of changes takes one reading rather than many. */
+  private permissionScrollerMeasurementQueued = false;
+
+  /**
+   * Queues a scroller measurement for the next frame.
+   *
+   * Measured after paint rather than during projection, because the answer is geometry: the table's width
+   * against its container's, neither of which exists until the rows the operator just revealed are laid out.
+   */
+  private schedulePermissionScrollerMeasurement(): void {
+    if (this.permissionScrollerMeasurementQueued || typeof requestAnimationFrame === 'undefined') {
+      return;
+    }
+
+    this.permissionScrollerMeasurementQueued = true;
+
+    requestAnimationFrame(() => {
+      this.permissionScrollerMeasurementQueued = false;
+      this.measurePermissionScroller();
+    });
+  }
+
+  /** Recomputes whether the permission scroller clips, and publishes the answer. */
+  private measurePermissionScroller(): void {
+    const container = this.host.nativeElement.querySelector<HTMLElement>(
+      '.module-settings__permission-grid-scroll',
+    );
+
+    if (container === null) {
+      this.permissionScrollerClipsSignal.set(false);
+
+      return;
+    }
+
+    // The same tolerance the shared grid applies, and for the same reason: these are integer properties, so
+    // a sub-pixel difference between a table and its container must not be reported as hidden content.
+    this.permissionScrollerClipsSignal.set(
+      container.scrollWidth - container.clientWidth > PERMISSION_SCROLLER_TOLERANCE_PX,
+    );
+  }
+
+  /**
+   * The reasons actually in play, each with the element that states it.
+   *
+   * ⚠ DERIVED FROM THE RENDERED CELLS, NOT DECLARED. A reason no cell bears must not be stated, or the
+   * legend tells the operator that something is locked when nothing is: turning the inheritance switch off
+   * has to remove the inherited sentence from the page, not merely stop pointing at it. Because the source
+   * is `permissionRows()`, which already tracks the live switch, that happens without a second mechanism.
+   */
+  protected readonly permissionLockLegend = computed<readonly PermissionLockLegendEntry[]>(() => {
+    const inPlay = new Set<PermissionLockKind>();
+
+    for (const row of this.permissionRows()) {
+      for (const cell of row.cells) {
+        if (cell.lock !== null) {
+          inPlay.add(cell.lock);
+        }
+      }
+    }
+
+    // Filtered from the constant rather than from the set, so the legend's order is the declared one and
+    // does not shift with whichever row happened to be projected first.
+    return PERMISSION_LOCK_SENTENCES.filter((entry) => inPlay.has(entry.kind)).map(
+      (entry): PermissionLockLegendEntry => ({
+        id: this.permissionLockId(entry.kind),
+        sentence: entry.sentence,
+      }),
+    );
+  });
+
+  /**
+   * The identifier of the element stating one reason.
+   *
+   * @param kind The reason.
+   * @returns A document-unique identifier.
+   */
+  private permissionLockId(kind: PermissionLockKind): string {
+    // The same instance prefix the cell identifiers use, so two of this screen on one document cannot
+    // collide on the legend either.
+    return `${this.controlId('permissions')}-lock-${kind}`;
+  }
+
+  /**
+   * The element a locked cell's description points at, or `null` when the cell is operable.
+   *
+   * @param cell The cell.
+   * @returns The identifier, or `null`.
+   */
+  protected permissionCellDescribedBy(cell: PermissionCellView): string | null {
+    return cell.lock === null ? null : this.permissionLockId(cell.lock);
+  }
+
   /**
    * Projects one row of the server's grid into its rendered form.
    *
@@ -2735,17 +2981,33 @@ export class ModuleSettingsComponent {
       name,
       isAdministrator,
       cells: cells.map((cell: ModulePermissionCell): PermissionCellView => {
-        const collapsed: boolean = inheriting && cell.permissionKey === inheritedKey;
+        const inheritedColumn: boolean = cell.permissionKey === inheritedKey;
+        const collapsed: boolean = inheriting && inheritedColumn;
 
         if (collapsed) {
           // The switch wins over both the stored grant and any edit, exactly as the legacy override did:
           // it tested inheritance FIRST and returned before consulting the administrator rule or the row.
+          //
+          // ⚠ AND THAT PRECEDENCE GOVERNS THE EXPLANATION AS WELL AS THE STATE, INCLUDING ON THE
+          // ADMINISTRATOR ROW. It is tempting to argue the other way - the administrator lock is permanent
+          // while inheritance is transient, so it looks like the more specific reason - and it is wrong,
+          // because the sentence has to explain the box a reader is actually looking at. While inheritance
+          // is on, the administrator row's view box is rendered UNCHECKED, exactly as the legacy grid
+          // rendered it. Putting the administrator sentence there would place "portal administrators always
+          // hold every module permission" beside a visibly withheld permission - a statement the screen
+          // itself contradicts - and it would resume over-applying the very sentence whose over-application
+          // is the defect this projection was rewritten to fix.
+          //
+          // The invariant to preserve is therefore narrower and checkable: A LOCK SENTENCE NEVER CONTRADICTS
+          // ITS OWN BOX. Measured across all three reachable states of that one cell, it holds - inheritance
+          // on and unchecked cites inheritance; inheritance on, edit column and checked cites the
+          // administrator rule; inheritance off and checked cites the administrator rule. A spec pins it.
           return {
             permissionId: cell.permissionId,
             permissionKey: cell.permissionKey,
             allowAccess: false,
             editable: false,
-            lockedReason: PERMISSION_GRID_INHERITED_HINT,
+            lock: 'inherited',
           };
         }
 
@@ -2755,21 +3017,40 @@ export class ModuleSettingsComponent {
             permissionKey: cell.permissionKey,
             allowAccess: true,
             editable: false,
-            lockedReason: PERMISSION_GRID_ADMINISTRATOR_HINT,
+            lock: 'administrator',
           };
         }
 
-        // ⚠ THE SERVER'S OWN `editable` IS HONOURED AS WELL, not replaced. It carries reasons this client
-        // does not model - and a cell the server locked must never be offered, because a submission it
-        // produced would be refused or silently dropped.
+        // ⚠ THE SERVER'S OWN `editable` IS HONOURED for every column EXCEPT the one the switch governs.
+        // It carries reasons this client does not model, and a cell the server locked for one of those
+        // reasons must never be offered, because a submission it produced would be refused or dropped.
+        //
+        // The inherited column is the one exception, and it has to be: the server computes that column's
+        // `editable` from the STORED inheritance state, so while the module is stored as inheriting EVERY
+        // cell in it arrives locked - see `PermissionService.BuildRoleRow`, where the inherited column
+        // short-circuits ahead of the administrator rule, and `BuildPermissionUserRowsAsync`, where
+        // `Editable` is simply `!inheritedColumn`. That flag therefore describes the state the operator is
+        // in the act of leaving, and says nothing about the state they have moved to. Deferring to it left
+        // the whole column dead after the switch was cleared: turning inheritance off could never unlock
+        // anything, because the only fact consulted had been computed under inheritance being on.
+        //
+        // With the switch off this client can establish the column's editability itself, from the same two
+        // rules the server applies: the administrator row is handled above and has already returned, and
+        // every other row may be granted. Nothing is assumed about the OTHER columns, whose server flags
+        // are independent of the switch and remain authoritative.
+        const editable: boolean = inheritedColumn ? true : cell.editable;
         const edited: boolean | undefined = edits.get(`${key}:${cell.permissionId}`);
 
         return {
           permissionId: cell.permissionId,
           permissionKey: cell.permissionKey,
+          // The stored grant is not recoverable here: the server clears the inherited column's
+          // `allowAccess` rather than reporting what the module holds, so an un-inherited box opens
+          // unticked. That matches the legacy grid, which also cleared the column, and the operator now
+          // has an editable box to tick.
           allowAccess: edited ?? cell.allowAccess,
-          editable: cell.editable,
-          lockedReason: cell.editable ? null : PERMISSION_GRID_ADMINISTRATOR_HINT,
+          editable,
+          lock: editable ? null : 'withheld',
         };
       }),
     };
@@ -2928,6 +3209,9 @@ export class ModuleSettingsComponent {
         problemSeverity(status),
         NOT_FOUND,
         problemSupportReference(problem),
+        false,
+        null,
+        operationScope(operation),
       );
       return;
     }
@@ -2940,6 +3224,9 @@ export class ModuleSettingsComponent {
         problemSeverity(status),
         conflictMessage(code) ?? code ?? CONFLICT,
         problemSupportReference(problem),
+        false,
+        null,
+        operationScope(operation),
       );
       return;
     }
@@ -2950,7 +3237,14 @@ export class ModuleSettingsComponent {
     this.currentProblem.set(problem);
 
     if (problem === null) {
-      this.notifications.notify('error', `The ${operation} request could not be completed.`);
+      this.notifications.notify(
+        'error',
+        `The ${operation} request could not be completed.`,
+        null,
+        false,
+        null,
+        operationScope(operation),
+      );
     }
   }
 

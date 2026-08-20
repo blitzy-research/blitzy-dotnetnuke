@@ -162,6 +162,23 @@ export interface RoleGroup {
 
   /** The group's description, at most 1000 characters, or `null`. */
   readonly description: string | null;
+
+  /**
+   * How many roles this group classifies, across the whole tenant.
+   *
+   * ⚠ THIS IS THE ONLY ADMISSIBLE EVIDENCE FOR WHETHER THE GROUP MAY BE DELETED, and it is sent by the
+   * server precisely because nothing on this side can derive it. The role listing on screen is one page
+   * long and narrowed by whatever the operator has typed into the filter, so narrowing to a term that
+   * matches nothing emptied the page and made a populated group look empty: the delete command appeared,
+   * the operator confirmed it, and the server answered `role_group.in_use`. Reading `items.length` — or
+   * any other property of what happens to be displayed — reintroduces exactly that defect.
+   *
+   * It is the same quantity the server's removal guard tests, taken from the same predicate, so the count
+   * read here and the refusal issued there cannot disagree. Zero means the group is genuinely empty and
+   * removable; any positive value is the number of roles that must be moved or deleted first, which is the
+   * remedy to state rather than merely the rule that was broken.
+   */
+  readonly classifiedRoleCount: number;
 }
 
 /**
@@ -394,6 +411,12 @@ export const decodeRoleGroup: Decoder<RoleGroup> = objectOf<RoleGroup>({
   portalId: decodeInteger,
   roleGroupName: decodeString,
   description: nullable(decodeString),
+  // ⚠ REQUIRED, NOT NULLABLE, AND DELIBERATELY NOT DEFAULTED. The server sends the count on all four
+  // group paths - list, read, create and update - so a response without it is a response this client cannot
+  // reason about. Tolerating its absence with a fallback would have to choose a fallback, and both choices
+  // are wrong: zero silently offers a deletion the server may refuse, and a positive guess withholds a
+  // legitimate one forever. Failing the decode surfaces a contract break instead of guessing past it.
+  classifiedRoleCount: decodeInteger,
 });
 
 /** Decodes one user-to-role assignment. */

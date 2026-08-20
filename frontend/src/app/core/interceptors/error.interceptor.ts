@@ -63,7 +63,12 @@ export const errorInterceptor: HttpInterceptorFn = (req, next) => {
       if (error instanceof HttpErrorResponse && !presentedByCaller) {
         // The OUTBOUND correlation identifier is handed over as well, because it is the only reference that
         // survives a failure where no response arrives at all - see the status-zero branch of `announce`.
-        announce(notifications, error, outboundCorrelationId(req));
+        //
+        // ⚠ QA-26 - THE REQUEST'S OWN IDENTITY IS THE OPERATION. Two failures of the same method against
+        // the same address are two answers to one question, and only the later one is still true, so the
+        // newer report supersedes the older rather than stacking beside it. Method and URL together,
+        // because a GET and a DELETE of one address are different operations.
+        announce(notifications, error, outboundCorrelationId(req), `${req.method} ${req.url}`);
       }
 
       return throwError(() => error);
@@ -81,11 +86,13 @@ export const errorInterceptor: HttpInterceptorFn = (req, next) => {
  * @param notifications The queue to report through.
  * @param error The failed response.
  * @param requestCorrelationId The identifier this application put on the outbound request, or null.
+ * @param operation The operation this failure is an answer to, so a later answer supersedes it.
  */
 function announce(
   notifications: NotificationService,
   error: HttpErrorResponse,
   requestCorrelationId: string | null,
+  operation: string,
 ): void {
   const status: number = error.status;
 
@@ -104,7 +111,7 @@ function announce(
     // on for a failure of this kind. If the request did reach the API before the connection broke, the
     // server logged this very value; if it never left the browser, quoting it costs nothing. Passing null
     // here, which is what this branch used to do, discarded the one reference available.
-    notifications.notify(severity, NETWORK_UNAVAILABLE, requestCorrelationId);
+    notifications.notify(severity, NETWORK_UNAVAILABLE, requestCorrelationId, false, null, operation);
 
     return;
   }
@@ -120,6 +127,9 @@ function announce(
     severity,
     summary.message,
     resolveReference(summary.supportReference ?? headerCorrelationId(error)),
+    false,
+    null,
+    operation,
   );
 
   // RETENTION IS ALREADY CALLER-OWNED, WHICH IS WHY REMOVING IT LOSES NOTHING. Every path that actually

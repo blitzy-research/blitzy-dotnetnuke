@@ -4652,6 +4652,84 @@ public sealed class ModuleApiTests
             new Dictionary<string, object?>());
     }
 
+    /// <summary>
+    /// A module-title filter the database collation cannot weigh must match NOTHING rather than everything.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠ THIS IS A SAFETY TEST, NOT A TIDINESS ONE. The schema is collated
+    /// <c>SQL_Latin1_General_CP1_CI_AS</c>, which gives supplementary characters no collation weight, so
+    /// <c>N'🚀'</c> compares equal to the empty string. A CONTAINS comparison degrades further than a prefix
+    /// one: measured against the live listing before the guard existed, searching module titles for a single
+    /// rocket reported a filter in force and returned all eight visible placements.
+    /// </para>
+    /// <para>
+    /// An administrator who believes the list has been narrowed to one placement may open its settings or
+    /// delete it on that belief, so returning nothing is both honest and safe.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task SearchModules_ByCharactersTheCollationCannotWeigh_MatchesNothingRatherThanEverything()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        // A placement of this suite's own, because the fixture seeds no module and a guard that fails closed is
+        // indistinguishable from an empty listing. Removed again below, so this case leaves no residue.
+        ModuleDetailDto placed = await CreateModuleAsync(client, _fixture.Seed.RootTabId);
+
+        try
+        {
+            // The unfiltered total, so "everything" is a measured number rather than a guess.
+            using HttpResponseMessage unfiltered = await client.GetAsync(new Uri(
+                "/api/v1/modules?pageIndex=0&pageSize=100",
+                UriKind.Relative));
+
+            unfiltered.StatusCode.Should().Be(HttpStatusCode.OK);
+
+            PagedEnvelope<ModuleListItemDto>? everything = await unfiltered.Content
+                .ReadFromJsonAsync<PagedEnvelope<ModuleListItemDto>>(ApiTestFixture.Json);
+
+            everything.Should().NotBeNull();
+            everything!.Items.Should().Contain(
+                row => row.ModuleId == placed.ModuleId,
+                "the guard is only meaningful when there is a row it could wrongly return");
+
+            IReadOnlyList<ModuleListItemDto> weightless = await SearchModulesAsync(client, "\U0001F680");
+
+            weightless.Should().BeEmpty(
+                "a filter that cannot discriminate fails closed, never open - and certainly not onto every placement");
+        }
+        finally
+        {
+            using HttpResponseMessage removed = await client.DeleteAsync(ModuleRoute(
+                _fixture.Seed.PortalId,
+                placed.ModuleId));
+
+            removed.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        }
+    }
+
+    /// <summary>
+    /// A module-title filter MIXING weightless characters with ordinary text still discriminates on the
+    /// ordinary part, so the guard suppresses no legitimate search.
+    /// </summary>
+    /// <returns>A task representing the test.</returns>
+    [Fact]
+    [Trait("Category", "Integration")]
+    public async Task SearchModules_ByOrdinaryTextCarryingAWeightlessCharacter_StillFiltersOnTheOrdinaryPart()
+    {
+        using HttpClient client = await _fixture.CreateHostClientAsync();
+
+        IReadOnlyList<ModuleListItemDto> matched = await SearchModulesAsync(
+            client,
+            "zzz-no-module-bears-this-title\U0001F680");
+
+        matched.Should().BeEmpty(
+            "the ordinary part carries weight, so the filter is applied rather than treated as unable to filter");
+    }
+
     /// <summary>Produces a short random suffix for values that must differ between tests.</summary>
     /// <returns>Twelve lower-case hexadecimal characters.</returns>
     private static string Suffix() => Guid.NewGuid().ToString("N", CultureInfo.InvariantCulture)[..12];

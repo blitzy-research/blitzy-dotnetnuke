@@ -194,6 +194,17 @@
   so a keyboard user could not reach it at all. It is a real button here with no tab index of its own,
   which reverses an accessibility defect at no visual cost.
 -->
+<!--
+  ⚠ THE SECTION CAPTION IS A HEADING HERE TOO, AND IN THIS BRANCH ALONE IT WAS NOT. The view branch above
+  wraps the identical control in `<h2>`; this one - the EDIT branch, which is where an operator spends the
+  time - emitted a bare button inside the legend. So the same screen presented its own structure two
+  different ways depending on which mode it was in: viewing a profile gave a screen-reader user a heading
+  per section to navigate by, and editing the same profile gave them none, leaving the page with only its
+  `h1` and the "Still required" heading. A caption that names a group of fields is a heading in both modes
+  or in neither. Level 2 matches the view branch and sits directly under the page's single `h1`, so no
+  level is skipped.
+-->
+            <h2>
             <button
               type="button"
               class="user-profile__toggle"
@@ -211,6 +222,7 @@
               </svg>
               {{ section.heading }}
             </button>
+            </h2>
           </legend>
 
 <!--
@@ -241,6 +253,7 @@
                     [label]="labelFor(value)"
                     [for]="controlId(value)"
                     [required]="value.definition.required"
+                    [limit]="maxLengthFor(value)"
                     [help]="helpFor(value)"
                     [error]="errorsFor(value)"
                   >

@@ -162,31 +162,62 @@ export interface RoleMemberScope {
 /**
  * The authentication endpoints, closed at four. Login, refresh and logout are anonymous on the server:
  * they authenticate the credentials or the refresh token they carry, not a bearer token.
+ *
+ * ⚠ EVERY MEMBER IS A FUNCTION, AND THAT IS THE WHOLE POINT RATHER THAN A STYLISTIC CHOICE. These four were
+ * the only endpoints in this module held as EAGER STRINGS - every group in {@link API_ENDPOINTS} is already a
+ * function - and being eager sent a child portal's caller to the WRONG TENANT:
+ *
+ *   - {@link apiUrl} composes the confirmed tenant path prefix, and that prefix is recorded by
+ *     `tenant-resolution.ts`, which `main.ts` AWAITS before `bootstrapApplication`. But an ES module's
+ *     top-level initialisers run when the module graph is EVALUATED, which is strictly before the first
+ *     statement of `main.ts` executes. This module is in that graph - the authentication and correlation
+ *     interceptors import it - so these four strings were fixed while {@link tenantPathBase} still answered
+ *     the empty string, and no later confirmation could revise them.
+ *   - Measured through a configured child-prefix alias: the SPA loaded beneath the prefix, every other
+ *     request carried it, and login, refresh, me and logout alone went to the ROOT `/api/v1/auth/*`. The
+ *     server resolved the bare host for those, so a caller who addressed a child portal was issued authority
+ *     for PortalID `-1` - a tenant-isolation failure, not merely a wrong URL - and a signed-in operator then
+ *     read and wrote the root tenant's records from a screen addressed at the child's.
+ *   - The escape was silent in both directions: the child's own screens worked, so nothing looked wrong, and
+ *     because the bearer token WAS attached to those root-addressed calls the API answered them normally.
+ *
+ * Resolving at request time also keeps this group honest with {@link isApiRequest} and
+ * {@link isAnonymousAuthEndpoint}, both of which resolve {@link configuredApiBase} live. When these four
+ * were eager and the base was not, the interceptor's exemption test compared a prefixed candidate against an
+ * unprefixed declaration and stopped matching under a child portal - so a bearer token was attached to
+ * login and refresh, which is the opposite of what those endpoints require.
  */
 export const AUTH_ENDPOINTS = {
   /** `POST` — exchanges credentials for a token pair. Anonymous. */
-  login: apiUrl(`${SEGMENT.auth}/${SEGMENT.login}`),
+  login: (): string => apiUrl(`${SEGMENT.auth}/${SEGMENT.login}`),
 
   /** `POST` — exchanges a refresh token for a new pair, rotating it. Anonymous. */
-  refresh: apiUrl(`${SEGMENT.auth}/${SEGMENT.refresh}`),
+  refresh: (): string => apiUrl(`${SEGMENT.auth}/${SEGMENT.refresh}`),
 
   /** `POST` — revokes a refresh token. Anonymous, and answers `204` regardless. */
-  logout: apiUrl(`${SEGMENT.auth}/${SEGMENT.logout}`),
+  logout: (): string => apiUrl(`${SEGMENT.auth}/${SEGMENT.logout}`),
 
   /** `GET` — returns the signed-in identity. Requires a bearer token. */
-  me: apiUrl(`${SEGMENT.auth}/${SEGMENT.me}`),
+  me: (): string => apiUrl(`${SEGMENT.auth}/${SEGMENT.me}`),
 } as const;
 
 /**
  * The endpoints an interceptor must never attach a bearer token to, and must never attempt to recover
  * with a refresh. `me` is deliberately absent: it is the one authentication endpoint that does require a
  * bearer token, so it takes one and a 401 from it is a genuine expiry worth refreshing.
+ *
+ * ⚠ COMPOSED ON EVERY CALL, FOR THE SAME REASON {@link AUTH_ENDPOINTS} IS. This was a frozen array of the
+ * three eager strings, so it was fixed at module evaluation alongside them. Under a child-prefix alias its
+ * declarations carried no prefix while the outbound request did, {@link isAnonymousAuthEndpoint} compared
+ * the two paths and found no match, and the interceptor attached a bearer token to login and refresh. The
+ * two changes are therefore ONE change: leaving this array eager while making the endpoints lazy would have
+ * closed the wrong-tenant defect and opened a credential-handling one.
+ *
+ * @returns The three anonymous endpoint URLs, composed against the base in force now.
  */
-export const ANONYMOUS_AUTH_ENDPOINTS: readonly string[] = Object.freeze([
-  AUTH_ENDPOINTS.login,
-  AUTH_ENDPOINTS.refresh,
-  AUTH_ENDPOINTS.logout,
-]);
+export function anonymousAuthEndpoints(): readonly string[] {
+  return [AUTH_ENDPOINTS.login(), AUTH_ENDPOINTS.refresh(), AUTH_ENDPOINTS.logout()];
+}
 
 // URL RESOLUTION — the shared basis for both credential tests below
 // BOTH TESTS BELOW RESOLVE URLS RATHER THAN COMPARING STRINGS, AND THAT IS A SECURITY PROPERTY RATHER THAN
@@ -287,7 +318,7 @@ export function isAnonymousAuthEndpoint(url: string): boolean {
     return false;
   }
 
-  return ANONYMOUS_AUTH_ENDPOINTS.some((endpoint) => {
+  return anonymousAuthEndpoints().some((endpoint) => {
     const declared = resolveAgainstDocument(endpoint);
 
     return declared !== null && declared.pathname === candidate.pathname;
@@ -300,7 +331,7 @@ export function isAnonymousAuthEndpoint(url: string): boolean {
  */
 export const API_ENDPOINTS = {
   /**
-   * Authentication. The same four strings as {@link AUTH_ENDPOINTS}, reachable from within the grouped
+   * Authentication. The same four builders as {@link AUTH_ENDPOINTS}, reachable from within the grouped
    * tree so a caller need not know both names.
    */
   auth: AUTH_ENDPOINTS,

@@ -1081,6 +1081,52 @@ describe('DataTableComponent', () => {
       expect(sorts).toEqual([]);
     });
 
+    describe('the pointer target a sort control offers', () => {
+      it('floors the control at the target size, and pays for it with the heading cell padding', () => {
+        const control = requireElement(headers()[0], 'button');
+        const heading = headers()[0];
+
+        if (heading === undefined) {
+          throw new Error('the sortable heading was not rendered');
+        }
+
+        const rootStyle: CSSStyleDeclaration = getComputedStyle(document.documentElement);
+        const rootFontSize: number = Number.parseFloat(rootStyle.fontSize);
+        const flooredPx: number =
+          Number.parseFloat(rootStyle.getPropertyValue('--target-size-min')) * rootFontSize;
+
+        expect(flooredPx).withContext('the target token resolves').toBeGreaterThan(0);
+
+        // ⚠ THE ONLY BUTTON IN THE APPLICATION THAT CARRIED NO FLOOR AT ALL. `_forms.scss` floors every
+        // entry control and every action, and the choice controls take the compact token under the
+        // standard's inline-control carve-out with that exemption stated. This control had `padding: 0` and
+        // no block floor, so its height was whatever its own line box came to - about eighteen pixels,
+        // which is short of the twenty-four that applies to everything, let alone the forty-four this token
+        // set treats as the floor for a real control. A column sort is a standalone command.
+        expect(control.getBoundingClientRect().height)
+          .withContext('the sort control meets the pointer target')
+          .toBeGreaterThanOrEqual(flooredPx - 0.5);
+
+        // ⚠ AND THE BAND DOES NOT GROW BY MORE THAN THE FLOOR. The cell's own block padding is released to
+        // the control, so the heading resolves to the floor rather than the floor plus eight pixels - which
+        // would be eight pixels paid on every listing for space the control does not use.
+        const headingStyle: CSSStyleDeclaration = getComputedStyle(heading);
+
+        expect(Number.parseFloat(headingStyle.paddingBlockStart))
+          .withContext('a sortable heading surrenders its block padding')
+          .toBe(0);
+        expect(Number.parseFloat(headingStyle.paddingBlockEnd)).toBe(0);
+
+        expect(heading.getBoundingClientRect().height)
+          .withContext('so the band is the floor, not the floor plus the padding')
+          .toBeLessThanOrEqual(flooredPx + 2);
+
+        // The label and the indicator remain aligned with each other in the taller box, which is what the
+        // baseline alignment was doing that mattered.
+        expect(getComputedStyle(control).alignItems).toBe('center');
+      });
+    });
+
     describe('keyboard operability of the sort control', () => {
       // WHY THIS IS ASSERTED SEPARATELY FROM THE CLICK TESTS ABOVE. Those prove the sort CONTRACT - which
       // key, which direction, which column.
@@ -1391,11 +1437,33 @@ describe('DataTableComponent', () => {
     // announced the dataset total from a live region of its own, so one action produced two polite
     // announcements with a blank between them. The pager's region is now visible-only, which makes this the
     // one announcer - so it has to carry both facts.
-    it('states the dataset total alongside the page count when a total is supplied', () => {
+    it('states the range within the dataset when a total is supplied', () => {
       set('rows', ROWS);
       set('totalCount', 34);
 
-      expect(announcement()).toBe(`Showing ${ROWS.length} of 34 records.`);
+      expect(announcement()).toBe(`Showing records 1 to ${ROWS.length} of 34.`);
+    });
+
+    // ⚠ THE POSITION IS THE POINT, NOT THE QUANTITY. On a later page this region used to say
+    // "Showing 3 of 13 records." - true, and indistinguishable from a filter that had narrowed the set to
+    // three, because the pager's own range and "2 / 2" readout are deliberately visible-but-not-announced.
+    // A screen-reader user was told how many rows they had without ever being told WHICH.
+    it('places the page within the dataset once the listing is scrolled past the first page', () => {
+      set('rows', ROWS);
+      set('totalCount', 34);
+      set('rowOffset', 30);
+
+      expect(announcement()).toBe(`Showing records 31 to ${30 + ROWS.length} of 34.`);
+    });
+
+    // A page coordinate that has not resolved is read as a first page, which is the truthful reading of
+    // "not yet known" and is the same rule the input's own guard applies.
+    it('reads an unusable offset as the first page rather than shifting the range', () => {
+      set('rows', ROWS);
+      set('totalCount', 34);
+      set('rowOffset', -5);
+
+      expect(announcement()).toBe(`Showing records 1 to ${ROWS.length} of 34.`);
     });
 
     it('states the plain count when the whole match set is on the page', () => {
@@ -1942,6 +2010,684 @@ describe('DataTableComponent', () => {
 
       expect(first).not.toBe(other);
       second.destroy();
+    });
+  });
+
+  // ===================================================================================================
+  // ROW IDENTITY WHILE THE REGION CLIPS — QA-7 / QA-8
+  // ===================================================================================================
+
+  describe('the row identity a clipped region keeps in view', () => {
+    /** A column set whose row-header column is NOT first, which is every listing in the application. */
+    function commandFirstColumns(): readonly DataTableColumn<Row>[] {
+      return [
+        // A bound column standing in for the icon command column every listing puts first: an actions column
+        // needs a template this fixture has none of, and the hoisting cares only that the row header is NOT
+        // first, which is the shape being reproduced.
+        { key: 'edit', label: 'Edit', field: 'id', headerHidden: true },
+        { key: 'name', label: 'Name', field: 'name', rowHeader: true, atomic: true },
+        { key: 'count', label: 'Count', field: 'count' },
+        { key: 'note', label: 'Note', field: 'note' },
+      ];
+    }
+
+    /** The container that scrolls, addressed through its contract attribute. */
+    function scrollHost(): HTMLElement {
+      return requireElement(host(), '[data-table-scroll]') as HTMLElement;
+    }
+
+    /**
+     * Makes the container report a clipping or a fitting box and re-measures through the production path.
+     *
+     * @param clipping Whether the container should report content wider than its box.
+     */
+    function reportOverflow(clipping: boolean): void {
+      const container = scrollHost();
+
+      Object.defineProperty(container, 'clientWidth', { value: 400, configurable: true });
+      Object.defineProperty(container, 'scrollWidth', {
+        value: clipping ? 900 : 400,
+        configurable: true,
+      });
+      (fixture.componentInstance as unknown as { measureScrollable(): void }).measureScrollable();
+      fixture.detectChanges();
+    }
+
+    /**
+     * The rendered heading order, by visible or hidden label text.
+     *
+     * `thead` is qualified explicitly: this column set declares a ROW HEADER, so the body emits `th` cells of
+     * its own and the shared `headers()` helper would return the heading row plus one cell per row.
+     */
+    function headingOrder(): readonly string[] {
+      return Array.from(host().querySelectorAll('thead th')).map((cell) => textOf(cell));
+    }
+
+    /** The heading cells alone, for the attribute assertions. */
+    function headingCells(): readonly Element[] {
+      return Array.from(host().querySelectorAll('thead th'));
+    }
+
+    beforeEach(() => {
+      set('columns', commandFirstColumns());
+    });
+
+    it('leaves the declared order alone while the whole table is in view', () => {
+      reportOverflow(false);
+
+      // ⚠ THE ORDER IS LEGACY PARITY AT A WIDTH THAT CAN AFFORD IT. Every one of these grids puts its
+      // commands first because `users.ascx`, `roles.ascx` and `portals.ascx` all did; when nothing is hidden
+      // there is nothing to fix, so nothing is moved.
+      expect(headingOrder()).toEqual(['Edit', 'Name', 'Count', 'Note']);
+      expect(scrollHost().hasAttribute('data-identity-pinned')).toBeFalse();
+    });
+
+    it('hoists the row-header column to the front once the region clips', () => {
+      // ⚠ THE MEASURED DEFECT. At 320 the scrollport is 271px and the table is floored at 960, so the first
+      // 271px is all a reader sees before scrolling — and on four of six listings that first 271px was
+      // command buttons and blank headers with the identifying value 8px to 214px beyond the right edge. The
+      // rows were unidentifiable until the reader discovered a horizontal scroll region.
+      reportOverflow(true);
+
+      expect(headingOrder()).toEqual(['Name', 'Edit', 'Count', 'Note']);
+      expect(headingCells()[0].getAttribute('data-row-identity')).toBe('true');
+      expect(headingCells()[1].hasAttribute('data-row-identity'))
+        .withContext('exactly one column is the identity')
+        .toBeFalse();
+    });
+
+    it('publishes the pinning contract on the region, for the shared stylesheet', () => {
+      reportOverflow(true);
+
+      // An attribute rather than a class, for the same reason `data-table-scroll` is one: the sticky rules
+      // live in the SHARED table stylesheet, which cannot see a component's encapsulated class names.
+      expect(scrollHost().getAttribute('data-identity-pinned')).toBe('true');
+    });
+
+    it('withdraws both when the clipping goes away', () => {
+      reportOverflow(true);
+      reportOverflow(false);
+
+      expect(headingOrder()).toEqual(['Edit', 'Name', 'Count', 'Note']);
+      expect(scrollHost().hasAttribute('data-identity-pinned'))
+        .withContext('the pinning is the conditional half, and it is withdrawn')
+        .toBeFalse();
+
+      // ⚠ THE IDENTITY MARKER ITSELF IS UNCONDITIONAL, AND DELIBERATELY SO. It names which column is the
+      // record's identity, which is true at every width; the sticky rules are gated on the container's
+      // pinning attribute instead. Emitting the marker only while clipping would make it flicker on a
+      // resize for no benefit, and the stylesheet would still need the pinning attribute to act on.
+      expect(host().querySelectorAll('thead [data-row-identity]'))
+        .withContext('one column is still named as the identity')
+        .toHaveSize(1);
+    });
+
+    it('moves the row-header CELLS with their heading, so no row is transposed', () => {
+      reportOverflow(true);
+
+      // The reordering is the whole column, heading and cells together. A heading that moved without its
+      // cells would put every value under the wrong name — a far worse defect than the one being fixed.
+      const first = bodyRows()[0];
+      const cells = Array.from(first.querySelectorAll('td,th'));
+
+      expect(cells[0]?.tagName.toLowerCase()).withContext('the identity is the row header').toBe('th');
+      expect(cells[0]?.getAttribute('scope')).toBe('row');
+      expect(textOf(cells[0] ?? null)).toBe('Alpha');
+      expect(textOf(cells[2] ?? null)).withContext('and the rest follow in order').toBe('3');
+    });
+
+    it('changes nothing at all for a grid that declares no row header', () => {
+      set('columns', baseColumns());
+      reportOverflow(true);
+
+      expect(headingOrder()).toEqual(['Name', 'Count', 'Active', 'Note']);
+      expect(scrollHost().hasAttribute('data-identity-pinned'))
+        .withContext('there is no identity to pin')
+        .toBeFalse();
+    });
+
+    it('states the hidden columns in words a sighted reader can read', () => {
+      const internals = fixture.componentInstance as unknown as {
+        hiddenColumnCountSignal: { set(value: number): void };
+      };
+
+      reportOverflow(true);
+      internals.hiddenColumnCountSignal.set(1);
+      fixture.detectChanges();
+
+      const cue = requireElement(host(), '.data-table__overflow-cue');
+
+      // ⚠ ZERO PAINTED CUES WAS THE MEASURED STATE. Across nine narrow renderings of six listings, the
+      // scroll region carried a role, a tab stop and an accessible name — and not one word of visible text
+      // telling a sighted reader that anything lay to the right.
+      expect(textOf(cue)).toBe('Scroll sideways for 1 more column.');
+      expect(cue.getAttribute('aria-hidden'))
+        .withContext('the region already names itself to assistive technology; this is for the eye')
+        .toBe('true');
+
+      internals.hiddenColumnCountSignal.set(6);
+      fixture.detectChanges();
+
+      expect(textOf(requireElement(host(), '.data-table__overflow-cue'))).toBe(
+        'Scroll sideways for 6 more columns.',
+      );
+    });
+
+    it('says nothing when nothing is hidden', () => {
+      const internals = fixture.componentInstance as unknown as {
+        hiddenColumnCountSignal: { set(value: number): void };
+      };
+
+      reportOverflow(true);
+      internals.hiddenColumnCountSignal.set(0);
+      fixture.detectChanges();
+
+      expect(host().querySelector('.data-table__overflow-cue'))
+        .withContext('a cue that is always there is furniture, not information')
+        .toBeNull();
+    });
+  });
+
+  // ===================================================================================================
+  // A CUT VALUE IS RECOVERABLE — QA-4b / QA-4c / QA-4d
+  // ===================================================================================================
+
+  describe('the recovery affordance on a value that is actually cut', () => {
+    /** Runs the production truncation pass. */
+    function measure(): void {
+      (
+        fixture.componentInstance as unknown as { measureTruncatedCells(): void }
+      ).measureTruncatedCells();
+      fixture.detectChanges();
+    }
+
+    /**
+     * Makes one element report a cut value or a fitting one, geometrically.
+     *
+     * @param element The heading or cell to size.
+     * @param cut Whether its content should overflow its box.
+     */
+    function reportCut(element: Element, cut: boolean): void {
+      Object.defineProperty(element, 'clientWidth', { value: 100, configurable: true });
+      Object.defineProperty(element, 'scrollWidth', { value: cut ? 400 : 100, configurable: true });
+    }
+
+    beforeEach(() => {
+      set('columns', [
+        { key: 'name', label: 'Name', field: 'name', atomic: true },
+        { key: 'count', label: 'Count', field: 'count' },
+      ] satisfies readonly DataTableColumn<Row>[]);
+    });
+
+    it('gives a cut cell a tooltip and a focus stop', () => {
+      // ⚠ THE MEASURED DEFECT. Twelve cut cells at 1440 on the account listing carried no `title`, no
+      // `tabindex`, no `aria-label` and no copy of the value anywhere else on the row: a 100-character
+      // sign-in name painted eleven characters and the rest was recoverable only through the accessibility
+      // tree, so a screen-reader user could read what a sighted user could not.
+      const cell = requireElement(bodyRows()[0], 'td[data-atomic="true"]');
+
+      reportCut(cell, true);
+      measure();
+
+      expect(cell.getAttribute('data-truncated')).toBe('true');
+      expect(cell.getAttribute('title')).toBe('Alpha');
+      expect(cell.getAttribute('tabindex'))
+        .withContext('reachable by keyboard, not by pointer alone')
+        .toBe('0');
+    });
+
+    it('leaves a cell that fits completely alone', () => {
+      // The affordance costs a tab stop, so an unconditional one would add six stops to every row of the
+      // account listing — sixty on a page — most of them on values shown in full.
+      const cell = requireElement(bodyRows()[0], 'td[data-atomic="true"]');
+
+      reportCut(cell, false);
+      measure();
+
+      expect(cell.hasAttribute('data-truncated')).toBeFalse();
+      expect(cell.hasAttribute('title')).toBeFalse();
+      expect(cell.hasAttribute('tabindex')).toBeFalse();
+    });
+
+    it('hands the affordance back when the value stops being cut', () => {
+      const cell = requireElement(bodyRows()[0], 'td[data-atomic="true"]');
+
+      reportCut(cell, true);
+      measure();
+      reportCut(cell, false);
+      measure();
+
+      // Left behind, the tab order would accumulate stops for values that are no longer truncated — a column
+      // that widens on a resize would keep paying for a cut it no longer has.
+      expect(cell.hasAttribute('data-truncated')).toBeFalse();
+      expect(cell.hasAttribute('tabindex')).toBeFalse();
+      expect(cell.hasAttribute('title')).toBeFalse();
+    });
+
+    it('never touches a column that did not ask to be atomic', () => {
+      const ordinary = Array.from(bodyRows()[0].querySelectorAll('td')).find(
+        (cell) => !cell.hasAttribute('data-atomic'),
+      );
+
+      if (ordinary === undefined) {
+        throw new Error('the ordinary column did not render');
+      }
+
+      reportCut(ordinary, true);
+      measure();
+
+      // A non-atomic cell WRAPS, so it has nothing to recover: marking it would offer a tooltip for a value
+      // already fully on screen.
+      expect(ordinary.hasAttribute('data-truncated')).toBeFalse();
+      expect(ordinary.hasAttribute('tabindex')).toBeFalse();
+    });
+
+    it('marks a heading whose WRAPPING label cannot hold its longest word', () => {
+      // ⚠ THE SECOND BLIND SPOT, ALSO FOUND AT RUNTIME. A label allowed to wrap is laid out ALREADY ELLIPSISED
+      // when a single word will not fit, so the overflow collapses: measured at 320, the `Auto` heading painted
+      // `A…` while reporting `scrollWidth - clientWidth = 0`, and `Public` painted `Pu…` while reporting 2.
+      // Neither is an atomic column either, so the old test was blind twice over. The width the text NEEDS is
+      // asked for instead, which no layout can hide.
+      const heading = requireElement(host(), 'thead th');
+      const label = requireElement(heading, '.data-table__label') as HTMLElement;
+
+      // A wrapping label, and a content box far narrower than the one word it holds.
+      label.style.whiteSpace = 'normal';
+      label.style.display = 'block';
+      label.style.inlineSize = '4px';
+      label.style.overflow = 'hidden';
+      measure();
+
+      expect(heading.getAttribute('data-truncated'))
+        .withContext('the word cannot fit on any line, so it is cut')
+        .toBe('true');
+      expect(heading.getAttribute('title')).toBe('Name');
+
+      // The counterpart, and the reason the test measures the longest WORD rather than the whole string: a
+      // multi-word label wide enough for its longest word is not cut, it simply wraps.
+      label.style.inlineSize = '';
+      label.style.whiteSpace = '';
+      label.style.display = '';
+      label.style.overflow = '';
+      measure();
+
+      expect(heading.hasAttribute('data-truncated')).toBeFalse();
+      expect(heading.hasAttribute('title')).toBeFalse();
+    });
+
+    it('catches a label cut by a FRACTION of a pixel, which integer widths cannot see', () => {
+      // ⚠ THE THIRD BLIND SPOT, AND THE ONE THAT SURVIVED TWO ATTEMPTS. `clientWidth` is an INTEGER: measured at
+      // 320, the `Auto` heading's label had a 33.594px content box, needed 34.153px, painted `A…` — and reported
+      // `clientWidth` 34, turning a real 0.559px overflow into an apparent 0.153px that a one-pixel tolerance
+      // then discarded. The comparison is now against the fractional content box with a tenth-pixel tolerance.
+      //
+      // The construction reproduces exactly that shape. The text's own width is taken from the browser's layout
+      // with a Range — an independent measurement, not a repeat of the component's canvas — and the label is then
+      // given a content box four tenths of a pixel narrower. The integer width rounds that shortfall away, so
+      // only a fractional comparison can see it.
+      const heading = requireElement(host(), 'thead th');
+      const label = requireElement(heading, '.data-table__label') as HTMLElement;
+      const range = document.createRange();
+
+      range.selectNodeContents(label);
+
+      const textWidth = range.getBoundingClientRect().width;
+
+      expect(textWidth).withContext('the heading text has a measurable width').toBeGreaterThan(1);
+
+      label.style.display = 'block';
+      label.style.whiteSpace = 'nowrap';
+      label.style.overflow = 'hidden';
+      label.style.inlineSize = `${textWidth - 0.4}px`;
+      measure();
+
+      expect(textWidth - label.clientWidth)
+        .withContext('the shortfall is smaller than a pixel, so an integer test cannot see it')
+        .toBeLessThan(1);
+      expect(heading.getAttribute('data-truncated'))
+        .withContext('but the text genuinely does not fit, so it is marked')
+        .toBe('true');
+      expect(heading.getAttribute('title')).toBe('Name');
+
+      // The counterpart: a box a fraction WIDER than the text is not truncation and must not be marked.
+      label.style.inlineSize = `${textWidth + 0.4}px`;
+      measure();
+
+      expect(heading.hasAttribute('data-truncated'))
+        .withContext('a tenth-pixel tolerance must not flag a label that fits')
+        .toBeFalse();
+
+      label.style.inlineSize = '';
+      label.style.whiteSpace = '';
+      label.style.display = '';
+      label.style.overflow = '';
+      measure();
+    });
+
+    it('never marks a command column whose label is hidden rather than cut', () => {
+      // An icon-only column clips its label to a single pixel ON PURPOSE, so the column has an accessible name
+      // with no painted heading. Its label reports a large overflow at every width, and treating that as
+      // truncation would put a tooltip on every command column in the application.
+      set('columns', [
+        { key: 'name', label: 'Name', field: 'name' },
+        { key: 'edit', label: 'Edit', field: 'id', headerHidden: true },
+      ] satisfies readonly DataTableColumn<Row>[]);
+
+      const hidden = Array.from(host().querySelectorAll('thead th')).find(
+        (cell) => cell.querySelector('.data-table__label--hidden') !== null,
+      );
+
+      if (hidden === undefined) {
+        throw new Error('the hidden-label column did not render');
+      }
+
+      measure();
+
+      expect(hidden.hasAttribute('data-truncated')).toBeFalse();
+      expect(hidden.hasAttribute('title')).toBeFalse();
+    });
+
+    it('measures the element that OWNS the clipping, not always the cell around it', () => {
+      // ⚠ THE MISS THIS CLOSES, FOUND AT RUNTIME RATHER THAN HERE. A heading's text lives in a
+      // `.data-table__label` span, and when that span is the box carrying `overflow: hidden` the `th` around it
+      // reports equal widths however badly the label is cut. Measured at a 320 viewport: the `Username` heading
+      // painted "Userna…" with its label at 67/73 while its cell reported 91/91, so a cell-only test found
+      // nothing to mark — at the one width where headings actually clip.
+      const heading = requireElement(host(), 'thead th[data-atomic="true"]');
+      const label = requireElement(heading, '.data-table__label');
+
+      reportCut(heading, false);
+      reportCut(label, true);
+      measure();
+
+      expect(heading.getAttribute('data-truncated')).toBe('true');
+      expect(heading.getAttribute('title')).toBe('Name');
+    });
+
+    it('gives a cut PLAIN heading a tooltip AND a focus stop, because nothing inside it can take one', () => {
+      // ⚠ A CLIPPED HEADING IS THE COLUMN'S OWN NAME GOING MISSING, which costs more than a clipped value.
+      // Measured: the `Telephone` heading painted `Teleph…` in a 77.86px track needing 81.91px.
+      //
+      // ⚠ THIS ASSERTION WAS INVERTED, AND THE OLD ONE ENCODED A REAL GAP. It required a cut heading to carry
+      // NO focus stop, on the reasoning that a sortable heading already holds a focusable sort button. That
+      // reasoning is sound for a SORTABLE heading and wrong for a plain one: `title` is a pointer affordance,
+      // a sighted keyboard user cannot hover, and a plain heading holds nothing focusable — so the in-place
+      // reveal had no keyboard route at all. Found at runtime on the profile-property listing, where the
+      // `Validation Expression` heading painted an ellipsis while sitting in neither the focusable set nor
+      // holding a focusable descendant. The rule is now conditional, and the sortable half is the case below.
+      const heading = requireElement(host(), 'thead th[data-atomic="true"]');
+
+      expect(heading.querySelector('button'))
+        .withContext('this fixture column is not sortable, so the heading holds no control of its own')
+        .toBeNull();
+
+      // The LABEL is sized, not the cell: the label is the box that owns the clipping, which is the whole point
+      // of the case immediately above this one.
+      reportCut(requireElement(heading, '.data-table__label'), true);
+      measure();
+
+      expect(heading.getAttribute('data-truncated')).toBe('true');
+      expect(heading.getAttribute('title')).toBe('Name');
+      expect(heading.getAttribute('tabindex'))
+        .withContext('the only way a keyboard reaches the reveal on a heading with no control in it')
+        .toBe('0');
+    });
+
+    it('withholds the stop from a cut SORTABLE heading, whose button is already the stop', () => {
+      // The other half of the conditional rule. A sortable heading holds a focusable sort button whose
+      // accessible name carries the full column name, so a stop on the cell around it would put TWO stops on
+      // one heading. The stylesheet reveals on `:focus-within` as well, so focusing that button still unwraps
+      // the heading it belongs to — one stop, same recovery.
+      set('columns', [
+        { key: 'name', label: 'Name', field: 'name', atomic: true, sortable: true },
+        { key: 'count', label: 'Count', field: 'count' },
+      ] satisfies readonly DataTableColumn<Row>[]);
+
+      const heading = requireElement(host(), 'thead th[data-atomic="true"]');
+
+      expect(heading.querySelector('button'))
+        .withContext('a sortable heading renders its own control')
+        .not.toBeNull();
+
+      reportCut(requireElement(heading, '.data-table__label'), true);
+      measure();
+
+      expect(heading.getAttribute('data-truncated')).toBe('true');
+      expect(heading.getAttribute('title')).toBe('Name');
+      expect(heading.hasAttribute('tabindex'))
+        .withContext('two stops on one heading would be the fix creating a defect')
+        .toBeFalse();
+    });
+
+    it('hands a heading its stop back when the label stops being cut', () => {
+      const heading = requireElement(host(), 'thead th[data-atomic="true"]');
+      const label = requireElement(heading, '.data-table__label');
+
+      reportCut(label, true);
+      measure();
+
+      expect(heading.getAttribute('tabindex')).toBe('0');
+
+      reportCut(label, false);
+      measure();
+
+      // Left behind, every heading that ever clipped would keep a permanent stop in the header row.
+      expect(heading.hasAttribute('data-truncated')).toBeFalse();
+      expect(heading.hasAttribute('title')).toBeFalse();
+      expect(heading.hasAttribute('tabindex')).toBeFalse();
+    });
+
+    it('clears the affordance from a cell that STOPS being atomic', () => {
+      // ⚠ THE CLEARING PASS USED TO VISIT ONLY `[data-atomic="true"]`, so a cell that left the atomic set was
+      // never visited again and kept its marks forever — including its `tabindex`, a permanent phantom stop on
+      // a value no longer treated as indivisible. Found at runtime: after removing the attribute the marks
+      // survived a further measurement pass. Every body cell is visited now, and atomicity decides whether it
+      // is a CANDIDATE rather than whether it is looked at.
+      const cell = requireElement(bodyRows()[0], 'td[data-atomic="true"]');
+
+      reportCut(cell, true);
+      measure();
+
+      expect(cell.getAttribute('data-truncated')).toBe('true');
+      expect(cell.getAttribute('tabindex')).toBe('0');
+
+      set('columns', [
+        { key: 'name', label: 'Name', field: 'name' },
+        { key: 'count', label: 'Count', field: 'count' },
+      ] satisfies readonly DataTableColumn<Row>[]);
+
+      const same = requireElement(bodyRows()[0], 'td');
+
+      expect(same.hasAttribute('data-atomic'))
+        .withContext('the column no longer asks for atomic treatment')
+        .toBeFalse();
+
+      reportCut(same, true);
+      measure();
+
+      expect(same.hasAttribute('data-truncated')).toBeFalse();
+      expect(same.hasAttribute('tabindex')).toBeFalse();
+      expect(same.hasAttribute('title')).toBeFalse();
+    });
+
+    it('marks a body cell whose overflow is smaller than a whole pixel', () => {
+      // ⚠ THE INTEGER TRAP, ON THE BODY PATH THIS TIME. `scrollWidth` and `clientWidth` are integers, so an
+      // overflow below a pixel rounds into invisibility and the one-pixel scroll tolerance discards what is left.
+      // Found at runtime on the role listing at 768 and 1024: `QA Annual Patrons` needed 126.77px in a 125.39px
+      // content box - 1.38px over - and reported `scrollWidth 135` against `clientWidth 134`, exactly 1. Chrome
+      // painted `QA Annual Patr\u2026` and the cell carried no tooltip and no focus stop. The heading path had
+      // already been corrected the same way; the two must agree.
+      //
+      // The construction reproduces that shape rather than simulating it. The text's own width comes from the
+      // browser's layout with a Range - an independent measurement, not a repeat of the component's own - and the
+      // cell is then given a content box four tenths of a pixel narrower, so the integer width rounds the
+      // shortfall away and only a fractional comparison can see it.
+      const cell = requireElement(bodyRows()[0], 'td[data-atomic="true"]') as HTMLElement;
+      const range = document.createRange();
+
+      range.selectNodeContents(cell);
+
+      const textWidth = range.getBoundingClientRect().width;
+
+      expect(textWidth).withContext('the cell text has a measurable width').toBeGreaterThan(1);
+
+      cell.style.display = 'block';
+      cell.style.whiteSpace = 'nowrap';
+      cell.style.overflow = 'hidden';
+
+      // ⚠ `content-box` IS DECLARED RATHER THAN ASSUMED, AND LEAVING IT OUT MADE THIS CASE MEASURE THE WRONG
+      // THING. A table cell carries 4px of inline padding on each side, so under `border-box` an `inline-size` of
+      // `textWidth + 0.4` yields a CONTENT box 7.6px NARROWER than the text - a large overflow, which the
+      // production code then flagged correctly while this case read the flag as a false positive. Pinning the box
+      // model makes `inline-size` the content box exactly, so the constructed shortfall is the one intended.
+      cell.style.boxSizing = 'content-box';
+      cell.style.inlineSize = `${textWidth - 0.4}px`;
+      measure();
+
+      expect(textWidth - cell.clientWidth)
+        .withContext('the shortfall is smaller than a pixel, so an integer test cannot see it')
+        .toBeLessThan(1);
+      expect(cell.getAttribute('data-truncated'))
+        .withContext('but the value genuinely does not fit, so it is marked')
+        .toBe('true');
+      expect(cell.getAttribute('title')).toBe('Alpha');
+      expect(cell.getAttribute('tabindex')).toBe('0');
+
+      // The counterpart: a box a fraction WIDER than the text is not truncation and must not be marked.
+      cell.style.inlineSize = `${textWidth + 0.4}px`;
+      measure();
+
+      expect(cell.hasAttribute('data-truncated'))
+        .withContext('a tenth-pixel tolerance must not flag a value that fits')
+        .toBeFalse();
+
+      cell.style.inlineSize = '';
+      cell.style.boxSizing = '';
+      cell.style.whiteSpace = '';
+      cell.style.display = '';
+      cell.style.overflow = '';
+      measure();
+    });
+
+    it('ignores text that is hidden from sight when judging whether a value fits', () => {
+      // ⚠ THE FALSE POSITIVE THE FRACTIONAL TEST INTRODUCED, FOUND AT RUNTIME. Cells carry companion text painted
+      // 1x1px under `clip-path: inset(50%)` so it reaches assistive technology and nothing else - most visibly the
+      // shared absent-value marker, which pairs a painted em-dash with a hidden "not recorded". Measuring
+      // `textContent` measured that companion string too: on the account listing an absent telephone painted 13px
+      // of em-dash in a 64.66px box, with 51.66px to spare, and was marked as cut because the full
+      // "\u2014not recorded" string measures about 85px. The reader got a tooltip saying "\u2014not recorded" over
+      // an untruncated cell and a keyboard stop with nothing to reveal.
+      const cell = requireElement(bodyRows()[0], 'td[data-atomic="true"]') as HTMLElement;
+
+      cell.textContent = '';
+
+      const painted = document.createElement('span');
+
+      painted.setAttribute('aria-hidden', 'true');
+      painted.textContent = '\u2014';
+
+      const hidden = document.createElement('span');
+
+      hidden.setAttribute('data-visually-hidden', '');
+      hidden.textContent = 'not recorded and then a great deal more text besides, far wider than any cell';
+
+      cell.append(painted, hidden);
+      measure();
+
+      expect(cell.hasAttribute('data-truncated'))
+        .withContext('the painted em-dash fits easily; only the hidden companion text does not')
+        .toBeFalse();
+      expect(cell.hasAttribute('tabindex')).toBeFalse();
+      expect(cell.hasAttribute('title')).toBeFalse();
+    });
+
+    it('puts only the VISIBLE text in the tooltip of a cell that is cut', () => {
+      // The other half: when a cell genuinely is cut, the recovery tooltip must offer what the reader could not
+      // see, not the companion wording meant for assistive technology.
+      const cell = requireElement(bodyRows()[0], 'td[data-atomic="true"]') as HTMLElement;
+
+      cell.textContent = 'Alpha';
+
+      const hidden = document.createElement('span');
+
+      hidden.setAttribute('data-visually-hidden', '');
+      hidden.textContent = 'companion wording';
+
+      cell.append(hidden);
+      reportCut(cell, true);
+      measure();
+
+      expect(cell.getAttribute('data-truncated')).toBe('true');
+      expect(cell.getAttribute('title'))
+        .withContext('the value, without the companion wording')
+        .toBe('Alpha');
+    });
+
+    it('re-measures truncation when the TABLE resizes and the window does not', () => {
+      // ⚠ THE RESIZE OBSERVER CALLED ONLY THE OVERFLOW MEASUREMENT, WHICH IS WHY THIS EXISTS. The observer
+      // watches the container and the table precisely because a column set arriving, a sort indicator
+      // appearing, the sidebar collapsing or a column weight changing all alter their width WITHOUT moving the
+      // window — and the only path to the truncation pass ran from the window listeners. Proven at runtime:
+      // forcing a genuine clip without resizing the window left the heading unmarked, and a window resize then
+      // marked it correctly. The narrow scheduler is used rather than the full window update because that one
+      // also re-windows the rows, which changes the table's height and would re-notify this same observer.
+      const cell = requireElement(bodyRows()[0], 'td[data-atomic="true"]');
+
+      reportCut(cell, true);
+
+      (
+        fixture.componentInstance as unknown as { scheduleTruncationUpdate(): void }
+      ).scheduleTruncationUpdate();
+
+      return new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => {
+          window.requestAnimationFrame(() => {
+            fixture.detectChanges();
+
+            expect(cell.getAttribute('data-truncated'))
+              .withContext('a width change the window never saw still refreshes the marks')
+              .toBe('true');
+            expect(cell.getAttribute('tabindex')).toBe('0');
+
+            resolve();
+          });
+        });
+      });
+    });
+  });
+
+  // ===================================================================================================
+  // A SMALL GRID IS NOT INFLATED TO THE SHARED FLOOR — QA-7
+  // ===================================================================================================
+
+  describe('the scroll floor a grid may declare for itself', () => {
+    /** The table element, whose inline style carries the override. */
+    function table(): HTMLElement {
+      return requireElement(host(), 'table.data-table') as HTMLElement;
+    }
+
+    it('declares nothing of its own by default, so the shared token governs', () => {
+      expect(table().style.minInlineSize).toBe('');
+    });
+
+    it('applies a floor a listing declares', () => {
+      // ⚠ THE MEASURED DEFECT. The portal alias grid has two columns needing 207px between them, and the
+      // shared 60rem floor made its table 960px wide: at 320 the host name — the only data on the screen —
+      // began 214px past the right edge of a 271px scrollport.
+      set('minInlineSize', 'var(--table-min-inline-size-compact)');
+
+      expect(table().style.minInlineSize).toBe('var(--table-min-inline-size-compact)');
+    });
+
+    it('treats blank and absent alike, so a mis-set input cannot zero the floor', () => {
+      set('minInlineSize', 'var(--table-min-inline-size-compact)');
+      set('minInlineSize', '   ');
+
+      expect(table().style.minInlineSize).toBe('');
+
+      set('minInlineSize', null);
+
+      expect(table().style.minInlineSize).toBe('');
     });
   });
 
