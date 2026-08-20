@@ -1,0 +1,92 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <!--
+    The only project in the solution built with the Web SDK; Domain, Application and
+    Infrastructure use plain Microsoft.NET.Sdk.
+
+    CONTAINER ENTRYPOINT CONTRACT - do not add an AssemblyName property here. That property,
+    and that property alone, names the emitted assembly; the SDK defaults it to this file's
+    name, which is what makes the published assembly DnnMigration.Api.dll, the exact name
+    docker/api.Dockerfile starts. Declaring it adds a second place the name can drift from,
+    and no compiler catches the mismatch. The same path is spelled in backend/DnnMigration.sln
+    and in the integration test project's project reference, and the Alpine build stage is
+    case-sensitive, so the casing must not change either.
+
+    Build policy is inherited from backend/Directory.Build.props, which is why this file
+    declares no PropertyGroup. Any diagnostic that survives a Release build with warnings
+    promoted to errors is fixed in code, never suppressed here.
+
+    The API image runs as an unprivileged user and listens on 8080, so nothing added here may
+    require root, a port below 1024, or a writable path outside the application directory.
+    Secrets arrive as environment variables, never from a project-scoped secret store.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.29" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="8.0.29" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.9.0" />
+    <PackageReference Include="Asp.Versioning.Mvc" Version="8.1.1" />
+    <PackageReference Include="Asp.Versioning.Mvc.ApiExplorer" Version="8.1.1" />
+    <PackageReference Include="Serilog.AspNetCore" Version="8.0.3" />
+  </ItemGroup>
+
+  <!--
+    Two references, and no more. Application supplies the service abstractions, DTOs and
+    options the controllers bind to. Infrastructure is referenced so that the composition root
+    this project must declare can register the persistence and security services, among them
+    the database health check served at /health, which has to remain anonymous because the
+    frontend container's start-up waits on it.
+
+    Domain is deliberately not named: it arrives transitively, and listing it would advertise
+    that the API may consume domain entities directly instead of crossing the boundary through
+    DTOs.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\DnnMigration.Application\DnnMigration.Application.csproj" />
+    <ProjectReference Include="..\DnnMigration.Infrastructure\DnnMigration.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <!--
+    ONE grant, for ONE question a public surface cannot answer. ApiResults.MapStatusCode returns 400 both
+    for a code declared as 400 and for a code nobody declared, so no comparison of its return value can tell
+    a registered failure code from a missing one. ApiResults.IsClassified answers exactly that, and it is
+    internal because it is a statement about this table's completeness rather than part of the HTTP contract
+    a caller consumes.
+
+    ⚠ THE GRANT NAMES DnnMigration.IntegrationTests, AND ONLY THAT ASSEMBLY, matching the single grant
+    Infrastructure already makes. The unit project has one edge, to Application, so it cannot name a type
+    here in any case. Do not add a second name, do not grant to a wildcard, and do not widen a member from
+    internal to public to make a test compile.
+  -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="DnnMigration.IntegrationTests" />
+  </ItemGroup>
+
+  <!--
+    DEBUG SYMBOLS ARE BUILT AND ARE NOT PUBLISHED, which is why this is a publish-time filter rather than
+    <DebugType>none</DebugType>.
+
+    What shipped before: the production image carried DnnMigration.{Api,Application,Domain,Infrastructure}.pdb
+    - four portable symbol files, each embedding the absolute source paths of the machine that built them.
+    Nothing in the running application reads them; the exception handler answers RFC 7807 documents that carry
+    no stack trace at all, so their only effect in production is to describe the build tree to anyone who
+    obtains a layer.
+
+    Why not turn symbols off outright: the whole solution builds in Release for the test gates, and a Release
+    build with no symbols reports failures without file or line numbers, which makes a red test measurably
+    harder to diagnose. Filtering at publish keeps both properties - symbols where they are read, none where
+    they are only exposure.
+
+    ComputeFilesToPublish is the target that assembles the publish set from the build output and from every
+    referenced project, so removing the .pdb items here covers the referenced projects' symbols as well as
+    this one's. It applies to `dotnet publish` alone: `dotnet build` output is untouched, which is what the
+    test gates consume.
+  -->
+  <Target Name="ExcludeSymbolsFromPublishOutput" AfterTargets="ComputeFilesToPublish">
+    <ItemGroup>
+      <ResolvedFileToPublish
+          Remove="@(ResolvedFileToPublish)"
+          Condition="'%(Extension)' == '.pdb'" />
+    </ItemGroup>
+  </Target>
+
+</Project>

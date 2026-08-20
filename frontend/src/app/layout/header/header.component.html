@@ -1,0 +1,48 @@
+<!--
+  ELEMENT ORDER AND CLASS NAMES ARE A CONTRACT, NOT A PREFERENCE Three sibling files pin the structure
+  below and were authored against it: the paired component documents it on its class, the paired
+  stylesheet publishes it as an explicit "SELECTOR CONTRACT", and the paired specification asserts it —
+  the banner's first element child must be `.app-header__brand` and its last must be
+  `.app-header__actions`.
+-->
+
+<!--
+  MIGRATION: view state, the multipart server form and the hidden round-trip inputs are eliminated
+  outright.
+-->
+<header>
+  <!--
+    MIGRATION: the identity affordance is kept as legacy parity but resolves to the application root
+    rather than to a profile screen, and the legacy tooltip is not reproduced.
+  -->
+  <!--
+    MIGRATION: the legacy REGISTER affordance is deliberately not carried forward. `User.ascx.vb` gated
+    it twice — on the tenant's registration mode and on its user quota — with the caption "Register"
+    from `User.ascx.resx` L42-L43.
+  -->
+  <a class="app-header__brand" [routerLink]="brandLink">{{ applicationName }}</a>
+
+  <div class="app-header__actions">
+    @if (hasSignedInUser) {
+      <span class="app-header__user">{{ userName }}</span>
+      @if (hasAccountProfileLink) {
+        <a class="app-header__account-link" [routerLink]="accountProfileLink">{{
+          accountProfileLabel
+        }}</a>
+      }
+      @if (hasAccountPasswordLink) {
+        <a class="app-header__account-link" [routerLink]="accountPasswordLink">{{
+          accountPasswordLabel
+        }}</a>
+      }
+      <button
+        type="button"
+        class="app-header__logout"
+        [disabled]="signingOut"
+        (click)="onSignOutClick()"
+      >
+        Logout
+      </button>
+    }
+  </div>
+</header>

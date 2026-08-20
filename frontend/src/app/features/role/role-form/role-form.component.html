@@ -1,0 +1,549 @@
+<!-- LEGACY SOURCE, read in full: `Website/admin/Security/editroles.ascx`, 191 content lines. -->
+<section class="role-form">
+  <!--
+    This screen's resource file declares NO create-mode title key, so the legacy add form showed the
+    same "Edit Security Roles" heading over a blank creation form.
+  -->
+  <app-page-header [title]="heading()" [subtitle]="pageSubtitle()">
+    <!--
+      THE ONE WAY OUT, offered in the same place, with the same caption shape, as the other three detail
+      screens. ⚠ THIS SCREEN USED TO MOVE THE READER INSTEAD - see the arrival effect's migration note.
+    -->
+    @if (nothingToShow()) {
+      <a class="page-action" routerLink="/roles">{{ recoveryLabel }}</a>
+    }
+  </app-page-header>
+
+  <!-- The failure surface. -->
+  <app-error-banner [problem]="problem()" [fallbackMessage]="failureFallback()" />
+
+  @if (conflicted()) {
+    <!--
+      MIGRATION: NET-NEW, in both the situation and the affordance. The legacy update procedure carried
+      no revision marker, so a conflict could not be detected and was not reported - the later save
+      simply overwrote the earlier one in full.
+    -->
+    <div class="role-form__conflict">
+      <p class="role-form__warning">{{ conflictRecoveryMessage }}</p>
+      <button
+        type="button"
+        class="role-form__conflict-reload"
+        (click)="onReloadAfterConflict()"
+        [disabled]="loading()"
+      >
+        {{ conflictReloadLabel }}
+      </button>
+    </div>
+  }
+
+  @if (nothingToShow()) {
+    <!--
+      Either the address does not name a role, or the role it names has gone. Stated by the banner above -
+      the application's one assertive owner for a refusal - and recovered through the header, so the state
+      is one statement rather than two.
+    -->
+  } @else if (loading()) {
+    <app-loading-spinner size="large" label="Loading role…" />
+  } @else {
+    <!-- One form for the whole screen, as the legacy postback was one submission for the whole page. -->
+    <!-- `aria-busy` while a save issued by THIS screen is in flight. -->
+    <!--
+      ⚠ `appBlockImplicitSubmit` — ENTER IN A VALUE BOX MUST NOT COMMIT THIS FORM, and that restores the
+      legacy outcome rather than departing from it. Every command in `editroles.ascx` L179-L188 is an
+      `asp:LinkButton`, which renders as an anchor and not a submit control, and the same markup declares
+      eight text boxes - so HTML's implicit-submission rule left Enter doing nothing at all. The port
+      renders a real submit button, so Enter dispatched a genuine save; and this screen's save is the one
+      that legitimately OVERWRITES stored paid-membership values it does not render
+      (`EditRoles.ascx.vb:L212-L231`), which made an accidental keystroke destructive. The save itself is
+      unchanged - it is parity - and both commands stay fully keyboard-operable, because Enter on a button
+      is a click and is never suppressed.
+    -->
+    <form
+      appBlockImplicitSubmit
+      class="role-form__form"
+      [formGroup]="form"
+      [attr.aria-busy]="saving() ? 'true' : null"
+      (ngSubmit)="onSubmit()"
+    >
+      @if (readOnly()) {
+        <!--
+          MIGRATION: the component disables the whole form group, so every control carries the native
+          disabled attribute and the state is programmatically determinable rather than implied.
+        -->
+        <p class="role-form__notice">
+          This role is maintained by the portal, so its settings cannot be changed and it cannot
+          be deleted.
+        </p>
+      }
+
+      <!--
+        The legacy section-head control is replaced by a grouping element and its caption. No shared
+        component covers a collapsible section, and none is added for it: a fieldset and its legend carry
+        the same grouping semantics with no script behind them.
+      -->
+      <fieldset class="role-form__section">
+        <legend class="role-form__legend"><h2>Basic Settings</h2></legend>
+
+        <!-- A measured resource-key asymmetry, honoured rather than tidied. -->
+        <p class="role-form__intro">
+          In this section, you can set up the basic settings for this role.
+        </p>
+
+        <div class="role-form__grid">
+          <!-- ROLE NAME. `txtRoleName` at L27-L28 with its hidden read-only twin `lblRoleName` at L28-L29. -->
+          @if (isEditMode()) {
+            <app-form-field
+              label="Role Name"
+              for="role-form-role-name"
+              help="Enter the name of the role."
+              [class.form-field--disabled]="readOnly()"
+            >
+              <div class="role-form__control">
+                <output class="role-form__readonly" id="role-form-role-name">{{
+                  displayRoleName()
+                }}</output>
+              </div>
+            </app-form-field>
+          } @else {
+            <!--
+              The wrapper's `required` input is a presentational marker only and cannot make a field
+              required, so the control states its own requiredness through `aria-required`. The rule
+              itself lives on the form control, where the component adds and removes it by mode.
+            -->
+            <app-form-field
+              label="Role Name"
+              for="role-form-role-name"
+              help="Enter the name of the role."
+              [required]="true"
+              [error]="messageFor('roleName')"
+              [class.form-field--disabled]="readOnly()"
+            >
+              <div class="role-form__control">
+                <input
+                  id="role-form-role-name"
+                  type="text"
+                  formControlName="roleName"
+                  maxlength="50"
+                  autocomplete="off"
+                  aria-required="true"
+                  [attr.aria-invalid]="messageFor('roleName') ? 'true' : null"
+                />
+
+                <!--
+                  THE LENGTH NOTICE. `maxlength` above is faithful - `editroles.ascx:L31` declares
+                  `MaxLength="50"` - and a browser enforcing it discards the surplus characters with no
+                  indication whatsoever.
+                -->
+                @if (nameAtLimit()) {
+                  <p class="role-form__notice" aria-live="polite">{{ nameAtLimitNotice }}</p>
+                }
+              </div>
+            </app-form-field>
+          }
+
+          <!--
+            MIGRATION: the measured `Height="84px"` at L40 is not reproduced as a length. Block size
+            comes from the control's own row count, which is intrinsic content sizing rather than a
+            design value, so no literal length enters the markup or the stylesheet.
+          -->
+          <app-form-field
+            label="Description"
+            for="role-form-description"
+            help="Enter a description of the role."
+            class="form-field--multiline"
+            [error]="messageFor('description')"
+            [class.form-field--disabled]="readOnly()"
+          >
+            <div class="role-form__control">
+              <textarea
+                id="role-form-description"
+                formControlName="description"
+                rows="4"
+                maxlength="1000"
+                [attr.aria-invalid]="messageFor('description') ? 'true' : null"
+              ></textarea>
+            </div>
+          </app-form-field>
+
+          <!--
+            ROLE GROUP. `cboRoleGroups` at L47, labelled at L44 by a label that declares NO resource
+            key, so the key defaults to the label's own control id - which is why the wording comes from
+            the `plRoleGroups` entry.
+          -->
+          <app-form-field
+            label="Role Group"
+            for="role-form-role-group"
+            help="Select the Role Group to which this role belongs."
+            [class.form-field--disabled]="readOnly()"
+          >
+            <div class="role-form__control">
+              <select id="role-form-role-group" formControlName="roleGroupId">
+                @for (option of roleGroupOptions(); track option.value) {
+                  <option [ngValue]="option.value">{{ option.label }}</option>
+                }
+              </select>
+            </div>
+          </app-form-field>
+
+          <!--
+            PUBLIC ROLE. `chkIsPublic` at L56 - a bare check box carrying no caption of its own,
+            labelled at L52 through a resource key that matches neither the control id nor the property
+            name.
+          -->
+          <app-form-field
+            label="Public Role?"
+            for="role-form-is-public"
+            help="Is this Role a Public Role?"
+            class="form-field--inline"
+            [class.form-field--disabled]="readOnly()"
+          >
+            <div class="role-form__control role-form__control--choice">
+              <input id="role-form-is-public" type="checkbox" formControlName="isPublic" />
+            </div>
+          </app-form-field>
+
+          <!-- AUTO ASSIGNMENT. `chkAutoAssignment` at L64, labelled at L60. -->
+          <app-form-field
+            label="Auto Assignment?"
+            for="role-form-auto-assignment"
+            help="Is this role automatically assigned to users?"
+            class="form-field--inline"
+            [class.form-field--disabled]="readOnly()"
+          >
+            <div class="role-form__control role-form__control--choice">
+              <input
+                id="role-form-auto-assignment"
+                type="checkbox"
+                formControlName="autoAssignment"
+              />
+            </div>
+          </app-form-field>
+        </div>
+      </fieldset>
+
+      <!--
+        ADVANCED SETTINGS. `dshAdvanced` at L68-L70 declares `IsExpanded="False"`, so this block is
+        COLLAPSED ON FIRST RENDER - the `open` attribute is deliberately absent below.
+      -->
+      <!--
+        ⚠ THE DISCLOSURE OPENS ITSELF WHEN THERE IS A WITHHELD-VALUES WARNING TO READ, and that is a safety
+        requirement rather than a convenience. The warning lives here because it describes THESE boxes, but
+        the Update command sits OUTSIDE this section and is reachable without ever expanding it - so a
+        collapsed disclosure let an operator run the destructive save with the warning never once on screen.
+        Measured in the browser: the section renders collapsed by default and Update is fully operable.
+      -->
+      <details
+        #advancedSection
+        class="role-form__section role-form__section--advanced"
+        [open]="withheldTermsNotice() !== ''"
+        (toggle)="advancedSection.open"
+      >
+        <summary class="role-form__summary" [attr.aria-expanded]="advancedSection.open">
+          Advanced Settings
+        </summary>
+
+        <!-- The counterpart of the basic intro; see the key-asymmetry note above. -->
+        <p class="role-form__intro">
+          In this section, you can set up more advanced settings for this role.
+        </p>
+
+        @if (showProcessorWarning()) {
+          <!-- THE PAYMENT-PROCESSOR WARNING. `lblProcessorWarning` at L80. -->
+          <p class="role-form__warning">
+            <strong>Warning:</strong> You will need to configure the Payment Processor under
+            SiteSettings, in order to enable users to subscribe to fee-base roles/services.
+          </p>
+        }
+
+        <!--
+          THE WITHHELD PAID-MEMBERSHIP VALUES. A NET ADDITION with no legacy counterpart, placed
+          immediately above the boxes it describes and below the legacy elements so that their relative
+          order is untouched.
+        -->
+        @if (withheldTermsNotice()) {
+          <p class="role-form__notice" aria-live="polite">{{ withheldTermsNotice() }}</p>
+        }
+
+        <div class="role-form__grid">
+          <!-- ALL FOUR MONEY AND PERIOD FIELDS ARE OPTIONAL. THIS IS LOAD-BEARING. -->
+
+          <!-- SERVICE FEE. `txtServiceFee` at L89-L90, a narrow box. -->
+          <app-form-field
+            label="Service Fee"
+            for="role-form-service-fee"
+            help="Enter the Fee charged for users in this role."
+            [error]="messageFor('serviceFee')"
+            [class.form-field--disabled]="readOnly()"
+          >
+            <div class="role-form__control role-form__control--narrow">
+              <input
+                id="role-form-service-fee"
+                type="text"
+                formControlName="serviceFee"
+                maxlength="50"
+                autocomplete="off"
+                [attr.aria-invalid]="messageFor('serviceFee') ? 'true' : null"
+                (blur)="onNumericCommit('serviceFee')"
+              />
+            </div>
+          </app-form-field>
+
+          <!--
+            MIGRATION: the doubled non-breaking spaces that separated the two controls at L105 are not
+            reproduced. The gap is the stylesheet's token-based spacing, which is adjustable and cannot
+            be collapsed the way a run of literal whitespace can.
+          -->
+          <!--
+            ⚠ EACH HALF OF THE PAIR IS NAMED DISTINCTLY, and the two clipped qualifiers below are the
+            whole mechanism.
+          -->
+          <app-form-field
+            #billingPeriodField
+            label="Billing Period (Every)"
+            for="role-form-billing-period"
+            [help]="
+              'These two fields are used in conjunction to enter a Billing Period. e.g 2 weeks, or 1 month. ' +
+              'Leaving either box empty, or choosing no frequency, stores no billing terms: the fee is saved ' +
+              'as 0 and the period as 1. There is no way to save these as unknown.'
+            "
+            [error]="messageFor('billingPeriod')"
+            [class.form-field--disabled]="readOnly()"
+          >
+            <div class="role-form__control role-form__control--pair">
+              <span class="role-form__qualifier" id="role-form-billing-period-qualifier">{{
+                periodCountQualifier
+              }}</span>
+              <span class="role-form__qualifier" id="role-form-billing-frequency-qualifier">{{
+                periodUnitQualifier
+              }}</span>
+              <input
+                id="role-form-billing-period"
+                class="role-form__period"
+                type="text"
+                inputmode="numeric"
+                formControlName="billingPeriod"
+                maxlength="50"
+                autocomplete="off"
+                [attr.aria-labelledby]="
+                  billingPeriodField.labelId() + ' role-form-billing-period-qualifier'
+                "
+                [attr.aria-invalid]="messageFor('billingPeriod') ? 'true' : null"
+                (blur)="onNumericCommit('billingPeriod')"
+              />
+              <select
+                id="role-form-billing-frequency"
+                class="role-form__frequency"
+                formControlName="billingFrequency"
+                [attr.aria-labelledby]="
+                  billingPeriodField.labelId() + ' role-form-billing-frequency-qualifier'
+                "
+              >
+                @for (option of frequencyOptions; track option.value) {
+                  <option [ngValue]="option.value">{{ option.label }}</option>
+                }
+              </select>
+            </div>
+          </app-form-field>
+
+          <!-- TRIAL FEE. `txtTrialFee` at L122-L123. -->
+          <app-form-field
+            label="Trial Fee"
+            for="role-form-trial-fee"
+            help="Enter the trial fee charged for users in this role"
+            [error]="messageFor('trialFee')"
+            [class.form-field--disabled]="readOnly()"
+          >
+            <div class="role-form__control role-form__control--narrow">
+              <input
+                id="role-form-trial-fee"
+                type="text"
+                formControlName="trialFee"
+                maxlength="50"
+                autocomplete="off"
+                [attr.aria-invalid]="messageFor('trialFee') ? 'true' : null"
+                (blur)="onNumericCommit('trialFee')"
+              />
+            </div>
+          </app-form-field>
+
+          <!--
+            TRIAL PERIOD AND ITS FREQUENCY - ONE FIELD, TWO CONTROLS. `txtTrialPeriod` at L136-L137 and
+            `cboTrialFrequency` at L138-L139 under the single label at L132, the same arrangement as the
+            billing pair above and for the same measured reason.
+          -->
+          <app-form-field
+            #trialPeriodField
+            label="Trial Period (Every)"
+            for="role-form-trial-period"
+            [help]="
+              'These two fields are used in conjunction to enter a Trial Period. e.g 2 weeks, or 1 month. ' +
+              'Leaving either box empty, or choosing no frequency, stores no trial terms: the fee is saved as ' +
+              '0 and the period as 1. A trial is also only stored when a service fee is present.'
+            "
+            [error]="messageFor('trialPeriod')"
+            [class.form-field--disabled]="readOnly()"
+          >
+            <div class="role-form__control role-form__control--pair">
+              <!-- The same distinct naming as the billing pair above; see the note there. -->
+              <span class="role-form__qualifier" id="role-form-trial-period-qualifier">{{
+                periodCountQualifier
+              }}</span>
+              <span class="role-form__qualifier" id="role-form-trial-frequency-qualifier">{{
+                periodUnitQualifier
+              }}</span>
+              <input
+                id="role-form-trial-period"
+                class="role-form__period"
+                type="text"
+                inputmode="numeric"
+                formControlName="trialPeriod"
+                maxlength="50"
+                autocomplete="off"
+                [attr.aria-labelledby]="
+                  trialPeriodField.labelId() + ' role-form-trial-period-qualifier'
+                "
+                [attr.aria-invalid]="messageFor('trialPeriod') ? 'true' : null"
+                (blur)="onNumericCommit('trialPeriod')"
+              />
+              <select
+                id="role-form-trial-frequency"
+                class="role-form__frequency"
+                formControlName="trialFrequency"
+                [attr.aria-labelledby]="
+                  trialPeriodField.labelId() + ' role-form-trial-frequency-qualifier'
+                "
+              >
+                @for (option of frequencyOptions; track option.value) {
+                  <option [ngValue]="option.value">{{ option.label }}</option>
+                }
+              </select>
+            </div>
+          </app-form-field>
+
+          <!--
+            RSVP CODE. `txtRSVPCode` at L153 - narrow, not the wider width the other text fields use -
+            labelled at L150 by a label declaring neither a resource key nor a suffix.
+          -->
+          <app-form-field
+            label="RSVP Code:"
+            for="role-form-rsvp-code"
+            [help]="
+              'Enter an RSVP Code for the role.  This code can be used to provide a convenient ' +
+              'method for users to subscribe to one or more roles.  A new code must be at least 12 ' +
+              'characters long and must mix letters with digits or punctuation, because anyone holding ' +
+              'the code can join the role.  A code already saved against this role keeps working as it ' +
+              'is, and only needs to meet the rule if you change it.'
+            "
+            [error]="messageFor('rsvpCode')"
+            [class.form-field--disabled]="readOnly()"
+          >
+            <!--
+              NOT a narrow slot. An invitation code is bounded at fifty characters and REQUIRED to be at
+              least twelve, so the narrow measure - sized for a money amount and a period count - was too
+              small for every legal value: a thirteen-character code measured 124.79px inside a 78px content
+              box and six characters were simply clipped away, with no ellipsis and no title. This slot takes
+              the ordinary control measure every other text field on the screen uses.
+            -->
+            <div class="role-form__control">
+            <!--
+              ⚠ NO NATIVE `minlength` OR `pattern` HERE, DELIBERATELY. Both are provenance-blind - they judge
+              the value in the box and cannot know whether it is the code already stored - so either would
+              refuse a legacy short code that this role is entitled to keep, which is the exact trap the
+              server fix removed. The strength rule is carried by `authoredRsvpCodeValidator` instead, which
+              compares against the stored value and fires only when a new code is actually being authored.
+            -->
+              <input
+                id="role-form-rsvp-code"
+                type="text"
+                formControlName="rsvpCode"
+                maxlength="50"
+                autocomplete="off"
+                [attr.aria-invalid]="messageFor('rsvpCode') ? 'true' : null"
+              />
+            </div>
+          </app-form-field>
+
+          <!--
+            MIGRATION: THE RSVP LINK IS DROPPED UNCONDITIONALLY. `txtRSVPLink` at L161 was a read-only
+            box the code-behind filled at L165-L168 by composing the request's own domain with the
+            default page and the code as a query argument.
+          -->
+          <app-form-field
+            label="Icon:"
+            for="role-form-icon-file"
+            help="Select an icon for the role."
+            [error]="messageFor('iconFile')"
+            [class.form-field--disabled]="readOnly()"
+          >
+            <div class="role-form__control">
+              <input
+                id="role-form-icon-file"
+                type="text"
+                formControlName="iconFile"
+                maxlength="100"
+                autocomplete="off"
+                [attr.aria-invalid]="messageFor('iconFile') ? 'true' : null"
+              />
+            </div>
+          </app-form-field>
+        </div>
+      </details>
+
+      <!--
+        Bare buttons, and deliberately so. No shared component wraps a button, and the global form
+        stylesheet already gives every button its appearance and its focus ring, so reaching for a
+        component here would mean adding a shared member for one caller.
+      -->
+      <div class="role-form__actions">
+        @if (canSave()) {
+          <button class="form-action--primary" type="submit" [disabled]="saving()"
+          [attr.aria-busy]="saving() ? 'true' : null">{{ submitLabel() }}</button>
+        }
+
+        <button type="button" [disabled]="saving()" (click)="onCancel()">Cancel</button>
+
+        @if (canDelete()) {
+          <button
+            type="button"
+            class="role-form__command--danger"
+            [disabled]="saving()"
+            (click)="requestRemoval()"
+          >
+            Delete
+          </button>
+        }
+
+        @if (canManageUsers()) {
+          <!--
+            The caption comes from the LOCAL resource entry, which is longer and more explicit than the
+            inline one; the inline caption is stale wherever a local key exists.
+          -->
+          <button type="button" [disabled]="saving()" (click)="onManageUsers()">
+            {{ manageUsersLabel }}
+          </button>
+        }
+
+        @if (saving()) {
+          <app-loading-spinner size="small" label="Saving…" />
+        }
+      </div>
+    </form>
+  }
+
+  <!-- The delete confirmation, CREATED when it is needed because it opens itself as a modal on first view. -->
+  @if (confirmingDelete()) {
+    <!--
+      ⚠ NO `title` IS BOUND, AND THAT IS THE POINT. Every delete confirmation in this application shows
+      the SAME title, which the shared dialog declares as its default; binding one here is how five
+      different titles for one action came about - runtime testing found `Delete`, `Confirm Delete`,
+      `Delete Module`, `Delete Profile Property` and `Delete role group` across the screens.
+    -->
+    <app-confirm-dialog
+      [message]="deleteConfirmMessage"
+      [confirmLabel]="deleteConfirmLabel"
+      danger
+      (confirm)="onRemovalConfirmed()"
+      (cancel)="onRemovalCancelled()"
+    />
+  }
+</section>

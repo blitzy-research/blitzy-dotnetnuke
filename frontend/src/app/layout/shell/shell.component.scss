@@ -1,0 +1,30 @@
+// Sass module scoping is per-file, so this `@use` is what makes `mx.*` available here; a `@use`
+// elsewhere does not. It is the file's first non-comment statement because Sass requires that.
+@use '../../../styles/mixins' as mx;
+
+:host(:not(.shell)) {
+  display: block;
+}
+
+.shell__skip-link {
+  color: var(--color-background);
+}
+
+// THE FIRST DECLARATION closes the item side of a clamp _layout.scss makes on the track side.
+main {
+  // The application's own focus indicator on the skip link's landing place, for the reason set out in the
+  // accessibility note above.
+  @include mx.focus-ring;
+
+  // ⚠ #29 — THE RING IS DRAWN INSIDE THE REGION, and that is the whole fix. An outline sits OUTSIDE the box
+  // it rings, offset further still by `--focus-ring-offset`; this region fills the width of the viewport and
+  // runs the full height of the document, so every edge of its ring was painted outside the visible area and
+  // activating the skip link appeared to do nothing. A negative offset of the ring's own width pulls all four
+  // edges inside the region, where the top edge lands directly under the header a reader is looking at.
+  &:focus-visible {
+    outline-offset: calc(-1 * var(--focus-ring-width));
+  }
+
+  min-inline-size: 0;
+  overflow-wrap: break-word;
+}

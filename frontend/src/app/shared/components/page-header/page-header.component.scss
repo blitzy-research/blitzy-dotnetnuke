@@ -1,0 +1,90 @@
+@use '../../../../styles/mixins' as mx;
+
+// ⚠ `min-inline-size: 0` HERE IS LOAD-BEARING, AND IT IS THE HOST THAT NEEDS IT, NOT THE TITLE.
+// This component is frequently a grid or flex ITEM. An item's automatic minimum size is its MIN-CONTENT
+// size, and a long unbreakable heading makes that min-content size the full width of the heading - which
+// resolves an `auto` track WIDER THAN THE CONTAINER THAT OWNS IT and pushes the whole page into horizontal
+// scroll. Measured on the user-edit screen with a 128-character unbroken display name: the enclosing grid's
+// single track resolved to 1695px against its own 1048px content box, 647px over-wide at 1280px and 1367px
+// over-wide at 375px. Clamping the item's minimum here stops that demand escaping the component, whatever
+// the surrounding layout happens to be.
+:host {
+  display: block;
+  min-inline-size: 0;
+  max-inline-size: 100%;
+}
+
+// Stacked below the breakpoint and side by side above it, authored mobile-first: the narrow layout is
+// unconditional and the wider one is layered on top. The breakpoint is obtained only by including the
+// shared mixin, so no component restates a width and lets it drift.
+.page-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin-block-end: var(--space-5);
+
+  @include mx.respond-above('md') {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    justify-content: space-between;
+  }
+}
+
+.page-header__text {
+  display: flex;
+  flex: var(--flex-fill);
+  flex-direction: column;
+  gap: var(--space-1);
+  min-inline-size: 0;
+}
+
+// ⚠ `anywhere` RATHER THAN `break-word`, AND THE DIFFERENCE IS THE ENTIRE FIX. Once a line is being laid
+// out the two behave identically, so this is invisible in ordinary use. They differ in INTRINSIC SIZING:
+// only `anywhere` contributes its break opportunities to the min-content width. With `break-word`, a
+// heading containing one long unbreakable token reports a min-content width equal to the WHOLE TOKEN, and
+// any `auto`-sized track or flex item above it is obliged to honour that.
+//
+// Proven by single-property isolation against the live screen: `anywhere` alone took the document from
+// 616px of horizontal overflow to none and the overflowing-element count from 43 to 0, while adding
+// `min-width: 0` to this element alone changed NOTHING - because the heading is not the element being
+// constrained, it is the one making the demand. `min-inline-size` therefore belongs on `:host` above, and
+// the wrapping mode belongs here.
+//
+// A heading is exactly where this bites: display names, portal titles and module titles are all
+// user-supplied, and none of them is guaranteed to contain a space.
+.page-header__title {
+  margin: 0;
+  color: var(--color-primary);
+  font-size: var(--font-size-xxl);
+  font-weight: var(--font-weight-normal);
+  line-height: var(--line-height-tight);
+  overflow-wrap: anywhere;
+}
+
+// The supporting line is de-emphasised. The legacy body-text rule it derives from declared no colour at
+// all, so that line simply inherited the surrounding text colour; resolving it to the muted token separates
+// the two text roles without introducing a second type size.
+.page-header__subtitle {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-base);
+  // `anywhere` for the same intrinsic-sizing reason as the title: this line carries portal names and
+  // e-mail addresses, and an e-mail address is a single unbreakable token by construction.
+  overflow-wrap: anywhere;
+}
+
+.page-header__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+
+  // Collapse at zero actions. This rule is load-bearing rather than defensive, because a wrapper with no
+  // padding, border or background still occupies no space only in its OWN box: the gap does not belong to
+  // the wrapper.
+  &:empty {
+    display: none;
+  }
+}

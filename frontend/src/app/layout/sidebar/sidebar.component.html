@@ -1,0 +1,117 @@
+<!--
+  THIS FILE EMITS EXACTLY ONE LANDMARK, AND IT IS THE ONLY ONE OF ITS KIND The shell composes four
+  members and the landmarks are divided between them with no overlap: the banner belongs to the header
+  component, the main region and its outlet belong to the shell itself, the contentinfo band belongs to
+  the footer component, and primary navigation belongs here.
+-->
+
+<!--
+  MIGRATION: view state, the multipart server form and the hidden round-trip inputs are eliminated
+  outright.
+-->
+
+<!-- There is no page-management entry in this rail, and none may be added. -->
+
+<!--
+  MIGRATION: the module collection's label is genuinely net-new, and the proof is an absence I measured
+  rather than an editorial preference.
+-->
+
+<!--
+  MIGRATION: localisation is not carried forward. The legacy screens resolved every one of these strings
+  through a per-control resource file at run time, across those 37 resource files.
+-->
+
+<!--
+  ⚠ the current-destination decision is the COMPONENT'S, resolved as the longest matching entry, and
+  both the highlight and the announcement read that one answer.
+-->
+
+<!--
+  ⚠ the entries whose routes carry the tenant-administration policy are rendered ONLY for a caller the
+  client can already tell administers the tenant, and the fact comes from the same authority the route
+  gate reads.
+-->
+
+<!--
+  MIGRATION: the focus ring these controls receive is a NET ADDITION. The legacy stylesheets declare no
+  focus styling whatsoever — a census of `default.css` for focus selectors and outline declarations
+  returns zero — so keyboard users had no visible indication of position anywhere in the legacy chrome.
+-->
+
+<!--
+  ⚠ THE RAIL IS NOT EMITTED AT ALL WHEN IT HAS NOTHING TO OFFER, and this was observed in a browser
+  rather than reasoned about.
+-->
+@if (visibleNavigation().length > 0) {
+    <nav
+      class="app-sidebar"
+      aria-label="Administration"
+      [class.app-sidebar--collapsed]="collapsed()"
+    >
+    <!--
+      The disclosure control. A real button, because a button is what a control that acts on the current
+      document is, and because it is focusable, keyboard-operable and announced correctly with no
+      attribute added to make it so.
+    -->
+    <!--
+      The marker is text, not an icon. The legacy chrome drew its menu indicators from a symbol font and
+      its affordances from raster images referenced by the stylesheet; neither ships with this
+      application, and the only static asset in the workspace is the favicon.
+    -->
+    <button
+      #navToggle
+      type="button"
+      class="app-sidebar__toggle"
+      [attr.aria-expanded]="collapsed() === false"
+      [attr.aria-controls]="navigationRegionId"
+      (click)="toggleCollapsed()"
+    >
+      Navigation
+    </button>
+
+    <div
+      class="app-sidebar__regions"
+      [id]="navigationRegionId"
+      [hidden]="collapsed()"
+    >
+      <!--
+        Tracking is by the group's own stable key and by each destination's address, both of which are
+        invariant.
+      -->
+      <!--
+        A group whose every entry was withheld is dropped by the projection rather than rendered empty,
+        which is why nothing below tests for an empty list: an empty `aria-labelledby` list would
+        announce a named navigation region containing nothing.
+      -->
+      @for (group of visibleNavigation(); track group.id) {
+        @let groupHeadingId = navigationRegionId + '-' + group.id;
+
+        <!--
+          Nothing is lost by the change, because the group's accessible name never came from the element
+          being a heading: it comes from `aria-labelledby` on the list below, which resolves against ANY
+          element with an id.
+        -->
+        <p class="app-sidebar__group" [id]="groupHeadingId">{{ group.label }}</p>
+
+        <ul class="app-sidebar__list" [attr.aria-labelledby]="groupHeadingId">
+          @for (item of group.items; track item.path) {
+            <li class="app-sidebar__item">
+              <!--
+                ⚠ THE ACTIVE CLASS AND THE ANNOUNCEMENT COME FROM ONE CALL, so the visual treatment and
+                what assistive technology is told cannot disagree.
+              -->
+              <a
+                class="app-sidebar__link"
+                [routerLink]="item.path"
+                [class.app-sidebar__link--active]="isCurrent(item)"
+                [attr.aria-current]="ariaCurrent(item)"
+                >{{ item.label }}</a
+              >
+            </li>
+          }
+        </ul>
+      }
+    </div>
+  </nav>
+}

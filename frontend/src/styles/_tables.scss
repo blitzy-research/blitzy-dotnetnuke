@@ -1,0 +1,533 @@
+// Bare-element table presentation plus the data-grid conventions the shared data-table composes from.
+// Row-state and sort hooks are ARIA attributes rather than classes, so a state cannot be painted without
+// also being announced.
+
+@use 'mixins' as mx;
+
+table {
+  inline-size: var(--size-full);
+
+  // Collapsing the border model is what makes the borderlessness hold: the separated model the browser
+  // defaults to inserts a 2px gap between cells. It also means there is no divider to leave dangling after
+  // the final row, so the usual last-child exception is unnecessary here.
+  border-collapse: collapse;
+
+  background-color: transparent;
+
+  font-family: var(--font-family-base);
+
+  font-size: var(--font-size-sm);
+
+  line-height: var(--line-height-tight);
+
+  color: inherit;
+
+  text-align: start;
+}
+
+caption {
+  caption-side: top;
+  padding-block-end: var(--space-2);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-primary);
+  text-align: start;
+}
+
+// The hook to reach for when a visible page heading already says the same thing, instead of dropping the
+// caption: a table with no caption leaves screen-reader users no way to tell one grid from another on a
+// screen that shows two.
+caption[data-visually-hidden] {
+  @include mx.visually-hidden;
+}
+
+// Declaring the size on the SECTION rather than on the cell is what makes a row header inside the body come
+// out at body size: it inherits from the table, not from here. That is the correct result, since a row
+// header sits among the data it labels, and it falls out of the structure instead of needing a second rule.
+thead,
+tfoot {
+  font-size: var(--font-size-lg);
+  color: var(--color-primary);
+}
+
+tfoot {
+  background-color: var(--color-background);
+}
+
+th,
+td {
+  padding-block: var(--space-1);
+  padding-inline: var(--space-1);
+
+  vertical-align: top;
+
+  // CELLS REFLOW, THEY DO NOT TRUNCATE, and no truncation hook is offered. Grid
+  // cells here really do receive unbroken runs — a host name in an alias list has
+  // no space in it — and permitting a break inside such a run is what keeps it
+  // inside its column instead of forcing the table wider than its container.
+  //
+  // Clipping is rejected rather than overlooked: a grid cell is often the only
+  // place a value appears, so hiding its tail hides information the reader came
+  // for, and clipping in a table additionally requires a fixed layout mode and an
+  // explicit column width to have any effect — neither of which belongs in a
+  // global rule. A component needing a single-line column can set both in its own
+  // scoped stylesheet.
+  //
+  // ⚠ `anywhere` RATHER THAN `break-word`, AND THE DIFFERENCE IS THE WHOLE FIX.
+  // The two keywords permit the same breaks, and differ in ONE respect that decides
+  // this case: `break-word` is ignored when the box's intrinsic minimum size is
+  // computed, while `anywhere` is honoured. In a fixed-layout table the column width
+  // is settled independently of the content, so a cell holding a run wider than its
+  // share never got the break `break-word` appeared to promise — the run simply
+  // overflowed a `td` whose `overflow` is visible, and painted across the column
+  // beside it. Measured on the account listing with the three optional columns
+  // enabled: eleven columns in a 1358px fixed-layout table, an address content run
+  // of [1228,1345] against a cell box of [1224,1338] — a 7px spill on one row and
+  // 19px on the next, overprinting the timestamp in the neighbouring column so that
+  // both values became unreadable at once. `anywhere` makes the minimum size that of
+  // the widest breakable fragment, so the browser breaks the run and it stays inside
+  // its own column. A run with ordinary break opportunities still breaks at them
+  // first, so prose is unaffected.
+  //
+  // ⚠ "NOTHING ELSE CHANGES" WAS WRONG, AND A REGRESSION SWEEP CAUGHT IT. This declaration sits
+  // on `th, td`, so it reached the HEADING cells too - and a sortable heading's label does not sit
+  // in a plain box, it sits inside a flex button. A flex item's AUTOMATIC MINIMUM SIZE is its
+  // min-content size, which is the one thing these two keywords disagree about: under `break-word`
+  // that minimum stays the whole word, so the button refuses to shrink past its own label; under
+  // `anywhere` it falls to a single character, so the button shrank to the column width and the
+  // label was broken mid-word. Measured on the role listing: thirteen columns sharing 1198px at
+  // exactly 92px each, rendering the heading `Description` as `Descripti` / `on`. A heading broken
+  // across a syllable is a worse fault than the spill this rule was written for - and it is the very
+  // same mechanism read the other way round, which is why the heading is told the opposite thing
+  // below rather than this rule being reverted and the measured spill let back in.
+  overflow-wrap: anywhere;
+}
+
+th {
+  // ⚠ A HEADING IS A FIXED LABEL, NOT CONTENT, AND MUST NEVER BE SHREDDED. The rule above needs `anywhere`
+  // so an unbreakable DATA run - an address, a package name - cannot escape its column and overprint its
+  // neighbour.
+  overflow-wrap: break-word;
+
+  font-weight: var(--font-weight-bold);
+
+  color: var(--color-primary);
+}
+
+// THE HEADING SEPARATOR, RESTORED. MIGRATION: the legacy record grids drew a rule beneath their heading row -
+// it is the one dimensional treatment their heading band did carry - and the measured implementation computed
+// `0px none`, so the head and the first data row met with nothing between them. Drawn on the heading cells
+// rather than on the row, because the border model is collapsed and a row-level border on a collapsed table
+// is resolved per cell anyway. This is the ONLY border any cell in this application draws: the eight legacy
+// grids all declared their grid lines off, and the alternating surface remains the row separation.
+thead th {
+  border-block-end: var(--border-width) var(--border-style) var(--color-border);
+}
+
+// Both alignments are written out explicitly rather than left to inheritance, and that is deliberate rather
+// than verbose: the table above sets start alignment, which every cell inherits, but the browser's own
+// stylesheet targets the header cell element directly and a direct rule outranks an inherited value.
+th[scope='col'] {
+  text-align: center;
+}
+
+th[scope='row'] {
+  text-align: start;
+}
+
+tbody > tr:nth-child(even) {
+  background-color: var(--color-surface);
+}
+
+// THE PINNED IDENTITY COLUMN. Published here, beside the zebra and selected rules it has to restate, and
+// opted into by the shared grid emitting `data-identity-pinned` on its container while the region ACTUALLY
+// clips - the same conditional discipline the `[data-table-scroll]` block below already follows.
+//
+// ⚠ THE MEASURED DEFECT. At 320px every listing resolves to a 271px scrollport against a 968px table, hiding
+// 697px, and four of six put their row commands first - so the opening view was command columns and blank
+// icon-only headings with the record's identity off screen entirely: the member-services name began 8px past
+// the trailing edge, profile definitions 54px past, modules 108px past, and the portal-alias grid 214px past,
+// showing nothing but a column of identical "Edit" buttons with no indication of WHICH host name each would
+// edit. The grid hoists the identity column to the front while it clips; this keeps it in view once the reader
+// scrolls away from it.
+[data-identity-pinned='true'] {
+  thead th[data-row-identity='true'],
+  tbody th[scope='row'] {
+    position: sticky;
+
+    // ⚠ MINUS THE SCROLLPORT'S OWN INLINE PADDING, AND A ZERO OFFSET LEFT A MEASURABLE LEAK. A sticky offset
+    // of zero holds the cell at the scrollport's CONTENT edge - measured, x=21 inside a container whose visible
+    // box begins at x=16 - while a scrollport CLIPS at its padding box, x=17. The 4px strip between the two is
+    // inside the scroll area, so content scrolling underneath was still painted and hit-testable in it: with the
+    // role grid scrolled fully right, all ten rows leaked the `Trial Every` column's value into the strip
+    // immediately left of the pinned name, and `elementFromPoint` there returned the scrolled-under cell.
+    // Offsetting by exactly that padding lets the cell's own opaque fill reach the clipping edge, which covers
+    // the strip visually AND for hit-testing. It changes nothing at rest: the offset only binds once the cell
+    // would otherwise scroll past the threshold, so at scroll position zero the column stays where it was.
+    inset-inline-start: calc(-1 * var(--space-1));
+
+    // ⚠ AN OPAQUE FILL IS MANDATORY, NOT COSMETIC. A sticky cell paints over its siblings as they pass
+    // beneath it and a cell's default background is transparent, so without a fill the identity would be
+    // overprinted by every value scrolling under it - unreadable at the moment it matters most. The row's fill
+    // lives on the `tr`, which a sticky child does not inherit as a paint source, so each state restates it.
+    background-color: var(--color-background);
+
+    // ⚠ AND IT MUST BE A BACKGROUND RATHER THAN A SHADOW. Covering the strip described above with a spread-free
+    // `box-shadow` on the cell was tried first and is INERT: this table computes `border-collapse: collapse`,
+    // and under Chromium's collapsed-border table painting model a shadow declared on a `td` or `th` is never
+    // rasterised. It appeared in computed style and painted nothing, which is the most expensive kind of wrong
+    // - so the offset above moves the cell's real background over the strip instead.
+
+    // ⚠ A TRAILING EDGE, BECAUSE STICKINESS IS OTHERWISE INVISIBLE: text stops and other text starts in the
+    // same plane with nothing saying one column is held still. The BOUNDARY token, not the decorative one -
+    // this edge is the only thing identifying where the held column ends.
+    border-inline-end: var(--border-width) var(--border-style) var(--color-border-control);
+  }
+
+  // The heading band sits above the values, and above the pinned column where the two intersect.
+  thead th[data-row-identity='true'] {
+    z-index: 2;
+  }
+
+  tbody th[scope='row'] {
+    z-index: 1;
+  }
+
+  // The stripe and the tint, restated on the pinned cell only. Matched on the same `:nth-child(even)` and the
+  // same ARIA attribute the rules above use, so the pinned column can never disagree with its own row about
+  // which state it is in - and a row not ANNOUNCED as selected still cannot be PAINTED as selected.
+  tbody > tr:nth-child(even) > th[scope='row'] {
+    background-color: var(--color-surface);
+  }
+
+  tbody > tr[aria-selected='true'] > th[scope='row'] {
+    background-color: var(--color-selected);
+  }
+}
+
+@media (forced-colors: active) {
+  // Forced colours replace the fills above with the user's own, so the overprinting they prevent would
+  // return. The edge is what survives, and it is doubled so the held column still reads as held.
+  [data-identity-pinned='true'] {
+    thead th[data-row-identity='true'],
+    tbody th[scope='row'] {
+      border-inline-end-width: calc(2 * var(--border-width));
+    }
+  }
+}
+
+// THE ZEBRA FALLBACK FOR FORCED COLOURS, and without it the row tracking cue disappears entirely. A forced
+// colour scheme replaces every background with the user's own, so the alternating surface above - the sole
+// device that lets an eye follow one record across a wide grid - collapses to a single flat colour. The
+// replacement is a hairline between rows, which forced colours DOES honour. `currentColor` rather than a
+// system colour keyword so the value stays inside the permitted literals: under forced colours it resolves to
+// the user's own text colour, which is exactly the intended result.
+@media (forced-colors: active) {
+  tbody > tr:not(:last-child) > th,
+  tbody > tr:not(:last-child) > td {
+    border-block-end: var(--border-width) var(--border-style) currentColor;
+  }
+}
+
+// Keyed to the ARIA state rather than to a class, which is the most useful decision in this rule: colour
+// must never be the only carrier of meaning, and keying the tint to the attribute makes that impossible to
+// violate — a row that is not announced as selected cannot be painted as selected, so the obligation is
+// discharged by the selector itself rather than by a convention someone has to remember.
+tbody > tr[aria-selected='true'] {
+  background-color: var(--color-selected);
+}
+
+// Matching the bare attribute rather than one of its values covers a row that is selectable but not
+// currently selected, which is the ordinary case. The pointer is the affordance for a mouse and the ring
+// for a keyboard.
+tbody > tr[aria-selected] {
+  cursor: pointer;
+
+  @include mx.focus-ring;
+}
+
+// Keyed to the sort state for the same reason the selected row is: a header that looks sortable but does
+// not announce its direction is unusable with a screen reader, and tying the appearance to the attribute
+// stops the two drifting apart.
+th[aria-sort] {
+  cursor: pointer;
+}
+
+// SUPPLEMENTARY to the direction indicator the component draws, never a replacement for it: a tint says
+// "this column" but cannot say "ascending", and direction must not be carried by colour. The head is not
+// striped, so this tint has nothing to collide with.
+th[aria-sort='ascending'],
+th[aria-sort='descending'] {
+  background-color: var(--color-surface);
+}
+
+// ⚠ A SORTABLE HEADING SURRENDERS ITS BLOCK PADDING TO THE CONTROL INSIDE IT. The control is floored to the
+// pointer target below, and with the cell's own four-pixel padding still in force that floor would resolve to
+// a fifty-two-pixel heading band rather than a forty-four-pixel one - paying eight pixels on every listing
+// for space the control does not use. The padding is therefore moved INTO the button, which is where a press
+// has to land anyway. A heading that is not sortable keeps its padding and its natural height; the row's
+// height is set by the tallest cell in it, so the band resolves to exactly the floor.
+th[aria-sort] {
+  padding-block: 0;
+}
+
+// A real button rather than a click handler on the cell, because only a button is reachable by keyboard and
+// announced as operable.
+th[aria-sort] > button {
+  font: inherit;
+  color: inherit;
+  background-color: transparent;
+  border-width: 0;
+  cursor: pointer;
+
+  // ⚠ THE POINTER TARGET, AND IT WAS MEASURABLY ABSENT. This control carried `padding: 0` and no block floor
+  // of any kind, so its height was whatever its own line box came to - about eighteen pixels, which is not
+  // merely short of the forty-four this token set treats as the floor for a real control but short of the
+  // twenty-four that applies to everything. It is the only button in the application that had no floor at
+  // all: `_forms.scss` floors every entry control and every action, and the choice controls take the compact
+  // token under the standard's inline-control carve-out with that exemption stated. A column sort is a
+  // standalone command, not an inline control, so it takes the full floor.
+  //
+  // The block padding released by the cell above is restated here, so the label keeps the same distance from
+  // the band's edges that it had while the padding lived on the cell.
+  padding-block: var(--space-1);
+  padding-inline: 0;
+  min-block-size: var(--target-size-min);
+
+  // Inline-level on purpose. An inline-level box is positioned by the text alignment of the cell around it,
+  // so the button lands centred under a column header and at the start edge under a header a component has
+  // re-aligned, without this file restating either alignment.
+  display: inline-flex;
+
+  // ⚠ CENTRED RATHER THAN BASELINE-ALIGNED, AND THE FLOOR ABOVE IS WHY. Baseline alignment positions this
+  // box's contents against the surrounding text's baseline, which is fine in a box that is exactly as tall
+  // as its contents and wrong in one held open to the target floor: the label and the arrow sat pinned to
+  // the top of a forty-four-pixel box with the remainder empty beneath them. Centring keeps the pair
+  // together and centres them in the band. The two items remain aligned with EACH OTHER, which is what the
+  // baseline was doing that mattered - a one-character arrow and a label share a centre line as readily as
+  // a baseline.
+  align-items: center;
+  gap: var(--space-1);
+
+  // ⚠ THE ITEMS STAY ON ONE LINE, AND THIS REPLACES A `wrap` THAT IS NO LONGER DOING ANY WORK. Wrapping was
+  // how the button used to be kept inside its cell: with nothing able to shrink, the only way to fit was to
+  // push the sort indicator onto a second line. The cap below and the label's own ellipsis now do that job
+  // properly, and wrapping actively harms the result - the flex algorithm breaks lines BEFORE it shrinks
+  // anything, so on a narrow atomic heading it moved the indicator under the label instead of letting the
+  // label truncate. Measured at 375px: the indicator wrapped to a second flex line on both atomic headings,
+  // costing nothing only because it is empty while unsorted - the moment either column WAS sorted, its arrow
+  // would have appeared centred on a line of its own beneath a truncated name and grown the heading row.
+  flex-wrap: nowrap;
+  text-align: inherit;
+
+  // ⚠ AND WRAPPING ALONE WAS NOT ENOUGH: A FLEX ITEM REFUSES TO SHRINK BELOW ITS CONTENT BY DEFAULT. With the
+  // automatic minimum in force, a heading whose longest word is wider than its column pushed the button past
+  // the cell's edge and the text bled 38-41px into the neighbouring column, with no ellipsis and no cue -
+  // measured on the role and portal listings at 375px. Zeroing the minimum on the button AND on the label span
+  // it contains is what lets the wrap above actually happen; the label rule below then decides what becomes
+  // of a word that still cannot fit.
+  min-inline-size: 0;
+
+  // ⚠ AND THE BUTTON NEEDS A CEILING OF ITS OWN, WHICH IS WHERE THE ELLIPSIS WAS BEING LOST. Measured with the
+  // ceiling only on the label: it had no effect whatsoever. The label's containing block is not the cell — it
+  // is this button, an INLINE-LEVEL flex box that shrink-to-fits its content, so its width WAS the label's
+  // natural width ("Portal Id" 60.02px inside a 57.59px cell) and `max-inline-size: 100%` on the label
+  // resolved to 100% of exactly the label's own width. Nothing could ever overflow, `text-overflow` stayed
+  // inert, and the cell hard-clipped "Portal I" mid-glyph with no cue at all. `min-inline-size: 0` above does
+  // not help here either: it governs this box as a flex ITEM, which it is not. Capped at the cell's content
+  // box, the button shrinks, the label overflows itself, and the ellipsis finally renders.
+  max-inline-size: 100%;
+
+  & > span {
+    min-inline-size: 0;
+  }
+
+  @include mx.focus-ring;
+}
+
+// THE HEADING LABEL — A COLUMN NAME IS NEVER SHREDDED, AND THIS IS WHERE THAT IS DECIDED.
+//
+// ⚠ `break-word` KEPT THE LABEL INSIDE ITS CELL AND MADE IT UNREADABLE DOING SO, which is only half a fix.
+// Measured after the bleed was closed: "Users" rendered as "Use" / "rs" and "Pages" as "Pag" / "es" on the
+// portal listing at 768px, and "Authorized" as "Authoriz" / "ed" on the account listing at its DEFAULT
+// desktop width. A column name broken across a syllable boundary is not a column name; it is two fragments
+// that happen to be stacked.
+//
+// So the label wraps at SPACES only and, when a single word still will not fit, it clips with an ellipsis.
+// That is the deliberate cue the shared expectation calls for rather than a silent misreading, and it costs
+// nothing in the accessibility tree: the text node is untouched, so a screen reader still hears the whole
+// name, and the sort control beside it carries the name verbatim in its own accessible label.
+//
+// THE CLIP IS ON THE SPAN AND NOT ON THE CELL, and that distinction is load-bearing. Every sortable heading
+// contains a focusable button whose focus ring is drawn OUTSIDE its border box with a six-pixel contrast
+// halo; `overflow: hidden` on the cell would clip that ring away and leave a keyboard reader with no visible
+// position. Clipping inside the label, which contains nothing focusable, protects the name without touching
+// the ring.
+.data-table__label {
+  display: block;
+  min-inline-size: 0;
+
+  // ⚠ THE CEILING IS WHAT MAKES THE ELLIPSIS BELOW ACTUALLY FIRE, and without it the rule was inert. Measured
+  // at 375px on the two atomic headings, whose cells inherit `white-space: nowrap`: the label box sized itself
+  // to its OWN content — "Portal Id" 60.02px inside a 57.59px cell, "Disk Space" 80.05px inside 76.80px — so
+  // its `scrollWidth` equalled its `clientWidth`, there was nothing for `text-overflow` to elide, and the
+  // excess was hard-clipped one level up by the cell instead. "Portal I" was cut mid-word with no ellipsis at
+  // all, which is the silent truncation the cue exists to replace. Held to the cell's content box, the label
+  // overflows ITSELF and elides.
+  max-inline-size: 100%;
+
+  overflow-wrap: normal;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+// THE ATOMIC CELL — a value that must never be split across lines.
+//
+// The body-cell rule at the top of this file breaks anywhere, which is right for prose and free text and
+// WRONG for a figure or a date: measured at 375px, `1234567.89` broke after the decimal point so the first
+// line read `1234567.` - a complete, plausible and incorrect amount - and `6/30/2021` broke as `6/30/202` and
+// `1`. Forty such breaks were counted across three listings. A column that carries one indivisible value
+// declares itself atomic and this rule keeps it whole; if the column is then too narrow for the value, it
+// clips with an ellipsis, which is a visible cue rather than a silent misreading. Tabular figures line the
+// digits up by place value down the column.
+th[data-atomic='true'],
+td[data-atomic='true'] {
+  white-space: nowrap;
+  overflow-wrap: normal;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+
+// THE RECOVERY OF A CUT VALUE, and it is the missing half of the rule above.
+//
+// ⚠ AN ELLIPSIS IS A CUE, NOT AN ANSWER. The rule above is right to keep an indivisible value whole, and its
+// ellipsis is right to say "this is truncated rather than short" — but measured at 1440 on the account
+// listing, twelve cut cells carried no `title`, no `tabindex`, no `aria-label` and no copy of the value
+// anywhere else on the row, so the value was recoverable only through the accessibility tree. A hundred-
+// character sign-in name showed eleven characters and a fifty-character role name about thirteen.
+//
+// The grid marks a cell `data-truncated` only when it is ACTUALLY cut, and gives it a `title` for a pointer
+// and a focus stop for a keyboard. This rule is what the focus stop then reveals: the value UNWRAPS IN PLACE,
+// growing its own row, rather than floating over its neighbours. Deliberately so — the cell clips, so an
+// overlay would have to escape it and would then overprint adjacent values, and a reader recovering one value
+// should not lose sight of the two beside it.
+//
+// ⚠ THE REVEAL IS KEYED TO `:focus-visible` AND NOT TO `:hover`. Hover would reflow the table under a moving
+// pointer on every atomic cell it crossed, which is worse than the truncation; the pointer is served by the
+// `title` instead, which costs no layout at all.
+//
+// ⚠ `:focus-within` IS HERE FOR THE SORTABLE HEADINGS, AND WITHOUT IT THEY HAD NO KEYBOARD ROUTE AT ALL. A cut
+// heading is given a focus stop only when nothing inside it can take one, because a sortable heading already
+// holds a focusable sort button and a stop on the cell around it would put two stops on one heading. That
+// leaves the sortable case: the button takes the focus, the `th` never matches `:focus-visible`, and before
+// this selector the reveal simply never fired for it — the very column names most likely to be cut, since a
+// sort indicator takes 16px of the label's room. `:focus-within` matches the `th` when its button is focused,
+// so both kinds of cut heading reveal on exactly one stop.
+th[data-truncated='true']:focus-visible,
+th[data-truncated='true']:focus-within,
+td[data-truncated='true']:focus-visible {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  overflow: visible;
+}
+
+// The label inside a revealed heading owns the clipping, so lifting it from the cell alone changes nothing:
+// `overflow: hidden` plus `text-overflow: ellipsis` live on the label. Both are released together.
+th[data-truncated='true']:focus-visible .data-table__label,
+th[data-truncated='true']:focus-within .data-table__label {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  overflow: visible;
+  text-overflow: clip;
+}
+
+// THE ATOMIC VALUE — the same protection for one run of text INSIDE a cell that carries more than one thing.
+//
+// A cell is only declared atomic when its whole content is the indivisible value. Several cells are not like
+// that: a fee is followed by a qualifier when it is negative or approximate, and an expiry is followed by an
+// expired marker. Making those cells atomic would keep the figure whole and then CLIP the qualifier, which
+// removes information rather than protecting it. So the figure itself is wrapped instead, and the qualifier
+// stays free to wrap onto the next line where it belongs.
+[data-atomic-value] {
+  white-space: nowrap;
+  overflow-wrap: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+// A single spanning cell carrying a zero-result or still-loading message while the table's structure stays
+// on screen, so the reader keeps the column headings as context.
+td[data-placeholder] {
+  padding-block: var(--space-6);
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
+// An admin grid has many columns and cannot always fit. Scrolling the region rather than the page keeps the
+// surrounding layout intact, and the automatic value means no scrollbar appears at all when the table
+// already fits.
+//
+// ⚠ THIS BLOCK WAS DEAD CSS UNTIL THE SHARED GRID EMITTED THE ATTRIBUTE. It was authored and published as a
+// contract that no element in the application ever opted into, so a table that overflowed was reachable by
+// POINTER ONLY: measured at 375px the host was 326px wide against a 648px table, seven columns sat off
+// screen, and the host carried `tabindex="-1"`, no role and no accessible name. The grid now emits
+// `data-table-scroll` on its container and — only when the container ACTUALLY overflows — `role="region"`,
+// `aria-labelledby` pointing at the table's own caption, and `tabindex="0"`. Those are what make the focus
+// ring below reachable and this rule load-bearing.
+//
+// ⚠ THE BELOW-MD WIDTH RELAXATION THAT USED TO LIVE HERE IS DELIBERATELY GONE, and removing it is a decision
+// rather than an oversight. It set `inline-size: auto; min-inline-size: 100%` on the table below the tablet
+// step, which fits a thirteen-column grid into a 320px viewport by giving every column about twenty-five
+// pixels — precisely the crushing the grid's minimum width exists to prevent, and a measured defect in its
+// own right at 375px where columns resolved near forty-nine pixels. Two further facts settle it: the rule
+// could never have applied even once the attribute was emitted, because the grid's own `min-inline-size`
+// carries a view-encapsulation attribute and out-specifies a global descendant selector; and horizontal
+// scrolling of a data grid inside a NAMED, KEYBOARD-OPERABLE region is the accessible pattern for a wide
+// table rather than a workaround for one. The floor therefore holds at every width and the region scrolls,
+// which is exactly what the attributes above make usable. Recorded in MIGRATION_NOTES.md.
+[data-table-scroll] {
+  overflow-x: auto;
+
+  // Stops a horizontal swipe that reaches the end of the grid from continuing
+  // into the page or the browser's own back gesture.
+  overscroll-behavior-x: contain;
+
+  // A scrollable region must be operable by keyboard, which means focusable — the consumer supplies the tab
+  // stop, the accessible name and the region role — and a focusable element must show where the focus is.
+  @include mx.focus-ring;
+}
+
+// Opt-in rather than automatic: it is only correct inside a scrolling region or a tall page, and a
+// global default would apply it to short tables that gain nothing.
+//
+// The header must be OPAQUE to work - a see-through sticky header lets body rows scroll through it
+// and makes both layers unreadable at once - so the page background value is named rather than left
+// transparent.
+//
+// Sticky positioning is applied to the header CELL rather than to the head section, because the
+// collapsed border model leaves the section without a box of its own to position.
+table[data-sticky-head] thead th {
+  position: sticky;
+  inset-block-start: 0;
+  z-index: var(--z-index-sticky);
+  background-color: var(--color-background);
+  box-shadow: var(--elevation-1);
+}
+
+// No pager styling. A pager is a SIBLING of the table and not part of it, so no rule here reaches inside a
+// table to style one, and the shared pagination component must not be rendered into a foot row.
+
+// No row hover, and the omission is principled. A hover rule on a touch device sticks to the last-tapped
+// element until something else is tapped, so it needs a hover-capability query - and _mixins.scss, the only
+// file permitted a raw media feature query, exposes no such guard.
+
+// COMMANDS INSIDE A CELL — the pointer-target floor for a row's own actions
+td a,
+th a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  min-inline-size: var(--target-size-min);
+  min-block-size: var(--target-size-min);
+}

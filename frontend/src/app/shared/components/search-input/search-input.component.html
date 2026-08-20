@@ -1,0 +1,78 @@
+<!--
+  Withheld only when the consumer states it has already labelled this control itself. A control named by
+  two labels carries a composite accessible name in which the caption nearest the field is no longer the
+  whole name, which is the SC 2.5.3 Label in Name mismatch; see `labelledExternally`.
+-->
+@if (!labelledExternally) {
+  <label class="search-input__label" [attr.for]="fieldId">Search:</label>
+}
+
+<!-- No `form` element wraps this row. -->
+<div class="search-input__row">
+  <!--
+    A placeholder is a hint and never an accessible name, which is why the visible label above is
+    mandatory rather than optional.
+  -->
+  <input
+    class="search-input__field"
+    type="search"
+    [id]="fieldId"
+    [formControl]="term"
+    [placeholder]="placeholder"
+    [attr.maxlength]="maxTermLength"
+    [attr.aria-describedby]="limitId"
+    (keydown.enter)="submit($event)"
+    autocomplete="off"
+  />
+
+
+  <!--
+    MIGRATION: the legacy shared label control set a tab index of minus one on both its help link and
+    the image nested inside it, removing the control from the tab order entirely and leaving it operable
+    only by pointer.
+  -->
+  <button
+    class="search-input__submit"
+    type="button"
+    [disabled]="isDisabled"
+    (click)="submit()"
+  >
+    <svg
+      class="search-input__submit-icon"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.75"
+      stroke-linecap="round"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <circle cx="6.75" cy="6.75" r="4.25" />
+      <path d="M10.1 10.1 14.25 14.25" />
+    </svg>
+    Search
+  </button>
+</div>
+
+<!--
+  THE TYPING BOUND, STATED WHERE IT IS HEARD. A native `maxlength` stops accepting keystrokes without
+  saying anything: measured with a 300-character term, 256 characters were kept and the rest were dropped
+  in silence. Permanently present, because the description above names it and a reference to an absent
+  element is dropped by some assistive technology and read as empty by others.
+-->
+<p class="search-input__limit" data-visually-hidden [id]="limitId">{{ limitDescription }}</p>
+
+<!--
+  THE ADVISORY. Present only when the term actually had to be changed, so it is silent for every ordinary
+  search and cannot become wallpaper. `role="status"` with `aria-live="polite"` announces it without
+  interrupting typing; it is painted as well as announced, because a sighted operator needs to know why the
+  box they can see disagrees with the listing they can see.
+-->
+@if (adjustmentMessage(); as advisory) {
+  <p class="search-input__advisory" role="status" aria-live="polite">{{ advisory }}</p>
+}
+
+<!--
+  Both visible strings are authored inline in English; no translation runtime is wired into this
+  workspace.
+-->

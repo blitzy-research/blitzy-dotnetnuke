@@ -1,0 +1,157 @@
+<!--
+  MARKUP CONTRACT. The paired stylesheet states the class vocabulary this template may emit, and the
+  constraint is binding rather than advisory: emulated view encapsulation rewrites every selector with
+  this component's content attribute, so a class name that drifts does not error - it silently matches
+  nothing and the screen renders unstyled.
+-->
+<section class="module-import">
+  <!--
+    THAT HELP RESOURCE VALUE IS UNTRUSTED MARKUP AND IS RE-AUTHORED AS TEXT. Its stored value is a
+    top-level heading element followed by a paragraph element.
+  -->
+  <app-page-header [title]="title" [subtitle]="subtitle" />
+
+  <!--
+    One indicator at a time, and the order is the order the two waits actually occur in: the module list
+    is read when the screen opens, and only afterwards can an import be in flight.
+  -->
+  @if (loadingModules()) {
+    <app-loading-spinner size="small" [label]="loadingModulesLabel" />
+  } @else if (busy()) {
+    <app-loading-spinner size="small" [label]="importingLabel" />
+  }
+
+  <!--
+    THE SUMMARY FAILURE SURFACE, AND IT IS DELIBERATELY NOT WRAPPED IN A CONDITION. The shared component
+    keeps its announcing region mounted at all times and guards the CONTENT inside itself, so wrapping
+    the element would create the region and its content in the same instant - which is exactly the case
+    assistive technology frequently fails to announce.
+  -->
+  <!--
+    ONE INPUT IS BOUND, WHERE TWO USED TO BE. The second carried a fallback sentence for a failure with no
+    problem document, which is what a response this client could not decode used to produce. The store now
+    synthesises a document for that case, so the banner always has the server's own explanation or a
+    well-formed substitute for it.
+  -->
+  <app-error-banner [problem]="problem()" />
+
+  <!--
+    ⚠ THE RECOVERY THIS SCREEN DID NOT HAVE. A failed choice read left the picker withheld, the submit
+    control disabled and nothing on screen able to re-attempt anything, so the only way out was to navigate
+    away and back. Offered only while a failure is being reported, so the healthy screen gains no control.
+  -->
+  @if (problem() !== null) {
+    <p class="module-import__recovery">
+      <button class="module-import__retry" type="button" (click)="onRetryChoices()">
+        Try again
+      </button>
+    </p>
+  }
+
+  <!--
+    THERE IS A FORM ELEMENT NOW, WHERE THERE WAS NONE. The legacy markup declared no form of its own -
+    the surrounding page supplied one and every control round-tripped through it - so the submit control
+    below is genuinely new, and with it keyboard submission from either field.
+  -->
+  <form class="module-import__form" [formGroup]="form" (ngSubmit)="submit()" novalidate>
+    @if (hasModuleChoices()) {
+      <!--
+        MIGRATION: THE TARGET MODULE IS NOW CHOSEN ON THE SCREEN, AND THIS WHOLE FIELD IS NET-NEW. The
+        legacy screen had no module field at all: `Import.ascx.vb:L67-L68` read its target out of band
+        from a request value and parsed it with no guard, under a compilation setting that had strict
+        typing disabled, so any non-numeric input threw into the catch-all.
+      -->
+      <app-form-field
+        [label]="moduleFieldLabel"
+        [for]="moduleFieldId"
+        [required]="true"
+        [help]="moduleFieldHelp"
+        [error]="moduleError()"
+      >
+        <select
+          [id]="moduleFieldId"
+          formControlName="moduleId"
+          (change)="onModuleSelected()"
+          [attr.disabled]="busy() ? '' : null"
+          [attr.aria-invalid]="
+            (form.controls.moduleId.touched || form.controls.moduleId.dirty) &&
+            form.controls.moduleId.invalid
+          "
+        >
+          <option [ngValue]="null">{{ modulePlaceholderLabel }}</option>
+          @for (choice of moduleChoices(); track choice.value) {
+            <option [ngValue]="choice.value">{{ choice.label }}</option>
+          }
+        </select>
+      </app-form-field>
+
+      @if (moduleChoiceSummary() !== null) {
+        <p class="module-import__choice-summary">{{ moduleChoiceSummary() }}</p>
+      }
+    } @else if (!loadingModules() && choicesUnread()) {
+      <!--
+        ⚠ THE FAILED READING COMES FIRST, and getting these two the wrong way round is what made this screen
+        state a falsehood. A read that failed leaves the choice slice empty exactly as a tenant with nothing
+        to import into does, and the empty state below asserts the latter. This branch asserts only that
+        nothing could be read, and points at the failure surface above, which carries the reason, the support
+        reference and the retry.
+      -->
+      <app-empty-state [message]="modulesUnreadMessage" />
+    } @else if (!loadingModules()) {
+      <!--
+        Shown in place of the picker when the tenant offers nothing to import into, rather than an empty
+        control the operator cannot use. Guarded on the read having finished, so an in-flight listing
+        shows the indicator above instead of claiming there is nothing.
+      -->
+      <app-empty-state [message]="noModulesMessage" />
+    }
+
+    <!--
+      MIGRATION: THE COLON IS NOT REPRODUCED. `import.ascx:L6` and `L10` both appended one through the
+      legacy label control's suffix attribute. The wording constant carries none and the shared field
+      normalises the punctuation, so a colon is never doubled and never authored twice.
+    -->
+    <app-form-field
+      [label]="fileFieldLabel"
+      [for]="fileFieldId"
+      [required]="true"
+      [help]="fileFieldHelp"
+      [error]="fileError()"
+    >
+      <!--
+        THIS NATIVE FILE CONTROL IS THE SINGLE DOCUMENTED EXCEPTION to the rule that a feature template
+        uses a shared component wherever one covers the need.
+      -->
+      <input
+        [id]="fileFieldId"
+        type="file"
+        [attr.accept]="fileAccept"
+        (change)="onFileSelected($event)"
+        [attr.disabled]="busy() ? '' : null"
+        [attr.aria-invalid]="
+          (form.controls.file.touched || form.controls.file.dirty) &&
+          form.controls.file.invalid
+        "
+      />
+
+      <!--
+        Tested EXPLICITLY against null rather than for truthiness, in keeping with the rule that the
+        empty string is data in this schema and never means "unset".
+      -->
+      @if (selectedFileName() !== null) {
+        <p>{{ selectedFileName() }}</p>
+      }
+    </app-form-field>
+
+    <div class="module-import__actions">
+      <!--
+        MIGRATION: the single literal non-breaking space that separated them at the end of `L15` is not
+        reproduced.
+      -->
+      <button class="form-action--primary" type="submit" [disabled]="!canSubmit()"
+          [attr.aria-busy]="busy() ? 'true' : null">{{ importActionLabel }}</button>
+
+      <button type="button" (click)="cancel()">{{ cancelActionLabel }}</button>
+    </div>
+  </form>
+</section>

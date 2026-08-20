@@ -1,0 +1,497 @@
+// COMPONENT STATUS — COMPILED, ROUTED AND SPECIFIED
+// ⚠ FOUR ENTRIES LEFT THIS LIST WITH THE FIELD SYSTEM, and three more that were never in it.
+@use '../../../../styles/mixins' as mx;
+
+// ROOT
+// No colour is declared, and that is inheritance rather than an absent token: body text inherits, which is
+// exactly what the legacy body rule and its Normal text class did — both declared family, size and weight and
+// no colour at all. (The vocabulary does hold `--color-text`, and this comment previously said it did not and
+// attributed the omission to the vocabulary being "closed at nine colours". Both halves were wrong; neither
+// was the reason this rule declares no colour.)
+:host,
+.module-settings {
+  display: grid;
+  gap: var(--space-4);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+}
+
+// SECTION DESCRIPTION
+// The three explanatory paragraphs that introduce the module, page and module-specific groups.
+.module-settings__intro {
+  margin-block: 0 var(--space-3);
+  max-inline-size: mx.breakpoint('sm');
+  line-height: var(--line-height-base);
+  overflow-wrap: break-word;
+}
+
+// -----------------------------------------------------------------------------
+//  COLLAPSIBLE SECTION
+// -----------------------------------------------------------------------------
+//  Seven sections, nested two levels deep: three at the top level, each holding
+//  two children. Four of the seven open collapsed, so the disclosure is
+//  functional rather than decorative and the closed state must be the resting
+//  presentation, not an afterthought.
+//
+//  Only the block spacing is set. If the section element is a grouping box the
+//  global layer has already given it its boundary, corner and inset, and a
+//  second inset declared here would simply add to that one.
+.module-settings__section {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.module-settings__section--nested {
+  margin-inline-start: var(--space-6);
+}
+
+// DISCLOSURE HEAD
+// This rule corrects a real legacy accessibility defect rather than reproducing it.
+.module-settings__toggle {
+  inline-size: var(--size-full);
+  text-align: start;
+
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-tight);
+  color: var(--color-primary);
+
+  background-color: transparent;
+  border: 0;
+  padding-inline: 0;
+  padding-block: var(--space-1);
+
+  cursor: pointer;
+
+  &:not([disabled]):not([aria-disabled='true']):hover {
+    color: var(--color-primary-hover);
+  }
+
+  &:not([disabled]):not([aria-disabled='true']):active {
+    background-color: var(--color-selected);
+    border-radius: var(--radius-sm);
+  }
+
+  &[disabled] {
+    color: var(--color-text-muted);
+    cursor: not-allowed;
+  }
+
+  // Unavailable, ARIA form — stays focusable and in the tab order so a keyboard user can still reach it and
+  // hear it announced as unavailable. No `cursor` and no `:hover` hold, matching the global layer: an
+  // element receiving no pointer events resolves no cursor and can never be a hit-test target.
+  &[aria-disabled='true'] {
+    color: var(--color-text-muted);
+    pointer-events: none;
+  }
+}
+
+// ⚠ #21 — A NESTED SECTION HEAD IS ONE STEP SMALLER THAN THE HEAD IT SITS UNDER. This screen nests regions
+// two deep - an `h2` disclosure with `h3` disclosures inside it - and the head treatment above applied the
+// same 15px to both, so depth was invisible: "Basic Settings" inside "Module Settings" looked like its
+// sibling rather than its child. Only the size steps; the weight and the disclosure affordance are shared,
+// because they say "this opens", which is true at either depth.
+h3 > .module-settings__toggle {
+  font-size: var(--font-size-md);
+}
+
+.module-settings__toggle--ruled {
+  border-block-end: var(--border-width) var(--border-style) var(--color-text-muted);
+  padding-block-end: var(--space-2);
+}
+
+// THE THREE VERTICAL STACKS
+// A section's body, the field grid inside it, and the injected module-specific group. All three are the
+// same thing — a single column at the section rhythm — and all three were declared separately with
+// byte-for-byte identical bodies.
+.module-settings__body,
+.module-settings__fields,
+.module-settings__slot {
+  display: grid;
+  gap: var(--space-3);
+
+  // ⚠ NOTHING ZEROES THE AUTOMATIC MINIMUM HERE, AND THAT IS DELIBERATE - IT WAS TRIED AND IT WAS THE WRONG
+  // LAYER. The permission matrix below declares `min-inline-size: max-content` so it keeps its natural width
+  // and scrolls, and that ~787px minimum used to propagate back up this chain: each of these three is a grid
+  // ITEM as well as a grid container, so each in turn refused to be narrower than the table, and the
+  // scroller's own `overflow-x: auto` never engaged because it was never asked to be smaller than its
+  // content. The document measured 827px wide at a 375px viewport and 1012px at 768px.
+  //
+  // Adding `min-inline-size: 0` to these three recovered 21px of that and no more, because the box actually
+  // holding the line was one further down and outside this stylesheet's naming - a flex item of the shared
+  // form field. The matrix's scroller now states `contain: ... inline-size` instead, which makes its
+  // intrinsic contribution zero AT SOURCE, so no ancestor is ever told about the table's width and there is
+  // nothing left up here to zero. Re-adding it would be inert, and would read as though this chain still
+  // carried the constraint.
+}
+
+// THE FIELD SYSTEM THIS FILE NO LONGER OWNS
+// Five rules stood here - `__field`, `__field--stacked`, `__control`, `__messages` and `__label` - and with
+// them roughly a hundred and fifty lines of reasoning about label tracks, measured legacy cell widths, a
+// capped `minmax` bound and a message region's flex basis. All five are withdrawn.
+
+// THE DECLARED-PERMISSION ADVISORY
+.module-settings__declared-permissions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-2);
+  margin-block: var(--space-1) 0;
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-tight);
+  color: var(--color-text-muted);
+}
+
+// The administered-elsewhere note, shown instead of the form when the module's package is administrative.
+// Styled as a bordered advisory rather than as a failure: the boundary is by design, so the danger colour
+// would misreport it.
+.module-settings__administered {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background-color: var(--color-surface);
+}
+
+.module-settings__administered-message {
+  margin: 0;
+}
+
+.module-settings__administered-link {
+  align-self: flex-start;
+}
+
+.module-settings__administered-reference {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.module-settings__declared-permissions-label {
+  font-weight: var(--font-weight-bold);
+}
+
+.module-settings__declared-permission {
+  padding-inline: var(--space-1);
+  background-color: var(--color-selected);
+  color: var(--color-primary);
+}
+
+// The three mutually exclusive states of the declared-permission read share one region so that the
+// switch above never shifts as the read resolves.
+.module-settings__declared-permissions-pending,
+.module-settings__declared-permissions-unread {
+  margin-block: var(--space-1) 0;
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-tight);
+  color: var(--color-text-muted);
+}
+
+// ⚠ MUTED, NOT DANGER-COLOURED, AND THAT IS DELIBERATE. This read is advisory: its failure does not stop
+// the operator saving, and painting it in the colour this application reserves for genuine failure would
+// overstate it beside a form that is working perfectly well.
+.module-settings__declared-permissions-reason {
+  display: block;
+  color: var(--color-text-muted);
+}
+
+// The spinner sits inline with the sentence it belongs to, so the two read as one statement rather than as
+// an indicator that happens to have text beside it.
+.module-settings__declared-permissions-pending {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+// The support reference. Set in the monospace face for the same reason the credential panel is: a
+// correlation identifier is transcribed character by character into a support request, so no two glyphs in
+// it may be ambiguous.
+.module-settings__declared-permissions-reference {
+  display: block;
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.module-settings__declared-permissions-retry {
+  margin-block-start: var(--space-2);
+}
+
+.module-settings__choices {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+}
+
+// INJECTED MODULE-SPECIFIC GROUP
+// The successor to the legacy panel that hosted each module's own settings control. Only flow and rhythm
+// are declared: what is placed inside owns its own appearance, and this file must not presume it.
+
+// -----------------------------------------------------------------------------
+//  COMMAND ROW
+// -----------------------------------------------------------------------------
+//  The three commands the legacy screen closed with. A real gap rather than the
+//  literal spacing characters the legacy markup used between them, so the
+//  separation survives the collapsing of repeated spaces and the row wraps
+//  cleanly instead of overflowing. The buttons themselves are styled by the
+//  global form layer.
+//
+//  MIGRATION: the row stays at the END of the document, after every section, and
+//  is deliberately NOT pinned to the viewport. A review finding recorded this
+//  screen at 1835px tall with its commands at y1746-1769.75 and asked for them to
+//  be brought within reach. Of the two things that measurement describes, one was
+//  a real defect and is fixed; the placement is faithful parity and is kept.
+//
+//   - The 23.75px command height was the real defect. The shared target-size floor
+//     now gives each command an explicit 44px box: measured height 44.000 for all
+//     three of Update, Cancel and Delete, at every viewport height from 900 to
+//     1200.
+//   - The 1835px document is now 1003px on arrival, because the regions the legacy
+//     declared `isexpanded="False"` start closed here too. The component states
+//     that mapping and cites its source; this file only has to avoid undoing it.
+//     Configured, four of the seven regions start closed. Only three of them are
+//     in the arrival DOM - `security`, `pageSettings`, `specificSettings` - because
+//     a closed region renders its toggle and nothing else, so `other`, which nests
+//     inside a closed region, does not exist yet. Measured on arrival: five
+//     toggles, three reading `aria-expanded="false"`.
+//   - The placement itself reproduces the legacy screen exactly.
+//     `modulesettings.ascx` is 225 lines and declares cmdUpdate, cmdCancel and
+//     cmdDelete on lines 222, 223 and 224 - the last three content lines of the
+//     file, after all forty-one of its layout rows. This row is likewise the last
+//     child of the form. Placing it anywhere else would invent a convention the
+//     legacy portal never had, which Minimal Change Clause item 4 forbids.
+//
+//  Stated plainly, because the argument is weaker if it pretends otherwise: at
+//  1280x900 the row genuinely IS below the fold. Its bottom edge sits at 932.500,
+//  so 32.500px of a 44px control is clipped - 73.864% hidden, and a hit test at the
+//  button's own centre returns null. What makes that acceptable is not that it is
+//  invisible but that it is trivially reachable: the entire page holds 103px of
+//  scroll, one wheel notch, after which the whole row is on screen with 70.500px of
+//  headroom and an intersection ratio of 1. Clicking it there saves normally - a
+//  200 carrying an unaltered title.
+//
+//  A `position: sticky` command bar was considered and rejected on three grounds.
+//  It exists nowhere else in this workspace - the only sticky rule is the data
+//  table's own column head - so applying it here would make the longest form in the
+//  application behave unlike every other form in it. It would not generalise from
+//  one screen either: the same arrival-below-the-fold geometry is present on the
+//  user create form, so a pinned-command convention belongs to the cross-cutting
+//  responsive pass that can apply it to all of them at once and judge it against
+//  the shell. And the amount clipped is a property of the measuring viewport rather
+//  than of this layout: the bottom edge measured a constant 932.500 across all
+//  eleven heights tested from 900 to 1200, so the layout never reflows and the
+//  smallest viewport showing the control whole is exactly ceil(932.500) = 933. That
+//  is a hairline boundary, not comfort - it is offered as evidence that nothing here
+//  is height-dependent, not as a claim that the control is generally above the fold.
+//
+//  ⚠ THE CROSS-CUTTING PASS THIS NOTE DEFERRED TO HAS NOW RUN, AND IT DECLINES THE
+//  CONVENTION. Three measurements settled it, and two of them weaken the case above
+//  rather than strengthening it, which is why they are recorded here in full.
+//
+//  First, there is no convention to join. A scan of every screen in the application
+//  found `position: sticky` on ZERO elements and `position: fixed` on exactly one - the
+//  notification list, an empty container measuring 448 x 0 - so a pinned command bar
+//  would not be extending a pattern, it would be introducing one.
+//
+//  Second, and against the argument above: the "one wheel notch" holds only while this
+//  screen's three collapsed sections stay shut. Expand them - which is what an operator
+//  editing advanced settings does - and the same button measures 100% clipped, 1,896px
+//  below the fold at 1280x900, needing a viewport 2,796px tall to show it whole. So the
+//  73.864% figure is the BEST case, not the typical one, and scroll is not a formality
+//  here. That is the strongest available argument FOR pinning, and it is stated plainly.
+//
+//  Third, what pinning would cost, which is why it still loses. A pinned row takes its
+//  own height plus its spacing out of every viewport on every form screen, permanently,
+//  and it takes it worst exactly where the least is available: at 320x900 the shell's
+//  stacked header and navigation already consume 640.5px - 71.17% of the first viewport
+//  - before any content at all. Trading a permanent reduction on thirteen screens for
+//  the removal of a scroll on two is not a trade this pass is willing to make on its own
+//  authority, and neither the Agent Action Plan nor the legacy portal names such a
+//  convention: the legacy commands sat at the end of the form, which is where these sit.
+//
+//  So the decision is DECLINED for both screens together, not just this one. The user
+//  create form is the other member of the family and measures the same way - its submit
+//  100% clipped with its bottom edge at 1,332 against a 900px viewport, 432px past the
+//  fold - and it carries the same note. Both controls are reachable by ordinary
+//  scrolling and both are fully visible at the page bottom, verified at 1280x900 and
+//  1920x1080. Should a future pass adopt a pinned-command convention it must apply to
+//  both, and to the other eleven form screens with them.
+.module-settings__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-block-start: var(--space-4);
+}
+
+:host([hidden]),
+:host [hidden] {
+  display: none;
+}
+
+// THE SECTION HEADINGS
+// Each disclosure toggle is wrapped in a real heading so this screen's seven sections appear in the
+// document outline.
+.module-settings__section-heading {
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+}
+
+// THE STORED-SETTINGS DISCLOSURE A definition list, because that is exactly what the data is: a name paired
+// with the value recorded against it. A table would claim a second axis this data does not have, and a list
+// of paragraphs would lose the pairing.
+.module-settings__stored {
+  margin: var(--space-2) 0 0;
+}
+.module-settings__stored-name {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-bold);
+  overflow-wrap: anywhere;
+}
+.module-settings__stored-scope {
+  font-weight: var(--font-weight-normal);
+  font-style: italic;
+}
+.module-settings__stored-value {
+  margin: 0 0 var(--space-2);
+  max-inline-size: mx.breakpoint('md');
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-base);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+// The two ZERO-RESULT sentences on this form - no stored settings, and no roles to grant to - are the same
+// thing said about different collections, so they are one rule. They were declared separately with
+// byte-for-byte identical bodies, which is the same duplication the three vertical stacks above were
+// consolidated out of.
+.module-settings__stored-empty,
+.module-settings__permission-grid-empty {
+  margin: var(--space-2) 0 0;
+  color: var(--color-text-muted);
+  line-height: var(--line-height-base);
+}
+.module-settings__notice {
+  margin: var(--space-1) 0 0;
+  max-inline-size: mx.breakpoint('md');
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-base);
+  overflow-wrap: anywhere;
+}
+
+// THE GRANT GRID. Presentation only - every rule that decides whether a cell is operable lives in the
+// component, because a cell that merely LOOKS locked is still operable.
+.module-settings__permission-grid-scroll {
+  // A grid of one row per portal role by up to four columns can exceed a narrow viewport, and the shell
+  // forbids horizontal overflow of the page itself - so the overflow is confined here.
+  overflow-x: auto;
+  max-inline-size: var(--size-full);
+  margin-block-start: var(--space-2);
+
+  // ⚠ THIS DECLARATION IS WHAT MAKES THE SCROLLING ABOVE ACTUALLY HAPPEN, and without it none of the rest of
+  // this rule does anything at all.
+  //
+  // The problem it solves is that `overflow-x: auto` is inert on a box that is never asked to be smaller than
+  // its contents, and this box was not. The grant grid declares `min-inline-size: max-content` - correctly, so
+  // it keeps its natural ~766px width - and that intrinsic minimum propagates OUT of here and up the ancestor
+  // chain. Every flex or grid item on the way up has an automatic minimum of `auto`, meaning it refuses to be
+  // narrower than its own content's minimum, so each in turn was held open at 766px. This wrapper's
+  // `max-inline-size: 100%` then resolved against an ancestor that was itself 766px wide, so 100% WAS 766px
+  // and the scroller had nothing to scroll. Measured: the document was 806px wide at a 375px viewport and
+  // 991px at 768px, the wrapper's `scrollLeft` was pinned at 0, and the rightmost permission column could be
+  // reached only by scrolling the whole page - at which point the role-name column left the screen and an
+  // administrator could no longer tell which role they were granting.
+  //
+  // Inline-size containment makes this box's intrinsic sizes resolve as though it had no contents, so the
+  // table's 766px stops being visible to anything outside this element. Every ancestor's automatic minimum
+  // then sees zero and is free to shrink, this box takes its width from its containing block, and the table
+  // overflows it - which is precisely the condition `overflow-x: auto` exists to answer.
+  //
+  // ⚠ IT IS DELIBERATELY STATED HERE RATHER THAN AS `min-inline-size: 0` ON EACH ANCESTOR, and that is the
+  // whole point. Zeroing minimums up the chain works only for as long as the chain is known: this wrapper sits
+  // fourteen boxes deep, behind a shared form-field component, and an earlier attempt that patched the three
+  // stacks above recovered 21px of gutter and left the real 431px overflow untouched because one box in the
+  // middle - the declared-permissions region, a flex item of the form field's control - had been missed.
+  // Containment is a property of THIS element, so no future wrapper, reorder or shared-component change can
+  // reintroduce the fault from outside.
+  //
+  // ⚠ ALL THREE KEYWORDS ARE LOAD-BEARING, AND `inline-size` ALONE WAS MEASURABLY NOT ENOUGH. With only
+  // inline-size containment the table was correctly clipped and the scroller correctly engaged - and the
+  // document was STILL 621px wide at a 375px viewport. The remaining offenders were the fifty-one visually
+  // hidden `<label>` elements that carry each checkbox's accessible name: the shared hidden-text utility
+  // positions them absolutely, inline-size containment does NOT make an element a containing block for
+  // absolutely-positioned descendants, and their nearest positioned ancestor was the shell's `<main>` - far
+  // outside this scroller. So they kept the offsets they would have had inside the 766px table, escaped the
+  // clip entirely, and `documentElement.scrollWidth` came to exactly the right edge of the last one.
+  //
+  // `layout` supplies the containing block those labels were missing, so they are now positioned against this
+  // box and land inside its scrollable region; `paint` clips anything that still reaches past the padding box;
+  // `inline-size` is what stops the table's intrinsic width escaping in the first place. Nothing here is
+  // defensive - each keyword answers a failure that was measured with the other two already in place.
+  contain: layout paint inline-size;
+}
+
+// ⚠ THE REGION MUST TAKE THE ROW WIDTH IT IS OFFERED, BECAUSE CONTAINING THE GRID ABOVE LEFT IT SIZING ITSELF
+// FROM A CAPTION. This box is a flex item of the form field's control track and declared nothing, so it took
+// the default `flex: 0 1 auto` and sized to its own max-content. Once the scroller above stopped contributing
+// an intrinsic width, the only child still contributing one was the "Permissions defined for this module type"
+// sentence - so the whole matrix was pinned to that sentence's 452.3px, identically at 768, 1280, 1920 and
+// wider, no matter how much room the row actually had. Measured consequence at 1280: of the four column
+// headings only "Role" was fully readable, "View Module" showed 66.9 of its 120.0px, and the remaining two
+// were entirely off-screen until the operator scrolled a scroller they had no reason to expect.
+//
+// Growing cannot reintroduce the overflow just fixed: `flex-grow` only ever distributes space the row already
+// has spare, and the scroller's own contribution stays at zero under size containment, so the table still
+// scrolls internally whenever it genuinely does not fit - which is what continues to happen at 375, where the
+// row is narrower than this box and it shrinks instead.
+.module-settings__declared-permissions-region {
+  flex-grow: 1;
+}
+
+.module-settings__permission-grid {
+  // `auto` rather than the global `100%`: the columns are a role name and a handful of checkboxes, and
+  // stretching them across a wide viewport puts a checkbox an inch from the row it belongs to.
+  inline-size: auto;
+  min-inline-size: max-content;
+}
+
+.module-settings__permission-grid td {
+  // Centred under the column header, which is what makes a matrix readable as a matrix.
+  text-align: center;
+  vertical-align: middle;
+}
+
+.module-settings__permission-grid input[type='checkbox'] {
+  // The pointer-target floor, on both axes. The global choice-control rule keeps these native and sets no
+  // size, and a native checkbox renders around 13px - short of the 24 that WCAG 2.2 SC 2.5.8 binds. The
+  // compact token is the grid variant: the full floor would make a four-column matrix taller than the
+  // screen it sits in.
+  min-inline-size: var(--target-size-compact);
+  min-block-size: var(--target-size-compact);
+}
+
+.module-settings__permission-column-note,
+.module-settings__permission-row-note {
+  // Their own line, so the note reads as an annotation of the name above rather than as part of it.
+  display: block;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-normal);
+  font-style: italic;
+}
+
+// NO RULE FOR THE LOCK LEGEND, AND THAT IS DELIBERATE. The sentences explaining why a grant cannot be
+// changed are rendered with `.module-settings__notice` - this screen's existing treatment for an
+// explanatory sentence beneath a field - rather than with a block of their own. They ARE explanatory
+// sentences beneath a field, so a second treatment would be a second answer to a question this stylesheet
+// has already answered, and it would put this file over its five-kilobyte budget to say the same thing
+// twice. The budget is not raised to accommodate duplication.

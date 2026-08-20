@@ -1,0 +1,288 @@
+<!-- THE MODULE LISTING SCREEN, mounted at /modules. -->
+
+<div class="module-list">
+  <!-- THE PAGE TITLE AND THE TWO PAGE-LEVEL ACTIONS. -->
+  <app-page-header [title]="pageTitle" [subtitle]="pageSubtitle">
+    <a class="page-action module-list__action" [routerLink]="createLink">{{ pageActionLabel.create }}</a>
+    <a class="page-action module-list__action" [routerLink]="importLink">{{ pageActionLabel.import }}</a>
+  </app-page-header>
+
+  <!--
+    MIGRATION: THE ALPHABET FILTER STRIP IS DELIBERATELY NOT CARRIED OVER. Both measured legacy grids
+    opened with one - `Website/admin/Portal/portals.ascx:L4-L11` and
+    `Website/admin/Users/users.ascx:L14-L20` each declare a centred `plLetterSearch` panel repeating a
+    `CommandButton` hyperlink per initial letter, separated by a PAIR OF LITERAL NON-BREAKING-SPACE
+    ENTITIES. It is not reproduced for three measured reasons: the listing endpoint accepts a free-text
+    term and no initial-letter parameter, so every letter would have to be sent as a one-character query
+    and would match mid-word; no shared component covers a letter strip;
+    and the doubled-entity spacing it depends on is exactly the layout-by-entity practice this migration
+    replaces with a design-token gap, so no such entity is written anywhere in this file.
+  -->
+  <h2 data-visually-hidden>Filter Modules</h2>
+
+  <app-search-input
+    class="module-list__search"
+    [placeholder]="searchPlaceholder"
+    (search)="onSearch($event)"
+  />
+
+  <!--
+    THE ACTIVE FILTER, STATED - #36. A polite live region, so a reader who changes the filter hears what is
+    now in force rather than only the row count changing.
+  -->
+  @if (filterDisclosure(); as disclosure) {
+    <p class="module-list__filter-disclosure" role="status" aria-live="polite" aria-atomic="true">{{ disclosure }}</p>
+  }
+
+  <!-- THE FAILURE SURFACE. -->
+  <!--
+    ⚠ THE SCROLL ANCHOR IS THIS ELEMENT, NOT THE COMMANDS BELOW IT. A first cut anchored on
+    `module-list__status`, and runtime measurement showed why that is not enough: the banner precedes
+    the commands in document order and is 114 px tall, so scrolling the commands flush to the top left
+    the banner at top −130.5 / bottom −32.5 — entirely above the viewport.
+  -->
+  <app-error-banner #failureBanner [problem]="problem()" />
+
+  <!--
+    ⚠ A RETRY COMMAND, AND THE DISMISS IT STANDS BESIDE IS NOT A SUBSTITUTE FOR ONE. Measured on this
+    screen: with the network unreachable, the whole page offered ZERO affordances matching retry,
+    try-again, reload or refresh — sixty-four interactive elements in the healthy state and sixty-five
+    in the failed one, the single addition being `Dismiss`, which clears the banner and re-attempts
+    nothing.
+  -->
+  @if (problem() !== null) {
+    <div class="module-list__status">
+      <button class="module-list__action" type="button" (click)="onRetryRead()">Try again</button>
+      <button class="module-list__action" type="button" (click)="onDismissFailure()">
+        Dismiss
+      </button>
+    </div>
+  }
+
+  <app-data-table
+    [columns]="columns()"
+    [rows]="modules()"
+    [totalCount]="meta().totalCount"
+    [rowOffset]="meta().pageIndex * meta().pageSize"
+    [rowKey]="moduleRowKey"
+    [sortBy]="sortBy()"
+    [sortDir]="sortDir()"
+    [loading]="listWaiting()"
+    [loadingLabel]="loadingLabel"
+    [failed]="listFailed()"
+    [emptyMessage]="emptyMessage()"
+    (sortChange)="onSortChange($event)"
+  >
+    <span dataTableCaption>{{ tableCaption }}</span>
+
+    <!--
+      ⚠ PROJECTED INTO THE TABLE'S OWN EMPTY ROW, AND THE RECOVERY IS THE POINT. Reported twice against this
+      screen: a search that matched nothing left an operator with an empty grid whose only route back was to
+      find the box above it, select its contents and clear them; and `?currentpage=99` left one with no route
+      back at all. Both now offer the affordance that undoes the state they are in, beside the sentence that
+      names it. The home is the table's empty row rather than a panel of this screen's own, because
+      substituting a panel for the grid destroys the polite `role="status"` region along with it.
+    -->
+    <ng-container dataTableEmptyAction>
+      @if (isPastEnd()) {
+        <button type="button" class="module-list__action module-list__first-page" (click)="onReturnToFirstPage()">
+          {{ firstPageLabel }}
+        </button>
+      } @else if (isSearching()) {
+        <button type="button" class="module-list__action module-list__clear-search" (click)="onClearSearch()">
+          {{ clearSearchLabel }}
+        </button>
+      } @else {
+        <a class="module-list__action" [routerLink]="createLink">{{ pageActionLabel.create }}</a>
+      }
+    </ng-container>
+  </app-data-table>
+
+  <!--
+    ⚠ NO ARITHMETIC, IN EITHER DIRECTION. The wire's page coordinate is zero-based, the pager's `page`
+    input IS that zero-based index, and its change event emits a zero-based index back. The one-based
+    counter a person reads is rendered inside the pager and never leaves it.
+  -->
+  <!--
+    ⚠ GATED ON THE ROWS IN HAND, NOT ON THE TOTAL. A page past the end of a real result set has a total and
+    no rows, and gating on the total alone is what put "21-30 of 30" beside a grid showing nothing.
+  -->
+  @if (hasRows()) {
+    <app-pagination
+      [page]="meta().pageIndex"
+      [pageSize]="meta().pageSize"
+      [totalCount]="meta().totalCount"
+      [loading]="listLoading()"
+      (pageChange)="onPageChange($event)"
+    />
+  }
+</div>
+
+@if (removalTarget() !== null) {
+  <!--
+    ⚠ NO `title` IS BOUND, AND THAT IS THE POINT. Every delete confirmation in this application shows
+    the SAME title, which the shared dialog declares as its default; binding one here is how five
+    different titles for one action came about - runtime testing found `Delete`, `Confirm Delete`,
+    `Delete Module`, `Delete Profile Property` and `Delete role group` across the screens.
+  -->
+  <app-confirm-dialog
+    [message]="removeConfirmMessage()"
+    danger
+    (confirm)="onConfirmDelete()"
+    (cancel)="onCancelDelete()"
+  />
+}
+
+<!-- Declared as an `ng-template` and projected into the grid's commands column. -->
+<ng-template #rowCommands let-row>
+  <!--
+    ⚠ THE KEY ALONE WOULD HIDE WORKING CONTROLS FROM THE OPERATOR THIS SCREEN EXISTS FOR. All four
+    commands below are `ModuleEdit` on the API, so the persisted `EDIT` key is the vocabulary that
+    governs them and the shared permission directive is the right instrument for it.
+  -->
+  @if (holdsAdministration()) {
+    <ng-container *ngTemplateOutlet="rowCommandControls; context: { $implicit: row }" />
+  } @else {
+    <ng-container *hasPermission="editPermissionKey">
+      <ng-container *ngTemplateOutlet="rowCommandControls; context: { $implicit: row }" />
+    </ng-container>
+  }
+</ng-template>
+
+<!--
+  Declared once, at the top level, and rendered by `#rowCommands` above through `ngTemplateOutlet` in
+  whichever arm of the gate admits the caller.
+-->
+<ng-template #rowCommandControls let-row>
+  <a
+    class="module-list__row-command"
+    [routerLink]="editLink(row)"
+    [attr.aria-label]="commandName(commandLabel.edit, row)"
+    [attr.title]="commandName(commandLabel.edit, row)"
+  >
+    {{ commandLabel.edit }}
+  </a>
+
+  <!--
+    ⚠ THE DESTINATION IS RESOLVED PER ROW, AND FOR ONE KIND OF ROW THERE IS NONE. The generic settings screen
+    refuses a module whose package is administrative - measured: `/modules/7/settings` answered 403
+    `module.settings_protected` every time, telling the operator the settings were "available only through
+    their typed privileged endpoint", which names nothing they can reach. So an administrative module's
+    affordance goes to the screen that DOES own its settings where this console has one, and is withheld
+    where it does not, rather than being offered as a link that cannot work.
+  -->
+  @if (settingsDestination(row) !== null) {
+    <a
+      class="module-list__row-command"
+      [routerLink]="settingsDestination(row)"
+      [attr.aria-label]="commandName(commandLabel.settings, row)"
+      [attr.title]="commandName(commandLabel.settings, row)"
+    >
+      {{ commandLabel.settings }}
+    </a>
+  }
+
+  <a
+    class="module-list__row-command"
+    [routerLink]="exportLink(row)"
+    [attr.aria-label]="commandName(commandLabel.export, row)"
+    [attr.title]="commandName(commandLabel.export, row)"
+  >
+    {{ commandLabel.export }}
+  </a>
+
+  <!--
+    ⚠ THE REMOVAL ADDRESSES THE PLACEMENT, NOT THE MODULE, and the sibling component passes both
+    identities for that reason.
+  -->
+  <button
+    class="module-list__row-command module-list__row-command--danger"
+    type="button"
+    [attr.aria-label]="commandName(commandLabel.remove, row)"
+    [attr.title]="commandName(commandLabel.remove, row)"
+    (click)="onRequestDelete(row)"
+  >
+    {{ commandLabel.remove }}
+  </button>
+</ng-template>
+
+<!--
+  A template column, necessarily: a boolean is not a text-shaped value and the shared yes/no pipe is a
+  template construct with no expression in a formatter function. `false` is DATA here and renders as the
+  negative word rather than as empty output, which is exactly what the pipe guarantees.
+-->
+<!--
+  Measured before this template existed: for the module that stores the empty string the cell's whole
+  content was two literal U+0020 characters in a single text node, with no element children and no
+  pseudo-element, and Chrome's accessibility tree reported the cell as unnamed.
+-->
+<!--
+  MEASURED, at 1280 x 900 on the module storing a 256-character heading: its row rendered 349.250 px
+  against 136.750 px for every other row on the page - 2.554x, and 212.5 px of it was one cell.
+-->
+<ng-template #titleCell let-row>
+  @if (isTitleAbsent(row)) {
+    <span aria-hidden="true">{{ absentTitleMark }}</span>
+    <span class="module-list__absent-value">{{ absentTitleDescription }}</span>
+  } @else {
+    <span class="module-list__title" [attr.title]="row.moduleTitle">{{ row.moduleTitle }}</span>
+  }
+</ng-template>
+
+<ng-template #allTabsCell let-row>{{ row.allTabs | yesNo }}</ng-template>
+
+<!--
+  THE VISIBILITY CELL. A published code paints its word and needs nothing else. A code this console cannot
+  name paints `#<code>` and carries the SAME two companions the profile-definition listing gives an
+  unnameable data type - a `title` for a pointer and sr-only wording for a reader - so the cell is never
+  blank and never silently confident. The marked span is NOT `aria-hidden`: the mark itself is the only
+  thing painted, so hiding it would leave the cell with nothing but the description.
+-->
+<ng-template #visibilityCell let-row>
+  @if (isNameableVisibility(row.visibility)) {
+    {{ visibilityLabel(row.visibility) }}
+  } @else {
+    <span
+      class="module-list__unnameable-code"
+      [attr.title]="visibilityDescription(row.visibility)"
+      >{{ visibilityLabel(row.visibility) }}</span
+    >
+    <span class="module-list__absent-value">{{ visibilityDescription(row.visibility) }}</span>
+  }
+</ng-template>
+
+<!-- THE SCHEDULE. -->
+<!--
+  THE TWO TERM CELLS. Both answer three states rather than one, and both did neither before.
+  ⚠ AN EXPIRED PLACEMENT WAS BYTE-IDENTICAL TO AN ACTIVE ONE, which is the measured defect. A module whose end
+  date has passed is not shown on its page, yet its row rendered exactly like a live one - the same text, the
+  same colour, the same weight - so the one fact this column exists to report could only be established by
+  reading the date and doing the arithmetic. The portal listing already qualified an expired term in words; this
+  one now uses the same word, in the same treatment, so the two listings agree.
+  ⚠ AND AN ABSENT DATE PAINTED NOTHING AT ALL. The display pipe answers the empty string for an absent instant,
+  so a placement with no term rendered an empty cell, indistinguishable from a cell that failed to render.
+-->
+<ng-template #startDateCell let-row>
+  @if (hasInstant(row.startDate)) {
+    <span data-atomic-value>{{ row.startDate | dateDisplay }}</span>
+  } @else {
+    <app-absent-value />
+  }
+</ng-template>
+<ng-template #endDateCell let-row>
+  @if (hasInstant(row.endDate)) {
+    <span data-atomic-value>{{ row.endDate | dateDisplay }}</span>
+    @if (isTermExpired(row)) {
+      <!--
+        ⚠ `&ngsp;` IS A REAL SPACE AND IT IS LOAD-BEARING HERE. The compiler removes whitespace between
+        elements, so the two spans produced the single text run "1/1/2021Expired" — the visible four-pixel gap
+        came from a margin, which a screen reader, a copy-paste and a text extraction all ignore. This entity
+        emits an actual space character into the text content, so the value and its qualifier are two words
+        wherever the cell is read rather than looked at.
+      -->
+      &ngsp;<span class="module-list__expired">{{ expiredQualifier }}</span>
+    }
+  } @else {
+    <app-absent-value />
+  }
+</ng-template>

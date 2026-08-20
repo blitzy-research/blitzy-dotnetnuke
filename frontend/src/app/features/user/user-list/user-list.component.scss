@@ -1,0 +1,339 @@
+// Sass modules are per-file and are NOT ambient: a load in `src/styles.scss` does not
+// make these members visible here, so this stylesheet loads the partial itself. The
+// path climbs FOUR levels, counted rather than copied — `user-list/` to `user/` to
+// `features/` to `app/` to `src/` — which is the depth the partial's own documented
+// path table gives for a feature screen. A layout or directive stylesheet sits one
+// level shallower and legitimately climbs three; copying that line here would resolve
+// to a directory that does not exist and fail the build outright. The token partial is
+// deliberately NOT loaded: tokens are CSS custom properties that arrive through the
+// global cascade at run time, so importing them would emit the document-root block a
+// second time.
+@use '../../../../styles/mixins' as mx;
+
+:host {
+  display: grid;
+  grid-template-columns: var(--grid-track-fluid);
+  gap: var(--space-4);
+}
+
+.user-list__email {
+  color: var(--color-primary);
+  text-decoration: underline;
+
+  // ⚠ UNGATED, for the reason the portal listing's own row-command rule records: a measurement showed the
+  // pointer-capability guard silently disabling the hover treatment, leaving a command inside a data row
+  // with the pointer as its only feedback. The three listing screens now agree, and they agree with the
+  // global button rule, whose hover has never been gated.
+  &:hover {
+    color: var(--color-primary-hover);
+  }
+}
+
+// THE ELECTRONIC-MAIL CELL REFLOWS AND IS NOT HELD TO ONE LINE, which is a correction rather than a
+// preference.
+
+.user-list__failure {
+  display: grid;
+  gap: var(--space-2);
+}
+
+// The no-query notice, shown only while the tenant's opening-view policy has issued no query at all. Muted
+// rather than emphasised: it explains why the grid below is bare, and it is not a fault.
+.user-list__notice {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+// The policy degradation disclosure - #5. Says the tenant's page size and column selection could not be
+// read, so the listing is on its fallbacks.
+.user-list__policy-notice {
+  margin: 0;
+  max-inline-size: mx.breakpoint('md');
+  color: var(--color-primary);
+  font-weight: var(--font-weight-bold);
+}
+
+.user-list__filter-disclosure {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.user-list__row-mark {
+  margin-inline-start: var(--space-1);
+  color: var(--color-danger);
+  font-weight: var(--font-weight-bold);
+}
+
+// THE UNAUTHORISED-ACCOUNT STATE — QA-19. The same two declarations, in the same order, as
+// `.role-list__fee-state` and the two expired-term treatments on the portal and module listings, because a
+// single shared vocabulary is the whole point: muted, because a state must not compete with the ordinary
+// values in the rows around it, and italic so the distinction survives for a reader who perceives no colour
+// at all. Colour is never the only carrier of meaning here — and here it is not a carrier at all.
+.user-list__row-state {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+// ⚠ `__absent-value` WAS REMOVED RATHER THAN LEFT UNUSED — QA-15. The absent-value mark on this screen is now
+// painted by the shared component, which carries its own muted colour, so this rule matched nothing at all —
+// and a rule matching nothing is dead weight in a stylesheet held to a 4 kB component budget.
+
+// The stray-whitespace mark, styled as the absent mark is so the two annotations read as one family. It is
+// deliberately NOT the danger colour: padding is a data-quality remark, not a failure.
+.user-list__padded-value {
+  margin-inline-start: var(--space-1);
+  color: var(--color-text-muted);
+}
+
+//  The explanation both marks share. Clipped from the painted page and present in the accessibility
+//  tree, through the one mixin in the workspace that expresses that.
+.user-list__row-mark-description {
+  @include mx.visually-hidden;
+}
+
+// The label cell has no counterpart here at all, and that is the shared search control's doing rather than
+// an omission: it paints the legacy wording as its own associated label, so writing a second label beside
+// the control would put two on one field and read the words twice to a screen reader.
+.user-list__filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  align-items: end;
+}
+
+// ⚠ THE BASIS IS WHAT MAKES THE ROW REFLOW, AND A ZERO BASIS IS WHY IT DID NOT. Runtime measurement at a
+// 320-unit viewport: this item and the axis field beside it both took a fluid share from a zero basis, a
+// zero basis can never exceed the line, so the row's `flex-wrap` never engaged and the pair simply halved
+// the 271 units available.
+.user-list__search {
+  flex: 1 1 var(--filter-control-basis);
+  min-inline-size: 0;
+}
+
+// THE SEARCH-AXIS FIELD, and the sizing here answers a measured property of the data rather than a taste.
+// The axis list is an OPEN SET: the two account fields lead it and then one entry follows for every profile
+// property the tenant has declared, each labelled with its own raw name when no wording is known for it.
+.user-list__search-field {
+  flex: 1 1 var(--filter-control-basis);
+  min-inline-size: 0;
+  margin-block-end: 0;
+
+  // MIGRATION: every viewport query in this file is a NET ADDITION — the legacy stylesheets declare none at
+  // all, in either file, so there is no responsive behaviour to preserve and no legacy figure to match.
+  @include mx.respond-above('md') {
+    max-inline-size: mx.breakpoint('sm');
+  }
+}
+
+// 5. THE FIRST-LETTER FILTER STRIP.
+.user-list__letters {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+}
+
+// ONE ENTRY, AND IT MUST NOT LOOK LIKE A BUTTON EVEN THOUGH IT IS ONE.
+//
+// ⚠ ITS SHARED HALF NOW LIVES IN THE BARE-COMMAND GROUP BELOW, and the consolidation is a measured
+// correction rather than a tidy-up. This screen carries three bare commands — the letter strip entry, the
+// row command and the empty-state command — and each had independently restated the SAME eight declarations
+// plus the shared hover, the shared focus ring and the shared press state. The compiled result held two
+// byte-identical `:focus-visible` blocks of 331 and 284 bytes and two byte-identical hover media blocks,
+// which is what pushed this stylesheet through its 4 kB component budget. What remains below is only what
+// is genuinely this control's own.
+.user-list__letter {
+  flex: none;
+  white-space: nowrap;
+  text-decoration: underline;
+
+  // THE SURFACE TINT IS PART OF THIS STRIP'S HOVER, AND ITS ABSENCE WAS MEASURED RATHER THAN INFERRED. The
+  // portal listing's alphabet strip declares BOTH the hover colour and this surface, so the two strips -
+  // identical controls doing an identical job, one screen apart - answered a hover differently: this one moved
+  // its ink and left its box untouched. The colour half comes from the bare-command group below; only the
+  // tint is this control's own, because the row and empty-state commands in that group are glyph commands
+  // whose measured legacy appearance carries no fill at all.
+  //
+  // Declared BEFORE the applied-entry rule on purpose: the two tie on specificity, so source order elects the
+  // applied tint and an applied entry keeps it through a hover - the same arrangement the portal listing uses.
+  &:hover {
+    background-color: var(--color-surface);
+  }
+
+  // THE APPLIED ENTRY, AND ITS STATE IS NOT CARRIED BY COLOUR ALONE.
+  &[aria-pressed='true'] {
+    font-weight: var(--font-weight-bold);
+    background-color: var(--color-selected);
+  }
+}
+
+// THE ZERO-RESULT SURFACE'S ACTION ROW — QA-28. Projected into the shared grid's empty state.
+//
+// It wraps rather than overflows, because the two affordances it carries are a full phrase apiece and the
+// empty state is centred inside a table that can be as narrow as a 320-unit viewport. Centred to sit under
+// the centred message it belongs to, and gapped on the shared scale so the two can never read as one.
+.user-list__empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+}
+
+// ⚠ THE EMPTY-STATE COMMANDS JOIN THE ROW-COMMAND SELECTOR GROUPS BELOW RATHER THAN RESTATING THEM. Every
+// declaration they need — the bare link-coloured surface, the floored target on both axes, the hover, the
+// focus ring and the restated press state — is already emitted for `.user-list__row-action`, and this
+// screen's compiled stylesheet is held to a 4 kB budget that a second copy of that block breaks outright.
+// The class is deliberately shared by a `<button>` and an `<a>`: one lists every account and one navigates,
+// but both are "the way out of an empty table", and presenting them differently would imply a difference
+// that is not there.
+.user-list__filter-action,
+.user-list__row-action,
+.user-list__failure-retry {
+  // Held to its content width inside the stretching failure region above.
+  justify-self: start;
+
+  display: inline-flex;
+  gap: var(--space-1);
+  align-items: center;
+}
+
+// THE BARE-COMMAND GROUP — the letter-strip entry, the row command and the empty-state command, which are
+// the three affordances on this screen that CARRY NO SURFACE. That is the measured legacy appearance for the
+// row commands: all three were image command columns, a bare sixteen-unit glyph each, with no fill, no
+// boundary and no padding of any kind. The letter strip and the empty-state command are held to the same
+// treatment so a reader meets one command vocabulary on this screen rather than three.
+//
+// The target floor applies to every one of them: a single-glyph command has almost no intrinsic width, so
+// the inline floor matters as much as the block one.
+.user-list__letter,
+.user-list__filter-action,
+.user-list__row-action {
+  min-block-size: var(--target-size-min);
+  min-inline-size: var(--target-size-min);
+  justify-content: center;
+
+  color: var(--color-primary);
+  font-size: inherit;
+
+  background-color: transparent;
+  border: none;
+  padding: 0;
+
+  // ⚠ UNGATED, for the reason the portal listing's own row-command rule records: a measurement showed the
+  // pointer-capability guard silently disabling the hover treatment, leaving a command inside a data row
+  // with the pointer as its only feedback. The three listing screens now agree, and they agree with the
+  // global button rule, whose hover has never been gated.
+  &:hover {
+    color: var(--color-primary-hover);
+  }
+
+  // THE RING IS RESTATED FOR THE SET BECAUSE THE BOX IT MEASURES AGAINST HAS JUST CHANGED. The shared focus
+  // ring is already applied to every button globally and the mixin is documented idempotent and safe to
+  // apply again, so this costs nothing and can never conflict — and emitted ONCE for the set it costs a
+  // single rule rather than three copies of the same one.
+  @include mx.focus-ring;
+  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE, and suppression without
+  // replacement is what leaves a control with no visible response at all.
+  &:active {
+    background-color: var(--color-selected);
+  }
+}
+
+// The one place the empty-state command departs from the row command: it carries WORDS rather than a glyph,
+// so it needs the padding the glyph deliberately does not have, and the rounded press surface that padding
+// implies. Declared after the shared block so it wins at equal specificity.
+.user-list__filter-action {
+  padding-block: var(--space-1);
+  padding-inline: var(--space-2);
+  line-height: var(--line-height-tight);
+  text-decoration: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.user-list__row-action--danger {
+  color: var(--color-danger);
+
+  // ⚠ UNGATED, for the reason the portal listing's own row-command rule records: a measurement showed the
+  // pointer-capability guard silently disabling the hover treatment, leaving a command inside a data row
+  // with the pointer as its only feedback. The three listing screens now agree, and they agree with the
+  // global button rule, whose hover has never been gated.
+  // ⚠ AND A SURFACE CHANGE, BECAUSE THE INK CANNOT MOVE. Re-setting the colour it already has changes
+  // nothing, and this command's colour is pinned: a destructive command stays in the danger hue and this
+  // vocabulary declares exactly one danger token. The selected tint is the only token that differs from BOTH
+  // row surfaces - the plain row is the background token and the alternating row is the surface token - so it
+  // is the only hover that can be perceived on every row. Stated plainly: hover and press paint the same tint
+  // on this one command, which is the lesser fault beside a hover that cannot be perceived at all.
+  &:hover {
+    color: var(--color-danger);
+    background-color: var(--color-selected);
+  }
+}
+
+// The corner radius the form vocabulary puts on a button SURVIVES the surface collapse above, because the
+// border shorthand resets width, style, colour and image but not the radius.
+
+// The legacy row affordances were three raster images and this screen draws inline vector art instead, for
+// the same reason section 2 gives — one static binary is in scope for this workspace and none of the legacy
+// images is it.
+.user-list__icon {
+  flex: none;
+  inline-size: var(--font-size-md);
+  block-size: var(--font-size-md);
+}
+
+//  THE LABEL BESIDE THAT GLYPH, and both rules here answer the same measured fact: this
+//  is the widest grid in the application and the shared table lays itself out in fixed
+//  mode, so each of eleven columns gets an equal share of a floor that does not grow
+//  with content, and the command column is the only one holding three unbreakable
+//  units.
+//
+//  So the label is allowed to REFLOW. A zero minimum is what permits a flex item to
+//  shrink below its content width at all, and breaking inside a long run is what keeps
+//  the command inside its cell instead of over its neighbour — the same policy the
+//  global table partial applies to every cell, and the reason no truncation hook is
+//  offered anywhere: a clipped command label hides which command it is, and one of these
+//  three destroys a record.
+//
+// MIGRATION: BELOW THE TABLET STEP THE LABEL IS WITHDRAWN FROM SIGHT ONLY, and this is
+//  a return toward the measured legacy presentation rather than a departure from it —
+//  the legacy commands were icon-only image buttons with no visible wording at all.
+//  Where every column is at its narrowest, three two-line commands stacked in one cell
+//  cost more than they explain, so the wording is hidden VISUALLY and kept in the
+//  accessibility tree by the shared mixin, which clips rather than removing the box.
+//  Nothing is lost to a screen reader: the template gives all three commands an
+//  accessible name that carries the command AND names the account, so the announcement
+//  is unchanged at every width, and above the step the visible wording returns — that
+//  being the accessibility gain over the legacy screen, kept wherever there is room for
+//  it. Withdrawal below a step rather than addition above it is the direction the mixin
+//  documents for a rule that has to be taken away, and it is the only shape that cannot
+//  half-undo the clipping geometry.
+// ⚠ THE BREAKPOINT WAS REMOVED AND THE LABEL IS NOW WITHDRAWN AT EVERY WIDTH, and a measurement forced it.
+//  The commands column is a fixed 3.25rem track — one interactive target plus the cell's own padding, which
+//  is the whole point of the token — and the wording does not fit in it at ANY width. Measured with the
+//  breakpoint in place, at exactly 768px (the step's own upper edge, where the labels were still shown): the
+//  "Manage Roles" cell reported `scrollWidth` 69 against `clientWidth` 64 and its link box ended at 402.98
+//  while the cell ended at 398, so the command painted 4.98px into the username column beside it. That is the
+//  bleed the shared table rules exist to prevent, and reflow could not fix it: the glyph beside the words
+//  never shrinks, so the command's irreducible width stays wider than its own track.
+//
+//  Nothing is lost to a screen reader, which is what makes this the right trade rather than a reduction: the
+//  template gives all three commands an accessible name carrying the command AND naming the account, so the
+//  announcement is identical at every width. It is also a return TOWARD the measured legacy presentation —
+//  `users.ascx` declared three image command columns with no visible wording at all — and it matches the role
+//  listing, which withdraws its own command wording unconditionally for the same reason.
+.user-list__action-label {
+  @include mx.visually-hidden;
+}
+
+// The 24px floor for the page actions, stated as its OWN rule rather than added to the shared
+// `.user-list__page-action.user-list__email` block above.
+.user-list__page-action {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: var(--target-size-min);
+}

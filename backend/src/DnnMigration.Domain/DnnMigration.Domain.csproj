@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The innermost layer. Its emptiness is the specification: Domain declares no
+    project, package, assembly or framework reference, so a layering violation
+    or a stray infrastructure dependency is a build failure rather than a review
+    finding. Never add one — if a Domain type appears to need a package, the
+    concern belongs in Application or Infrastructure instead. That rules out
+    mapping, validation and serialisation attributes here.
+
+    Build policy, including the target framework and the warning suppressions,
+    is inherited from backend/Directory.Build.props and must not be restated or
+    overridden in this file.
+  -->
+
+</Project>

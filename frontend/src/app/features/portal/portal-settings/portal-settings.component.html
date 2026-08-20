@@ -1,0 +1,1094 @@
+<!--
+  MIGRATION: THE TWO-LEVEL SECTION-HEAD HIERARCHY BECOMES A TWO-TAB STRIP OVER NESTED COLLAPSIBLE
+  GROUPS, AND THE THIRD TOP-LEVEL GROUP IS DROPPED WITH SKINNING. Measured from
+  `Website/admin/Portal/sitesettings.ascx`: it declares THIRTEEN section heads, of which exactly THREE
+  carry `IncludeRule="True"` and are therefore top level — the basic group at L14, the advanced group at
+  L204 and the stylesheet editor at L539.
+-->
+<section class="portal-settings">
+  <!-- The page-level action projects into the header slot. -->
+  <app-page-header [title]="pageTitle" [subtitle]="portalName()">
+    @if (canDelete()) {
+      <!--
+        Bare, and deliberately so: the shared inventory declares no button member, and the global form
+        stylesheet already gives every button its appearance and its focus ring.
+      -->
+      <button class="page-action" type="button" [disabled]="busy()" (click)="onDeleteRequested()">Delete</button>
+    }
+
+    <!--
+      ⚠ THE ONLY LINK IN THE APPLICATION TO A PORTAL'S HOST NAMES. Every anchor the console renders was
+      enumerated and none addressed `:portalId/aliases`, so that screen could be reached only by typing
+      its address — while the alias endpoints grant a tenant administrator every action by right.
+    -->
+    @if (aliasesLink(); as aliases) {
+      <!--
+        The accessible name is QUALIFIED WITH THE TENANT while the visible text stays the bare module
+        title, so a reader is told whose host names these are and a speech-input caller can still say
+        what they see: the name BEGINS with the visible text, which is what WCAG 2.5.3 Label in Name
+        requires.
+      -->
+      <a
+        class="page-action"
+        [routerLink]="aliases"
+        [attr.aria-label]="portalName() ? aliasesLinkLabel + ': ' + portalName() : aliasesLinkLabel"
+        >{{ aliasesLinkLabel }}</a
+      >
+    }
+  </app-page-header>
+
+  <!--
+    The failure surface. The label dictionary is the SAME one the fields use, so a refusal keyed by the
+    contract's `portalName` / `hostFee` / `expiryDate` is listed as Title / Hosting Fee / Expiry Date -
+    the names actually on screen - instead of quoting wire property names at an operator.
+  -->
+  <app-error-banner [problem]="problem()" [fieldLabels]="fieldLabel" />
+
+  @if (!hasPortalId()) {
+    <!-- The address named no usable portal. -->
+    <p class="portal-settings__intro">{{ portalIdMissingMessage }}</p>
+  } @else if (loading()) {
+    <app-loading-spinner size="large" label="Loading site settings…" />
+  } @else if (settings() !== null) {
+    <div
+      class="portal-settings__tablist"
+      role="tablist"
+      aria-label="Site settings sections"
+      (keydown)="onTabKeydown($event)"
+    >
+      @for (tab of tabOrder; track tab) {
+        <!--
+          ⚠ QA-21 — THE REFERENCE IS NOW UNCONDITIONAL, AND IT USED TO BE WITHHELD WHILE COLLAPSED. It read
+          `isTabActive(tab) ? tabPanelId(tab) : null` because only the selected panel was in the document,
+          so naming the other one would have pointed at an element that does not exist — correct reasoning
+          about a wrong structure. Both panel shells are permanent now (see the note beside them), so every
+          tab names its own panel at all times and the reference always resolves.
+        -->
+        <button
+          #tabControl
+          type="button"
+          class="portal-settings__tab"
+          role="tab"
+          [id]="tabControlId(tab)"
+          [attr.aria-selected]="isTabActive(tab)"
+          [attr.aria-controls]="tabPanelId(tab)"
+          [attr.tabindex]="isTabActive(tab) ? 0 : -1"
+          [class.portal-settings__tab--errored]="tabHasErrors(tab)"
+          (click)="selectTab(tab)"
+        >
+          {{ tabLabel[tab] }}
+
+          <!--
+            THE ERRORS THAT ARE NOT ON SCREEN. A rejected save can name fields on the tab that is not
+            selected, and because the unselected panel is destroyed rather than hidden those fields have no
+            node to carry `aria-invalid` and no way to be found. The marker is the only thing that makes
+            them discoverable. The glyph is decorative and the sentence beside it is the real announcement,
+            so the tab reads as "Advanced Settings, has fields needing attention".
+          -->
+          @if (tabHasErrors(tab)) {
+            <span class="portal-settings__tab-error-marker" aria-hidden="true">!</span>
+            <span data-visually-hidden>{{ tabHasErrorsLabel }}</span>
+          }
+        </button>
+      }
+    </div>
+
+    <form class="portal-settings__panel" [formGroup]="form" (ngSubmit)="onSubmit()">
+      <!--
+        ⚠ QA-21 — BOTH PANELS EXIST AT ALL TIMES SO BOTH TABS CAN NAME THEIRS. Only the selected panel used
+        to be created, so the unselected tab's `aria-controls` had to be withheld — measured on this screen,
+        `Basic Settings` carried the reference while `Advanced Settings` carried none, and then the two
+        swapped over when the selection changed. A tab is required to name its panel, and a pattern that
+        names it only half the time is the inconsistency rather than a considered exception.
+        The shell is what is now permanent; its CONTENT is still created only for the selected tab, so no
+        control of the unselected tab is in the document and nothing about focus, validation, the error
+        markers on the tab heads or the destroyed-panel reasoning behind them changes. `hidden` keeps the
+        unselected shell out of the accessibility tree and out of the layout.
+      -->
+      <div
+        role="tabpanel"
+        class="portal-settings__panel"
+        [id]="tabPanelId('basic')"
+        [attr.aria-labelledby]="tabControlId('basic')"
+        [attr.tabindex]="isTabActive('basic') ? 0 : null"
+        [hidden]="!isTabActive('basic')"
+      >
+        @if (isTabActive('basic')) {
+          <p class="portal-settings__intro">{{ tabHelp['basic'] }}</p>
+
+          <!--
+            The toggle sits INSIDE the caption, so the group's name and the control that opens it are
+            one thing.
+          -->
+          <fieldset
+            class="portal-settings__section"
+            [class.portal-settings__section--collapsed]="!isSectionOpen('siteDetails')"
+          >
+            <legend>
+              <h2>
+              <button
+                type="button"
+                class="portal-settings__toggle"
+                [attr.aria-expanded]="isSectionOpen('siteDetails')"
+                [attr.aria-controls]="sectionBodyId('siteDetails')"
+                (click)="toggleSection('siteDetails')"
+              >
+                <svg viewBox="0 0 8 8" aria-hidden="true" focusable="false">
+                  <path d="M1 0 L7 4 L1 8 Z" fill="currentColor" />
+                </svg>
+                {{ sectionLabel['siteDetails'] }}
+              </button>
+              </h2>
+            </legend>
+
+            <!--
+                ⚠ QA-21 — THE REGION EXISTS EVEN WHILE IT IS CLOSED, SO THE HEAD CAN NAME IT AT ALL TIMES. The body
+                used to be created only while open, so `aria-controls` on the head above had to be dropped whenever
+                the group was collapsed: measured on this screen, two of the five section heads and the whole
+                unselected tab carried no reference at all, while the three open ones did — one control pattern
+                emitting two different attribute sets depending on state. A reference that resolves to nothing is
+                worse than none, so dropping it was right GIVEN a destroyed body; the fix is to stop destroying the
+                body. This shell is always in the document and carries `hidden` while closed, which keeps it out of
+                the accessibility tree and out of the layout; its CONTENT is still created on demand, so no control
+                of a closed group is in the document and nothing about focus, validation or the error markers on the
+                tab heads changes.
+              -->
+              <div
+                class="portal-settings__body"
+                [id]="sectionBodyId('siteDetails')"
+                [hidden]="!isSectionOpen('siteDetails')"
+              >
+                @if (isSectionOpen('siteDetails')) {
+                  <div class="portal-settings__grid">
+                <!--
+                  ⚠ NOT MARKED REQUIRED, AND NOTHING HERE REFUSES A BLANK TITLE. This field briefly
+                  carried a `[required]` marker, an `aria-required` announcement and a
+                  `Validators.required` rule, mirroring a `NotEmpty()` the update contract carried; all
+                  four are withdrawn together as a parity break.
+                -->
+                <!--
+                  ⚠ QA-21 — EVERY FIELD IN THIS SECTION TAKES ITS OWN ROW, AND THE MIXTURE IS WHAT WAS WRONG.
+                  Two of these five are textareas and were already `--wide`, the other three were not, so the
+                  auto-placing two-column grid resolved them as: Title at (1,1) with (1,2) EMPTY because the
+                  spanning Description could not fit beside it, Description on row 2, Keywords on row 3, and
+                  then Copyright at (4,1) with the GUID stranded at (4,2). Measured at 1440: a conspicuous
+                  empty cell to the right of the Title row, and the GUID alone in a right-hand column with
+                  nothing above or below it — a read-only identifier presenting as a second, unheaded table.
+                  One field per row is also exactly what the legacy screen was: `sitesettings.ascx` L44-L70 is
+                  a table of single rows, a `width="150"` caption cell beside a 300px control cell.
+                -->
+                <app-form-field
+                  class="portal-settings__field--wide"
+                  [limit]="maxLength.portalName"
+                  [label]="fieldLabel['portalName']"
+                  [for]="controlId('portalName')"
+                  [help]="fieldHelp['portalName']"
+                  [error]="messagesFor('portalName')"
+                >
+                  <div class="portal-settings__control">
+                    <input
+                      type="text"
+                      formControlName="portalName"
+                      [id]="controlId('portalName')"
+                      [maxlength]="maxLength.portalName"
+                      autocomplete="off"
+                    />
+                  </div>
+                </app-form-field>
+
+                <!-- A plain multi-line box. -->
+                <app-form-field
+                  [limit]="maxLength.description"
+                  class="portal-settings__field--wide"
+                  [label]="fieldLabel['description']"
+                  [for]="controlId('description')"
+                  [help]="fieldHelp['description']"
+                  [error]="messagesFor('description')"
+                >
+                  <div class="portal-settings__control">
+                    <textarea
+                      formControlName="description"
+                      rows="3"
+                      [id]="controlId('description')"
+                      [maxlength]="maxLength.description"
+                    ></textarea>
+                  </div>
+                </app-form-field>
+
+                <app-form-field
+                  [limit]="maxLength.keyWords"
+                  class="portal-settings__field--wide"
+                  [label]="fieldLabel['keyWords']"
+                  [for]="controlId('keyWords')"
+                  [help]="fieldHelp['keyWords']"
+                  [error]="messagesFor('keyWords')"
+                >
+                  <div class="portal-settings__control">
+                    <textarea
+                      formControlName="keyWords"
+                      rows="3"
+                      [id]="controlId('keyWords')"
+                      [maxlength]="maxLength.keyWords"
+                    ></textarea>
+                  </div>
+                </app-form-field>
+
+                <app-form-field
+                  class="portal-settings__field--wide"
+                  [limit]="maxLength.footerText"
+                  [label]="fieldLabel['footerText']"
+                  [for]="controlId('footerText')"
+                  [help]="fieldHelp['footerText']"
+                  [error]="messagesFor('footerText')"
+                >
+                  <div class="portal-settings__control">
+                    <input
+                      type="text"
+                      formControlName="footerText"
+                      [id]="controlId('footerText')"
+                      [maxlength]="maxLength.footerText"
+                      autocomplete="off"
+                    />
+                  </div>
+                </app-form-field>
+
+                <!--
+                  ⚠ QA-21 — THIS WAS AN `<output>`, AND AN `<output>` IS A LIVE REGION. HTML-AAM maps it to
+                  `role="status"`, which carries an implicit `aria-live="polite"` and `aria-atomic="true"` —
+                  confirmed in Chrome's accessibility tree, which reported `status "GUID" atomic
+                  live="polite"`. A site's identifier never changes, so nothing here has any business being
+                  announced, and a live region that exists to announce nothing is a region that will announce
+                  the wrong thing the first time anything near it redraws.
+
+                  The element was chosen because `<output>` is labelable and the legacy label declared
+                  `controlname="lblGUID"` at `sitesettings.ascx:L68`, so it DID name its control. That
+                  justification is set aside deliberately: the value is not a control, it is not typed into
+                  and it takes no focus, and the field's own read-only branch — the Home Directory value on
+                  the Advanced tab — already renders exactly this case as a paragraph with `for` withheld,
+                  leaving the shared field to name its own group. Two read-only values on one screen must not
+                  be built two different ways. Recorded in MIGRATION_NOTES.md.
+                -->
+                <app-form-field
+                  class="portal-settings__field--wide"
+                  [label]="fieldLabel['guid']"
+                  [help]="fieldHelp['guid']"
+                >
+                  <div class="portal-settings__control">
+                    <p class="portal-settings__readonly-value" [id]="controlId('guid')">
+                      {{ portalGuid() }}
+                    </p>
+                  </div>
+                </app-form-field>
+              </div>
+            }
+            </div>
+          </fieldset>
+
+          <!--
+            Site Marketing survives with EXACTLY ONE field, so it is rendered rather than dropped. Its
+            body at `sitesettings.ascx` L75-L128 holds five labelled rows; four go and one stays.
+          -->
+          <fieldset
+            class="portal-settings__section"
+            [class.portal-settings__section--collapsed]="!isSectionOpen('marketing')"
+          >
+            <legend>
+              <h2>
+              <button
+                type="button"
+                class="portal-settings__toggle"
+                [attr.aria-expanded]="isSectionOpen('marketing')"
+                [attr.aria-controls]="sectionBodyId('marketing')"
+                (click)="toggleSection('marketing')"
+              >
+                <svg viewBox="0 0 8 8" aria-hidden="true" focusable="false">
+                  <path d="M1 0 L7 4 L1 8 Z" fill="currentColor" />
+                </svg>
+                {{ sectionLabel['marketing'] }}
+              </button>
+              </h2>
+            </legend>
+
+            <!--
+                ⚠ QA-21 — THE REGION EXISTS EVEN WHILE IT IS CLOSED, SO THE HEAD CAN NAME IT AT ALL TIMES. The body
+                used to be created only while open, so `aria-controls` on the head above had to be dropped whenever
+                the group was collapsed: measured on this screen, two of the five section heads and the whole
+                unselected tab carried no reference at all, while the three open ones did — one control pattern
+                emitting two different attribute sets depending on state. A reference that resolves to nothing is
+                worse than none, so dropping it was right GIVEN a destroyed body; the fix is to stop destroying the
+                body. This shell is always in the document and carries `hidden` while closed, which keeps it out of
+                the accessibility tree and out of the layout; its CONTENT is still created on demand, so no control
+                of a closed group is in the document and nothing about focus, validation or the error markers on the
+                tab heads changes.
+              -->
+              <div
+                class="portal-settings__body"
+                [id]="sectionBodyId('marketing')"
+                [hidden]="!isSectionOpen('marketing')"
+              >
+                @if (isSectionOpen('marketing')) {
+                  <div class="portal-settings__grid">
+                <!--
+                  NO `for` HERE, DELIBERATELY, and the same reasoning governs the user registration
+                  group on the other tab.
+                -->
+                <app-form-field
+                  [label]="fieldLabel['bannerAdvertising']"
+                  [help]="fieldHelp['bannerAdvertising']"
+                >
+                  <div class="portal-settings__control">
+                    <!-- Horizontal, three choices, matching the legacy list item for item. -->
+                    <!--
+                      BLITZY [A11Y]: a native radio renders at the user agent's own 13 by 13 pixel box,
+                      below the 24 by 24 minimum that the current success criterion for target size
+                      states.
+                    -->
+                    @for (choice of bannerChoices; track choice.value) {
+                      <label>
+                        <!-- ⚠ The static `name` is what makes these one NATIVE radio group. -->
+                        <input
+                          type="radio"
+                          name="bannerAdvertising"
+                          formControlName="bannerAdvertising"
+                          [value]="choice.value"
+                        />
+                        {{ choice.label }}
+                      </label>
+                    }
+
+                    <!--
+                      The hosting provider's lock. Measured: for a caller without the host account the
+                      list is disabled and this notice appears exactly when the STORED choice is Host;
+                      for a host account the notice is hidden outright.
+                    -->
+                    @if (bannerLockedByHost()) {
+                      <p class="portal-settings__notice">{{ bannerHostLockNotice }}</p>
+                    }
+                  </div>
+                </app-form-field>
+              </div>
+            }
+            </div>
+          </fieldset>
+        }
+      </div>
+
+      <div
+        role="tabpanel"
+        class="portal-settings__panel"
+        [id]="tabPanelId('advanced')"
+        [attr.aria-labelledby]="tabControlId('advanced')"
+        [attr.tabindex]="isTabActive('advanced') ? 0 : null"
+        [hidden]="!isTabActive('advanced')"
+      >
+        @if (isTabActive('advanced')) {
+          <p class="portal-settings__intro">{{ tabHelp['advanced'] }}</p>
+
+          <!-- Security Settings. Open by default: its section head declared no collapsed state. -->
+          <fieldset
+            class="portal-settings__section"
+            [class.portal-settings__section--collapsed]="!isSectionOpen('security')"
+          >
+            <legend>
+              <h2>
+              <button
+                type="button"
+                class="portal-settings__toggle"
+                [attr.aria-expanded]="isSectionOpen('security')"
+                [attr.aria-controls]="sectionBodyId('security')"
+                (click)="toggleSection('security')"
+              >
+                <svg viewBox="0 0 8 8" aria-hidden="true" focusable="false">
+                  <path d="M1 0 L7 4 L1 8 Z" fill="currentColor" />
+                </svg>
+                {{ sectionLabel['security'] }}
+              </button>
+              </h2>
+            </legend>
+
+            <!--
+                ⚠ QA-21 — THE REGION EXISTS EVEN WHILE IT IS CLOSED, SO THE HEAD CAN NAME IT AT ALL TIMES. The body
+                used to be created only while open, so `aria-controls` on the head above had to be dropped whenever
+                the group was collapsed: measured on this screen, two of the five section heads and the whole
+                unselected tab carried no reference at all, while the three open ones did — one control pattern
+                emitting two different attribute sets depending on state. A reference that resolves to nothing is
+                worse than none, so dropping it was right GIVEN a destroyed body; the fix is to stop destroying the
+                body. This shell is always in the document and carries `hidden` while closed, which keeps it out of
+                the accessibility tree and out of the layout; its CONTENT is still created on demand, so no control
+                of a closed group is in the document and nothing about focus, validation or the error markers on the
+                tab heads changes.
+              -->
+              <div
+                class="portal-settings__body"
+                [id]="sectionBodyId('security')"
+                [hidden]="!isSectionOpen('security')"
+              >
+                @if (isSectionOpen('security')) {
+                  <div class="portal-settings__grid">
+                <app-form-field
+                  [label]="fieldLabel['userRegistration']"
+                  [help]="fieldHelp['userRegistration']"
+                >
+                  <div class="portal-settings__control">
+                    <!--
+                      BLITZY [A11Y]: the user-agent radio box falls below the stated target-size minimum
+                      here for the same reason, and with the same owner, as the banner group on the
+                      other tab.
+                    -->
+                    @for (choice of registrationChoices; track choice.value) {
+                      <label>
+                        <!-- ⚠ The static `name` is what makes these one NATIVE radio group. -->
+                        <input
+                          type="radio"
+                          name="userRegistration"
+                          formControlName="userRegistration"
+                          [value]="choice.value"
+                        />
+                        {{ choice.label }}
+                      </label>
+                    }
+                  </div>
+                </app-form-field>
+              </div>
+            }
+            </div>
+          </fieldset>
+
+          <fieldset
+            class="portal-settings__section"
+            [class.portal-settings__section--collapsed]="!isSectionOpen('pages')"
+          >
+            <legend>
+              <h2>
+              <button
+                type="button"
+                class="portal-settings__toggle"
+                [attr.aria-expanded]="isSectionOpen('pages')"
+                [attr.aria-controls]="sectionBodyId('pages')"
+                (click)="toggleSection('pages')"
+              >
+                <svg viewBox="0 0 8 8" aria-hidden="true" focusable="false">
+                  <path d="M1 0 L7 4 L1 8 Z" fill="currentColor" />
+                </svg>
+                {{ sectionLabel['pages'] }}
+              </button>
+              </h2>
+            </legend>
+
+            <!--
+                ⚠ QA-21 — THE REGION EXISTS EVEN WHILE IT IS CLOSED, SO THE HEAD CAN NAME IT AT ALL TIMES. The body
+                used to be created only while open, so `aria-controls` on the head above had to be dropped whenever
+                the group was collapsed: measured on this screen, two of the five section heads and the whole
+                unselected tab carried no reference at all, while the three open ones did — one control pattern
+                emitting two different attribute sets depending on state. A reference that resolves to nothing is
+                worse than none, so dropping it was right GIVEN a destroyed body; the fix is to stop destroying the
+                body. This shell is always in the document and carries `hidden` while closed, which keeps it out of
+                the accessibility tree and out of the layout; its CONTENT is still created on demand, so no control
+                of a closed group is in the document and nothing about focus, validation or the error markers on the
+                tab heads changes.
+              -->
+              <div
+                class="portal-settings__body"
+                [id]="sectionBodyId('pages')"
+                [hidden]="!isSectionOpen('pages')"
+              >
+                @if (isSectionOpen('pages')) {
+                  <div class="portal-settings__grid">
+                @if (pagesUnavailable()) {
+                  <p class="portal-settings__notice">{{ pagesUnavailableMessage }}</p>
+                }
+
+                <app-form-field
+                  [label]="fieldLabel['splashTabId']"
+                  [for]="controlId('splashTabId')"
+                  [help]="fieldHelp['splashTabId']"
+                  [error]="messagesFor('splashTabId')"
+                >
+                  <div class="portal-settings__control">
+                    <select formControlName="splashTabId" [id]="controlId('splashTabId')">
+                      @for (option of pageOptions(); track option.value) {
+                        <option [ngValue]="option.value">{{ option.label }}</option>
+                      }
+                    </select>
+                  </div>
+                </app-form-field>
+
+                <app-form-field
+                  [label]="fieldLabel['homeTabId']"
+                  [for]="controlId('homeTabId')"
+                  [help]="fieldHelp['homeTabId']"
+                  [error]="messagesFor('homeTabId')"
+                >
+                  <div class="portal-settings__control">
+                    <select formControlName="homeTabId" [id]="controlId('homeTabId')">
+                      @for (option of pageOptions(); track option.value) {
+                        <option [ngValue]="option.value">{{ option.label }}</option>
+                      }
+                    </select>
+                  </div>
+                </app-form-field>
+
+                <app-form-field
+                  [label]="fieldLabel['loginTabId']"
+                  [for]="controlId('loginTabId')"
+                  [help]="fieldHelp['loginTabId']"
+                  [error]="messagesFor('loginTabId')"
+                >
+                  <div class="portal-settings__control">
+                    <select formControlName="loginTabId" [id]="controlId('loginTabId')">
+                      @for (option of pageOptions(); track option.value) {
+                        <option [ngValue]="option.value">{{ option.label }}</option>
+                      }
+                    </select>
+                  </div>
+                </app-form-field>
+
+                <app-form-field
+                  [label]="fieldLabel['userTabId']"
+                  [for]="controlId('userTabId')"
+                  [help]="fieldHelp['userTabId']"
+                  [error]="messagesFor('userTabId')"
+                >
+                  <div class="portal-settings__control">
+                    <select formControlName="userTabId" [id]="controlId('userTabId')">
+                      @for (option of pageOptions(); track option.value) {
+                        <option [ngValue]="option.value">{{ option.label }}</option>
+                      }
+                    </select>
+                  </div>
+                </app-form-field>
+
+                <!--
+                  THE HOME DIRECTORY, SHOWN AND NOT EDITABLE - WHICH IS EXACT LEGACY PARITY RATHER THAN A
+                  COMPROMISE. `Website/admin/Portal/sitesettings.ascx:L289-L290` declares this box
+                  `Enabled="False"`, so the legacy screen displayed the path and refused to let anybody
+                  change it; the code-behind read it back out on save purely to round-trip it
+                  (`SiteSettings.ascx.vb:L419` in, `L781` out). It sits at the end of Page Management
+                  because that is the section legacy declared it in (L285, inside the block opened at L239).
+                  Nothing on this screen wrote it before, and nothing does now - the request composer still
+                  returns it unchanged.
+
+                  `readonly` RATHER THAN `disabled`, DELIBERATELY. The two are equivalent for editing, but a
+                  disabled control is removed from the tab order and skipped by assistive technology, so the
+                  legacy spelling would have hidden the value from the readers most in need of it. This is
+                  not a form control at all - it is bound by value - so nothing here can reach the payload.
+                -->
+                <!--
+                  ⚠ QA-20/QA-21 — AN UNRECORDED PATH RENDERED AN EMPTY BOX, WHICH IS NOT A STATEMENT. The
+                  reasoning for keeping the marker out of the input is sound and is kept: a dash inside a text
+                  box reads as a stored value one character long. The answer is therefore to render the absent
+                  affordance INSTEAD OF the box rather than inside it — the box is read-only and holds nothing,
+                  so there is no value, no editing and no tab stop being given up. `for` is dropped in that
+                  branch as well, because a label may only point at a labelable control; the shared field then
+                  names its own group, which is the arrangement it already provides for exactly this case.
+                -->
+                <app-form-field
+                  [label]="fieldLabel['homeDirectory']"
+                  [for]="homeDirectoryPresent() ? controlId('homeDirectory') : ''"
+                  [help]="fieldHelp['homeDirectory']"
+                >
+                  <div class="portal-settings__control portal-settings__control--medium">
+                    @if (homeDirectoryPresent()) {
+                      <input
+                        type="text"
+                        readonly
+                        [id]="controlId('homeDirectory')"
+                        [value]="homeDirectoryText()"
+                        [attr.aria-describedby]="'portal-settings-homeDirectory-fixed'"
+                        autocomplete="off"
+                      />
+                    } @else {
+                      <p
+                        class="portal-settings__readonly-value"
+                        [attr.aria-describedby]="'portal-settings-homeDirectory-fixed'"
+                      >
+                        <app-absent-value />
+                      </p>
+                    }
+                  </div>
+
+                  <!--
+                    ⚠ QA-21 — THE EXPLANATION IS PROJECTED INTO THE FIELD, AND IT USED TO BE A SIBLING OF IT.
+                    As a sibling it was its own item in the two-column settings grid, so it was laid out in
+                    the OPPOSITE column from the value it explains — measured at 1440, the field's caption at
+                    x=214 and this sentence at x=719, with a whole other field's worth of screen between
+                    them. The `aria-describedby` wiring was always correct, so only a sighted reader was
+                    misled. This is the same correction, and the same `form-note` class, that the time-zone
+                    unit note on this screen already uses.
+                  -->
+                  <p class="form-note" id="portal-settings-homeDirectory-fixed">
+                    {{ homeDirectoryNotice }}
+                  </p>
+                </app-form-field>
+              </div>
+            }
+            </div>
+          </fieldset>
+
+          <!--
+            PAYMENT SETTINGS, RESTORED. Neither of these two could be configured anywhere in the
+            application, while the role screen still tells an operator to configure a payment processor.
+            Placed between Page Management and Other Settings because that is the legacy order:
+            `sitesettings.ascx` declares its Advanced heads as Security (L218), Page Management (L239),
+            Payment (L294), Usability (L339), Other (L385) and Host (L420).
+          -->
+          <fieldset
+            class="portal-settings__section"
+            [class.portal-settings__section--collapsed]="!isSectionOpen('payment')"
+          >
+            <legend>
+              <h2>
+              <button
+                type="button"
+                class="portal-settings__toggle"
+                [attr.aria-expanded]="isSectionOpen('payment')"
+                [attr.aria-controls]="sectionBodyId('payment')"
+                (click)="toggleSection('payment')"
+              >
+                <svg viewBox="0 0 8 8" aria-hidden="true" focusable="false">
+                  <path d="M1 0 L7 4 L1 8 Z" fill="currentColor" />
+                </svg>
+                {{ sectionLabel['payment'] }}
+              </button>
+              </h2>
+            </legend>
+
+            <!--
+                ⚠ QA-21 — THE REGION EXISTS EVEN WHILE IT IS CLOSED, SO THE HEAD CAN NAME IT AT ALL TIMES. The body
+                used to be created only while open, so `aria-controls` on the head above had to be dropped whenever
+                the group was collapsed: measured on this screen, two of the five section heads and the whole
+                unselected tab carried no reference at all, while the three open ones did — one control pattern
+                emitting two different attribute sets depending on state. A reference that resolves to nothing is
+                worse than none, so dropping it was right GIVEN a destroyed body; the fix is to stop destroying the
+                body. This shell is always in the document and carries `hidden` while closed, which keeps it out of
+                the accessibility tree and out of the layout; its CONTENT is still created on demand, so no control
+                of a closed group is in the document and nothing about focus, validation or the error markers on the
+                tab heads changes.
+              -->
+              <div
+                class="portal-settings__body"
+                [id]="sectionBodyId('payment')"
+                [hidden]="!isSectionOpen('payment')"
+              >
+                @if (isSectionOpen('payment')) {
+                  <div class="portal-settings__grid">
+                <!--
+                  A TEXT BOX RATHER THAN THE LEGACY SELECTOR. `cboProcessor` (L314) was filled from the
+                  legacy list subsystem, which the plan excludes, so its closed value set does not exist
+                  here - the same position the currency and language boxes are already in.
+                -->
+                <app-form-field
+                  [label]="fieldLabel['paymentProcessor']"
+                  [for]="controlId('paymentProcessor')"
+                  [help]="fieldHelp['paymentProcessor']"
+                  [error]="messagesFor('paymentProcessor')"
+                >
+                  <div class="portal-settings__control portal-settings__control--medium">
+                    <input
+                      type="text"
+                      formControlName="paymentProcessor"
+                      [id]="controlId('paymentProcessor')"
+                      [maxlength]="maxLength.processor"
+                      autocomplete="off"
+                    />
+                  </div>
+                </app-form-field>
+
+                <app-form-field
+                  [label]="fieldLabel['processorUserId']"
+                  [for]="controlId('processorUserId')"
+                  [help]="fieldHelp['processorUserId']"
+                  [error]="messagesFor('processorUserId')"
+                >
+                  <div class="portal-settings__control portal-settings__control--medium">
+                    <input
+                      type="text"
+                      formControlName="processorUserId"
+                      [id]="controlId('processorUserId')"
+                      [maxlength]="maxLength.processor"
+                      autocomplete="off"
+                    />
+                  </div>
+                </app-form-field>
+
+                <p class="portal-settings__notice">{{ processorCredentialNotice }}</p>
+              </div>
+            }
+            </div>
+          </fieldset>
+
+          <!-- Other Settings survives with EXACTLY TWO fields, so it is rendered rather than dropped. -->
+          <fieldset
+            class="portal-settings__section"
+            [class.portal-settings__section--collapsed]="!isSectionOpen('other')"
+          >
+            <legend>
+              <h2>
+              <button
+                type="button"
+                class="portal-settings__toggle"
+                [attr.aria-expanded]="isSectionOpen('other')"
+                [attr.aria-controls]="sectionBodyId('other')"
+                (click)="toggleSection('other')"
+              >
+                <svg viewBox="0 0 8 8" aria-hidden="true" focusable="false">
+                  <path d="M1 0 L7 4 L1 8 Z" fill="currentColor" />
+                </svg>
+                {{ sectionLabel['other'] }}
+              </button>
+              </h2>
+            </legend>
+
+            <!--
+                ⚠ QA-21 — THE REGION EXISTS EVEN WHILE IT IS CLOSED, SO THE HEAD CAN NAME IT AT ALL TIMES. The body
+                used to be created only while open, so `aria-controls` on the head above had to be dropped whenever
+                the group was collapsed: measured on this screen, two of the five section heads and the whole
+                unselected tab carried no reference at all, while the three open ones did — one control pattern
+                emitting two different attribute sets depending on state. A reference that resolves to nothing is
+                worse than none, so dropping it was right GIVEN a destroyed body; the fix is to stop destroying the
+                body. This shell is always in the document and carries `hidden` while closed, which keeps it out of
+                the accessibility tree and out of the layout; its CONTENT is still created on demand, so no control
+                of a closed group is in the document and nothing about focus, validation or the error markers on the
+                tab heads changes.
+              -->
+              <div
+                class="portal-settings__body"
+                [id]="sectionBodyId('other')"
+                [hidden]="!isSectionOpen('other')"
+              >
+                @if (isSectionOpen('other')) {
+                  <div class="portal-settings__grid">
+                <app-form-field
+                  [label]="fieldLabel['administratorId']"
+                  [for]="controlId('administratorId')"
+                  [help]="fieldHelp['administratorId']"
+                  [error]="messagesFor('administratorId')"
+                >
+                  <!--
+                    NOT a medium slot, and the difference is what makes this control readable. Its options
+                    are a person's display name AND their login name, so the longest real option measured
+                    231.77px against 144px of slot - roughly 110px of it usable once the native arrow is
+                    deducted - and every administrator rendered clipped mid-word at every viewport from 320
+                    through 1920. This slot grows with its column instead, floored at a measure that fits the
+                    longest real option.
+                  -->
+                  <div class="portal-settings__control portal-settings__control--name">
+                    <select formControlName="administratorId" [id]="controlId('administratorId')">
+                      @for (option of administratorOptions(); track option.value) {
+                        <option [ngValue]="option.value">{{ option.label }}</option>
+                      }
+                    </select>
+
+                    @if (administratorsLoading()) {
+                      <p class="portal-settings__notice">{{ administratorsLoadingMessage }}</p>
+                    } @else if (administratorsFailed()) {
+                      <p class="portal-settings__notice">{{ administratorsUnavailableMessage }}</p>
+                    }
+                  </div>
+                </app-form-field>
+
+                <!-- The time zone is an explicit offset in whole minutes rather than a named-zone list. -->
+                <app-form-field
+                  [label]="fieldLabel['timeZoneOffset']"
+                  [for]="controlId('timeZoneOffset')"
+                  [help]="fieldHelp['timeZoneOffset']"
+                  [error]="messagesFor('timeZoneOffset')"
+                >
+                  <div class="portal-settings__control portal-settings__control--medium">
+                    <!--
+                      The note below is referenced from the CONTROL rather than from the field, which is
+                      the finer-grained of the two wirings the field component documents as supported.
+                    -->
+                    <input
+                      type="text"
+                      inputmode="numeric"
+                      formControlName="timeZoneOffset"
+                      [id]="controlId('timeZoneOffset')"
+                      aria-describedby="portal-settings-timeZoneOffset-unit"
+                      autocomplete="off"
+                    />
+                  </div>
+
+                  <!--
+                    ⚠ THE UNIT NOTE IS PROJECTED INTO THE FIELD, AND IT USED TO BE A SIBLING OF IT. As a
+                    sibling it was its own item in the two-column settings grid, so from 768 upwards it was
+                    laid out in the LEFT column while the input it describes sat in the RIGHT one — measured
+                    at 1024, note at x=214 and input at x=769. On screen it read as belonging to whichever
+                    field happened to be above or below it. The wiring was never wrong: the input's
+                    `aria-describedby` always named it, so a screen-reader user got the right association and
+                    only a sighted reader was misled.
+                    Projected into the field it can no longer be placed by the settings grid at all, which is
+                    the same arrangement the Banners host-lock notice above already uses.
+                    It sits OUTSIDE the width-capped wrapper rather than inside it: that wrapper caps the
+                    control at 9rem, which is right for a numeric offset and far too narrow for two sentences
+                    of prose.
+                    ⚠ IT CARRIES THE SHARED `form-note` CLASS, NOT THIS SCREEN'S NOTICE CLASS. Both would look
+                    the same, but a note projected into a field needs its own line inside the field's wrapping
+                    control row, and that is a property of the SHARED field rather than of this screen — so it
+                    belongs with `form-help` and `form-error` in the global form-region family, where every
+                    screen can reach it.
+                  -->
+                  <p class="form-note" id="portal-settings-timeZoneOffset-unit">
+                    The offset from Coordinated Universal Time, in minutes. Behind UTC is
+                    negative — for example −480 for Pacific Time.@if (timeZoneReading(); as reading) {
+                      <!--
+                        ⚠ QA-21 — THE STORED FIGURE RESTATED, IN THE SAME SENTENCE THAT DECLARES THE UNIT.
+                        Kept inside this note rather than given its own line so the unit and the reading are
+                        never separated by a redraw, and inside the element the input's `aria-describedby`
+                        already names so the reading is announced with the rule rather than needing a second
+                        reference. Withheld entirely while the box is blank or not yet a number: restating
+                        nothing would be noise, and restating an unreadable value would compete with the
+                        validation message that is about to appear.
+                        ⚠ THE SENTENCE CARRIES NO LEADING SPACE OF ITS OWN. The block's own indentation
+                        collapses to exactly one space in front of it - measured in the rendered text node -
+                        so supplying another produced `Pacific Time.␣␣This site`. HTML folds the pair when
+                        painting, but the text an assistive technology reads, and every assertion made
+                        about this copy, sees both.
+                      -->
+                      {{ 'This site is set to ' + reading + '.' }}
+                    }
+                  </p>
+                </app-form-field>
+
+                <app-form-field
+                  [limit]="maxLength.currency"
+                  [label]="fieldLabel['currency']"
+                  [for]="controlId('currency')"
+                  [help]="fieldHelp['currency']"
+                  [error]="messagesFor('currency')"
+                >
+                  <div class="portal-settings__control portal-settings__control--narrow">
+                    <input
+                      type="text"
+                      formControlName="currency"
+                      [id]="controlId('currency')"
+                      [maxlength]="maxLength.currency"
+                      autocomplete="off"
+                    />
+                  </div>
+                </app-form-field>
+
+                <!-- ⚠ A TEXT BOX RATHER THAN THE LEGACY CULTURE SELECTOR, for the same class of reason. -->
+                <app-form-field
+                  [limit]="maxLength.defaultLanguage"
+                  [label]="fieldLabel['defaultLanguage']"
+                  [for]="controlId('defaultLanguage')"
+                  [help]="fieldHelp['defaultLanguage']"
+                  [error]="messagesFor('defaultLanguage')"
+                >
+                  <div class="portal-settings__control portal-settings__control--narrow">
+                    <input
+                      type="text"
+                      formControlName="defaultLanguage"
+                      [id]="controlId('defaultLanguage')"
+                      [maxlength]="maxLength.defaultLanguage"
+                      autocomplete="off"
+                    />
+                  </div>
+                </app-form-field>
+              </div>
+            }
+            </div>
+          </fieldset>
+
+          <!-- Host Settings. -->
+          @if (isSuperUser()) {
+            <fieldset
+              class="portal-settings__section"
+              [class.portal-settings__section--collapsed]="!isSectionOpen('host')"
+            >
+              <legend>
+                <h2>
+                <button
+                  type="button"
+                  class="portal-settings__toggle"
+                  [attr.aria-expanded]="isSectionOpen('host')"
+                  [attr.aria-controls]="sectionBodyId('host')"
+                  (click)="toggleSection('host')"
+                >
+                  <svg viewBox="0 0 8 8" aria-hidden="true" focusable="false">
+                  <path d="M1 0 L7 4 L1 8 Z" fill="currentColor" />
+                </svg>
+                {{ sectionLabel['host'] }}
+                </button>
+                </h2>
+              </legend>
+
+              <!--
+                  ⚠ QA-21 — THE REGION EXISTS EVEN WHILE IT IS CLOSED, SO THE HEAD CAN NAME IT AT ALL TIMES. The body
+                  used to be created only while open, so `aria-controls` on the head above had to be dropped whenever
+                  the group was collapsed: measured on this screen, two of the five section heads and the whole
+                  unselected tab carried no reference at all, while the three open ones did — one control pattern
+                  emitting two different attribute sets depending on state. A reference that resolves to nothing is
+                  worse than none, so dropping it was right GIVEN a destroyed body; the fix is to stop destroying the
+                  body. This shell is always in the document and carries `hidden` while closed, which keeps it out of
+                  the accessibility tree and out of the layout; its CONTENT is still created on demand, so no control
+                  of a closed group is in the document and nothing about focus, validation or the error markers on the
+                  tab heads changes.
+                -->
+                <div
+                  class="portal-settings__body"
+                  [id]="sectionBodyId('host')"
+                  [hidden]="!isSectionOpen('host')"
+                >
+                  @if (isSectionOpen('host')) {
+                    <div class="portal-settings__grid">
+                  <app-form-field
+                    [limit]="maxLength.expiryDate"
+                    [label]="fieldLabel['expiryDate']"
+                    [for]="controlId('expiryDate')"
+                    [help]="fieldHelp['expiryDate']"
+                    [error]="messagesFor('expiryDate')"
+                  >
+                    <div class="portal-settings__control portal-settings__control--medium">
+                      <input
+                        type="date"
+                        formControlName="expiryDate"
+                        [id]="controlId('expiryDate')"
+                        [maxlength]="maxLength.expiryDate"
+                      />
+                    </div>
+                  </app-form-field>
+
+                  <app-form-field
+                    [limit]="maxLength.hostFee"
+                    [label]="fieldLabel['hostFee']"
+                    [for]="controlId('hostFee')"
+                    [help]="fieldHelp['hostFee']"
+                    [error]="messagesFor('hostFee')"
+                  >
+                    <div class="portal-settings__control portal-settings__control--narrow">
+                      <input
+                        type="text"
+                        inputmode="decimal"
+                        formControlName="hostFee"
+                        [id]="controlId('hostFee')"
+                        [maxlength]="maxLength.hostFee"
+                        autocomplete="off"
+                      />
+                    </div>
+                  </app-form-field>
+
+                  <!-- The three quota boxes show the stored number, INCLUDING zero. -->
+                  <app-form-field
+                    [limit]="maxLength.hostSpace"
+                    [label]="fieldLabel['hostSpace']"
+                    [for]="controlId('hostSpace')"
+                    [help]="fieldHelp['hostSpace']"
+                    [error]="messagesFor('hostSpace')"
+                  >
+                    <div class="portal-settings__control portal-settings__control--narrow">
+                      <input
+                        type="text"
+                        inputmode="numeric"
+                        formControlName="hostSpace"
+                        [id]="controlId('hostSpace')"
+                        [maxlength]="maxLength.hostSpace"
+                        autocomplete="off"
+                      />
+                    </div>
+                  </app-form-field>
+
+                  <app-form-field
+                    [limit]="maxLength.pageQuota"
+                    [label]="fieldLabel['pageQuota']"
+                    [for]="controlId('pageQuota')"
+                    [help]="fieldHelp['pageQuota']"
+                    [error]="messagesFor('pageQuota')"
+                  >
+                    <div class="portal-settings__control portal-settings__control--narrow">
+                      <input
+                        type="text"
+                        inputmode="numeric"
+                        formControlName="pageQuota"
+                        [id]="controlId('pageQuota')"
+                        [maxlength]="maxLength.pageQuota"
+                        autocomplete="off"
+                      />
+                    </div>
+                  </app-form-field>
+
+                  <app-form-field
+                    [limit]="maxLength.userQuota"
+                    [label]="fieldLabel['userQuota']"
+                    [for]="controlId('userQuota')"
+                    [help]="fieldHelp['userQuota']"
+                    [error]="messagesFor('userQuota')"
+                  >
+                    <div class="portal-settings__control portal-settings__control--narrow">
+                      <input
+                        type="text"
+                        inputmode="numeric"
+                        formControlName="userQuota"
+                        [id]="controlId('userQuota')"
+                        [maxlength]="maxLength.userQuota"
+                        autocomplete="off"
+                      />
+                    </div>
+                  </app-form-field>
+                </div>
+              }
+              </div>
+            </fieldset>
+          }
+        }
+      </div>
+
+      <!-- The form's own action bar. -->
+      <div class="portal-settings__actions">
+        <button class="form-action--primary" type="submit" [disabled]="busy()"
+          [attr.aria-busy]="busy() ? 'true' : null">Update</button>
+        <button type="button" [disabled]="busy()" (click)="onCancel()">Cancel</button>
+
+        @if (busy()) {
+          <!--
+            ⚠ THE LABEL IS BOUND, NOT WRITTEN. It read "Saving…" unconditionally, and this indicator
+            shows whenever any request this screen depends on is outstanding - including the refetch
+            that a plain REVISIT issues, where the form renders immediately from the store's held
+            settings and nothing has been submitted at all.
+          -->
+          <app-loading-spinner size="small" [label]="busyLabel()" />
+        }
+      </div>
+
+      <!--
+        ⚠ THE FORM-LEVEL SUMMARY IS GONE, AND SO IS THE SECOND LIVE REGION IT LIVED IN. It restated, in an
+        assertive region of this screen's own, the news that the field receiving focus already carries -
+        two owners for one category, beside the shared banner. `submitRejected()` survives because the
+        reveal logic uses it; only the restatement has gone. See the submit handler's contract note.
+      -->
+    </form>
+  } @else if (settingsUnreadable()) {
+    <!--
+      ⚠ THE BRANCH THAT WAS MISSING. Without a final alternative here a refused read painted the page
+      chrome and then 656 measured pixels of nothing - no statement of what had happened, and no way to
+      try again. The REASON is not repeated: the banner above owns the problem document and its support
+      reference, and this states only what the blank region means and what to do about it.
+    -->
+    <app-empty-state [message]="settingsUnreadableMessage">
+      <button type="button" (click)="retrySettingsRead()">{{ settingsRetryLabel }}</button>
+    </app-empty-state>
+  }
+
+  <!--
+    The confirmation is CREATED when it is needed, because it opens itself as a modal on first view. Its
+    wording is this screen's own measured message — including the space before its question mark — and
+    not the shared "delete this item" question the portal listing asks.
+  -->
+  @if (confirmingDelete()) {
+    <!--
+      ⚠ NO `title` IS BOUND, AND THAT IS THE POINT. Every delete confirmation in this application shows
+      the SAME title, which the shared dialog declares as its default; binding one here is how five
+      different titles for one action came about - runtime testing found `Delete`, `Confirm Delete`,
+      `Delete Module`, `Delete Profile Property` and `Delete role group` across the screens.
+    -->
+    <app-confirm-dialog
+      [title]="deleteConfirmTitle"
+      [message]="deleteConfirmMessage()"
+      [confirmLabel]="deleteConfirmLabel"
+      danger
+      (confirm)="onDeleteConfirmed()"
+      (cancel)="onDeleteCancelled()"
+    />
+  }
+</section>

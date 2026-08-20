@@ -1,0 +1,211 @@
+// Component stylesheet for the tenant's account-administration policy screen, served by the route
+// /settings/membership.
+
+@use '../../../../styles/mixins' as mx;
+
+// ROOT - THE HOST AND THE FORM
+// The rhythm is a grid `gap` because the host's children are a page header, an announcement region, a
+// conditional failure line and either an indicator or the form - a set whose membership changes at run
+// time.
+:host {
+  display: grid;
+  gap: var(--space-4);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+
+  // The widest label track in the token set, because six of this screen's captions are full policy sentences
+  // — "Number of minutes a user's authentication is cached for" and its neighbours — and the standard 150px
+  // track reflowed every one of them onto three or four lines.
+  //
+  // ⚠ THIS NO LONGER REACHES THE SIX CHOICE FIELDS, and that is deliberate. It used to: a 300px label track
+  // inside a roughly 350px grid cell left each switch about 300px from its own caption and roughly 30px from
+  // the NEXT one, so 4 to 6 of the 14 switches read as belonging to the wrong label and at 1024px three sat
+  // in the fieldset's right padding — QA-06. The shared field's choice variant is now sized to its caption
+  // instead of to this track, so the override applies only to the six text, number and select fields it was
+  // actually written for.
+  --field-label-inline-size: var(--field-label-inline-size-wider);
+
+  // ⚠ BELOW `lg` THE CAPTION YIELDS TO THE VALUE, because at that width the two can no longer both have
+  // what they want and the value is the one that cannot be recovered.
+  //
+  // The shared field caps its caption track at `min(token, 45%)`, so at 768 the 300px above resolves to
+  // 225.891px of a 502px field and leaves the value 260.109px. Measured against the running screen, that is
+  // 21.6px short of what the longest redirect option needs: `No redirect (stay on the current page)` is
+  // 249.287px of text against a 242px content box once Chrome's ~14.4px dropdown-arrow reserve is taken
+  // out, so the picker painted `No redirect (stay on the current pa` and clipped `ge)` with no ellipsis.
+  // A native select cannot signal that loss the way a table cell can — `scrollWidth` equals `clientWidth`
+  // because a select never scroll-overflows its own label, so nothing in the DOM even reports it.
+  //
+  // ⚠ THE WIDE STEP WAS TRIED FIRST AND WAS MEASURABLY 6.68px SHORT. It takes the caption to 200px and
+  // the value to 286px, and re-measurement on the running screen showed all three redirect pickers STILL
+  // eliding `ge)` — because the arrow reserve on this select is 25.393px, not the 14.393px the first
+  // estimate back-solved, so the value needs 292.68px. The step below it takes the caption to 180px and the
+  // value to 306px, 13.3px clear, and still holds the longest caption here — `Redirect After
+  // Registration` at 177.63px — on one line. Going all the way to the base 150px would wrap that caption
+  // to buy width the value does not need.
+  //
+  // The captions this screen widened the track for are policy sentences that already wrap; they wrap a
+  // little more at this width, and a wrapped caption stays entirely readable while a clipped value does
+  // not. The cap still applies on top, so nothing here can exceed 45% of a narrower field.
+  @include mx.respond-below('lg') {
+    --field-label-inline-size: var(--field-label-inline-size-medium);
+  }
+}
+
+.membership-settings {
+  display: grid;
+  gap: var(--space-4);
+}
+
+// THE REDUCED-AFFORDANCE NOTE ABOVE THE REDIRECT PICKERS
+// Shown only when the page listing could not be read. Muted rather than red: every setting on the screen can
+// still be saved, so this is not a failure and must not read as one - the failure channel is the shared
+// banner, which is now this screen's only owner of that category.
+.membership-settings__pages-unavailable {
+  max-inline-size: mx.breakpoint('md');
+}
+
+// The provenance disclosure - #6. Whether the values on this screen are a stored policy or the platform
+// defaults.
+.membership-settings__provenance {
+  margin: 0;
+  max-inline-size: mx.breakpoint('md');
+  color: var(--color-text-muted);
+
+  &[data-provenance='defaults'] {
+    color: var(--color-primary);
+    font-weight: var(--font-weight-bold);
+  }
+}
+
+// The tenant stores no policy, so there is nothing to read and nowhere to write.
+.membership-settings__unconfigured {
+  margin: 0;
+  max-inline-size: mx.breakpoint('md');
+}
+
+// THE POLICY SECTION - A NATIVE DISCLOSURE
+// MIGRATION: the corner radius is a net addition. The legacy portal is square-cornered and shadowless, so
+// the radius scale exists as an intentional refinement that alters no behaviour; no elevation is taken,
+// because this surface is defined by its border.
+.membership-settings__section {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: var(--border-width) var(--border-style) var(--color-border);
+  border-radius: var(--radius-md);
+  background-color: var(--color-background);
+}
+
+.membership-settings__section-summary {
+  cursor: pointer;
+}
+
+// The heading stays a real `h2` rather than being reduced to a span, because nesting it in the summary
+// keeps this section in the document outline directly beneath the page heading with no level skipped - an
+// accessibility gain the governing precedence order ranks above visual continuity, and one with no visual
+// cost.
+.membership-settings__section-heading {
+  display: inline;
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+}
+
+// THE DISCLOSED BODY
+// The legacy inter-section spacing was CONTENT - `UserSettings.ascx` L29 and L52 are table rows whose only
+// content is a cell ten device pixels high.
+.membership-settings__section-body {
+  display: grid;
+  gap: var(--space-3);
+
+  app-form-field {
+    margin-block-end: 0;
+  }
+}
+
+// THE ACCOUNT-LISTING COLUMN SWITCHES
+// MIGRATION: the responsive behaviour is a net addition in its entirety. Both legacy stylesheets declare a
+// viewport query zero times, so there is no behaviour at any width to preserve.
+.membership-settings__columns {
+  display: grid;
+  gap: var(--space-2) var(--space-4);
+  padding: 0;
+  border: 0;
+  margin: 0;
+
+  // A grid rather than a wrapping flex run, because only a grid gives every switch the same track width -
+  // and since each switch is itself a two-column label-and-control grid, equal tracks are what bring the
+  // labels into alignment down the page.
+  @include mx.respond-above('md') {
+    grid-template-columns: repeat(2, var(--grid-track-fluid));
+  }
+
+  @include mx.respond-above('lg') {
+    grid-template-columns: repeat(3, var(--grid-track-fluid));
+  }
+
+  // Cleared for the same reason, and it matters more here: with a row gap this small, a field
+  // bringing its own trailing margin would separate the rows by visibly more than the columns.
+  app-form-field {
+    margin-block-end: 0;
+  }
+}
+
+// A legend is normally painted into its fieldset's border and needs inline padding to open a gap in that
+// border. This fieldset has no border, so the padding is removed.
+// ⚠ #21 — THE NESTED HEADING STEPS DOWN FROM THE SECTION HEAD ABOVE IT. The section head is an `h2` held at
+// the compact `--font-size-lg` step that all three settings screens use for a disclosure head, and this
+// legend's `h3` took the same 15px from the element ramp - so the sub-region and the region containing it
+// were the same size. One step down restores the rank.
+// ⚠ QA-24 — THE THIRD LEVEL IS NOW A PERCEIVABLE STEP BELOW THE SECOND, AND IT WAS ONE PIXEL. Measured:
+// the section heading above this legend renders at 15px/700 (`--font-size-lg`, the size every one of the
+// twelve section headings in this application uses) and this caption rendered at 14px/700 — a one-pixel
+// distinction that conveys no rank at all, while the 14px is also the body size, so the caption matched the
+// text it was captioning. `--font-size-sm` is the next step the vocabulary offers and gives a 2px drop; the
+// bold weight and the primary colour are what keep it reading as a caption rather than as small print.
+//
+// The legacy vocabulary offers no third level to copy — `Website/Portals/_default/default.css` L65-L80
+// declares exactly two, `.Head` at 20px/normal for a page title and `.SubHead` at 11px/bold for every item
+// title — so a third rank is a net addition and is recorded as such in MIGRATION_NOTES.md.
+.membership-settings__columns-legend {
+  padding-inline: 0;
+  margin-block-end: var(--space-2);
+
+  h3 {
+    font-size: var(--font-size-sm);
+  }
+}
+
+// THE STORED VALIDATION EXPRESSION
+// MIGRATION: the monospaced family is a net addition. The legacy screen rendered this value in the body
+// face, where a space and a non-breaking space are indistinguishable in a value whose entire meaning is
+// character-exact.
+.membership-settings__expression {
+  font-family: var(--font-family-mono);
+  overflow-wrap: anywhere;
+}
+
+// THE TWO FORM COMMANDS
+.membership-settings__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+// Each command sits at its own content width whatever the row does around it.
+.membership-settings__action {
+  display: inline-flex;
+  align-items: center;
+}
+
+// ⚠ #22 — THE PRIMARY MARKER IS THE SHARED ONE, `.form-action--primary` in _forms.scss. This screen used to
+// declare its own `--primary` modifier saying exactly the same thing, which is how one vocabulary becomes
+// several: the module form carried a third copy, and a reviewer walking the create screens met three
+// species of the same command. Nothing is declared here any more.
+
+// REMAINING DIVERGENCES, RECORDED RATHER THAN ABSORBED
+// MIGRATION: the control chrome the fields wear - border, padding, background and radius - is a net
+// addition with no fidelity owed, because the legacy text-entry rule declared none of the four. It is
+// `_forms.scss` that supplies them, and this file adds nothing of its own.

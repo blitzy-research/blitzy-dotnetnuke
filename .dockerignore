@@ -1,0 +1,94 @@
+# Docker build-context excludes for the repository root. Both shipped images
+# build from this directory, so this one file governs both; frontend/.dockerignore
+# is a separate list that applies only to a build rooted at frontend/.
+#
+# Every rule is root-anchored or `**/`-scoped and none is a `!` re-inclusion, so
+# rule order can never resurrect or hide a file. Nothing a Dockerfile COPYs may
+# be added here.
+
+# Version control and repository plumbing.
+.git/
+.gitignore
+.gitattributes
+.github/
+
+# Legacy VB.NET reference trees. Read-only inputs; no image copies them.
+Library/
+Website/
+DotNetNuke.sln
+DotNetNuke_VS2008.sln
+
+# Documentation and repository metadata - no image serves documentation.
+docs/
+blitzy/
+mkdocs.yml
+catalog-info.yaml
+README.md
+MIGRATION_NOTES.md
+
+# Root-scoped on purpose: `*` never crosses `/`, so Markdown nested in a
+# subdirectory is not matched and stays in the context.
+*.md
+
+# .NET build output. Global rather than backend-scoped: the API image restores
+# inside the SDK stage and then publishes with --no-restore, so a host-built
+# obj/ arriving in the context would overwrite project.assets.json with host
+# paths and break that publish.
+**/bin/
+**/obj/
+**/[Dd]ebug/
+**/[Rr]elease/
+**/x64/
+**/x86/
+**/artifacts/
+**/TestResults/
+**/*.trx
+**/*.coverage
+**/coverage.*.json
+**/coverage.*.xml
+**/coverage.*.info
+**/*.received.*
+
+# Node / Angular output. node_modules/ matters for the same reason: the frontend
+# image runs `npm ci` before copying sources, so a host install would replace a
+# Linux-native one with host-platform native bindings.
+**/node_modules/
+**/dist/
+**/coverage/
+**/.angular/
+**/npm-debug.log*
+**/yarn-error.log*
+**/*.tsbuildinfo
+**/.eslintcache
+
+# Secrets and local environment - never bake credentials into a layer.
+# `**/.env*` also covers docker/.env.example: compose interpolates the host .env
+# before any build starts, so neither file is needed inside the context. Shipped
+# appsettings.*.json stay in the context; only *.local.json overrides are cut.
+**/.env*
+**/appsettings.*.local.json
+**/secrets.json
+**/*.pfx
+**/*.p12
+**/*.p8
+**/*.jks
+**/*.keystore
+**/*.ppk
+**/*.key
+**/*.pem
+
+# IDE / editor / OS noise.
+**/.vs/
+**/.vscode/
+**/.idea/
+**/*.user
+**/*.userosscache
+**/*.userprefs
+**/*.suo
+**/*.swp
+**/*.swo
+**/*~
+**/.DS_Store
+**/Thumbs.db
+**/logs/
+**/*.log

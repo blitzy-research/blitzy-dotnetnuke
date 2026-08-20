@@ -1,0 +1,947 @@
+<app-page-header [title]="heading" [subtitle]="pageSubtitle"></app-page-header>
+
+<!--
+  The rejected-write surface: it renders the problem document the server sent, resolved to plain text by
+  core/utils/form-errors.util.ts, and nothing else. A refusal is announced as a warning-severity
+  advisory instead, on the legacy access-denied screen's precedent.
+-->
+<app-error-banner [problem]="problem()"></app-error-banner>
+
+@if (loading) {
+  <app-loading-spinner label="Loading module settings…"></app-loading-spinner>
+} @else if (administeredElsewhere()) {
+  <!--
+    ⚠ A BOUNDARY, EXPLAINED, RATHER THAN A REFUSAL LEFT ON SCREEN. This branch precedes the refusal branch
+    below deliberately: the server DOES answer 403 here, and the refusal branch would render the problem
+    document and nothing else - measured as a heading, a Forbidden banner reading "Administrative module
+    settings are available only through their typed privileged endpoint", and no way on. That sentence is
+    addressed to a client, not to an operator. This states the same fact in the operator's terms and, where
+    this console has the screen that owns those settings, takes them to it.
+  -->
+  <!--
+    ⚠ THE ASSERTIVE CHANNEL, AND `role="note"` WAS THE WRONG ONE. This block does not annotate the screen,
+    it REPLACES it: the operator asked for a settings form, waited for a read, and got a wall. `note` is a
+    static structural role that announces nothing on insertion, so a screen-reader user was left on a screen
+    whose form had silently never arrived, with no statement that it would not. The pair below is the same
+    one `app-error-banner` uses - the application's one assertive channel - so a boundary and a refusal are
+    announced through the same mechanism rather than two. `alert` announces on insertion, which is exactly
+    when this fact becomes true.
+  -->
+  <div class="module-settings__administered" role="alert" aria-live="assertive">
+    <p class="module-settings__administered-message">{{ administrativeMessage }}</p>
+
+    @if (administeringScreen(); as owner) {
+      <p class="module-settings__administered-message">
+        {{ administeredElsewhereMessage }}
+        <a class="module-settings__administered-link" [routerLink]="owner.route">{{ owner.label }}</a>
+        screen.
+      </p>
+    } @else {
+      <p class="module-settings__administered-message">{{ administeredNowhereMessage }}</p>
+    }
+
+    <a class="module-settings__administered-link" [routerLink]="moduleListRoute">{{ returnToModulesLabel }}</a>
+
+    <!--
+      Carried even though this is not presented as a failure: the server DID refuse, and an operator who
+      believes the boundary is wrong needs the identifier to raise it. Introduced with the same wording the
+      shared error banner uses, so one value is never announced two ways.
+    -->
+    @if (administrativeReference(); as reference) {
+      <p class="module-settings__administered-reference">{{ supportReferenceLabel }} {{ reference }}</p>
+    }
+  </div>
+} @else if (readRefused() || settingsRefused()) {
+  <!--
+    THE READ WAS REFUSED, OR FAILED. The banner above IS the presentation, and this branch exists to
+    render nothing beneath it - which is what makes the refusal one statement rather than two.
+  -->
+} @else if (notFound()) {
+  <!--
+    An identifier that resolves to nothing is a legitimate state - a stale bookmark, or a module already
+    removed - and is reported as such rather than as an error.
+  -->
+  <app-empty-state [message]="notFoundMessage"></app-empty-state>
+} @else if (settings === null) {
+  <app-empty-state [message]="noModuleMessage"></app-empty-state>
+} @else {
+  <form class="module-settings" [formGroup]="form" (ngSubmit)="onSubmit()">
+    <section class="module-settings__section">
+      <h2 class="module-settings__section-heading">
+        <button
+          class="module-settings__toggle module-settings__toggle--ruled"
+          type="button"
+          [id]="sectionHeadingId('moduleSettings')"
+          [attr.aria-expanded]="isExpanded('moduleSettings')"
+          [attr.aria-controls]="sectionBodyId('moduleSettings')"
+          (click)="toggle('moduleSettings')"
+        >
+          {{ headings['moduleSettings'] }}
+        </button>
+      </h2>
+
+      @if (isExpanded('moduleSettings')) {
+        <div [id]="sectionBodyId('moduleSettings')" class="module-settings__body" role="group" [attr.aria-labelledby]="sectionHeadingId('moduleSettings')">
+          <p class="module-settings__intro">{{ intros['moduleSettings'] }}</p>
+
+          <section class="module-settings__section module-settings__section--nested">
+            <h3 class="module-settings__section-heading">
+              <button
+                class="module-settings__toggle"
+                type="button"
+                [id]="sectionHeadingId('details')"
+                [attr.aria-expanded]="isExpanded('details')"
+                [attr.aria-controls]="sectionBodyId('details')"
+                [attr.aria-describedby]="sectionHeadingId('moduleSettings')"
+                (click)="toggle('details')"
+              >
+                {{ headings['details'] }}
+              </button>
+            </h3>
+
+            @if (isExpanded('details')) {
+              <div [id]="sectionBodyId('details')" class="module-settings__body" role="group" [attr.aria-labelledby]="sectionHeadingId('details')">
+                <div class="module-settings__fields">
+                  <!--
+                    The definition's name is shown, never edited: which definition a module instantiates
+                    is fixed when it is created.
+                  -->
+                  <!--
+                    NO `for`, BECAUSE THERE IS NO CONTROL TO NAME. The shared field renders its caption
+                    as a `span` in that case and names the control group from it, so the read-only value
+                    still carries the field's name without a `label` element captioning nothing.
+                  -->
+                  <app-form-field
+                    #friendlyNameField
+                    [label]="labels['friendlyName']"
+                    [help]="hints['friendlyName']"
+                  >
+                    <span [attr.aria-labelledby]="friendlyNameField.labelId()">{{ settings.friendlyName }}</span>
+                  </app-form-field>
+
+                  <!--
+                    ⚠ INVALIDITY AND THE MESSAGE COME FROM ONE EXPRESSION, ON EVERY FIELD BELOW, AND
+                    THAT IS THE POINT. This screen used to publish a reference to a control's error
+                    region and never publish `aria-invalid` at all - nine controls and groups - so
+                    assistive technology was handed a message with nothing to attach it to.
+                  -->
+                  <app-form-field
+                    [label]="labels['moduleTitle']"
+                    [help]="hints['moduleTitle']"
+                    [error]="messagesFor('moduleTitle')"
+                    [for]="controlId('moduleTitle')"
+                  >
+                    <input
+                      type="text"
+                      formControlName="moduleTitle"
+                      [id]="controlId('moduleTitle')"
+                      [maxlength]="limits.moduleTitle"
+                      [attr.aria-invalid]="messagesFor('moduleTitle').length > 0"
+                    />
+
+                    <!--
+                      ⚠ PROJECTED INTO THE FIELD, NOT PLACED AFTER IT, and the distinction survives the
+                      conversion to the shared component.
+                    -->
+                    @if (titleFallbackNotice !== null) {
+                      <p class="module-settings__notice" aria-live="polite">{{ titleFallbackNotice }}</p>
+                    }
+                  </app-form-field>
+
+                  <!--
+                    The permission grid itself is its own resource with its own screen; the inherit
+                    switch IS a column on the module, so it is kept here. --stacked because the legacy
+                    permissions region occupied the full width rather than a label/field pair.
+                  -->
+                  <!--
+                    ⚠ THE CAPTION NAMES THE REGION AND THE SWITCH NAMES ITSELF, which is why this field
+                    declares no `for`. Two names are in play: 'Permissions' captions the whole region,
+                    and 'Inherit View permissions from Page' names the one control in it.
+                  -->
+                  <app-form-field
+                    class="form-field--stacked"
+                    [label]="labels['permissions']"
+                    [help]="hints['permissions']"
+                    [error]="messagesFor('inheritViewPermissions')"
+                  >
+                    <!--
+                      WITHHELD WHILE THE VOCABULARY IS UNKNOWN. Inheritance chooses which permission set
+                      applies, so it cannot be chosen against a vocabulary that is still being read or that
+                      failed to read - see permissionControlsWithheld, which is deliberately scoped to
+                      this control alone and does not touch the rest of the screen. The lock itself is
+                      applied to the FORM CONTROL rather than through an attribute, because Angular's
+                      reactive-form directive owns the disabled state of a bound control and discards an
+                      `[attr.disabled]` binding on it outright - proven by a spec that measured
+                      `aria-disabled` applied while the property stayed false. The submission reads
+                      `getRawValue()`, which includes disabled controls, so the operator's choice still
+                      reaches the server.
+                    -->
+                    <label [for]="controlId('inheritViewPermissions')">
+                      <input
+                        type="checkbox"
+                        formControlName="inheritViewPermissions"
+                        [id]="controlId('inheritViewPermissions')"
+                        [attr.aria-invalid]="messagesFor('inheritViewPermissions').length > 0"
+                        [attr.aria-disabled]="permissionControlsWithheld() ? 'true' : null"
+                      />
+                      {{ labels['inheritViewPermissions'] }}
+                    </label>
+
+                      <!--
+                        ⚠ FOUR STATES, THREE OF WHICH USED TO LOOK IDENTICAL. This region once rendered
+                        nothing whenever the backing signal was `null`, and `null` meant "not applicable"
+                        OR "still loading" OR "failed" - so a refused or failed catalogue read was
+                        pixel-for-pixel identical to a definition that declares no keys, and the screen
+                        silently asserted an empty vocabulary it had never read. The switch above is
+                        choosing between exactly these keys, so that blank misrepresented the decision
+                        being made. `aria-busy` marks the outstanding read: this is the six-second
+                        sub-request that previously had no loading affordance of any kind.
+                      -->
+                      <div
+                        class="module-settings__declared-permissions-region"
+                        [attr.aria-busy]="declaredKeysLoading() ? 'true' : null"
+                      >
+                        @if (declaredKeysLoading()) {
+                          <!--
+                            The spinner accompanies the sentence rather than replacing it. A six-second wait
+                            with text alone reads as a finished state that happens to say "reading"; the
+                            moving indicator is what distinguishes "still working" from "this is the answer".
+                          -->
+                          <p class="module-settings__declared-permissions-pending" role="status">
+                            <!--
+                              THE SPINNER IS PASSED AN EMPTY LABEL SO IT RENDERS AS A BARE INDICATOR. Given
+                              one it renders its own VISIBLE label and takes `role="status"` itself, which
+                              printed the sentence twice side by side and nested one live region inside
+                              another - measured in a real browser, with both copies painting and the
+                              announcement duplicated. The paragraph owns the sentence and the live region;
+                              the spinner contributes only the motion, and marks itself `aria-hidden`.
+                            -->
+                            <app-loading-spinner size="small" label="" />
+                            {{ declaredKeysLoadingLabel }}
+                          </p>
+                        } @else if (declaredKeysUnread()) {
+                          <!--
+                            Announced politely rather than assertively: the read is advisory, so it must
+                            report itself without interrupting whatever the operator is typing.
+                          -->
+                          <p class="module-settings__declared-permissions-unread" role="status">
+                            {{ declaredKeysFailedLabel }}
+                            @if (declaredKeysFailureDetail(); as reason) {
+                              <span class="module-settings__declared-permissions-reason">{{ reason }}</span>
+                            }
+                            @if (declaredKeysFailureReference(); as reference) {
+                              <!--
+                                The support reference for an INLINE failure. Without it this was the one
+                                failure on the screen an operator could not quote, because it never reaches
+                                the page-level banner that renders references for everything else.
+                              -->
+                              <span class="module-settings__declared-permissions-reference">
+                                Reference: {{ reference }}
+                              </span>
+                            }
+                          </p>
+
+                          <button
+                            type="button"
+                            class="module-settings__declared-permissions-retry"
+                            (click)="onRetryDeclaredKeys()"
+                          >
+                            {{ declaredKeysRetryLabel }}
+                          </button>
+                        } @else {
+                          <!--
+                            ⚠ THE GRID ITSELF, WHICH THIS SCREEN PREVIOUSLY DID NOT HAVE AT ALL. The legacy
+                            screen declared `<dnn:modulepermissionsgrid id="dgPermissions">`
+                            (`modulesettings.ascx:L42`) and persisted `objModule.ModulePermissions`
+                            (`ModuleSettings.ascx.vb:L378-L379`); the first port rendered only the four
+                            declared key names as inert text, so a portal administrator could read the
+                            vocabulary but could not grant or withdraw a single permission. The help text
+                            above still said "by checking/unchecking the boxes in the grid" - there were no
+                            boxes and no grid.
+                          -->
+                          @if (permissionGridEmpty()) {
+                            <!--
+                              ⚠ ITS OWN CLASS, NOT THE FAILURE'S. The unread class is the idiom for "the
+                              vocabulary could not be read", and the whole point of separating that state was
+                              that an EMPTY answer and an UNREAD one must never look alike. This one is a
+                              real answer, stated positively.
+                            -->
+                            <p class="module-settings__permission-grid-empty" role="status">
+                              {{ permissionGridEmptyMessage }}
+                            </p>
+                          }
+
+                          @if (permissionGridPresent()) {
+                            <!--
+                              ⚠ THE PUBLISHED SCROLLER CONTRACT, NOT A BARE OVERFLOW BOX. This grid is as
+                              wide as the module type declares permissions - one column per key - so on a
+                              narrow viewport it clips exactly as a listing does, and it used to clip in
+                              silence: no role, no name, no tab stop, so a keyboard user could not scroll
+                              it at all and the columns past the edge were unreachable. `styles/_tables.scss`
+                              already publishes `[data-table-scroll]` - the overflow behaviour, the
+                              contained overscroll and the focus ring - and the shared grid already
+                              establishes that the role, the name and the tab stop are emitted ONLY while
+                              the region actually clips. Both are reused verbatim here rather than restated,
+                              so the two scrollers on this application cannot drift apart.
+                            -->
+                            <div
+                              class="module-settings__permission-grid-scroll"
+                              data-table-scroll
+                              [attr.tabindex]="permissionScrollerClips() ? 0 : null"
+                              [attr.role]="permissionScrollerClips() ? 'region' : null"
+                              [attr.aria-labelledby]="
+                                permissionScrollerClips() ? permissionGridCaptionId : null
+                              "
+                            >
+                              <table class="module-settings__permission-grid">
+                                <!--
+                                  A CAPTION RATHER THAN A HEADING, so the table carries its own name in the
+                                  accessibility tree instead of borrowing the field's. The legacy grid's
+                                  first column header was the literal `&nbsp;` (`PermissionsGrid.vb:L490`),
+                                  which named nothing; a column of role names is given the name it holds.
+
+                                  It carries an identifier because the scrolling region borrows it as its
+                                  own name, exactly as the shared grid's region does - so the region and
+                                  the table it wraps can never describe themselves differently.
+                                -->
+                                <caption
+                                  [id]="permissionGridCaptionId"
+                                  [attr.data-visually-hidden]="true"
+                                >
+                                  {{ permissionGridCaption }}
+                                </caption>
+
+                                <thead>
+                                  <tr>
+                                    <th scope="col">{{ permissionGridRoleHeading }}</th>
+                                    @for (column of permissionColumns(); track column.permissionId) {
+                                      <th scope="col">
+                                        {{ column.permissionName }}
+                                        @if (column.inherited) {
+                                          <!--
+                                            The column is not merely disabled, it is being decided
+                                            elsewhere, and saying so is what stops the locked boxes reading
+                                            as a fault.
+                                          -->
+                                          <span class="module-settings__permission-column-note">
+                                            inherited from page
+                                          </span>
+                                        }
+                                      </th>
+                                    }
+                                  </tr>
+                                </thead>
+
+                                <tbody>
+                                  @for (row of permissionRows(); track row.key) {
+                                    <tr>
+                                      <!--
+                                        `scope="row"` so each checkbox is announced against the role it
+                                        belongs to as well as the column, which a bare cell cannot convey.
+                                      -->
+                                      <th scope="row">
+                                        {{ row.name }}
+                                        @if (row.isAdministrator) {
+                                          <span class="module-settings__permission-row-note">
+                                            always granted
+                                          </span>
+                                        }
+                                      </th>
+
+                                      @for (cell of row.cells; track cell.permissionId) {
+                                        <td>
+                                          <!--
+                                            ⚠ THE LABEL IS VISUALLY HIDDEN, NOT ABSENT. A grid of bare
+                                            checkboxes announces "checkbox, checked" with nothing to
+                                            distinguish one from another, and `aria-label` alone would not
+                                            give the box a clickable label.
+                                          -->
+                                          <label
+                                            [for]="permissionCellId(row, cell)"
+                                            [attr.data-visually-hidden]="true"
+                                          >
+                                            {{ permissionCellLabel(row, cell) }}
+                                          </label>
+                                          <!--
+                                            ⚠ THE REASON IS ASSOCIATED TEXT, NOT A `title` ON A DISABLED
+                                            BOX. A disabled checkbox takes no focus and no hover
+                                            affordance, so a `title` on it was the one place the
+                                            explanation could not be reached: keyboard users never landed
+                                            on it, and it is advisory content no screen reader is obliged
+                                            to announce. It now points at a sentence printed once below
+                                            the grid, which every user can read and which `aria-describedby`
+                                            reaches whether or not the box is focusable.
+                                          -->
+                                          <input
+                                            type="checkbox"
+                                            [id]="permissionCellId(row, cell)"
+                                            [checked]="cell.allowAccess"
+                                            [disabled]="!cell.editable"
+                                            [attr.aria-describedby]="permissionCellDescribedBy(cell)"
+                                            (change)="
+                                              onPermissionCellToggle(
+                                                row,
+                                                cell,
+                                                $any($event.target).checked
+                                              )
+                                            "
+                                          />
+                                        </td>
+                                      }
+                                    </tr>
+                                  }
+                                </tbody>
+                              </table>
+                            </div>
+
+                            <!--
+                              ⚠ VISIBLE, NOT VISUALLY HIDDEN. Removing the `title` took the explanation
+                              away from pointer users, so printing it is what stops that being a
+                              regression: the reasons a box is locked are now stated on the page for
+                              everyone, and each locked box points at the sentence that applies to it.
+                              Only the reasons actually in play are printed.
+                            -->
+                            @for (entry of permissionLockLegend(); track entry.id) {
+                              <!--
+                                ⚠ THE SCREEN'S OWN NOTE TREATMENT, NOT A BESPOKE LEGEND STYLE. These are
+                                explanatory sentences beneath a field, which is exactly what
+                                `.module-settings__notice` already presents, so reusing it keeps one answer
+                                to one question and adds no new rule. The attribute is how a test
+                                identifies them; the class is how they are painted.
+                              -->
+                              <p
+                                class="module-settings__notice"
+                                data-permission-lock
+                                [id]="entry.id"
+                              >
+                                {{ entry.sentence }}
+                              </p>
+                            }
+                          }
+
+                          <!--
+                            An EMPTY array is a real answer - this definition declares no keys - and it is
+                            correct for that to render nothing, now that it can no longer be confused with
+                            a read that did not happen. The binding sits on its own primary `@if` because
+                            `as` is not permitted on an `@else if`.
+                          -->
+                          @if (definitionPermissionKeys(); as declaredKeys) {
+                            @if (declaredKeys.length > 0) {
+                              <p class="module-settings__declared-permissions">
+                                <span class="module-settings__declared-permissions-label">
+                                  {{ definitionPermissionKeysLabel }}
+                                </span>
+                                @for (key of declaredKeys; track key) {
+                                  <span class="module-settings__declared-permission">{{ key }}</span>
+                                }
+                              </p>
+                            }
+                          }
+                        }
+                      </div>
+                  </app-form-field>
+                </div>
+              </div>
+            } @else {
+              <!--
+                The region's identity, kept while it is closed so the toggle above can name it in both
+                states.
+              -->
+              <div [id]="sectionBodyId('details')" hidden></div>
+            }
+          </section>
+
+          <section class="module-settings__section module-settings__section--nested">
+            <h3 class="module-settings__section-heading">
+              <button
+                class="module-settings__toggle"
+                type="button"
+                [id]="sectionHeadingId('security')"
+                [attr.aria-expanded]="isExpanded('security')"
+                [attr.aria-controls]="sectionBodyId('security')"
+                [attr.aria-describedby]="sectionHeadingId('moduleSettings')"
+                (click)="toggle('security')"
+              >
+                {{ headings['security'] }}
+              </button>
+            </h3>
+
+            @if (isExpanded('security')) {
+              <div [id]="sectionBodyId('security')" class="module-settings__body" role="group" [attr.aria-labelledby]="sectionHeadingId('security')">
+                <div class="module-settings__fields">
+                  <app-form-field
+                    [label]="labels['tabId']"
+                    [help]="hints['tabId']"
+                    [error]="messagesFor('tabId')"
+                    [for]="controlId('tabId')"
+                  >
+                    <select
+                      formControlName="tabId"
+                      [id]="controlId('tabId')"
+                      [attr.aria-invalid]="messagesFor('tabId').length > 0"
+                    >
+                      @for (page of pages; track page.value) {
+                        <option [ngValue]="page.value">{{ page.label }}</option>
+                      }
+                    </select>
+                  </app-form-field>
+
+                  <!-- `form-field--inline` keeps the caption beside the box at every width. -->
+                  <app-form-field
+                    class="form-field--inline"
+                    [label]="labels['allTabs']"
+                    [help]="hints['allTabs']"
+                    [error]="messagesFor('allTabs')"
+                    [for]="controlId('allTabs')"
+                  >
+                    <input
+                      type="checkbox"
+                      formControlName="allTabs"
+                      [id]="controlId('allTabs')"
+                      [attr.aria-invalid]="messagesFor('allTabs').length > 0"
+                    />
+                  </app-form-field>
+
+                  <!--
+                    rows="6" reproduces the legacy multi-line height, and `form-field--multiline` is
+                    what keeps the caption pinned to the top of a tall row rather than sitting on a
+                    baseline partway down it.
+                  -->
+                  <app-form-field
+                    class="form-field--multiline"
+                    [label]="labels['header']"
+                    [help]="hints['header']"
+                    [error]="messagesFor('header')"
+                    [for]="controlId('header')"
+                  >
+                    <textarea
+                      rows="6"
+                      formControlName="header"
+                      [id]="controlId('header')"
+                      [attr.aria-invalid]="messagesFor('header').length > 0"
+                    ></textarea>
+                  </app-form-field>
+
+                  <app-form-field
+                    class="form-field--multiline"
+                    [label]="labels['footer']"
+                    [help]="hints['footer']"
+                    [error]="messagesFor('footer')"
+                    [for]="controlId('footer')"
+                  >
+                    <textarea
+                      rows="6"
+                      formControlName="footer"
+                      [id]="controlId('footer')"
+                      [attr.aria-invalid]="messagesFor('footer').length > 0"
+                    ></textarea>
+                  </app-form-field>
+
+                  <app-form-field
+                    [label]="labels['startDate']"
+                    [help]="hints['startDate']"
+                    [error]="messagesFor('startDate')"
+                    [for]="controlId('startDate')"
+                  >
+                    <input
+                      type="date"
+                      formControlName="startDate"
+                      [id]="controlId('startDate')"
+                      [maxlength]="limits.startDate"
+                      [attr.aria-invalid]="messagesFor('startDate').length > 0"
+                    />
+                  </app-form-field>
+
+                  <app-form-field
+                    [label]="labels['endDate']"
+                    [help]="hints['endDate']"
+                    [error]="messagesFor('endDate')"
+                    [for]="controlId('endDate')"
+                  >
+                    <input
+                      type="date"
+                      formControlName="endDate"
+                      [id]="controlId('endDate')"
+                      [maxlength]="limits.endDate"
+                      [attr.aria-invalid]="messagesFor('endDate').length > 0"
+                    />
+                  </app-form-field>
+                </div>
+              </div>
+            } @else {
+              <!--
+                The region's identity, kept while it is closed so the toggle above can name it in both
+                states.
+              -->
+              <div [id]="sectionBodyId('security')" hidden></div>
+            }
+          </section>
+        </div>
+      } @else {
+        <!--
+          The region's identity, kept while it is closed so the toggle above can name it in both states.
+          Empty and hidden: the CONTENTS are still removed rather than hidden, which is what keeps a
+          closed region out of the tab order and its controls out of the accessibility tree.
+        -->
+        <div [id]="sectionBodyId('moduleSettings')" hidden></div>
+      }
+    </section>
+
+    <section class="module-settings__section">
+      <h2 class="module-settings__section-heading">
+        <button
+          class="module-settings__toggle module-settings__toggle--ruled"
+          type="button"
+          [id]="sectionHeadingId('pageSettings')"
+          [attr.aria-expanded]="isExpanded('pageSettings')"
+          [attr.aria-controls]="sectionBodyId('pageSettings')"
+          (click)="toggle('pageSettings')"
+        >
+          {{ headings['pageSettings'] }}
+        </button>
+      </h2>
+
+      @if (isExpanded('pageSettings')) {
+        <div [id]="sectionBodyId('pageSettings')" class="module-settings__body" role="group" [attr.aria-labelledby]="sectionHeadingId('pageSettings')">
+          <p class="module-settings__intro">{{ intros['pageSettings'] }}</p>
+
+          <section class="module-settings__section module-settings__section--nested">
+            <h3 class="module-settings__section-heading">
+              <button
+                class="module-settings__toggle"
+                type="button"
+                [id]="sectionHeadingId('appearance')"
+                [attr.aria-expanded]="isExpanded('appearance')"
+                [attr.aria-controls]="sectionBodyId('appearance')"
+                [attr.aria-describedby]="sectionHeadingId('pageSettings')"
+                (click)="toggle('appearance')"
+              >
+                {{ headings['appearance'] }}
+              </button>
+            </h3>
+
+            @if (isExpanded('appearance')) {
+              <div [id]="sectionBodyId('appearance')" class="module-settings__body" role="group" [attr.aria-labelledby]="sectionHeadingId('appearance')">
+                <div class="module-settings__fields">
+                  <!--
+                    BOTH CHANNELS, and the history is why `messagesFor` combines them rather than the
+                    template choosing between them.
+                  -->
+                  <app-form-field
+                    [label]="labels['iconFile']"
+                    [help]="hints['iconFile']"
+                    [error]="messagesFor('iconFile')"
+                    [for]="controlId('iconFile')"
+                  >
+                    <input
+                      type="text"
+                      formControlName="iconFile"
+                      [id]="controlId('iconFile')"
+                      [maxlength]="limits.iconFile"
+                      [attr.aria-invalid]="messagesFor('iconFile').length > 0"
+                    />
+                  </app-form-field>
+
+                  <!--
+                    ⚠ THREE CONTROLS THAT DID NOT EXIST, FOR THREE COLUMNS THAT WERE UNREACHABLE. The legacy
+                    screen edited all three (`modulesettings.ascx:L120-L139`, saved at
+                    `ModuleSettings.ascx.vb:L345-L347`); the first port carried none of them, so an
+                    installation's stored container appearance could be neither seen nor changed - while the
+                    settings section further down this same screen asserted the module had no stored settings
+                    of its own.
+                  -->
+                  <app-form-field
+                    #alignmentField
+                    [label]="labels['alignment']"
+                    [help]="hints['alignment']"
+                    [error]="messagesFor('alignment')"
+                  >
+                    <div
+                      class="module-settings__choices"
+                      role="radiogroup"
+                      [attr.aria-labelledby]="alignmentField.labelId()"
+                    >
+                      @for (choice of alignmentOptions; track choice.value) {
+                        <label [for]="choiceId('alignment', $index)">
+                          <!-- The static `name` is not redundant beside `formControlName`. -->
+                          <input
+                            type="radio"
+                            name="alignment"
+                            formControlName="alignment"
+                            [id]="choiceId('alignment', $index)"
+                            [value]="choice.value"
+                            [attr.aria-invalid]="messagesFor('alignment').length > 0"
+                          />
+                          {{ choice.label }}
+                        </label>
+                      }
+                    </div>
+                  </app-form-field>
+
+                  <app-form-field
+                    [label]="labels['color']"
+                    [help]="hints['color']"
+                    [error]="messagesFor('color')"
+                    [for]="controlId('color')"
+                  >
+                    <input
+                      type="text"
+                      formControlName="color"
+                      [id]="controlId('color')"
+                      [maxlength]="limits.color"
+                      [attr.aria-invalid]="messagesFor('color').length > 0"
+                    />
+                  </app-form-field>
+
+                  <app-form-field
+                    [label]="labels['border']"
+                    [help]="hints['border']"
+                    [error]="messagesFor('border')"
+                    [for]="controlId('border')"
+                  >
+                    <!--
+                      `inputmode="numeric"` rather than `type="number"`: the stored column is `nvarchar(1)`
+                      and the empty string is a real value, whereas a number input reports an empty value as
+                      the empty string too but also admits a spinner and an exponent this column cannot hold.
+                    -->
+                    <input
+                      type="text"
+                      inputmode="numeric"
+                      formControlName="border"
+                      [id]="controlId('border')"
+                      [maxlength]="limits.border"
+                      [attr.aria-invalid]="messagesFor('border').length > 0"
+                    />
+                  </app-form-field>
+
+                  <app-form-field
+                    #visibilityField
+                    [label]="labels['visibility']"
+                    [help]="hints['visibility']"
+                    [error]="messagesFor('visibility')"
+                  >
+                    <div
+                      class="module-settings__choices"
+                      role="radiogroup"
+                      [attr.aria-labelledby]="visibilityField.labelId()"
+                    >
+                      @for (choice of visibilityChoices; track choice.value) {
+                        <label [for]="choiceId('visibility', $index)">
+                          <!-- The static `name` is not redundant beside `formControlName`. -->
+                          <input
+                            type="radio"
+                            name="visibility"
+                            formControlName="visibility"
+                            [id]="choiceId('visibility', $index)"
+                            [value]="choice.value"
+                            [attr.aria-invalid]="messagesFor('visibility').length > 0"
+                          />
+                          {{ choice.label }}
+                        </label>
+                      }
+                    </div>
+                  </app-form-field>
+
+                  <app-form-field
+                    class="form-field--inline"
+                    [label]="labels['displayTitle']"
+                    [help]="hints['displayTitle']"
+                    [error]="messagesFor('displayTitle')"
+                    [for]="controlId('displayTitle')"
+                  >
+                    <input
+                      type="checkbox"
+                      formControlName="displayTitle"
+                      [id]="controlId('displayTitle')"
+                      [attr.aria-invalid]="messagesFor('displayTitle').length > 0"
+                    />
+                  </app-form-field>
+
+                  @if (showCacheField()) {
+                    <app-form-field
+                      [label]="labels['cacheTime']"
+                      [help]="hints['cacheTime']"
+                      [error]="messagesFor('cacheTime')"
+                      [for]="controlId('cacheTime')"
+                    >
+                      <input
+                        type="text"
+                        inputmode="numeric"
+                        formControlName="cacheTime"
+                        [id]="controlId('cacheTime')"
+                        [maxlength]="limits.cacheTime"
+                        [attr.aria-invalid]="messagesFor('cacheTime').length > 0"
+                      />
+                    </app-form-field>
+                  }
+                </div>
+              </div>
+            } @else {
+              <!--
+                The region's identity, kept while it is closed so the toggle above can name it in both
+                states.
+              -->
+              <div [id]="sectionBodyId('appearance')" hidden></div>
+            }
+          </section>
+
+          <section class="module-settings__section module-settings__section--nested">
+            <h3 class="module-settings__section-heading">
+              <button
+                class="module-settings__toggle"
+                type="button"
+                [id]="sectionHeadingId('other')"
+                [attr.aria-expanded]="isExpanded('other')"
+                [attr.aria-controls]="sectionBodyId('other')"
+                [attr.aria-describedby]="sectionHeadingId('pageSettings')"
+                (click)="toggle('other')"
+              >
+                {{ headings['other'] }}
+              </button>
+            </h3>
+
+            @if (isExpanded('other')) {
+              <div [id]="sectionBodyId('other')" class="module-settings__body" role="group" [attr.aria-labelledby]="sectionHeadingId('other')">
+                <div class="module-settings__fields">
+                  <app-form-field
+                    class="form-field--inline"
+                    [label]="labels['setAsDefaultSettings']"
+                    [help]="hints['setAsDefaultSettings']"
+                    [error]="messagesFor('setAsDefaultSettings')"
+                    [for]="controlId('setAsDefaultSettings')"
+                  >
+                    <input
+                      type="checkbox"
+                      formControlName="setAsDefaultSettings"
+                      [id]="controlId('setAsDefaultSettings')"
+                      [attr.aria-invalid]="messagesFor('setAsDefaultSettings').length > 0"
+                    />
+                  </app-form-field>
+
+                  <app-form-field
+                    class="form-field--inline"
+                    [label]="labels['applyToAllModules']"
+                    [help]="hints['applyToAllModules']"
+                    [error]="messagesFor('applyToAllModules')"
+                    [for]="controlId('applyToAllModules')"
+                  >
+                    <input
+                      type="checkbox"
+                      formControlName="applyToAllModules"
+                      [id]="controlId('applyToAllModules')"
+                      [attr.aria-invalid]="messagesFor('applyToAllModules').length > 0"
+                    />
+                  </app-form-field>
+                </div>
+              </div>
+            } @else {
+              <!--
+                The region's identity, kept while it is closed so the toggle above can name it in both
+                states.
+              -->
+              <div [id]="sectionBodyId('other')" hidden></div>
+            }
+          </section>
+        </div>
+      } @else {
+        <!--
+          The region's identity, kept while it is closed so the toggle above can name it in both states.
+          Empty and hidden: the CONTENTS are still removed rather than hidden, which is what keeps a
+          closed region out of the tab order and its controls out of the accessibility tree.
+        -->
+        <div [id]="sectionBodyId('pageSettings')" hidden></div>
+      }
+    </section>
+
+    <section class="module-settings__section">
+      <h2 class="module-settings__section-heading">
+        <button
+          class="module-settings__toggle module-settings__toggle--ruled"
+          type="button"
+          [id]="sectionHeadingId('specificSettings')"
+          [attr.aria-expanded]="isExpanded('specificSettings')"
+          [attr.aria-controls]="sectionBodyId('specificSettings')"
+          (click)="toggle('specificSettings')"
+        >
+          {{ headings['specificSettings'] }}
+        </button>
+      </h2>
+
+      @if (isExpanded('specificSettings')) {
+        <div [id]="sectionBodyId('specificSettings')"
+          class="module-settings__body"
+          role="group"
+          [attr.aria-labelledby]="sectionHeadingId('specificSettings')"
+        >
+          <p class="module-settings__intro">{{ intros['specificSettings'] }}</p>
+
+          <!--
+            The successor to the legacy per-module settings control panel. A definition that contributes
+            its own settings surface projects it here; the region is always rendered when open so the
+            operator can see that the module has none, which the legacy screen could not show.
+          -->
+          <!--
+            ⚠ NOT AN `app-form-field`, DELIBERATELY. This is a projection slot for a surface this screen
+            knows nothing about: it has no caption, no help text, no control and no validation state, so
+            wrapping it in a field primitive would assert a label-and-control relationship that does not
+            exist.
+          -->
+          <div class="module-settings__slot">
+            <ng-content select="[moduleSpecificSettings]"></ng-content>
+          </div>
+
+          <!--
+            WHAT THIS MODULE ACTUALLY HAS STORED. Read-only by design: the legacy placeholder hosted the
+            module's OWN settings control, and that control loader is out of scope, so there is no
+            bespoke editor to present and no way to know what a given key permits.
+          -->
+          @if (hasSpecificSettings) {
+            <dl class="module-settings__stored">
+              @for (row of specificSettingRows; track row.scope + '\u001f' + row.name) {
+                <dt class="module-settings__stored-name">
+                  {{ row.name }}
+                  <span class="module-settings__stored-scope">{{ row.scope }}</span>
+                </dt>
+                <dd class="module-settings__stored-value">{{ row.value }}</dd>
+              }
+            </dl>
+          } @else {
+            <p class="module-settings__stored-empty">{{ noSpecificSettingsMessage }}</p>
+          }
+        </div>
+      } @else {
+        <!--
+          The region's identity, kept while it is closed so the toggle above can name it in both states.
+          Empty and hidden: the CONTENTS are still removed rather than hidden, which is what keeps a
+          closed region out of the tab order and its controls out of the accessibility tree.
+        -->
+        <div [id]="sectionBodyId('specificSettings')" hidden></div>
+      }
+    </section>
+
+    <div class="module-settings__actions">
+      <button class="form-action--primary" type="submit" [disabled]="saving"
+          [attr.aria-busy]="saving ? 'true' : null">{{ saving ? 'Saving…' : 'Update' }}</button>
+      <button type="button" (click)="onCancel()">Cancel</button>
+      @if (canDelete) {
+        <button type="button" [disabled]="saving" (click)="requestRemoval()">Delete</button>
+      }
+    </div>
+  </form>
+
+  @if (removalPending) {
+    <!--
+      ⚠ NO `title` IS BOUND, AND THAT IS THE POINT. Every delete confirmation in this application shows
+      the SAME title, which the shared dialog declares as its default; binding one here is how five
+      different titles for one action came about - runtime testing found `Delete`, `Confirm Delete`,
+      `Delete Module`, `Delete Profile Property` and `Delete role group` across the screens.
+    -->
+    <app-confirm-dialog
+      [message]="deleteConfirmMessage()"
+      [confirmLabel]="deleteConfirmLabel"
+      danger
+      (confirm)="confirmRemoval()"
+      (cancel)="abandonRemoval()"
+    ></app-confirm-dialog>
+  }
+}

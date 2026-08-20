@@ -1,0 +1,128 @@
+@use '../../../../../styles/mixins' as mx;
+
+// ROOT
+// A custom element defaults to `display: inline` and would not contain its block-level children, so a
+// box-generating display is stated regardless of layout.
+:host {
+  display: grid;
+
+  // THE EXPLICIT FLUID TRACK. See the note on the same declaration in `portal-list.component.scss` for the
+  // measured failure: an implicit single-column track takes an automatic `min-content` minimum, the shared
+  // grid's `min-inline-size: 40rem` therefore sizes the track, and every region on the screen is stretched
+  // past the column its parent offered - so the page header, the failure banner and the action row all
+  // overflowed the document rather than the table, and the table container's own `overflow-x: auto` had
+  // nothing left to clip.
+  grid-template-columns: var(--grid-track-fluid);
+
+  gap: var(--space-4);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+}
+
+// THE SECTION AND ITS HEADING
+// The heading's own flow margins are cleared for that reason too, and its scale is the section scale rather
+// than the page scale: the host emits the level-one heading and this is the level below it.
+.member-services {
+  display: grid;
+  grid-template-columns: var(--grid-track-fluid);
+  gap: var(--space-4);
+  padding-block-start: var(--space-5);
+  border-block-start: var(--border-width) var(--border-style) var(--color-border);
+}
+
+.member-services__heading {
+  margin: 0;
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-tight);
+}
+
+// THE TWO PROSE PARAGRAPHS
+.member-services__help,
+.member-services__notice {
+  margin: 0;
+  max-inline-size: mx.breakpoint('md');
+  line-height: var(--line-height-base);
+}
+
+// The notice replaces a whole screen's worth of content, so it is set apart from the ordinary
+// body ink rather than left to look like a first paragraph of something longer.
+.member-services__notice {
+  color: var(--color-text-muted);
+}
+
+// THE INVITATION CODE
+// The legacy affordance sat inside a fixed 350-pixel table of two 175-pixel cells.
+.member-services__code {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: flex-end;
+}
+
+.member-services__code-input {
+  flex: var(--flex-fill-from-zero);
+  max-inline-size: mx.breakpoint('sm');
+}
+
+// ⚠ #22 — THE PRIMARY MARKER IS THE SHARED ONE. This rule said exactly what `.form-action--primary` says in
+// _forms.scss, and the panel that hosts this one carried a third copy of the same idea: one vocabulary
+// expressed three times is how the create screens came to read as three different species. The class stays on
+// the element for layout; the weight now comes from the shared marker alone.
+
+.member-services__report {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: var(--border-width) var(--border-style) var(--color-border);
+  border-radius: var(--radius-md);
+  background-color: var(--color-surface);
+}
+
+.member-services__report-text {
+  margin: 0;
+  line-height: var(--line-height-base);
+}
+
+// The joined roles. A list, because one code may join several roles at once - the legacy walk
+// had no early exit - and a comma-run would read as one name to a screen reader.
+.member-services__report-list {
+  margin: 0;
+  padding-inline-start: var(--space-5);
+  font-weight: var(--font-weight-bold);
+}
+
+// A tertiary control: it dismisses a message and changes nothing, so it takes no fill and sits
+// at the start of its own line rather than stretching across the surface.
+.member-services__report-dismiss {
+  justify-self: start;
+}
+
+// THE ROW COMMANDS
+// The chrome is deliberately minimal so a grid of seven columns does not become a grid of buttons: no fill,
+// no border, the primary ink, and the underline the console gives every other in-place command.
+.member-services__row-action {
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  background: none;
+  color: var(--color-primary);
+  font-family: inherit;
+  font-size: inherit;
+  text-decoration: underline;
+  white-space: nowrap;
+
+  &:hover:not(:disabled) {
+    color: var(--color-primary-hover);
+  }
+}
+
+// Muted and small, because it is a statement rather than an affordance and must not read as a disabled
+// button - a disabled button implies the command exists and is momentarily unavailable, whereas this
+// command does not exist on this site at all.
+.member-services__unavailable {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+}

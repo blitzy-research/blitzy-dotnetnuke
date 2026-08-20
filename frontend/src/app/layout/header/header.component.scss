@@ -1,0 +1,159 @@
+// Three levels from this stylesheet to `src/`, derived by counting directories:
+// header -> layout -> app -> src. The workspace configures no Sass load path —
+// angular.json declares no stylePreprocessorOptions and tsconfig.json declares no
+// baseUrl or paths — so a relative specifier is the only form that resolves, and
+// being off by one directory fails the build with "Can't find stylesheet to
+// import." Sass modules are per-file and NOT ambient: the `@use` in
+// src/styles.scss does not reach this file, so this file loads the partial itself.
+// Only the mixin partial is loaded, and deliberately so: it emits no CSS, whereas
+// _tokens.scss owns a document-root block that belongs to the single global
+// stylesheet and would be duplicated into every component that loaded it. The
+// custom properties below are resolved by the browser at run time from that one
+// global block, which is why they need no compile-time import here.
+@use '../../../styles/mixins' as mx;
+
+//  Host — the shell's banner grid item
+:host {
+  display: block;
+}
+
+// The band
+// Flexbox, not Grid: the band arranges items along one axis, and the shell above it already owns the
+// two-dimensional placement.
+header {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding-block: var(--space-3);
+  padding-inline: var(--space-4);
+  border-block-end: var(--border-width) var(--border-style) var(--color-text-muted);
+  background-color: var(--color-surface);
+  color: var(--color-primary);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-base);
+
+  @include mx.respond-above('md') {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+  }
+}
+
+// Every anchor in the band — the chrome-link treatment
+header a {
+  color: var(--color-primary);
+  text-decoration: none;
+
+  @include mx.focus-ring;
+
+  // Hover diverges from the measured legacy chrome anchor, which declared all four states byte-identically
+  // and therefore had no hover at all. The full reasoning, and the measurement it overrides, are recorded
+  // in the block above.
+  &:hover {
+    color: var(--color-primary-hover);
+    text-decoration: underline;
+  }
+
+  &:active {
+    background-color: var(--color-selected);
+    border-radius: var(--radius-sm);
+  }
+
+  // Unavailable. Only the ARIA form exists here: `disabled` is not a valid attribute on an anchor and
+  // `:disabled` can never match one, so this is the whole of the unavailable contract for a chrome link.
+  &[aria-disabled='true'] {
+    color: var(--color-text-muted);
+    text-decoration: none;
+    pointer-events: none;
+  }
+}
+
+// The identity affordance
+// Sized one ramp step below the page title so the banner reads as identity without competing with the
+// level-one heading the page-header component owns.
+.app-header__brand {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: var(--target-size-min);
+  min-inline-size: 0;
+  font-size: var(--font-size-xl);
+  overflow-wrap: break-word;
+}
+
+// The session cluster
+.app-header__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+
+  &:empty {
+    display: none;
+  }
+
+  @include mx.respond-above('md') {
+    margin-inline-start: auto;
+  }
+}
+
+// The signed-in user's display name
+.app-header__user {
+  min-inline-size: 0;
+  overflow-wrap: break-word;
+}
+
+// The account's own subscriptions
+// Declares ONE property, and the reason it needs no more is the type/class split above: the `header a` rule
+// already gives it the chrome-link ink, the absent underline, the focus ring and the hover, press and
+// unavailable treatments, so restating any of them here would put two authorities on one appearance.
+.app-header__account-link {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: var(--target-size-min);
+  font-weight: var(--font-weight-bold);
+}
+
+// Every button in the band — the text-link control treatment
+header button {
+  padding-block: var(--space-1);
+  padding-inline: var(--space-2);
+  border: none;
+  background-color: transparent;
+  color: var(--color-primary);
+  font-weight: var(--font-weight-bold);
+  cursor: pointer;
+
+  @include mx.focus-ring;
+
+  // Guarded on `:enabled`, and the guard is load-bearing rather than defensive: `header button:hover`
+  // weighs (0,1,2) against this rule's own `&:disabled` (0,1,2), so a bare hover declared first would be
+  // overridden by the disabled rule — but only for the properties the disabled rule happens to restate.
+  &:enabled:hover {
+    color: var(--color-primary-hover);
+    text-decoration: underline;
+  }
+
+  &:enabled:active {
+    background-color: var(--color-selected);
+    border-radius: var(--radius-sm);
+  }
+
+  &:disabled {
+    color: var(--color-text-muted);
+    text-decoration: none;
+    cursor: not-allowed;
+  }
+
+  // Unavailable, ARIA form — focusable and announced rather than absent, for a keyboard or
+  // assistive-technology user. No `cursor` and no `:hover` hold, for the reason the global layer documents:
+  // an element receiving no pointer events resolves no cursor and can never be a hit-test target.
+  &[aria-disabled='true'] {
+    color: var(--color-text-muted);
+    text-decoration: none;
+    pointer-events: none;
+  }
+}

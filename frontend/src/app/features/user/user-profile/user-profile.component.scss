@@ -1,0 +1,252 @@
+@use '../../../../styles/mixins' as mx;
+
+// ROOT
+:host,
+.user-profile {
+  display: grid;
+  gap: var(--space-3);
+
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+}
+
+// THE EDITOR REGION — the stack of category groups, and the screen's measure
+// A clamped track rather than a bare `1fr`: a profile value with no break opportunity — a long URL or an IM
+// handle — must not be able to widen the column that contains it and drag the rest of the screen out of
+// alignment.
+.user-profile__groups {
+  display: grid;
+  grid-template-columns: var(--grid-track-fluid);
+  row-gap: var(--space-4);
+
+  max-inline-size: mx.breakpoint('md');
+}
+
+.user-profile__group {
+  display: grid;
+  grid-template-columns: var(--grid-track-fluid);
+  row-gap: var(--space-3);
+}
+
+// THE GROUP'S COLLAPSE TOGGLE — rendered inside the `<legend>`
+// Placing the control inside the legend keeps the group's accessible name and its collapse affordance as
+// one thing, so the name is never duplicated and the fieldset never loses it.
+.user-profile__toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+
+  padding: 0;
+  border: 0;
+  background-color: transparent;
+
+  color: inherit;
+  font: inherit;
+  text-align: start;
+
+  @include mx.focus-ring;
+
+  // ---------------------------------------------------------------------------
+  //  INTERACTION STATES — restated here because this component SUPPRESSES the
+  //  global ones, and suppression without replacement is what leaves a control
+  //  with no visible response at all.
+  //
+  //  The three declarations above are the cause, not incidental: `color: inherit`
+  //  weighs (0,1,0) and the global `button:hover` / `button:active` rules weigh
+  //  (0,1,1). One class outranks one type selector, so every global state rule
+  //  for this control is already losing before a pointer arrives — the ink cannot
+  //  change on hover because `inherit` wins, and the press tint cannot appear
+  //  because `background-color: transparent` wins. Restating the states inside
+  //  the component is therefore the only place they can take effect.
+  //
+  //  Hover carries a NON-COLOUR cue as well as a colour one, and here that is not
+  //  belt-and-braces either: this control's resting ink is `inherit`, so a
+  //  hover that changed only the colour would be a change from an unknown
+  //  starting value to a known one, and against a heading that already renders in
+  //  the brand ink it could resolve to no perceptible change whatever. The
+  //  underline is independent of whatever the inherited colour turns out to be.
+  // ---------------------------------------------------------------------------
+
+  // The legacy category head had no hover, press or unavailable treatment to measure, because it was not an
+  // interactive control at all — the section-head icon button carried `tabIndex="-1"` and the head itself
+  // was plain text.
+  &:enabled:hover {
+    color: var(--color-primary-hover);
+    text-decoration: underline;
+  }
+
+  // Press. Distinct from hover by channel as well as by value: hover moves the ink
+  // and adds the underline, press adds the fill and leaves both standing.
+  &:enabled:active {
+    background-color: var(--color-selected);
+    border-radius: var(--radius-sm);
+  }
+
+  // Unavailable, native form.
+  &:disabled {
+    color: var(--color-text-muted);
+    text-decoration: none;
+    cursor: not-allowed;
+  }
+
+  // Unavailable, ARIA form — looks and is announced as unavailable while staying focusable and in the tab
+  // order.
+  &[aria-disabled='true'] {
+    color: var(--color-text-muted);
+    text-decoration: none;
+    pointer-events: none;
+  }
+}
+
+.user-profile__toggle-icon {
+  flex-shrink: 0;
+  inline-size: var(--font-size-md);
+  block-size: var(--font-size-md);
+}
+
+// The state hook is `aria-expanded`, which is simultaneously what tells assistive technology, so the
+// affordance and the announcement can never disagree.
+.user-profile__toggle[aria-expanded='true'] .user-profile__toggle-icon {
+  transform: rotate(var(--rotate-quarter-turn));
+}
+
+// THE FIELD STACK — edit mode
+// MIGRATION: control chrome is very largely a NET ADDITION rather than a port.
+.user-profile__fields {
+  display: grid;
+  grid-template-columns: var(--grid-track-fluid);
+  row-gap: var(--space-3);
+
+  // ⚠ U-M7 — THE LABEL MEASURE IS NOT RAISED HERE, IT IS REMOVED FROM THE DECISION. This screen's property
+  // fields carry `form-field--stacked`, so the label takes the whole content width at every viewport and no
+  // track applies to it at all.
+
+  app-form-field {
+    margin-block-end: 0;
+  }
+}
+
+// THE PER-PROPERTY VISIBILITY ROW
+.user-profile__visibility {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-normal);
+
+  app-form-field {
+    margin-block-end: 0;
+  }
+}
+
+// VIEW MODE — the name/value list
+.user-profile__values {
+  display: grid;
+  grid-template-columns: var(--grid-track-fluid);
+  gap: var(--space-2);
+
+  @include mx.respond-above('sm') {
+    grid-template-columns: var(--grid-track-term) var(--grid-track-detail);
+    column-gap: var(--space-4);
+    align-items: baseline;
+  }
+}
+
+.user-profile__value {
+  margin-inline: 0;
+
+  // Profile values are arbitrary user-entered text — a biography, a postal address, a URL, an IM handle.
+  // The initial `overflow-wrap` forbids breaking inside a word, so an unbroken value would overrun its
+  // column; the keyword restores the break opportunity and costs nothing on text that already wraps.
+  overflow-wrap: break-word;
+}
+
+// THE ACTION ROW
+.user-profile__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+// The pending sentence beside the actions, which is what the screen says instead of blanking its fields
+// while a save and its confirming read are outstanding.
+.user-profile__pending {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.user-profile__notice {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+// The standing explanation for a landing the caller did not choose. Bordered and surfaced so it reads as
+// context for the whole screen rather than as a hint attached to the first field.
+.user-profile__remediation {
+  margin-block: 0 var(--space-4);
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) var(--border-style) var(--color-border);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-surface);
+  color: var(--color-text-muted);
+}
+
+// U12 - the reach list for an unmet requirement declared far below the fold.
+.user-profile__outstanding {
+  margin-block-end: var(--space-4);
+  padding: var(--space-3);
+  border-inline-start: var(--space-1) solid var(--color-primary);
+  background-color: var(--color-surface);
+  border-radius: var(--radius-sm);
+}
+
+.user-profile__outstanding-heading {
+  margin: 0 0 var(--space-2);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-primary);
+}
+
+.user-profile__outstanding-list {
+  margin: 0;
+  padding-inline-start: var(--space-4);
+}
+
+.user-profile__outstanding-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-primary);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-sm);
+  text-decoration: underline;
+  cursor: pointer;
+
+  &:enabled:hover {
+    color: var(--color-primary-hover);
+  }
+}
+
+// U13 - the note naming the properties the declaration withholds from the account's own owner.
+.user-profile__withheld {
+  margin-block: 0 var(--space-4);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+// U14 - the remark marking a value seeded from the tenant's declared default. Muted rather than
+// coloured as a fault: a suggestion is a remark about provenance, not a problem to correct.
+.user-profile__seeded {
+  display: block;
+  margin-block-start: var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}

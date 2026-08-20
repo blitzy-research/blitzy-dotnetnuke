@@ -1,0 +1,192 @@
+<!-- THE PORTAL HTTP-ALIAS SCREEN: the listing, and the create / edit / delete form on the same surface. -->
+<div class="portal-alias-list">
+  <!--
+    PAGE CHROME. The shared header renders the title and projects this screen's single page-level action
+    into its own slot.
+  -->
+  <app-page-header [title]="heading" [subtitle]="portalName()">
+    <button class="page-action" type="button" (click)="startCreate()">{{ addActionLabel }}</button>
+
+    <!-- After the create action, so the command an operator came for keeps first position. -->
+    @if (settingsLink(); as settings) {
+      <a class="page-action" [routerLink]="settings">{{ settingsLinkLabel }}</a>
+    }
+  </app-page-header>
+
+  <!--
+    The banner is bound UNCONDITIONALLY and that is the deliberate choice. Its own root is a permanently
+    rendered assertive live region whose contents are conditional, so binding it always keeps the region
+    in the document BEFORE any message arrives - which is what makes an announcement reliable.
+  -->
+  <div class="portal-alias-list__status">
+    <app-error-banner [problem]="bannerProblem()" />
+
+    @if (loading()) {
+      <app-loading-spinner />
+    }
+  </div>
+
+  <!--
+    THE LEGACY LAYOUT GRID IS GONE. The edit surface arranged its single label and single box in a
+    two-cell tabular layout declared at `Website/admin/Portal/editportalalias.ascx:L4` with border,
+    cell-spacing and cell-padding attributes and - being a layout device rather than data - carrying no
+    summary attribute.
+  -->
+  @if (formOpen()) {
+    <form class="portal-alias-list__edit" [formGroup]="form" (ngSubmit)="submit()">
+      <!--
+        The labelled field. The shared component renders the label, associates it with the projected
+        control, marks the field required, owns the validation region and owns the help disclosure; it
+        renders no control of its own, which is why the box below is projected into its slot.
+      -->
+      <app-form-field
+        [label]="aliasLabel"
+        [for]="aliasControlId"
+        [required]="true"
+        [help]="aliasHelp"
+        [error]="aliasError()"
+      >
+        <!--
+          The character cap is bound as an ATTRIBUTE and deliberately NOT as a property binding or a
+          literal attribute.
+        -->
+        <!--
+          The template reference is what focus management reaches this box by, and it is read from an
+          `afterNextRender` callback rather than synchronously: the form sits inside a conditional
+          block, so the box does not exist at the moment the command that opens the form runs.
+        -->
+        <input
+          #entryBox
+          type="text"
+          [id]="aliasControlId"
+          [formControl]="form.controls.httpAlias"
+          [attr.maxlength]="aliasInputMaxLength"
+          [attr.aria-invalid]="aliasError().length > 0"
+          aria-required="true"
+          (input)="onAliasInput()"
+          (blur)="onAliasBlur()"
+        />
+      </app-form-field>
+
+      <!-- THE THREE COMMANDS, in the legacy order. -->
+      <div class="portal-alias-list__commands">
+        <button class="form-action--primary" type="submit" [disabled]="loading()"
+          [attr.aria-busy]="loading() ? 'true' : null">{{ submitLabel() }}</button>
+
+        <button type="button" (click)="cancelEdit()">{{ cancelLabel }}</button>
+
+        <!--
+          MIGRATION: DELETE IS WITHHELD UNDER THREE CONDITIONS - one measured, one a deliberate
+          divergence and one the server enforces.
+        -->
+        <!--
+          ⚠ THE DESTRUCTIVE MODIFIER, WHICH THIS CONTROL WAS MISSING. It was a bare button sitting
+          between Update and Cancel, visually identical to both, while the confirmation it opens
+          presents ITS OWN Delete with a red border and a danger label - so one screen carried two
+          different treatments for one destructive act, and the weaker of the two was the one an
+          operator reaches first.
+        -->
+        @if (deleteAffordanceVisible()) {
+          <button
+            type="button"
+            class="portal-alias-list__command--danger"
+            (click)="requestDelete()"
+          >
+            {{ deleteLabel }}
+          </button>
+        }
+      </div>
+    </form>
+  }
+
+  <!-- THE LISTING, in two mutually exclusive states. -->
+  @if (routeUsable() === false) {
+    <!-- The address carried no usable portal identifier, so there is no listing to render at all. -->
+    <app-empty-state [message]="unusableRouteMessage" />
+  } @else {
+    <!--
+      PRESSING THE ROW IS GUARDED TOO, and that is why hiding the button is not the whole of the rule.
+      The row press below is a net addition of this screen - the legacy grid had none - and it reaches
+      every row, so the component refuses the withheld row there as well and says why.
+    -->
+    <!--
+      ⚠ THE GENUINELY-EMPTY STATE IS NOW THE TABLE'S OWN ROW, NOT A PANEL RENDERED INSTEAD OF IT. This
+      screen used to replace the whole grid with `app-empty-state` the moment a portal was read and found
+      to have no host names, which destroyed the grid's `role="status"` result region along with it - so
+      the one transition most in need of a report, a listing narrowing to nothing, announced NOTHING. The
+      grid renders the same wording and the same recovery command inside a spanning row, and its polite
+      region survives to say it. `[failed]` keeps the two apart: a refused read reports that the records
+      could not be READ and never that none EXIST.
+    -->
+    <!--
+      ⚠ THIS GRID DECLARES ITS OWN SCROLL FLOOR, AND THE SHARED ONE WAS MEASURED DOING REAL HARM HERE. The
+      shared floor is 60rem, solved for the nine- to thirteen-column administration grids. This listing has
+      TWO columns needing 207px between them, and the shared floor inflated its table to 960px: at a 320
+      viewport the host name — the only data on the screen — began 214px past the right edge of a 271px
+      scrollport, so the visible table was three Edit buttons above an apparently empty body. The floor comes
+      from the shared compact token, which carries that measurement and its derivation, so the table fills any
+      container wider than it and never scrolls at a width where it does not have to.
+    -->
+    <app-data-table
+      [columns]="columns()"
+      [rows]="rows()"
+      [rowKey]="aliasRowKey"
+      [failed]="listFailed()"
+      [emptyMessage]="emptyMessage"
+      minInlineSize="var(--table-min-inline-size-compact)"
+      (rowSelect)="editAlias($event)"
+    >
+      <span dataTableCaption>{{ heading }}</span>
+
+      <ng-container dataTableEmptyAction>
+        <button type="button" (click)="startCreate()">{{ addActionLabel }}</button>
+      </ng-container>
+    </app-data-table>
+  }
+  <!-- THE DELETION PROMPT. -->
+  @if (confirmingDelete()) {
+    <app-confirm-dialog
+      [message]="deleteConfirmMessage()"
+      [confirmLabel]="deleteLabel"
+      [danger]="true"
+      (confirm)="confirmDelete()"
+      (cancel)="cancelDelete()"
+    />
+  }
+
+  <!--
+    MIGRATION: the legacy affordance was an image link whose alternate text came from the global edit
+    key.
+  -->
+  <ng-template #aliasCommands let-row="row">
+    @if (rowEditable(row)) {
+      <!--
+        Pf-M3: the VISIBLE text is the measured resource value and the ACCESSIBLE name is the
+        row-qualified one, which is why the label is supplied through `aria-label` rather than by
+        changing what is painted.
+      -->
+      <button type="button" [attr.aria-label]="editCommandLabel(row)" (click)="editAlias(row)">
+        {{ editLabel }}
+      </button>
+    } @else {
+      <!--
+        Pf-M2: the row this request arrived through STILL OFFERS NO COMMAND, which is the legacy
+        behaviour and is preserved deliberately.
+      -->
+      <span class="portal-alias-list__current-note">{{ currentAliasRowNote }}</span>
+    }
+  </ng-template>
+
+  <!--
+    THE HOST-NAME CELL, and it MUST stay at this template's top level for the same static-view-query
+    reason the command cell states above.
+  -->
+  <ng-template #aliasHostName let-row="row">
+    @if (isHostNameAbsent(row)) {
+      <span class="portal-alias-list__absent-host" aria-hidden="true">{{ hostNameText(row) }}</span>
+      <span class="portal-alias-list__absent-host-description">{{ absentHostNameDescription }}</span>
+    } @else {
+      {{ hostNameText(row) }}
+    }
+  </ng-template>
+</div>

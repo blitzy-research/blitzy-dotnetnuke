@@ -1,0 +1,316 @@
+// User-agent normalisation and the bare-element type ramp: box sizing, the document baseline, and type for
+// headings, table sections, anchors, inline elements, lists and rules.
+
+@use 'mixins' as mx;
+
+html {
+  box-sizing: border-box;
+
+  // ⚠ #43 — THE FAMILY IS DECLARED ON THE ROOT, not only on `body`. It was set on `body` alone, so the root
+  // element itself computed the user agent's default - Times New Roman - and anything a browser or extension
+  // renders against the root rather than against `body` inherited a serif face the design never specifies.
+  // Everything visible already inherited the correct stack through `body`, so this changes no rendered text;
+  // it removes a wrong value from the one element that had it.
+  font-family: var(--font-family-base);
+
+  // Stops mobile Safari inflating text when the device is turned to landscape.
+  // The ramp is deliberately compact, so silent inflation would break it.
+  -webkit-text-size-adjust: var(--size-full);
+
+  // ⚠ THIS IS THE OTHER HALF OF THE SCROLL LOCK, and removing it reintroduces a jump rather than a scroll.
+  scrollbar-gutter: stable;
+
+  // ⚠ ROOM FOR THE PINNED HEADER AT THE TOP OF EVERY SCROLL, AND IT CLOSES A DEFECT THIS PROJECT ITSELF
+  // INTRODUCED. Making `.shell__header` sticky at the side-by-side step meant the browser could scroll a
+  // target flush to the viewport top and leave it BEHIND the band, because Chrome subtracts nothing for a
+  // sticky element when it scrolls something into view. Measured on the account listing at 1280x720:
+  // activating "Skip to main content" - the first focusable thing on every page, and the one affordance
+  // whose entire purpose is to deposit a keyboard or screen-reader user at the start of the content - set
+  // `scrollY` to exactly 69 and left FOUR elements 100% concealed with zero pixels visible: the `h1` "User
+  // Accounts" and all three page actions, three of which are focusable links. Tabbing once more then put a
+  // visible focus ring on a control that was entirely hidden, and the browser did not self-correct because
+  // the control was technically inside the viewport rectangle.
+  //
+  // `html` rather than per-target `scroll-margin`, because `document.scrollingElement` IS `html` here and one
+  // declaration covers every path into the defect at once - the skip link's `focus()`, in-page fragments, and
+  // the three `scrollIntoView({ block: 'nearest' })` call sites, which respect this padding as the optimal
+  // viewing region and so also stop landing a corrected field under the band.
+  //
+  // Gated to the SAME step as the sticky rule, because below it the header is `position: static` and 177
+  // pixels tall; reserving that there would push content down for a band that scrolls away by itself.
+  // `--space-2` is added on top of the measured height so the target clears the band rather than sitting
+  // flush against it - proven necessary: with the bare height the target lands at offset exactly 0, which
+  // puts the 6-pixel white halo of the focus ring back under the header even though the box itself is clear.
+  @include mx.respond-above('md') {
+    scroll-padding-block-start: calc(var(--layout-header-block-size) + var(--space-2));
+  }
+}
+
+// 1a. Background scroll lock, applied only while a modal dialog is open.
+.dnn-scroll-locked {
+  overflow: hidden;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: inherit;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-background);
+  // Declared so the application's default text colour has a NAME - QA-11. The value is the black the user
+  // agent was already resolving in the absence of any declaration, and which the legacy `.Normal` class also
+  // fell back to, so this is zero visual change and is stated in full on the token itself.
+  color: var(--color-text);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-base);
+}
+
+img,
+svg,
+video {
+  display: block;
+  max-width: var(--size-full);
+  height: auto;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+// Collapsing the borders and removing the inherited cell spacing gives the tables partial a predictable
+// starting point. Table presentation belongs there.
+
+table {
+  border-collapse: collapse;
+  border-spacing: 0;
+}
+
+// ⚠ #21 — ONE STEP PER LEVEL, STRICTLY DECREASING. `h1` and `h2` used to SHARE `--font-size-xxl`, and `h3`
+// and `h4` used to share `--font-size-lg`, so a level said nothing about rank: the fallback view's `h1`
+// "Page Not Found" and the empty state's `h2` "Nothing to Display" rendered identically at 24px, and a
+// reader could not tell which was the page and which was the region inside it. The ramp now spends one
+// token per level, in the order the vocabulary already declares them, so a nested heading is always smaller
+// than the heading it sits under and the visual rank always matches the semantic one.
+h1 {
+  font-size: var(--font-size-xxl);
+}
+
+h2 {
+  font-size: var(--font-size-xl);
+}
+
+h3 {
+  font-size: var(--font-size-lg);
+}
+
+h4 {
+  font-size: var(--font-size-md);
+}
+
+h5 {
+  font-size: var(--font-size-sm);
+}
+
+h6 {
+  font-size: var(--font-size-xs);
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-weight: var(--font-weight-normal);
+  color: var(--color-primary);
+}
+
+// The two deepest levels keep the bolder treatment they had, because at 13px and 12px weight carries the
+// rank that size no longer can. `dt` sits with them: a definition term is a heading in all but name.
+h5,
+h6,
+dt {
+  font-weight: var(--font-weight-bold);
+  color: var(--color-primary);
+}
+
+// 7. Table section typography.
+
+thead,
+tfoot {
+  font-size: var(--font-size-lg);
+  color: var(--color-primary);
+}
+
+th {
+  vertical-align: baseline;
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-primary);
+}
+
+// The hover colour resolves through `--color-primary-hover`, not through the danger token: the MIGRATION
+// note below the unvisited rule records why the measured legacy hover red was not reproduced, and the rule
+// itself is the authority.
+
+a:link,
+a:visited {
+  color: var(--color-primary);
+  text-decoration: none;
+}
+
+// The hover ink is the darker brand tint, where the legacy sheet used pure red.
+
+a:hover {
+  color: var(--color-primary-hover);
+  text-decoration: underline;
+}
+
+a:active {
+  color: var(--color-primary);
+  text-decoration: none;
+}
+
+small {
+  font-size: var(--font-size-xs);
+}
+
+big {
+  font-size: var(--font-size-xl);
+}
+
+blockquote,
+pre {
+  font-family: var(--font-family-mono);
+}
+
+// Every value is a plain CSS keyword, so the marker progression needs no token. The last rule is the
+// non-obvious one: an unordered list nested inside an ordered one restarts at a filled marker rather than
+// continuing to inherit the unordered progression above.
+
+ul li {
+  list-style-type: square;
+}
+
+ul li li {
+  list-style-type: disc;
+}
+
+ul li li li {
+  list-style-type: circle;
+}
+
+ol li {
+  list-style-type: decimal;
+}
+
+ol ol li {
+  list-style-type: lower-alpha;
+}
+
+ol ol ol li {
+  list-style-type: lower-roman;
+}
+
+ol ul li {
+  list-style-type: disc;
+}
+
+// Drawn as a single leading hairline. Clearing the border first discards the browser's inset default, which
+// would otherwise render a two-tone groove instead of a flat rule.
+
+hr {
+  border: 0;
+  border-block-start: var(--border-width) var(--border-style) var(--color-text-muted);
+  margin-inline: 0;
+}
+
+// 10b. Disclosure target size.
+
+// EVERY DISCLOSURE IN THE APPLICATION IS A 44px TARGET — QA-18. Measured before this rule, the two `summary`
+// elements that exist rendered 294×23.75 (role Advanced) and 18.8 high (membership sections): roughly half
+// the minimum the token set carries, on the control that opens the fee and trial fields and on each of the
+// six membership policy sections.
+//
+// ⚠ THE CONTROL IS NOT REDRAWN, ONLY ITS BOX. `min-block-size` grows the box and `align-content` re-centres
+// the existing content inside it, which leaves `display: list-item` and therefore the platform's own
+// disclosure triangle intact — verified by probe: marker and `list-style-type: disclosure-closed` both
+// survive, and the caption sits centred rather than pinned to the top. A `display: flex` spelling would have
+// been the obvious way to centre it and is exactly wrong here: it suppresses the marker in Blink, which is a
+// visual regression traded for an accessibility gain.
+//
+// `align-content` on a block container is recent, and where it is unsupported the caption simply sits at the
+// top of a 44px box — the target is still met, so the degradation costs alignment and nothing else.
+summary {
+  min-block-size: var(--target-size-min);
+  align-content: center;
+}
+
+// 11. Focus visibility.
+
+a,
+button,
+input,
+select,
+textarea,
+summary,
+[tabindex]:not([tabindex='-1']) {
+  @include mx.focus-ring;
+}
+
+// ONE HOME FOR EVERY STATE INTERPOLATION IN THE APPLICATION. Measured before this rule: a CSSOM sweep of
+// every stylesheet found `transition` declared zero times, so each hover, press and validity change - here,
+// in _forms.scss and in every component that tints a control on `:active` - snapped instantly between two
+// appearances.
+@include mx.motion-safe {
+  a,
+  button,
+  input,
+  select,
+  textarea,
+  summary,
+  [tabindex]:not([tabindex='-1']) {
+    transition-property: color, background-color, border-color;
+    transition-duration: var(--duration-state);
+    transition-timing-function: var(--easing-state);
+  }
+
+  // THE PRESS IS EXEMPT FROM THE INTERPOLATION ABOVE, AND A FRAME-BY-FRAME MEASUREMENT IS WHY. The rule
+  // above puts `background-color` in the transition list, so every `:active` tint FADES IN from fully
+  // transparent instead of appearing. Measured on a row command whose `:active` declares
+  // `background-color: var(--color-selected)`, with a genuine trusted mouse press held open: at `mousedown`
+  // the computed background was still `rgba(0, 0, 0, 0)` - byte-identical to rest - and it stayed
+  // transparent for ~20ms, passed 49% opacity at 44ms, 84% at 94ms and only reached the declared
+  // `rgb(193, 210, 238)` at ~150ms, exactly the token's duration. A 50-100ms human click therefore never
+  // reaches the colour at all, and the same 150ms then runs IN REVERSE on release, so the whole press
+  // resolves to a faint wash that is absent at the one moment it is meant to confirm - the moment of
+  // pressing.
+  //
+  // Zeroing the duration only WHILE the control is active is what fixes that without losing the easing:
+  // the tint appears on the frame the press lands, and the release stops matching `:active`, so the
+  // fade-out runs at the full `--duration-state` again. The selector list is the same one above with
+  // `:active` appended, which raises every compound by one pseudo-class and so outranks it, and this block
+  // stays inside the reduced-motion guard because with motion reduced there is no transition to exempt.
+  //
+  // ⚠ THE COMPOUNDS ARE BARE, AND THE READ-ONLY GUARD BELONGS ON THE RULE THAT PAINTS. This block declares
+  // one property - a duration of zero - so it cannot make a read-only field look as though it were about to
+  // accept typing; the rule that COULD is the press tint in `_forms.scss`, and that one carries
+  // `:not(:disabled, [readonly])` for exactly that reason. Narrowing these compounds instead would leave a
+  // read-only control's own transitions interpolating on press for no benefit, and would drop the complete
+  // selector list this exemption has to mirror.
+  a:active,
+  button:active,
+  input:active,
+  select:active,
+  textarea:active,
+  summary:active,
+  [tabindex]:not([tabindex='-1']):active {
+    transition-duration: 0s;
+  }
+}

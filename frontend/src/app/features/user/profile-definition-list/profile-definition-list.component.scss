@@ -1,0 +1,168 @@
+@use '../../../../styles/mixins' as mx;
+
+:host {
+  display: grid;
+
+  // THE EXPLICIT FLUID TRACK. See the note on the same declaration in `portal-list.component.scss` for the
+  // measured failure.
+  grid-template-columns: var(--grid-track-fluid);
+
+  gap: var(--space-4);
+}
+
+.profile-definitions__help {
+  margin-block: 0;
+  text-align: start;
+
+  // A measure cap, so an explanatory paragraph does not run the full width of a wide monitor. The token
+  // vocabulary declares no width or measure token, and the breakpoint function is exported for exactly this
+  // raw-width use — what is barred is hand-writing a media query, not reading a step.
+  max-inline-size: mx.breakpoint('md');
+  overflow-wrap: break-word;
+}
+
+// 2. BULK TOGGLE REGION a relocated affordance, not a new one.
+.profile-definitions__bulk {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+
+  padding: var(--space-2);
+
+  background-color: var(--color-surface);
+  border: var(--border-width) var(--border-style) var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+// A label that wraps its own checkbox is already laid out as one inline row by src/styles/_forms.scss,
+// which detects the shape structurally and supplies the flow, the alignment, the gap, the body weight and
+// the inherited ink. None of that is restated.
+.profile-definitions__bulk-item {
+  margin-block-end: 0;
+}
+
+.profile-definitions__grid-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+
+  margin-block: 0;
+}
+
+// Four actions per row — edit, delete, move down, move up — each projected into the shared data table's
+// action cell as its own template.
+
+.profile-definitions__row-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+
+  // ⚠ THE TARGET FLOOR, AND IT MUST COME FROM THE TARGET FAMILY. This pair read `var(--space-8)` — a
+  // SPACING token that happens to evaluate to 2.5rem — so every one of this grid's forty-six row actions
+  // measured exactly 40.00 x 40.00 under runtime measurement, uniformly 4.00px short on both axes of the
+  // 2.75rem the token vocabulary names for row actions.
+  min-inline-size: var(--target-size-min);
+  min-block-size: var(--target-size-min);
+
+  padding-block: var(--space-1);
+  padding-inline: var(--space-2);
+
+  line-height: var(--line-height-none);
+}
+
+// ⚠ THE ONE DESTRUCTIVE CONTROL ON THIS SCREEN THAT WAS NOT PAINTED AS ONE. Measured across the six shared-table
+// listings, this grid's delete command computed `#003366` — the PRIMARY hue every non-destructive command uses —
+// while all five siblings define a danger variant and paint `var(--color-danger)`. The cause is structural rather
+// than a wrong value: `profile-definitions__row-action` above is shared by all four commands, so the delete
+// button had no class of its own and fell through to the generic button chrome. The glyph is a bare multiplication
+// sign, so hue was the ONLY signal distinguishing "remove this property permanently" from "move it up one place",
+// and it was absent.
+//
+// The colour is pinned rather than moved on hover, for the same reason the sibling listings pin theirs: a
+// destructive command must stay in the danger hue and this vocabulary declares exactly ONE danger token, so
+// there is no second red to move to.
+.profile-definitions__row-action--danger {
+  color: var(--color-danger);
+}
+
+// `anywhere` rather than `break-word` is the load-bearing choice. Both break inside a word to avoid
+// overflow, but only `anywhere` also lets the break count towards the element's minimum content size — and
+// it is that contribution the table's column algorithm reads.
+.profile-definitions__code {
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-sm);
+  overflow-wrap: anywhere;
+}
+
+// 6. INLINE CREATE / EDIT FORM the legacy editor was a separate multi-step page whose first step held the
+// property fields, second step the list entries and third step the localised wording.
+.profile-definitions__form {
+  display: grid;
+  gap: var(--space-3);
+
+  margin-block-end: 0;
+  max-inline-size: mx.breakpoint('md');
+}
+
+.profile-definitions__form-legend {
+  font-size: var(--font-size-lg);
+  overflow-wrap: break-word;
+}
+
+// Nine fields. Mobile-first: one column unconditionally, two from the medium step upward, through the
+// shared breakpoint mixin — never a hand-written media query.
+.profile-definitions__form-grid {
+  display: grid;
+  grid-template-columns: var(--grid-track-fluid);
+  gap: var(--space-2) var(--space-4);
+
+  // Two equal fluid columns. The repetition count is structural rather than a design value — it says how
+  // many of the same track to lay down — so the track itself is what resolves to the vocabulary.
+  @include mx.respond-above('md') {
+    grid-template-columns: repeat(2, var(--grid-track-fluid));
+  }
+}
+
+.profile-definitions__form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+// The per-field hint reproduces the legacy shared label control, which rendered its explanatory text as a
+// block below the label rather than as a tooltip. Two differences are deliberate.
+// `--grid-note` shares this treatment because it carries the same kind of fact - a quiet sentence
+// qualifying the control or column above it - and duplicating the declarations would let the two drift.
+.profile-definitions__form-hint,
+.profile-definitions__grid-note {
+  display: block;
+  margin-block-start: var(--space-1);
+
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-normal);
+  line-height: var(--line-height-base);
+  color: var(--color-text-muted);
+
+  overflow-wrap: break-word;
+}
+
+// A `<p>` arrives with UA block margins on BOTH sides; the shared treatment above only sets the start
+// margin, so the end margin is collapsed here rather than left to the user agent.
+.profile-definitions__grid-note {
+  margin-block-end: 0;
+}
+
+// Focus indication is deliberately not declared here. Every control this screen renders receives the shared
+// focus ring from two unscoped global sites - src/styles/_reset.scss and src/styles/_forms.scss - both of
+// which reach this component and its projected nodes.
+
+// The attribute alone does nothing. The workspace's only rule for it is `caption[data-visually-hidden]` in
+// src/styles/_tables.scss, which is qualified by element type and therefore cannot match a span;
+// src/styles.scss mentions the attribute in prose only.
+[data-visually-hidden] {
+  @include mx.visually-hidden;
+}

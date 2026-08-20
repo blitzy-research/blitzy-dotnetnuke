@@ -1,0 +1,68 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    THIS PROJECT'S PACKAGE SURFACE IS THE TWO FLUENTVALIDATION ENTRIES BELOW, AND
+    NOTHING ELSE. AAP 0.6.1 states it directly: "Application declares only
+    FluentValidation". Nothing may be added here on the grounds that a type in this
+    layer wants it; a dependency this layer cannot express is a signal about the
+    boundary, not a gap in the manifest.
+
+    Microsoft.Extensions.Options must NOT be added here so that a validator can take
+    IOptions<PasswordPolicyOptions>. Every technical claim such an addition rests on
+    is true - Options really is absent from the Microsoft.NETCore.App
+    reference pack, FluentValidation.DependencyInjectionExtensions really does not
+    supply it transitively, and the generic really does fail to compile without it -
+    and none of that would make the package approved. The correct resolution is to
+    change the consumer rather than the manifest: every validator that needs the
+    policy takes the bound PasswordPolicyOptions instance directly, which is what both
+    CreateUserRequestValidator and ChangePasswordRequestValidator do. That is the
+    boundary abstraction this layer is meant to use: PasswordPolicyOptions is
+    declared here and BOUND BY THE API LAYER, where the web framework supplies the
+    options machinery, and the composition root projects the bound instance as a
+    resolvable service so the container can hand it to both validators.
+
+    The wider point is that the options PATTERN is not the options PACKAGE. This
+    layer participates in the pattern by owning the policy type; only the layer that
+    reads configuration needs IOptions<T>, and AAP 0.5.2.2 puts that layer above
+    this one. Every IOptions<T> in the backend correctly sits in Api or
+    Infrastructure.
+  -->
+  <ItemGroup>
+    <!--
+      These two entries are the whole of this project's package surface, and the inventory that
+      fixes them lists nothing else for this layer. Adding a package here is therefore not a
+      local decision: the inventory is frozen, so an entry it does not contain does not belong
+      in this file even when a compiler error appears to ask for one.
+
+      That case has already arisen once and is recorded so it is not repeated. IOptions<T> is NOT
+      available to this project: FluentValidation.DependencyInjectionExtensions 11.12.0 closes
+      over FluentValidation and Microsoft.Extensions.DependencyInjection.Abstractions only, so it
+      supplies no Options assembly transitively, and Microsoft.Extensions.Options.dll is not in
+      the reference pack a Microsoft.NET.Sdk class library targets - it ships in the ASP.NET Core
+      shared framework, which this layer must never reference. Compiling a validator whose
+      constructor names IOptions<PasswordPolicyOptions> consequently fails with CS0234 and CS0246,
+      and that was verified rather than assumed.
+
+      The resolution is to stop asking for IOptions<T>, not to import it. Every validator in
+      Validation/ takes the bound options object itself - a plain PasswordPolicyOptions - which is
+      a Domain-adjacent Application type this project already owns outright. Nothing is lost: the
+      wrapper only defers reading a value that has already been read by the time a validator is
+      constructed, and taking the concrete type keeps the constructor honest about needing a
+      policy rather than a source of one.
+
+      What this shifts onto the composition root is a real obligation, so it is stated here. The
+      Api layer must not only bind the section but also project the bound instance as a resolvable
+      concrete service, for example by registering PasswordPolicyOptions from
+      IOptions<PasswordPolicyOptions>.Value. If it binds without projecting, every validator in
+      this project fails loudly at construction, which is the intended outcome - a missing policy
+      registration is a startup defect and must not degrade into a silently unvalidated password.
+    -->
+    <PackageReference Include="FluentValidation" Version="11.12.0" />
+    <PackageReference Include="FluentValidation.DependencyInjectionExtensions" Version="11.12.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DnnMigration.Domain\DnnMigration.Domain.csproj" />
+  </ItemGroup>
+
+</Project>

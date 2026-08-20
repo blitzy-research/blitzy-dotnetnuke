@@ -1,0 +1,176 @@
+@use 'sass:map';
+
+// =============================================================================
+//  HOW TO LOAD THIS FILE - the verified relative depths
+// =============================================================================
+//
+// The workspace configures no Sass load path: `angular.json` declares no
+// `stylePreprocessorOptions.includePaths`. Every `@use` must therefore be
+// relative, and a path off by one directory fails the build with "Can't find
+// stylesheet to import." Count the directories from the stylesheet up to `src/`:
+//
+//   src/styles/_<sibling>.scss                  @use 'mixins' as mx;
+//   src/styles.scss                             @use './styles/mixins' as mx;
+//   src/app/app.component.scss                  @use '../styles/mixins' as mx;
+//   src/app/layout/<band>/                      @use '../../../styles/mixins' as mx;
+//   src/app/shared/directives/                  @use '../../../styles/mixins' as mx;
+//   src/app/shared/components/<name>/           @use '../../../../styles/mixins' as mx;
+//   src/app/features/<f>/<screen>/              @use '../../../../styles/mixins' as mx;
+//   src/app/features/<f>/<screen>/<child>/      @use '../../../../../styles/mixins' as mx;
+//
+// The last row is real rather than hypothetical: a nested feature screen sits
+// five levels below `src/`, and `features/user/membership-settings/
+// member-services/member-services.component.scss` loads this file at that depth.
+//
+// Sass modules are per-file and NOT ambient: a `@use` in `styles.scss` does not
+// make these members visible to a component stylesheet, so every consumer must
+// load this file itself. There is deliberately no barrel to forward them from.
+
+// =============================================================================
+//  BREAKPOINT SCALE — declared exactly once for the entire workspace
+// =============================================================================
+
+// Each step is named before the map is composed from those names, so the scale has the same shape as every
+// other value in the workspace — a name, a documented provenance, and exactly one definition site — rather
+// than four bare widths sitting inside a literal map.
+$_breakpoint-sm: 30rem;
+$_breakpoint-md: 48rem;
+$_breakpoint-lg: 64rem;
+$_breakpoint-xl: 80rem;
+
+$_breakpoints: (
+  'sm': $_breakpoint-sm,
+  'md': $_breakpoint-md,
+  'lg': $_breakpoint-lg,
+  'xl': $_breakpoint-xl,
+);
+
+$_breakpoint-epsilon: 0.001rem;
+
+@function breakpoint($name) {
+  @if not map.has-key($_breakpoints, $name) {
+    @error 'Unknown breakpoint #{$name}. Valid steps are: #{map.keys($_breakpoints)}. '
+      + 'Breakpoints are declared once, in src/styles/_mixins.scss; add a step to '
+      + '$_breakpoints there if one is genuinely needed, and never write a bare '
+      + '@media query in a component stylesheet.';
+  }
+
+  @return map.get($_breakpoints, $name);
+}
+
+// Applies the wrapped declarations at and above a step, and is the default direction: author the narrow
+// layout unconditionally, then layer the wider one on top of it. Mixing directions across a codebase
+// produces overlapping queries whose winner depends on source order.
+@mixin respond-above($name) {
+  @media (min-width: breakpoint($name)) {
+    @content;
+  }
+}
+
+// Strictly below a step, for a rule that has to be withdrawn rather than added. The bound is exclusive, so
+// pairing this with `respond-above` on the same step covers every viewport exactly once — no overlap and no
+// gap.
+@mixin respond-below($name) {
+  @media (max-width: breakpoint($name) - $_breakpoint-epsilon) {
+    @content;
+  }
+}
+
+// =============================================================================
+//  INTERACTION — a hover state that a touch device cannot get stuck in
+// =============================================================================
+
+// Include inside a selector: it attaches `:hover` to the parent, so a top-level include is a compile error
+// rather than a silent no-op — the same shape as `focus-ring` beside it, and idempotent for the same
+// reason.
+@mixin hover {
+  @media (hover: hover) and (pointer: fine) {
+    &:hover {
+      @content;
+    }
+  }
+}
+
+// =============================================================================
+//  ACCESSIBILITY — invisible to a sighted mouse user at rest, so no visual cost
+// =============================================================================
+
+// Include inside a selector: it attaches `:focus-visible` to the parent, so a top-level include is a
+// compile error rather than a silent no-op. Idempotent, and therefore safe to apply broadly and again on an
+// individual control.
+// The ring itself, stated once so the two entry points below cannot drift apart.
+@mixin _focus-ring-paint {
+  outline: var(--focus-ring-width) var(--border-style) var(--focus-ring-color);
+  outline-offset: var(--focus-ring-offset);
+  box-shadow: 0 0 0
+    calc(var(--focus-ring-offset) + var(--focus-ring-width) + var(--focus-ring-width))
+    var(--focus-ring-contrast-color);
+}
+
+@mixin focus-ring {
+  &:focus-visible {
+    @include _focus-ring-paint;
+  }
+}
+
+// ⚠ #27 / #29 — THE RING ON PLAIN `:focus`, for the places where focus ARRIVES PROGRAMMATICALLY. A browser
+// matches `:focus-visible` from the last input modality, so an element focused by script after a MOUSE
+// interaction gets no ring at all: a confirm dialog opened by clicking put focus on its cancelling
+// affordance and showed nothing until the reader pressed Tab, and a pager moving focus off a step it had
+// just disabled moved it invisibly. Both are cases where the application, not the reader, decided where
+// focus went, so the reader has to be told - and in both the element is one the reader is expected to act on
+// immediately.
+//
+// Use this ONLY where focus is moved by script. Everywhere a reader focuses something themselves,
+// `focus-ring` is correct: it is what keeps a ring off every mouse click on every button in the application.
+@mixin focus-ring-always {
+  &:focus,
+  &:focus-visible {
+    @include _focus-ring-paint;
+  }
+}
+
+@mixin visually-hidden {
+  position: absolute;
+  inline-size: var(--border-width);
+  block-size: var(--border-width);
+  margin-inline: calc(-1 * var(--border-width));
+  margin-block: calc(-1 * var(--border-width));
+  padding: 0;
+  overflow: hidden;
+  clip-path: var(--clip-collapsed);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+// Hidden as above until it receives keyboard focus — the skip-link pattern, where a link must lead the tab
+// order yet stay invisible until tabbed to. Note the shape: the hidden state is scoped to
+// `:not(:focus-visible)` rather than applied unconditionally and then reversed on focus.
+@mixin visually-hidden-focusable {
+  &:not(:focus-visible) {
+    @include visually-hidden;
+  }
+}
+
+// MOTION
+// MIGRATION: A NET ADDITION, and it is added here rather than in a component for the same reason every
+// media query lives in this file: a component stylesheet may not author a raw `@media`, so a component that
+// needs motion cannot guard it and must therefore be given a guard to use.
+
+@mixin motion-safe {
+  @media (prefers-reduced-motion: no-preference) {
+    @content;
+  }
+}
+
+// / Applies the indeterminate rotation to the element it is included on. / / The rotation itself is
+// declared once, here, so that the keyframes are defined a / single time in the bundle and a component
+// cannot invent a second, differently-timed / spin.
+@mixin indeterminate-spin {
+  @include motion-safe {
+    animation-name: dnn-indeterminate-spin;
+    animation-duration: var(--duration-rotate);
+    animation-timing-function: var(--easing-rotate);
+    animation-iteration-count: infinite;
+  }
+}

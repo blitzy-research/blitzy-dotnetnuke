@@ -1,0 +1,675 @@
+<!--
+  `[title]` is a PROPERTY binding and must stay one. The input is declared required and the component
+  nulls `title` on its own host precisely so the value cannot leak out as the global HTML attribute;
+  written as a static attribute it would become a browser tooltip and never reach the input at all.
+-->
+<!--
+  THE HEADING GAINS A SUBTITLE WHEN AN ACCOUNT IS THE SUBJECT. The account listing's roles command
+  carries `?userId=` (see `user-list.component.html`, DL-8), and without a line saying so an operator
+  would be looking at a listing that had silently dropped most of its rows with nothing to explain why.
+-->
+<app-page-header [title]="pageTitle" [subtitle]="accountSubtitle()">
+  @if (narrowedToAccount()) {
+    <!--
+      THE RETURN PATH TO THE PERSON, and it is listed FIRST of the two because it is the way back
+      whereas the other is a way sideways.
+    -->
+    <a class="page-action role-list__page-action" [routerLink]="subjectAccountLink()">{{
+      subjectAccountLabel
+    }}</a>
+    <a class="page-action role-list__page-action" [routerLink]="showAllRolesLink">{{ showAllRolesLabel }}</a>
+  }
+  @if (administersPortal()) {
+    <a class="page-action role-list__page-action" [routerLink]="addRoleLink">{{ addRoleLabel }}</a>
+    <a class="page-action role-list__page-action" [routerLink]="addRoleGroupLink">{{ addRoleGroupLabel }}</a>
+  }
+  <a class="page-action role-list__page-action" [routerLink]="membershipSettingsLink">{{
+    membershipSettingsLabel
+  }}</a>
+</app-page-header>
+
+<!-- THE INLINE FAILURE SURFACE. -->
+<app-error-banner [problem]="loadProblem()" />
+
+@if (loadProblem() !== null) {
+  <div class="role-list__failure">
+    <button
+      type="button"
+      class="role-list__failure-retry"
+      [disabled]="loading()"
+      (click)="reload()"
+    >
+      Try again
+    </button>
+  </div>
+}
+
+<!--
+  THIS SCREEN OFFERS NO FREE-TEXT SEARCH AND NO PAGER, AND BOTH ABSENCES ARE MEASURED PARITY RATHER THAN
+  OMISSIONS. It was reported that the screen "omits search, sort, scope filter and pager the backend
+  fully supports".
+-->
+@if (filterRowVisible()) {
+  <div class="role-list__filter">
+    <h2 data-visually-hidden>Filter Roles</h2>
+
+    <!--
+      THE FREE-TEXT FILTER. The endpoint has always accepted one - `RoleRepository` matches
+      `RoleName.ToLower().Contains(...)` - and this screen was the only listing that offered no way to reach
+      it, so a tenant with more roles than fit a page had to page through them by eye.
+
+      ⚠ IT SITS OUTSIDE THE GROUP FILTER'S FIELD, DELIBERATELY. Placed inside that field's slot it inherited
+      the field's `aria-labelledby`, which points at the GROUP selector's label - so its computed accessible
+      name became "Filter By Role Group", identical to the select beside it and unrelated to its own visible
+      "Search:" label. Two controls that a screen reader cannot tell apart is worse than no filter at all.
+    -->
+    <app-search-input
+      class="role-list__search"
+      [placeholder]="searchPlaceholder"
+      (search)="onSearch($event)"
+    />
+
+    <app-form-field
+      [label]="groupFilterLabel"
+      [help]="groupFilterHelp"
+      [for]="groupFilterControlId"
+    >
+      <!--
+        The control row is a child of the slot rather than the slot itself, because the field owns the
+        label-to-control relationship and this element owns only the arrangement of the controls inside
+        it.
+      -->
+      <div class="role-list__filter-controls">
+        <!--
+          DEFECT D-R3. The legacy marked the "global roles" entry selected with `If RoleGroupId < 0`, a
+          sign test that treats the two sentinels as one, so with "all roles" active the selector read
+          "Global Roles" while the grid listed every role.
+        -->
+        <select
+          class="role-list__filter-select"
+          [id]="groupFilterControlId"
+          (change)="onGroupFilterChange($event)"
+        >
+          @for (option of groupOptions(); track option.value) {
+            <option [value]="option.value" [selected]="option.value === groupFilterValue()">
+              {{ option.label }}
+            </option>
+          }
+        </select>
+
+        <!--
+          The legacy edit affordance was a link to a separate `EditGroup` screen. The migrated route
+          table is closed and declares no group-edit route, so this opens the inline editor below
+          instead.
+        -->
+        @if (canEditSelectedGroup()) {
+          <button
+            type="button"
+            class="role-list__filter-action"
+            [disabled]="saving()"
+            (click)="openGroupEditor()"
+          >
+            <svg
+              class="role-list__icon"
+              aria-hidden="true"
+              focusable="false"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.4"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M11.2 2.6 L13.4 4.8" />
+              <path d="M12.4 1.6 L14.4 3.6 L5.4 12.6 L2 14 L3.4 10.6 Z" />
+            </svg>
+            <span class="role-list__action-label">{{ editGroupLabel }}</span>
+          </button>
+        }
+
+        <!--
+          THE REAL ACCESSIBILITY GAP ON THIS SCREEN. The legacy `cmdDelete` image button carried NEITHER
+          a resource key NOR alternative text, so it reached assistive technology with no accessible
+          name whatsoever: a reader met an unlabelled button that destroyed a record. It is named here.
+        -->
+        @if (canRemoveSelectedGroup()) {
+          <button
+            type="button"
+            class="role-list__filter-action role-list__filter-action--danger"
+            [disabled]="saving()"
+            (click)="requestGroupRemoval()"
+          >
+            <svg
+              class="role-list__icon"
+              aria-hidden="true"
+              focusable="false"
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.4"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M2.6 4.4 L13.4 4.4" />
+              <path d="M6 4.4 V2.9 A0.8 0.8 0 0 1 6.8 2.1 L9.2 2.1 A0.8 0.8 0 0 1 10 2.9 V4.4" />
+              <path d="M4 4.4 L4.7 14.4 L11.3 14.4 L12 4.4" />
+              <path d="M6.6 7.2 V11.7" />
+              <path d="M9.4 7.2 V11.7" />
+            </svg>
+            <span class="role-list__action-label">{{ removeGroupLabel }}</span>
+          </button>
+        } @else if (groupRemovalWithheldReason() !== null) {
+          <!--
+            The condition, not silence. Rendered as ordinary text rather than as a disabled button: a disabled
+            control announces a command that is genuinely unavailable and gives no route forward, whereas the
+            sentence names the remedy the operator has to carry out first.
+          -->
+          <!--
+            A POLITE LIVE REGION, like its two siblings below. The Remove button disappears silently when the
+            chosen group changes, so a reader who does not happen to move focus back over the filter row would
+            never learn that the explanation had replaced it.
+          -->
+          <p class="role-list__filter-note" role="status" aria-live="polite">
+            {{ groupRemovalWithheldReason() }}
+          </p>
+        }
+      </div>
+    </app-form-field>
+
+    <!--
+      WHAT IS IN FORCE, STATED. Two separate facts, and both were previously invisible: the free-text filter,
+      and the fact that the DEFAULT narrowing hides every grouped role. A polite live region, so a reader who
+      changes either hears what the grid now answers rather than only the row count changing.
+    -->
+    @if (filterDisclosure(); as disclosure) {
+      <p class="role-list__filter-disclosure" role="status" aria-live="polite" aria-atomic="true">{{ disclosure }}</p>
+    }
+
+    @if (defaultNarrowingInForce()) {
+      <p class="role-list__filter-disclosure" role="status" aria-live="polite" aria-atomic="true">
+        Showing roles that belong to no group. Choose &lt; All Roles &gt; to include grouped roles.
+      </p>
+    }
+  </div>
+}
+
+<!--
+  The legacy filter row linked out to a separate `EditGroup` screen. The migrated route table is closed
+  and declares no group-edit route, so the two facts a group owns are edited in place, COMPOSED from the
+  shared labelled-field component and native controls.
+-->
+@if (groupEditorOpen()) {
+  <form class="role-list__group-editor" [formGroup]="groupForm" (ngSubmit)="submitGroupEditor()">
+    <fieldset class="role-list__group-editor-fields">
+      <legend class="role-list__group-editor-legend"><h2>{{ groupEditorLegend }}</h2></legend>
+
+      <!--
+        MIGRATION: the legacy validator message for this field is `valRoleGroupName.Text`, stored with a
+        leading break tag ahead of the words `You Must Enter a Valid Name`.
+      -->
+      <app-form-field
+        [label]="groupNameLabel"
+        [for]="groupNameControlId"
+        [required]="true"
+        [help]="groupNameHelp"
+        [error]="groupNameMessages"
+      >
+        <!--
+          Declared as `aria-required` rather than the native attribute, matching the two screens that
+          already do this.
+        -->
+        <input
+          class="role-list__group-editor-input"
+          type="text"
+          aria-required="true"
+          [id]="groupNameControlId"
+          [formControl]="groupForm.controls.roleGroupName"
+          [attr.maxlength]="groupNameMaxLength"
+          [attr.aria-invalid]="groupNameMessages.length > 0 ? 'true' : null"
+        />
+      </app-form-field>
+
+      <!-- A plain multi-line text control. -->
+      <app-form-field
+        [label]="groupDescriptionLabel"
+        [for]="groupDescriptionControlId"
+        [help]="groupDescriptionHelp"
+        [error]="groupDescriptionMessages"
+      >
+        <textarea
+          class="role-list__group-editor-textarea"
+          [id]="groupDescriptionControlId"
+          [formControl]="groupForm.controls.description"
+          [attr.maxlength]="groupDescriptionMaxLength"
+          [attr.aria-invalid]="groupDescriptionMessages.length > 0 ? 'true' : null"
+        ></textarea>
+      </app-form-field>
+    </fieldset>
+
+    <!--
+      The two commands reproduce the legacy `cmdUpdate` and `cmdCancel` link buttons and their wording,
+      `Update` and `Cancel`, measured at `editroles.ascx` L179 and L182 and stored under those names in
+      `SharedResources.resx`.
+    -->
+    <div class="role-list__group-editor-commands">
+      <button type="submit" class="role-list__command form-action--primary" [disabled]="saving()"
+          [attr.aria-busy]="saving() ? 'true' : null">{{ saving() ? 'Saving…' : 'Update' }}</button>
+
+      <button
+        type="button"
+        class="role-list__command"
+        [disabled]="saving()"
+        (click)="closeGroupEditor()"
+      >
+        Cancel
+      </button>
+    </div>
+  </form>
+}
+
+<!--
+  Replaces the `asp:datagrid` named `grdRoles`. The twelve columns, their order and their alignment are
+  assembled by the sibling component and arrive through one input, so this template states the data and
+  not the shape of it.
+-->
+<!--
+  The ordering inputs are the SOLE source of truth for what each heading announces and are read straight
+  from the store, so a heading can never claim an order whose request failed.
+-->
+<app-data-table
+  [columns]="columns()"
+  [rows]="roles()"
+  [totalCount]="totalCount()"
+  [rowOffset]="pageIndex() * servedPageSize()"
+  [rowKey]="roleRowKey"
+  [loading]="listWaiting()"
+  [loadingLabel]="loadingLabel"
+  [failed]="listFailed()"
+  [sortBy]="sortBy()"
+  [sortDir]="sortDir()"
+  [emptyMessage]="emptyMessage()"
+  (sortChange)="onSortChange($event)"
+>
+  <span dataTableCaption>{{ pageTitle }}</span>
+
+  <!--
+    ⚠ THE ZERO-RESULT SURFACE'S WAY FORWARD, and it was empty. A reader who narrowed this listing to a group
+    with no roles in it was shown a generic sentence and nothing to do about it, with the group selector the
+    only route out - and the selector is above the table, past the empty surface the reader is looking at. An
+    address past the end was worse still: a grid reading "No records found." beside a pager claiming
+    "21-30 of 30", with no route back at all.
+
+    THE HOME IS THE GRID'S OWN EMPTY ROW rather than a panel of this screen's, because substituting a panel
+    for the grid destroys the polite `role="status"` region along with it.
+
+    The affordance offered is the one that can actually change the answer for the state that holds: return to
+    the first page when the address is past the end, otherwise widen the filter and add a role.
+  -->
+  <div dataTableEmptyAction class="role-list__empty-actions">
+    @if (isPastEnd()) {
+      <button type="button" class="role-list__first-page" (click)="onReturnToFirstPage()">
+        {{ firstPageLabel }}
+      </button>
+    } @else {
+      @if (isNarrowedByGroup()) {
+        <!--
+          The SAME affordance and the SAME wording this screen's own action bar offers, reached from where the
+          reader is looking rather than from above the table they have scrolled past.
+        -->
+        <a class="role-list__filter-action" [routerLink]="showAllRolesLink">{{ showAllRolesLabel }}</a>
+      }
+
+      <a class="role-list__filter-action" [routerLink]="addRoleLink">{{ addRoleLabel }}</a>
+    }
+  </div>
+</app-data-table>
+
+<!--
+  `roles.ascx` declares no paging control and no `AllowPaging`, its grid bound a plain untyped list, and
+  the code-behind holds no page index, size or record total anywhere. The pager style declared at
+  `roles.ascx:L32` never rendered.
+-->
+<!--
+  ⚠ GATED ON THE ROWS IN HAND, NOT ON THE TOTAL - R5. A page past the end of a real result set has a total
+  and no rows, and mounting the pager on the total alone is what put a populated range beside a grid showing
+  nothing. The portal and module listings gate on their rows for the same reason.
+-->
+@if (hasRows()) {
+  <app-pagination
+    [page]="pageIndex()"
+    [pageSize]="servedPageSize()"
+    [totalCount]="totalCount()"
+    [loading]="loading()"
+    (pageChange)="onPageChange($event)"
+  />
+}
+
+<!-- THE GROUP-REMOVAL CONFIRMATION. -->
+@if (pendingGroupRemoval() !== null) {
+  <!--
+    ⚠ NO `title` IS BOUND, AND THAT IS THE POINT. Every delete confirmation in this application shows
+    the SAME title, which the shared dialog declares as its default; binding one here is how five
+    different titles for one action came about - runtime testing found `Delete`, `Confirm Delete`,
+    `Delete Module`, `Delete Profile Property` and `Delete role group` across the screens.
+  -->
+  <app-confirm-dialog
+    [message]="groupRemovalMessage()"
+    [confirmLabel]="removalConfirmLabel"
+    [danger]="true"
+    (confirm)="onGroupRemovalConfirmed()"
+    (cancel)="onGroupRemovalCancelled()"
+  />
+}
+
+<!-- THE ROLE-REMOVAL CONFIRMATION. -->
+@if (pendingRoleRemoval() !== null) {
+  <app-confirm-dialog
+    [message]="roleRemovalMessage()"
+    [confirmLabel]="removalConfirmLabel"
+    [danger]="true"
+    (confirm)="onRoleRemovalConfirmed()"
+    (cancel)="onRoleRemovalCancelled()"
+  />
+}
+
+<!--
+  ══════════════════════════════════════════════════════════════════════════════════════ THE FOUR CELL
+  TEMPLATES.
+-->
+
+<!--
+  SENTINEL DISCIPLINE. `Roles.RoleID` is seeded to start at ZERO, so a role identifier of zero is a REAL
+  identifier and `/roles/0` is a real address.
+-->
+<ng-template #editCommand let-row>
+  @if (isProtectedRole(row)) {
+    <!--
+      ⚠ A STATEMENT, NOT A DISABLED CONTROL. The legacy screen withheld these commands for the two protected
+      roles and the server refuses both writes with `role.protected`, so a link here led to an editor that
+      could change nothing. A disabled anchor is not a thing HTML has, and a disabled BUTTON would announce a
+      command that does not exist; an unfocusable marker carrying the reason is what a reader can act on.
+    -->
+    <span class="role-list__row-action-withheld">
+      <!--
+        THE STATE IS VISIBLE; THE REASON IS THE ACCESSIBLE TEXT. Previously this cell held an `aria-hidden`
+        em dash plus a visually hidden sentence plus a `title` on this very span - so a screen reader heard
+        the reason, a mouse user could hover for it, and a sighted KEYBOARD user got a blank-looking cell
+        with no way to reach either. The dash is replaced by the state word and the `title` is dropped
+        rather than kept alongside it: a title on an element that already carries its own text becomes a
+        second description of the same fact, which is how one rule ends up announced twice.
+      -->
+      <span class="role-list__row-action-state">{{ protectedRoleStateLabel }}</span>
+      <span class="role-list__row-action-reason">{{ protectedRoleReason(row) }}</span>
+    </span>
+  } @else {
+  <a
+    class="role-list__row-action"
+    [routerLink]="editRoleLinks()[row.roleId]"
+    [attr.aria-label]="editRoleLabel + ' ' + row.roleName"
+    [attr.title]="editRoleLabel + ' ' + row.roleName"
+  >
+    <svg
+      class="role-list__icon"
+      aria-hidden="true"
+      focusable="false"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.4"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path d="M11.2 2.6 L13.4 4.8" />
+      <path d="M12.4 1.6 L14.4 3.6 L5.4 12.6 L2 14 L3.4 10.6 Z" />
+    </svg>
+    <span class="role-list__action-label">{{ editRoleLabel }}</span>
+  </a>
+  }
+</ng-template>
+
+<!--
+  THERE IS NO THIRD ROW COMMAND, AND THERE IS NO ROW-LEVEL DELETE. The legacy grid declared exactly
+  these two image command columns and no delete command anywhere; role removal lives on the role editor.
+-->
+<ng-template #membersCommand let-row>
+  <a
+    class="role-list__row-action"
+    [routerLink]="manageUsersLinks()[row.roleId]"
+    [attr.aria-label]="manageUsersLabel + ' ' + row.roleName"
+    [attr.title]="manageUsersLabel + ' ' + row.roleName"
+  >
+    <svg
+      class="role-list__icon"
+      aria-hidden="true"
+      focusable="false"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.4"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <circle cx="6" cy="5.2" r="2.6" />
+      <path d="M1.6 14 V13 A4.4 4.4 0 0 1 6 8.6 A4.4 4.4 0 0 1 10.4 13 V14" />
+      <path d="M10.7 3.1 A2.2 2.2 0 0 1 10.7 7.4" />
+      <path d="M12 8.9 A4 4 0 0 1 14.4 12.5 V14" />
+    </svg>
+    <span class="role-list__action-label">{{ manageUsersLabel }}</span>
+  </a>
+</ng-template>
+
+<!-- ROW COMMAND THREE - DELETE. NO LEGACY COLUMN BEHIND IT. -->
+<ng-template #deleteCommand let-row>
+  @if (isProtectedRole(row)) {
+    <!--
+      The destructive command is WITHHELD rather than refused. Confirming the destruction of the role an
+      operator's own access depends on, and only then being refused, reads as a fault rather than as a rule.
+    -->
+    <span class="role-list__row-action-withheld">
+      <!--
+        THE STATE IS VISIBLE; THE REASON IS THE ACCESSIBLE TEXT. Previously this cell held an `aria-hidden`
+        em dash plus a visually hidden sentence plus a `title` on this very span - so a screen reader heard
+        the reason, a mouse user could hover for it, and a sighted KEYBOARD user got a blank-looking cell
+        with no way to reach either. The dash is replaced by the state word and the `title` is dropped
+        rather than kept alongside it: a title on an element that already carries its own text becomes a
+        second description of the same fact, which is how one rule ends up announced twice.
+      -->
+      <span class="role-list__row-action-state">{{ protectedRoleStateLabel }}</span>
+      <span class="role-list__row-action-reason">{{ protectedRoleReason(row) }}</span>
+    </span>
+  } @else {
+  <button
+    type="button"
+    class="role-list__row-action role-list__row-action--danger"
+    [attr.aria-label]="deleteRoleLabel + ' ' + row.roleName"
+    [attr.title]="deleteRoleLabel + ' ' + row.roleName"
+    [disabled]="saving()"
+    (click)="requestRoleRemoval(row)"
+  >
+    <svg
+      class="role-list__icon"
+      aria-hidden="true"
+      focusable="false"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.4"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path d="M2.6 4.4 H13.4" />
+      <path d="M6.2 4.4 V2.6 H9.8 V4.4" />
+      <path d="M4 4.4 L4.8 13.4 H11.2 L12 4.4" />
+      <path d="M6.6 7 V11" />
+      <path d="M9.4 7 V11" />
+    </svg>
+    <span class="role-list__action-label">{{ deleteRoleLabel }}</span>
+  </button>
+  }
+</ng-template>
+
+<!-- THE SELF-SUBSCRIPTION CELL. Legacy template column headed `Public`. -->
+<!-- THE FEE CELLS - ONE TEMPLATE, BOTH MONEY COLUMNS. -->
+<!--
+  R-M4: AN AMOUNT TOO LARGE FOR A DOUBLE TO STATE EXACTLY SAYS SO. The column is SQL `money` and the
+  wire carries a JSON number, so above a computable magnitude the figure that arrives has already moved
+  from the figure that is stored - measured as `922337203685477.5807` stored against
+  `922337203685477.63` painted, in the same colour and weight as an exact amount.
+-->
+<!--
+  R3: A NEGATIVE AMOUNT IS MARKED, IN THE TREATMENT THE PORTAL LISTING ALREADY USES FOR THE SAME STATE. There
+  a fee below zero is painted in the danger colour at bold weight with the word "negative" clipped beside it;
+  here the identical state was a bare text node in the ordinary colour and weight, so a credit and a charge
+  differed by one minus glyph and nothing else.
+-->
+<!--
+  ⚠ THE `&nbsp;` IS LOAD-BEARING AND IS NOT DECORATION - R7. Angular compiles templates with
+  `preserveWhitespaces` disabled, which DELETES a whitespace-only text node standing between two elements. A
+  clipped qualifier written on its own line therefore joins the value it qualifies with no separator at all,
+  and the accessibility tree reports "-99.99negative" as one word. The date cells nearby need no such thing:
+  their interpolation and the newline after it live in ONE text node, which is collapsed to a single space
+  rather than removed, which is exactly why "1/1/2020 Expired" already reads correctly.
+
+  ⚠ IT IS `&nbsp;` RATHER THAN `&ngsp;` DELIBERATELY. An ordinary space reaches the DOM but is dropped from
+  the ACCESSIBILITY TREE whenever Angular's anchor comments leave it an isolated whitespace-only text node -
+  Blink builds no text box for one, so it never becomes a StaticText node and the accessible name
+  concatenates anyway. That was measured through the CDP Accessibility domain on the sibling role-assignment
+  screen, where the `@else if` branch computed "9/20/2027Active" behind a DOM that read "9/20/2027 Active".
+  U+00A0 is not collapsible, so it always produces a text box and cannot be dropped. The qualifier here is
+  1x1 and clipped, so a non-breaking space has no visual consequence whatsoever.
+-->
+<!--
+  THE DESCRIPTION — `roles.ascx` L48-L53, a bound column over `Description`.
+
+  ⚠ QA-20 — IT WAS THE LAST CELL ON THIS ROW STILL REPORTING AN ABSENT VALUE WITH NOTHING. Measured on the
+  live listing, one role carried no description and its cell rendered empty while the six columns beside it
+  each painted the shared mark for the same state. Nothing announced, nothing drawn, and no way for a reader
+  to tell "no description recorded" from "this cell did not render".
+-->
+<ng-template #descriptionCell let-row>
+  @if (isDescriptionAbsent(row)) {
+    <!-- The shared absent-value rendering: the same mark, colour and words as every other listing. -->
+    <app-absent-value />
+  } @else {
+    {{ row.description }}
+  }
+</ng-template>
+
+<ng-template #feeCell let-row let-column="column">
+  @if (isFeeAbsent(row, column.key)) {
+    <!-- The shared absent-value rendering: the same mark, colour and words as every other listing. -->
+    <app-absent-value />
+  } @else if (isFeeNegative(row, column.key)) {
+    <span class="role-list__fee--negative" data-atomic-value>{{ feeText(row, column.key) }}</span
+    >&nbsp;<span class="role-list__absent-value">{{ negativeFeeQualifier }}</span
+    >@if (isFeeApproximate(row, column.key)) {&nbsp;<span class="role-list__absent-value">{{ approximateValueDescription }}</span>
+    }
+  } @else {
+    <!--
+      ⚠ A FREE ROLE IS NAMED RATHER THAN PRICED, and it is a measured correction. A stored zero rendered
+      "0.00" in the same colour and weight as "0.01", so a free role and a charged one were told apart only by
+      reading two decimal places - the same failure the negative fee already had a qualifier for. The word is
+      the state; the figure is still available to a reader who wants it, in the announced text.
+    -->
+    @if (isFeeFree(row, column.key)) {
+      <span class="role-list__fee-state" data-atomic-value>{{ freeFeeLabel }}</span>
+      <span class="role-list__absent-value">{{ freeFeeDescription }}{{ feeText(row, column.key) }}</span>
+    } @else {
+      <span data-atomic-value>{{ feeText(row, column.key) }}</span
+      >@if (isFeeApproximate(row, column.key)) {&nbsp;<span class="role-list__absent-value">{{ approximateValueDescription }}</span>
+      }
+    }
+  }
+</ng-template>
+
+<!--
+  R-M1: an empty cell could not distinguish a period the tenant never recorded from one nobody had got
+  to yet, and this grid had a specific inconsistency to answer for - a stored `-1` rendered blank while
+  a stored `-3` rendered "-3", two negative periods presented as different kinds of value.
+-->
+<!--
+  ⚠ THREE RECORDED STATES, NOT ONE. A count of zero describes no recurrence at all and was painted exactly like
+  a genuine count; and a count whose unit cannot be named is not a period, although the frequency cell beside it
+  already said so. The painted figure is unchanged in every branch - the legacy grid bound the raw count and it
+  still does - so what distinguishes them is the state treatment the fee column already established plus a
+  clipped sentence, and never colour alone.
+-->
+<ng-template #periodCell let-row let-column="column">
+  @if (isPeriodAbsent(row, column.key)) {
+    <app-absent-value />
+  } @else if (isPeriodZero(row, column.key)) {
+    <span class="role-list__fee-state" data-atomic-value>{{ periodText(row, column.key) }}</span>
+    <span class="role-list__absent-value">{{ zeroPeriodDescription }}</span>
+  } @else if (isPeriodUnitless(row, column.key)) {
+    <span
+      class="role-list__unnameable-code"
+      data-atomic-value
+      [attr.title]="unitlessPeriodDescription"
+      >{{ periodText(row, column.key) }}</span
+    >
+    <span class="role-list__absent-value">{{ unitlessPeriodDescription }}</span>
+  } @else {
+    <span data-atomic-value>{{ periodText(row, column.key) }}</span>
+  }
+</ng-template>
+
+<!--
+  R-M3: THE PAINTED CHARACTER IS UNCHANGED. The legacy grid bound the raw field rather than the joined
+  description, so `M` rendered as `M`, and it still does - the character is load-bearing data
+  constrained by `FK_Roles_CodeFrequency`.
+-->
+<!--
+  ⚠ AN UNRECORDED FREQUENCY RENDERED A COMPLETELY EMPTY CELL, AND IT WAS THE LAST ONE THAT DID — QA-15.
+  Measured on the role whose whole paid-membership configuration is unset: its fee, billing-every, trial and
+  trial-every cells all rendered the shared absent mark, while these two rendered nothing at all — no text, no
+  children, nothing announced — in the same row. A reader could not tell "no frequency recorded" from "this
+  cell failed to draw", and the two states are told apart everywhere else on the same screen.
+-->
+<ng-template #frequencyCell let-row let-column="column">
+  @if (isFrequencyAbsent(row, column.key)) {
+    <!-- The shared absent-value rendering: the same mark, colour and words as every other listing. -->
+    <app-absent-value />
+  } @else if (isNameableFrequency(row, column.key)) {
+    <!--
+      ⚠ ONLY THE PAINTED CHARACTER IS EMITTED HERE, AND THE MISSING SIBLING IS DELIBERATE - QA-11. A
+      screen-reader-only span naming the unit used to sit on this line as well, which made the cell announce
+      the unit TWICE: measured as "WWeekWeek", "NNoneNone", "MMonthMonth", "DDayDay" and "YYearYear". The
+      cause is that `frequencyDescription` RETURNS `frequencyName` for any code it can name, so this span and
+      the unconditional sibling below it resolved to the same word. The sibling is the one that stays,
+      because it is the only branch-independent accessible text on the template and its own note records that
+      it exists precisely so no code can be left unannounced.
+    -->
+    <span aria-hidden="true">{{ frequencyCode(row, column.key) }}</span>
+  } @else {
+    <!--
+      A STORED CODE WITH NO WORD. Still painted verbatim, but muted and carrying a `title`, so a sighted
+      reader can see the cell holds a reference rather than a value and can read what it is. The same
+      treatment the profile-definition listing gives an unnameable data type.
+    -->
+    <span
+      aria-hidden="true"
+      class="role-list__unnameable-code"
+      [attr.title]="frequencyDescription(row, column.key)"
+      >{{ frequencyCode(row, column.key) }}</span
+    >
+  }
+  <!--
+    ALWAYS RENDERED, and unconditionally is the whole point: this sibling is the only thing a reader who
+    cannot see the painted character receives, and it used to be omitted for exactly the codes that needed
+    it most.
+  -->
+  <span class="role-list__absent-value">{{ frequencyDescription(row, column.key) }}</span>
+</ng-template>
+
+<ng-template #publicCell let-row>
+  {{ row.isPublic | yesNo }}
+</ng-template>
+
+<!--
+  THE AUTOMATIC-ENROLMENT CELL. Legacy template column headed `Auto`, the same image pair over
+  `AutoAssignment` and carrying the same absence of alternative text. Rendered the same way, for the
+  same reasons.
+-->
+<ng-template #autoCell let-row>
+  {{ row.autoAssignment | yesNo }}
+</ng-template>

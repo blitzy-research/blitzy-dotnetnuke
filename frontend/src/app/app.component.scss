@@ -1,0 +1,5 @@
+:host {
+  // A custom element has no user-agent display and would lay out inline, shrink-wrapping the shell. A block
+  // box fills the available inline size and gives the shell the block-level containing block it expects.
+  display: block;
+}

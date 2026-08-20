@@ -1,0 +1,59 @@
+<Project>
+
+  <!--
+    Build policy for every project in the DnnMigration solution. MSBuild imports
+    this file by walking upward from each project directory, so no .csproj needs
+    to restate any property below, and none should override one to make itself
+    build.
+
+    The file must stay at backend/. A copy at the repository root would also be
+    imported into the legacy .NET Framework project under Library/, injecting
+    net8.0, nullable reference types and warnings-as-errors into a project that
+    cannot survive them.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>12.0</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <RestoreLockedMode>true</RestoreLockedMode>
+
+    <!--
+      The package graph is part of the reviewed source, not a moving result of
+      whichever transitive versions happen to satisfy the direct references on
+      restore day. Every project therefore owns a packages.lock.json, including
+      Domain (whose empty graph is still an asserted graph), and ordinary restore
+      runs in locked mode. Updating a dependency is a two-step, review-visible
+      operation: change the manifest, then regenerate intentionally with the
+      force-evaluate option and RestoreLockedMode set to false. A restore that
+      would otherwise drift fails with NU1004 instead.
+    -->
+
+    <!--
+      Exactly two suppressions on top of whatever the SDK and the project already
+      contribute. The leading $(NoWarn) reference appends rather than replaces, so
+      removing it would discard those inherited values.
+
+        CS8618  entities and DTOs are materialised by EF Core and
+                System.Text.Json, so the compiler cannot see the assignment that
+                does happen.
+        CS1591  required for GenerateDocumentationFile to coexist with
+                warnings-as-errors: otherwise every undocumented public member
+                fails the build.
+
+      Widen this list for nothing else. Any other diagnostic under a Release build
+      with warnings promoted to errors means the code needs fixing, not a new
+      suppression, a per-project override or a file-level pragma.
+    -->
+    <NoWarn>$(NoWarn);CS8618;CS1591</NoWarn>
+
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- Promotes backend/.editorconfig from an IDE convenience to a build-time
+         contract. That file holds every style rule at `suggestion` or lower, so
+         the warning policy above cannot turn formatting into a build failure. -->
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+  </PropertyGroup>
+
+</Project>

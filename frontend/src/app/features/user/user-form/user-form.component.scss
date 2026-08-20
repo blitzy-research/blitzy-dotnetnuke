@@ -1,0 +1,305 @@
+// WHAT THIS FILE DELIBERATELY DOES NOT DO
+
+@use '../../../../styles/mixins' as mx;
+
+// ROOT
+:host {
+  display: grid;
+  gap: var(--space-4);
+}
+
+// The screen renders eight bare paragraphs — the absent-account and refusal notices, the password help and
+// alert, the required-field legend and the eight membership help lines. Their user-agent block margins are
+// removed once, here, because every ancestor spaces its children with `gap`.
+p {
+  margin-block: 0;
+}
+
+.user-form {
+  display: grid;
+  gap: var(--space-4);
+}
+
+// THE TWO PANELS — the measured side-by-side arrangement
+// The collapse is authored narrow-first and the two-column form layered above `lg`, which is the direction
+// `_mixins.scss` documents as default. `lg` rather than `md` is arithmetic, not taste: the measured panels
+// are 350px plus the 10px spacer plus 400px, so 760px of content.
+.user-form__panels {
+  display: grid;
+  gap: var(--space-3);
+  align-items: start;
+
+  @include mx.respond-above('lg') {
+    grid-template-columns: var(--grid-track-fluid) var(--grid-track-fluid);
+  }
+}
+
+.user-form__panel {
+  display: grid;
+  gap: var(--space-3);
+  align-content: start;
+  min-inline-size: 0;
+}
+
+.user-form__group-help {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.user-form__group-error {
+  margin: 0;
+  color: var(--color-danger);
+  font-weight: var(--font-weight-bold);
+}
+
+// SECTIONS AND THEIR DISCLOSURES
+.user-form__section {
+  background-color: var(--color-surface);
+  margin-block-end: 0;
+}
+
+// Typography is INHERITED, not restated: the global `legend` rule is already the measured `.SubHead` —
+// `default.css` L74-L80, 11px, bold, brand colour — exactly what a section caption should be here.
+.user-form__legend {
+  overflow-wrap: break-word;
+}
+
+// The focus ring IS already applied globally to every button.
+.user-form__section-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  inline-size: var(--size-full);
+  background-color: var(--color-background);
+  text-align: start;
+
+  @include mx.focus-ring;
+
+  svg {
+    flex: none;
+    inline-size: var(--space-2);
+    block-size: var(--space-2);
+  }
+
+  // Collapsed the caret points along the inline axis; expanded it points down the block axis.
+  // `--rotate-quarter-turn` exists in the token vocabulary for exactly this.
+  &[aria-expanded='true'] svg {
+    transform: rotate(var(--rotate-quarter-turn));
+  }
+}
+
+// Spacing only, and deliberately no `display`.
+.user-form__section-body {
+  margin-block-start: var(--space-3);
+}
+
+// FIELD ROWS
+// ONE field per row, which is what the legacy laid out: every row of `tblAddUser` and `tblPassword` is a
+// single label-and-control pair, never two side by side.
+.user-form__grid {
+  display: grid;
+  gap: var(--space-3);
+}
+
+// MEMBERSHIP — the read-only panel
+.user-form__membership {
+  dl {
+    display: grid;
+    gap: var(--space-2);
+    margin-block: 0;
+  }
+}
+
+// A term-and-detail pair. Narrow, the term sits above its value; from the `sm` step the two share a row,
+// baseline-aligned so a term stays level with the first line of a value that has wrapped.
+.user-form__membership-row {
+  display: grid;
+  gap: var(--space-1);
+
+  @include mx.respond-above('sm') {
+    grid-template-columns: var(--grid-track-term) var(--grid-track-detail);
+    column-gap: var(--space-4);
+    align-items: baseline;
+  }
+}
+
+.user-form__membership-term {
+  overflow-wrap: break-word;
+}
+
+// `margin-inline-start: 0` is load-bearing rather than tidy. A `dd` carries a user-agent indent of about
+// 40px, and the global layer leaves flow margins alone by design, so without this every value would sit
+// indented inside its own grid track and no value would line up with the column it belongs to.
+.user-form__membership-value {
+  margin-inline-start: 0;
+  min-inline-size: 0;
+  overflow-wrap: break-word;
+
+  p {
+    color: var(--color-text-muted);
+  }
+}
+
+.user-form__membership-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-2);
+  margin-block-start: var(--space-3);
+}
+
+// ⚠ #22 — THE SHARED PLACEMENT, which this bar alone did not use. It centred its commands with a wider gap
+// while the portal, module, role and password forms all start-align theirs with `--space-2`, so the primary
+// action moved horizontally as an operator walked between screens - one of the three placements the review
+// counted across four create screens. Nothing here is bespoke any more.
+.user-form__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+// The locked-account statement, sitting inside the wrapping action row beside the command that clears it.
+// `flex-basis: 100%` puts it on its own line rather than in the queue of buttons: it is a sentence, and a
+// sentence between two buttons reads as a label for one of them.
+.user-form__locked-out {
+  flex-basis: 100%;
+  margin-block: 0;
+  text-align: center;
+  color: var(--color-text-muted);
+}
+
+// ONE-TIME CREDENTIAL HAND-OVER
+// NET-NEW, with no legacy counterpart: the legacy mailed a generated password and there is no mail endpoint
+// here, so this region is the only way the value reaches the operator who just created the account.
+.user-form__credential {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border: var(--border-width) var(--border-style) var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-surface);
+}
+
+// Type is inherited from the global `h2` rule; only the flow margin is removed so the
+// heading spaces on the container's `gap` like everything else in it.
+.user-form__credential-title {
+  margin-block: 0;
+}
+
+// The recovery surface for an account that could not be read. Bordered like the credential panel so the
+// two read as the same class of out-of-band notice, and muted rather than danger-coloured because the
+// shared banner immediately above is already carrying the failure at full weight.
+// The stale-read recovery surface. Same visual register as the unconfirmed-record surface below, because
+// the two say the same kind of thing: what is on screen cannot be trusted, and here is what to do about it.
+.user-form__conflict {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-2);
+  margin-block: var(--space-2);
+  padding: var(--space-3);
+  border: var(--border-width) var(--border-style) var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-surface);
+}
+
+// What happened. Weighted above the recovery sentence beside it, because a reader needs to know that
+// nothing was saved before they read what to do next.
+.user-form__conflict-statement {
+  margin-block: 0;
+  max-inline-size: mx.breakpoint('md');
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-tight);
+}
+
+.user-form__conflict-message {
+  margin-block: 0;
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-tight);
+  color: var(--color-text-muted);
+}
+
+.user-form__unconfirmed {
+  display: grid;
+  gap: var(--space-2);
+  margin-block: var(--space-2);
+  padding: var(--space-3);
+  border: var(--border-width) var(--border-style) var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-surface);
+}
+
+.user-form__unconfirmed-message {
+  margin-block: 0;
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-tight);
+  color: var(--color-text-muted);
+}
+
+.user-form__unconfirmed-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+// The way out is an anchor rather than a button, because it navigates. It therefore inherits none of the
+// global `button` appearance and none of the pointer-target floor declared with it, so both are restated
+// here - the two controls sit side by side and must be indistinguishable in size and weight.
+a.user-form__recovery {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+
+  min-inline-size: var(--target-size-min);
+  min-block-size: var(--target-size-min);
+  padding-block: var(--space-1);
+  padding-inline: var(--space-3);
+
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+  color: var(--color-primary);
+  text-decoration: none;
+
+  background-color: var(--color-surface);
+  border: var(--border-width) var(--border-style) var(--color-primary);
+  border-radius: var(--radius-sm);
+}
+
+// The tenant-expression notice beside the address field. Muted rather than danger-coloured, because it is
+// an ADVISORY about a second rule that may or may not refuse the value - not a report that the field is
+// wrong. Colouring it as an error would make an ordinary `.museum` address look invalid when it is not.
+.user-form__tenant-advisory {
+  margin-block: var(--space-1) 0;
+  max-inline-size: mx.breakpoint('md');
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-tight);
+  color: var(--color-text-muted);
+}
+
+.user-form__credential-advisory {
+  color: var(--color-danger);
+  font-weight: var(--font-weight-bold);
+}
+
+// The value is rendered in a `code` element so every character is unambiguous.
+.user-form__credential-value {
+  font-family: var(--font-family-mono);
+  font-size: var(--font-size-lg);
+  overflow-wrap: anywhere;
+}
+
+// Centred for consistency with the two command rows above it. There is no legacy alignment
+// to preserve here, the region being net-new.
+.user-form__credential-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-2);
+}
+
+// DELIBERATE DIVERGENCES, RECORDED RATHER THAN ABSORBED
+// MIGRATION: the spacing, radius and elevation scales that every value above resolves to are NET ADDITIONS.
+// The legacy design has no spacing system, is square-cornered and is flat. Nothing here reads a value the
+// legacy declared and changes it; the scales exist so that no value has to be written as a literal.
+

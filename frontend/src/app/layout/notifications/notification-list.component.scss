@@ -1,0 +1,197 @@
+// Sass module scoping is per-file, so this `@use` is what makes `mx.*` available
+// here; a `@use` elsewhere does not.
+@use '../../../styles/mixins' as mx;
+
+// THE LIVE REGION
+// It is in the document at all times — a region inserted with its first message is announced inconsistently
+// — so while the queue is empty it must paint NOTHING. That is why it carries no padding, no border, no
+// background and no minimum size: an empty element with no content resolves to zero height, and `gap`
+// contributes nothing with fewer than two children.
+.notification-list {
+  // The element stays exactly where it is in the MARKUP - first inside the main region - so its place in
+  // the accessibility tree and in the tab order is unchanged. Only its painting moves.
+  position: fixed;
+  z-index: var(--z-index-overlay);
+  display: flex;
+
+  // `column-reverse` rather than reordering the entries in the template: the DOM order stays oldest-first,
+  // which is the order they are announced in and the order the tab sequence follows, while the newest is
+  // painted closest to the corner where a person's attention already is.
+  inset-block-end: var(--space-4);
+  inset-inline-end: var(--space-4);
+  flex-direction: column-reverse;
+  gap: var(--space-2);
+
+  // ⚠ EVERY VALUE HERE RESOLVES TO A TOKEN, AND TWO OF THEM DID NOT. The inline bound repeated `28rem` as a
+  // literal while `--notification-max-inline-size` already carried exactly that value and the sibling rule
+  // below already consumed it, so one measurement had two spellings and only one of them was in the
+  // vocabulary; and both viewport extents were spelled inline, where the block extent already had
+  // `--size-viewport-block`.
+  inline-size: min(
+    var(--notification-max-inline-size),
+    calc(var(--size-viewport-inline) - var(--space-8))
+  );
+  max-block-size: calc(var(--size-viewport-block) - var(--space-8));
+  overflow-y: auto;
+
+  // ⚠ THE REGION IS PRESENT AT ALL TIMES, so it must not intercept the pointer while it is empty - a fixed,
+  // transparent element over the bottom corner of every screen would swallow clicks on whatever is
+  // underneath it.
+  pointer-events: none;
+}
+
+// While the queue is empty the region paints nothing and, being fixed, occupies nothing either.
+// The two children below are what re-enable pointer interaction inside it.
+.notification-list__item,
+.notification-list__clear-all {
+  pointer-events: auto;
+}
+
+// ONE ENTRY
+.notification-list__item {
+  display: flex;
+  align-items: start;
+  gap: var(--space-2);
+  padding-block: var(--space-2);
+  padding-inline: var(--space-3);
+  border: var(--border-width) var(--border-style) var(--color-border);
+  // The accent is the leading edge only, which is the same emphasis the shared error banner uses and the
+  // same one the legacy validation-message vocabulary used. Widened to the first spacing step so it reads
+  // as an accent rather than as a hairline.
+  border-inline-start-width: var(--space-1);
+  border-radius: var(--radius-md);
+  background-color: var(--color-background);
+  box-shadow: var(--elevation-1);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-base);
+}
+
+// The danger band. Accent and ink are the same token, for the reason recorded in the band table above; the
+// severity word in the live region is what a reader who perceives no red receives instead.
+.notification-list__item[data-severity='error'] {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
+// The refusal band: brand accent, secondary surface, inherited ink.
+.notification-list__item[data-severity='warning'] {
+  border-inline-start-color: var(--color-primary);
+  background-color: var(--color-surface);
+}
+
+// The quiet band.
+.notification-list__item[data-severity='info'] {
+  border-inline-start-color: var(--color-text-muted);
+  background-color: var(--color-surface);
+}
+
+// ⚠ THE SURFACE IS WHAT SEPARATES THIS BAND FROM THE REFUSAL BAND, and it was added because the two were
+// reported as looking alike.
+.notification-list__item[data-severity='success'] {
+  border-inline-start-color: var(--color-primary);
+  background-color: var(--color-selected);
+}
+
+// THE SEVERITY WORD
+// Bold and non-shrinking, so a long sentence cannot squeeze the cue that carries the band without colour.
+// `flex-shrink: 0` is expressed through the shared flex token vocabulary's absence of a "fill" role here:
+// the word takes its intrinsic width and nothing more.
+.notification-list__severity {
+  flex: none;
+  margin: 0;
+  font-weight: var(--font-weight-bold);
+}
+
+// THE SENTENCE
+// Takes the remaining inline space from zero, so a single long unbroken token cannot force the row wider
+// than its container. `overflow-wrap` is what lets such a token break rather than overflow — a message can
+// be remote text and its shape is not this application's to choose.
+.notification-list__message {
+  flex: var(--flex-fill-from-zero);
+  margin: 0;
+  overflow-wrap: break-word;
+}
+
+// THE DISMISSAL
+// A real button, so it is styled down to a glyph rather than up from a span. The focus ring is the shared
+// one, applied on `:focus-visible` only, so a pointer activation does not leave a ring behind while a
+// keyboard activation always shows one.
+.notification-list__dismiss {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  // ⚠ THE MINIMUM IS THE TARGET TOKEN, NOT A SPACING STEP — QA-18. This used to read `var(--space-6)`, which
+  // is 24px, and 24×24 was exactly what the control measured: the AA floor for a control with no inline
+  // exemption, met and not exceeded, on a transient control that disappears on its own and therefore gives
+  // an operator one attempt at it. A dismissal that is missed re-triggers the toast's own hover-hold, so the
+  // cost of a mis-tap here is a notification that will not go away.
+  //
+  // Nothing else changes: the glyph is centred by the flex rules above, so the box grows around it.
+  min-inline-size: var(--target-size-min);
+  min-block-size: var(--target-size-min);
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background-color: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: var(--font-size-lg);
+  line-height: var(--line-height-none);
+  cursor: pointer;
+
+  @include mx.focus-ring;
+
+  // Hover is a REINFORCEMENT and never the only signal: the control has an accessible name, a pointer
+  // cursor and a focus ring, so an operator who cannot perceive the hover tint loses nothing.
+  @include mx.hover {
+    color: var(--color-primary-hover);
+  }
+  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE. `background-color:
+  // transparent` above weighs (0,1,0) against the global `button:active` rule's (0,1,1), so the shared
+  // press tint was losing before a pointer arrived and this control was BYTE-IDENTICAL pressed and at rest.
+  &:active {
+    background-color: var(--color-selected);
+  }
+}
+
+// OUT OF FLOW, SO AN ANNOUNCEMENT NEVER MOVES THE PAGE
+:host {
+  position: fixed;
+  inset-block-end: var(--space-4);
+  inset-inline-end: var(--space-4);
+  z-index: var(--z-index-overlay);
+
+  // Capped, and the cap now carries MORE weight than it did under the old block-start anchor: at the
+  // block-END corner an uncapped panel would span the full measure and so cover the ENTIRE last row of a
+  // form rather than one corner of it.
+  max-inline-size: min(var(--notification-max-inline-size), calc(100% - var(--space-8)));
+}
+
+// THE OVERFLOW COUNT
+.notification-list__overflow {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  text-align: end;
+}
+
+// CLEARING EVERYTHING
+// Styled as a text affordance rather than as a filled button: it sits beside messages that each carry their
+// own accent, and a second filled control there would compete with the message the person is meant to read.
+.notification-list__clear-all {
+  align-self: end;
+  border: none;
+  background-color: transparent;
+  color: var(--color-primary-hover);
+  font-family: inherit;
+  font-size: var(--font-size-sm);
+  text-decoration: underline;
+  cursor: pointer;
+
+  @include mx.focus-ring;
+
+  @include mx.hover {
+    color: var(--color-primary);
+  }
+}

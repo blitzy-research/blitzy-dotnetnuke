@@ -1,0 +1,58 @@
+// role-group-form — the create-a-role-group screen
+
+@use '../../../../styles/mixins' as mx;
+
+:host {
+  display: block;
+}
+
+// ROOT — the screen and its vertical rhythm
+.role-group-form {
+  display: grid;
+  gap: var(--space-4);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+}
+
+// THE FORM — the screen's only measure cap
+// The cap replaces four hardcoded widths and is a deliberate SNAP to the declared breakpoint scale rather
+// than a pixel match.
+.role-group-form__form {
+  display: grid;
+  gap: var(--space-4);
+  max-inline-size: mx.breakpoint('sm');
+}
+
+// THE FIELD GROUP
+// One column at every viewport, which is faithful rather than lazy: the legacy laid its two fields out as
+// two stacked table rows, so there is no second column to reproduce and nothing to withdraw when narrow.
+.role-group-form__fields {
+  display: grid;
+  gap: var(--space-3);
+
+  // THE GAP ABOVE IS THE SINGLE SOURCE OF THIS SCREEN'S RHYTHM, and clearing the shared field's trailing
+  // inset is what makes that true.
+  app-form-field {
+    margin-block-end: 0;
+  }
+
+  // Both legacy boxes were declared 325 wide, so they rendered as one aligned column.
+  input[type='text'] {
+    inline-size: var(--size-full);
+  }
+}
+
+// THE COMMAND ROW
+// Wrapping is intrinsic rather than defensive: when narrow the second command drops to its own line instead
+// of overflowing the measure, and the gap then supplies row spacing as well as column spacing. Centred on
+// the cross axis so the in-flight indicator, itself an inline-flex box, sits on the commands' line.
+.role-group-form__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+// RECORDED, NOT ABSORBED — measurements that produced no declaration
+// MIGRATION: the multi-line box's legacy fixed height is not reproduced as a length and needs no rule.

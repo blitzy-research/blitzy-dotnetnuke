@@ -1,0 +1,246 @@
+// Component stylesheet for the security-role create-and-edit form, served by the routes
+// /roles/new and /roles/:roleId.
+//
+// MARKUP CONTRACT. Emulated view encapsulation rewrites every selector below with the
+// component's own content attribute, so a class name that drifts does not error - it
+// silently matches nothing and the screen renders unstyled. The template must therefore
+// emit exactly this vocabulary:
+//
+//     .role-form
+//     .role-form__form
+//     .role-form__notice
+//     .role-form__intro
+//     .role-form__section
+//     .role-form__section--advanced
+//     .role-form__legend
+//     .role-form__summary
+//     .role-form__grid
+//     .role-form__control
+//     .role-form__control--narrow
+//     .role-form__control--choice
+//     .role-form__control--pair
+//     .role-form__period
+//     .role-form__frequency
+//     .role-form__qualifier
+//     .role-form__readonly
+//     .role-form__warning
+//     .role-form__actions
+//     .role-form__command--danger
+//
+// The template ALSO places `form-field--inline`, `form-field--multiline` and
+// `form-field--disabled` on `app-form-field` elements. Those three are NOT declared here
+// and must never be: the shared form field owns them through its own `:host(...)` rules,
+// so a copy in this file would either be dead or would fight the component that owns them.
+//
+// The surface is deliberately flat, and focus indication is deliberately absent: the
+// global reset applies the shared focus-ring mixin to every anchor, button, input, select,
+// textarea and summary, so the design system owns focus and this file only places things.
+// _reset.scss resolves that list at L263-L271 and states outright that no rule in it removes
+// an outline, so nothing below needs to re-apply the ring and nothing below may suppress it.
+//
+// WHAT THIS FILE DELIBERATELY DOES NOT DO. Three concerns that look like they belong to a
+// form stylesheet are owned elsewhere and are consumed rather than restated:
+//
+//   * the label-to-control ratio        -> form-field, :host(.form-field--inline)
+//   * the multi-line field's shape      -> form-field, :host(.form-field--multiline)
+//   * the read-only control's chrome    -> form-field + _forms.scss (:disabled, [readonly])
+//
+// and every element-level rule for label, input, select, textarea, button, fieldset and
+// legend belongs to _forms.scss. Restating any of them here would either be dead weight or
+// would start a specificity argument with the file that owns the answer.
+//
+// ONLY MIXINS ARE LOADED. _tokens.scss is deliberately NOT loaded: it emits a real `:root`
+// block, so `@use`-ing it from a component would copy the entire token vocabulary into THIS
+// component's stylesheet - emitted CSS that would count against the 4 kB `anyComponentStyle`
+// budget once per component and would duplicate the vocabulary across the bundle. Custom
+// properties do not need a Sass import to be visible: they inherit through the document from
+// the `:root` the single global stylesheet establishes, so `var(--x)` below resolves at run
+// time. Sass module scope only governs Sass-level names, and the only Sass-level names this
+// file needs are the mixins. _mixins.scss emits no CSS at all, so loading it costs nothing.
+@use '../../../../styles/mixins' as mx;
+
+// MEASURES
+$control-narrow: calc(var(--space-8) + var(--space-8) + var(--space-4));
+
+// ⚠ WHAT WAS MEASURED. With no cap, a control fills its column, and the column is a fraction of a container
+// that grows without limit.
+
+// ROOT
+// Three overlapping legacy font stacks collapse to one. default.css declares `Tahoma, Arial, Helvetica` 38
+// times, `Tahoma, Verdana, Arial, Sans-Serif` twice and a bare `Verdana, sans-serif` once - the same intent
+// authored three ways, with the two minority stacks reachable from this screen only by inheritance.
+// --font-family-base is the single consolidated stack, and the visual difference is imperceptible because
+// Tahoma leads two of the three and the fallbacks are the same faces in a different order.
+.role-form {
+  display: grid;
+  gap: var(--space-4);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+}
+
+.role-form__form {
+  display: grid;
+  gap: var(--space-4);
+}
+
+// PROSE
+.role-form__intro,
+.role-form__notice,
+.role-form__summary {
+  max-inline-size: mx.breakpoint('md');
+}
+
+.role-form__intro,
+.role-form__notice {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+// The refusal colour is the text variant, not the raw danger colour: the raw value is
+// tuned for a border or an icon and does not clear the contrast threshold as body text.
+.role-form__warning {
+  max-inline-size: mx.breakpoint('md');
+  color: var(--color-danger);
+}
+
+.role-form__conflict {
+  display: grid;
+  justify-items: start;
+  gap: var(--space-2);
+  max-inline-size: mx.breakpoint('md');
+}
+
+// SECTIONS
+// Two shapes share one class. The basic section is a `fieldset` with a `legend`; the advanced section is a
+// `details` with a `summary`, so the fee and trial fields collapse out of the way for the common case of an
+// unpaid role.
+.role-form__section {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+
+  // ⚠ THE COMPONENT-BOUNDARY TOKEN, AND THIS RULE IS WHY THE GLOBAL FIX WAS NOT ENOUGH ON ITS OWN. This is a
+  // real `fieldset`, so the global `fieldset` rule in `_forms.scss` already resolves the boundary token for
+  // it - but this declaration is a component override and won every cascade it entered. Measured in a real
+  // browser at 1440 and at 320: this edge painted `#DCDCDC` at 1.3713:1 against its own white fill, while the
+  // portal settings fieldset - identical markup role, no component override - painted `#767676` at 4.5422:1.
+  // Two fieldsets in the same product drawing their boundary at three-times-different weights, one of them
+  // effectively invisible. A group edge is the only thing saying where one set of fields ends and the next
+  // begins, which is component-identification information and owes 3:1; it is not decoration.
+  border: var(--border-width) var(--border-style) var(--color-border-control);
+  border-radius: var(--radius-md);
+  background-color: var(--color-background);
+}
+
+// The advanced disclosure sits on the shared surface tone rather than the page background, so a reader can
+// see at a glance that it is subordinate to the basic settings above it. Deliberately NOT the hint surface:
+// that token is the legacy help highlight and reads as an annotation, not as a region.
+.role-form__section--advanced {
+  background-color: var(--color-surface);
+}
+
+.role-form__legend,
+.role-form__summary {
+  padding-inline: var(--space-1);
+  padding-block-end: var(--space-1);
+
+  // The DECORATIVE token, deliberately, and not the boundary one used on the section edge above. This rule
+  // underlines a heading inside a region whose extent the section edge already states; it identifies nothing
+  // on its own, and the heading it sits under is bold navy at 12.61:1. Darkening it would draw a second heavy
+  // line immediately inside the first for no information gained.
+  border-block-end: var(--border-width) var(--border-style) var(--color-border);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-primary);
+}
+
+.role-form__summary {
+  cursor: pointer;
+}
+
+// FIELD GRID
+// One column until there is room for two. `minmax(0, 1fr)` rather than `1fr` because a grid track's
+// automatic minimum is its content, and one long unbroken value would otherwise push the second column off
+// the screen.
+.role-form__grid {
+  display: grid;
+  gap: var(--space-3);
+
+  @include mx.respond-above('xl') {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+// CONTROL SLOTS
+// MIGRATION: the CONTROL CHROME is a net addition, and a large one. `.NormalTextBox` (default.css
+// L123-L128) is the class the legacy admin pages put on every text box, and it declares four things only -
+// font family, 12px, `font-weight: normal`, and nothing else.
+.role-form__control {
+  box-sizing: border-box;
+  display: grid;
+  gap: var(--space-1);
+  min-inline-size: 0;
+
+  max-inline-size: var(--control-inline-size-lg);
+}
+
+// A money amount, a period count and a short code are short values. A control sized for a sentence invites
+// one, so these are narrowed rather than stretched across the grid column.
+.role-form__control--narrow {
+  max-inline-size: $control-narrow;
+}
+
+// A lone check box has no text of its own inside the slot - the shared field supplies the
+// label - so the slot only has to stop the control stretching to the column width.
+.role-form__control--choice {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+}
+
+.role-form__control--pair {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: end;
+}
+
+// The measured pair is `txtBillingPeriod` `Width="100"` beside `cboBillingFrequency` `Width="100px"`, and
+// `txtTrialPeriod` beside `cboTrialFrequency` on the same pattern.
+.role-form__period,
+.role-form__frequency {
+  box-sizing: border-box;
+  flex: var(--flex-fill-from-zero);
+  max-inline-size: $control-narrow;
+  min-inline-size: 0;
+}
+
+// The word that tells the two halves of a period pair apart in an accessible name, and nothing else.
+.role-form__qualifier {
+  @include mx.visually-hidden;
+}
+
+.role-form__readonly {
+  color: var(--color-text-muted);
+  overflow-wrap: break-word;
+}
+
+// COMMAND ROW
+// The legacy spacing characters are gone, all of them.
+.role-form__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.role-form__command--danger,
+.role-form__command--danger:hover {
+  color: var(--color-danger);
+}
+
+// DELIBERATE NET ADDITIONS, RECORDED RATHER THAN ABSORBED
+// MIGRATION: the spacing, radius and surface scales every value above resolves to are all net additions -
+// the legacy design is square-cornered, flat and has no spacing system and the two-column collapse is a net
+// addition too, because the legacy stylesheets declare no media query anywhere.

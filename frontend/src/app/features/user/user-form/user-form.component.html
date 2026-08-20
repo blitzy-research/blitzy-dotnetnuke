@@ -1,0 +1,767 @@
+<!--
+  The title is mode-dependent, which the measured resources prove: `AddUser.Text` while creating, and
+  the `UserTitle.Text` format 'Edit User - {0} (Id: {1})' once a record has loaded.
+-->
+<app-page-header [title]="pageTitle()" [subtitle]="pageSubtitle">
+  <!--
+    ⚠ U-M10 — WITHHELD ONCE THE ACCOUNT IS GONE, AND `isEditMode()` ALONE WAS NOT ENOUGH TO DO THAT.
+    That projection answers "does the route name an account", which stays true for an account that has
+    been REMOVED: measured on a deleted account, this screen reported that the account did not exist and
+    went on offering all three actions pointing at its identifier.
+  -->
+  @if (isEditMode() && !userMissing()) {
+    <a class="page-action" [routerLink]="['/users', resolvedUserId(), 'profile']">Manage User's Profile</a>
+    <a class="page-action" [routerLink]="['/users', resolvedUserId(), 'password']">Manage User's Password</a>
+    <a
+      class="page-action"
+      routerLink="/roles"
+      [queryParams]="{ userId: resolvedUserId() }"
+      >Manage Roles for this User</a
+    >
+  } @else if (userMissing() || addressUnreadable()) {
+    <!--
+      THE ONE WAY OUT, in the slot the three withheld actions vacated. Every detail screen offers exactly
+      this, in exactly this place, once its record has gone: previously three of the four left a reader
+      with a sentence and no route out at all.
+    -->
+    <a class="page-action" routerLink="/users">{{ recoveryLabel }}</a>
+  }
+</app-page-header>
+
+<!--
+  Covers both halves of the screen's work: the read that fills the membership panel and the write the
+  save action issues.
+-->
+@if (loading()) {
+  <app-loading-spinner label="Loading user account…" />
+}
+
+<app-error-banner [problem]="problem()" />
+
+<!--
+  ⚠ THE ONE REFUSAL THIS FORM CANNOT BE CORRECTED OUT OF. The revision marker an update carries comes from
+  the account this screen READ, and a refusal does not change that account - so pressing Update again sends
+  the same refused marker and is refused again, indefinitely. Without a way to re-read, a conflict is a dead
+  end.
+
+  MIGRATION: NET-NEW, in both the situation and the affordance. The legacy update carried no revision
+  marker, so a conflict could not be detected and was not reported - the later save simply overwrote the
+  earlier one in full.
+-->
+@if (conflicted()) {
+  <div class="user-form__conflict" role="status">
+    <p class="user-form__conflict-statement">{{ conflictMessage }}</p>
+    <p class="user-form__conflict-message">{{ conflictRecoveryMessage }}</p>
+    <button
+      type="button"
+      class="user-form__conflict-reload"
+      (click)="onReloadAfterConflict()"
+      [disabled]="loading()"
+    >
+      {{ conflictReloadLabel }}
+    </button>
+  </div>
+}
+
+<!--
+  ⚠ THE RECOVERY SURFACE FOR A FAILED ACCOUNT READ, WHICH DID NOT EXIST. A read that failed for anything
+  other than `403`/`404` left this screen showing the PREVIOUS read's values with Update, Delete,
+  UnAuthorize and Force Password Change all live, and offered no way to re-read and no way forward - the
+  shared banner named the fault and stopped there. The wording distinguishes "could not be read" from
+  "could not be RE-read", because showing fields that may be out of date is a different warning from
+  showing none.
+-->
+@if (detailUnread()) {
+  <div class="user-form__unconfirmed" role="status">
+    <p class="user-form__unconfirmed-message">
+      {{ showingUnconfirmedRecord() ? detailUnconfirmedMessage : detailUnreadMessage }}
+    </p>
+
+    <div class="user-form__unconfirmed-actions">
+      <button type="button" class="user-form__recovery" (click)="onRetryDetail()">
+        {{ retryLabel }}
+      </button>
+
+      <!--
+        PROCEEDING WITHOUT A RE-READ IS OFFERED ONLY WHEN THERE IS SOMETHING TO PROCEED WITH.
+        When a record was read earlier and is still on screen the operator can see real values and is
+        entitled to decide. When the FIRST read failed there is nothing on screen at all, so dismissing
+        would hand over a blank editable form with a live Update - see onDismissDetailFailure. The exit in
+        that case is the listing, not the form.
+      -->
+      @if (showingUnconfirmedRecord()) {
+        <button type="button" class="user-form__recovery" (click)="onDismissDetailFailure()">
+          {{ dismissLabel }}
+        </button>
+      } @else {
+        <a class="user-form__recovery" [routerLink]="listRoute">{{ leaveLabel }}</a>
+      }
+    </div>
+  </div>
+}
+
+<!-- THE ONE-TIME CREDENTIAL HAND-OVER. -->
+@if (revealedCredential(); as credential) {
+  <section class="user-form__credential" role="group" aria-labelledby="user-form-credential-title">
+    <h2 id="user-form-credential-title" class="user-form__credential-title">
+      Password for this account
+    </h2>
+    <p class="user-form__credential-advisory">{{ credentialAdvisory }}</p>
+    <p class="user-form__credential-value"><code>{{ credential }}</code></p>
+    <div class="user-form__credential-actions">
+      <button type="button" (click)="dismissCredential()">I have copied this password</button>
+    </div>
+  </section>
+}
+
+@if (userMissing() || addressUnreadable()) {
+  <!--
+    Stated by the banner above, which is the application's one assertive owner for a refusal, and
+    recovered through the header. Nothing is rendered here, so the state is one statement rather than two.
+  -->
+} @else {
+  <form class="user-form" [formGroup]="form" (ngSubmit)="onSubmit()">
+    @if (formDisabled()) {
+      <!--
+        MIGRATION — A DELIBERATE DIVERGENCE, MEASURED AND ANNOTATED. The legacy `DisableForm()` is named
+        for disabling but its implementation HIDES all six panels outright, and one branch at L237
+        redirects instead.
+      -->
+      <p>{{ refusalMessage() }}</p>
+    }
+
+    <div class="user-form__panels">
+      <div class="user-form__panel">
+      <!-- PANEL 1 — CREDENTIALS. -->
+      <fieldset class="user-form__section">
+        <legend class="user-form__legend"><h2>Manage User Credentials</h2></legend>
+
+        <button
+          type="button"
+          class="user-form__section-toggle"
+          [attr.aria-expanded]="credentialsExpanded()"
+          [attr.aria-controls]="credentialsExpanded() ? 'user-form-section-credentials' : null"
+          (click)="toggleCredentials()"
+        >
+          <svg viewBox="0 0 8 8" aria-hidden="true" focusable="false">
+            <path d="M1 0 L7 4 L1 8 Z" fill="currentColor" />
+          </svg>
+          {{ credentialsExpanded() ? 'Hide' : 'Show' }} user credentials
+        </button>
+
+        @if (credentialsExpanded()) {
+          <div id="user-form-section-credentials" class="user-form__section-body user-form__grid">
+            <!-- The sign-in name. -->
+<!--
+  ⚠ EVERY BOUNDED BOX ON THIS SCREEN NOW STATES ITS BOUND, AND UNTIL IT DID THE BOUND ONLY EVER BIT IN
+  SILENCE. Each of these controls carries `maxlength`, which stops accepting keystrokes without saying
+  anything and keeps only the head of a longer pasted value - so an operator pasting a 120-character
+  address into a 100-character box got a truncated account name and no indication that anything had been
+  dropped. `[limit]` is the shared field's own answer to exactly that, already in use on the portal
+  screens: it renders the bound as a permanently present sentence referenced by `aria-describedby`, so it
+  is announced when the box takes focus - BEFORE a keystroke is lost - and repeats it inside the help
+  disclosure for a sighted reader. The figure passed is the SAME constant the `maxlength` attribute is
+  bound to, so the stated bound and the enforced one cannot drift apart.
+-->
+            <app-form-field
+              label="User Name:"
+              for="user-form-username"
+              [limit]="maxLengths.username"
+              [help]="usernameHelp()"
+              [required]="true"
+              [error]="messageFor('username')"
+            >
+              <input
+                id="user-form-username"
+                type="text"
+                autocomplete="username"
+                [attr.aria-required]="true"
+                [attr.aria-invalid]="messageFor('username') ? 'true' : null"
+                [attr.aria-describedby]="isEditMode() ? usernameAdvisoryId : null"
+                [attr.maxlength]="maxLengths.username"
+                formControlName="username"
+              />
+            </app-form-field>
+
+<!--
+  ⚠ THE LOCK NOW SAYS WHY, IN THE FLOW, WHERE A DISABLED CONTROL CANNOT. While editing, the sign-in
+  name control is natively disabled - so it takes no focus, offers no hover, and until now carried the help
+  text "Enter a username" beside a box that cannot be typed into. The sentence is rendered as ordinary
+  visible text and named from the control's own `aria-describedby`, exactly as the tenant e-mail advisory
+  below already does, so the reason is available to a sighted reader and to the accessibility tree alike
+  rather than hidden behind a disclosure nobody has a reason to open.
+-->
+            @if (isEditMode()) {
+              <p [id]="usernameAdvisoryId" class="user-form__tenant-advisory">
+                {{ usernameFixedAdvisory }}
+              </p>
+            }
+
+            <app-form-field
+              label="First Name:"
+              for="user-form-first-name"
+              [limit]="maxLengths.firstName"
+              help="Enter a First Name"
+              [required]="true"
+              [error]="messageFor('firstName')"
+            >
+              <input
+                id="user-form-first-name"
+                type="text"
+                autocomplete="given-name"
+                [attr.aria-required]="true"
+                [attr.aria-invalid]="messageFor('firstName') ? 'true' : null"
+                [attr.maxlength]="maxLengths.firstName"
+                formControlName="firstName"
+              />
+            </app-form-field>
+
+            <app-form-field
+              label="Last Name:"
+              for="user-form-last-name"
+              [limit]="maxLengths.lastName"
+              help="Enter a Last Name"
+              [required]="true"
+              [error]="messageFor('lastName')"
+            >
+              <input
+                id="user-form-last-name"
+                type="text"
+                autocomplete="family-name"
+                [attr.aria-required]="true"
+                [attr.aria-invalid]="messageFor('lastName') ? 'true' : null"
+                [attr.maxlength]="maxLengths.lastName"
+                formControlName="lastName"
+              />
+            </app-form-field>
+
+            <!--
+              No autofill hint on this one. The legacy declared none on any field, so every hint here is
+              an addition; `nickname` is the only one the browser does not act on, and it raised a
+              developer-tools issue on every load while autofilling nothing.
+            -->
+<!--
+              WITHHELD ENTIRELY while creating an account in a tenant that composes display names itself,
+              and presented for READING ONLY while editing one. Both arms are the legacy rule; see
+              `showDisplayNameField` and `displayNameReadOnly` for the measured source and why the two arms
+              differ.
+            -->
+            @if (showDisplayNameField()) {
+              <app-form-field
+                label="Display Name:"
+                for="user-form-display-name"
+                [limit]="maxLengths.displayName"
+                [help]="displayNameHelp()"
+                [required]="!displayNameReadOnly()"
+                [error]="messageFor('displayName')"
+              >
+                <input
+                  id="user-form-display-name"
+                  type="text"
+                  [attr.aria-required]="displayNameReadOnly() ? null : true"
+                  [attr.aria-invalid]="messageFor('displayName') ? 'true' : null"
+                  [attr.aria-readonly]="displayNameReadOnly() ? 'true' : null"
+                  [attr.maxlength]="maxLengths.displayName"
+                  [readOnly]="displayNameReadOnly()"
+                  formControlName="displayName"
+                />
+              </app-form-field>
+            }
+
+            <!--
+              The address is typed as `email` so the platform offers the right keyboard, while the
+              pattern the component enforces is the MEASURED legacy expression rather than the
+              framework's own — substituting the framework validator would change which addresses are
+              accepted.
+            -->
+            <app-form-field
+              label="Email Address:"
+              for="user-form-email"
+              [limit]="maxLengths.email"
+              help="Enter a valid Email address"
+              [required]="true"
+              [error]="messageFor('email')"
+            >
+              <input
+                id="user-form-email"
+                type="email"
+                autocomplete="email"
+                [attr.aria-required]="true"
+                [attr.aria-invalid]="messageFor('email') ? 'true' : null"
+                [attr.aria-describedby]="tenantEmailAdvisory() ? 'user-form-email-tenant-advisory' : null"
+                [attr.maxlength]="maxLengths.email"
+                formControlName="email"
+              />
+            </app-form-field>
+
+            <!--
+              ⚠ AN ADVISORY, NOT AN ERROR, AND NOT A VALIDATOR. This site's own configured address
+              expression is a SECOND rule beside the address grammar the field already enforces, and the two
+              can disagree: DotNetNuke's default expression ends in `[a-zA-Z]{2,4}`, so a perfectly ordinary
+              `.local` or `.museum` address satisfies the grammar and not the expression.
+
+              The server admits an address that is ALREADY STORED without putting it to that expression -
+              nothing a caller could submit would satisfy it short of altering data they never came to
+              change - so this notice is silent for an unchanged address and never blocks a save. It exists
+              so the reader hears about the mismatch while the box is in front of them.
+            -->
+            @if (tenantEmailAdvisory(); as tenantAdvisory) {
+              <p
+                id="user-form-email-tenant-advisory"
+                class="user-form__tenant-advisory"
+                role="status"
+                aria-live="polite"
+              >
+                {{ tenantAdvisory }}
+              </p>
+            }
+          </div>
+        }
+      </fieldset>
+
+      <!--
+        Two groups, matching the two measured layout tables: the activation flags from `tblAddUser` and
+        the credential fields from `tblPassword`.
+      -->
+      @if (isCreateMode()) {
+        <!--
+          The caption is AUTHORED. `tblAddUser` is a layout table with no caption of any kind, and there
+          is no resource entry for one, so no measured wording exists to carry over — but a grouped
+          field set needs an accessible name, and inventing nothing would have left the group unnamed.
+        -->
+        <fieldset class="user-form__section">
+          <legend class="user-form__legend"><h2>New Account Options</h2></legend>
+
+          <button
+            type="button"
+            class="user-form__section-toggle"
+            [attr.aria-expanded]="newAccountOptionsExpanded()"
+            [attr.aria-controls]="
+              newAccountOptionsExpanded() ? 'user-form-section-new-account-options' : null
+            "
+            (click)="toggleNewAccountOptions()"
+          >
+            <svg viewBox="0 0 8 8" aria-hidden="true" focusable="false">
+              <path d="M1 0 L7 4 L1 8 Z" fill="currentColor" />
+            </svg>
+            {{ newAccountOptionsExpanded() ? 'Hide' : 'Show' }} new account options
+          </button>
+
+          @if (newAccountOptionsExpanded()) {
+          <div
+            id="user-form-section-new-account-options"
+            class="user-form__section-body user-form__grid"
+          >
+            <!--
+              Create-only by design: while editing, authorisation is changed through the membership
+              action below, which is a separate endpoint rather than a form field.
+            -->
+            <app-form-field
+              label="Authorize:"
+              for="user-form-authorize"
+              help="Authorize this user"
+            >
+              <input id="user-form-authorize" type="checkbox" formControlName="authorize" />
+            </app-form-field>
+
+            <!--
+              `plNotify`. ⚠ RENDERED DISABLED AND UNTICKED, DEPARTING FROM THE MEASURED `checked="True"`
+              at `User.ascx` L25 on purpose: there is no mail endpoint, so a tickable box would promise
+              something the installation cannot perform.
+            -->
+            <app-form-field label="Notify:" for="user-form-notify">
+              <input
+                id="user-form-notify"
+                type="checkbox"
+                [attr.aria-describedby]="notifyAdvisoryId"
+                formControlName="notify"
+              />
+            </app-form-field>
+
+<!--
+  ⚠ THE SENTENCE MOVED OUT OF THE HELP DISCLOSURE ON PURPOSE, AND THE HELP INPUT IS DELIBERATELY GONE
+  RATHER THAN KEPT ALONGSIDE. This box is disabled for the whole life of the screen, so nothing about it
+  will change and there is no reason to make the explanation conditional on a button press; keeping `help`
+  as well would state the same sentence twice, once visibly and once behind a toggle.
+-->
+            <p [id]="notifyAdvisoryId" class="user-form__tenant-advisory">
+              {{ notifyUnavailableAdvisory }}
+            </p>
+          </div>
+          }
+        </fieldset>
+
+        <!-- The password group. -->
+        <fieldset class="user-form__section">
+          <legend class="user-form__legend"><h2>Password</h2></legend>
+
+          <button
+            type="button"
+            class="user-form__section-toggle"
+            [attr.aria-expanded]="passwordExpanded()"
+            [attr.aria-controls]="passwordExpanded() ? 'user-form-section-password' : null"
+            (click)="togglePassword()"
+          >
+            <svg viewBox="0 0 8 8" aria-hidden="true" focusable="false">
+              <path d="M1 0 L7 4 L1 8 Z" fill="currentColor" />
+            </svg>
+            {{ passwordExpanded() ? 'Hide' : 'Show' }} password fields
+          </button>
+
+          @if (passwordExpanded()) {
+            <div id="user-form-section-password" class="user-form__section-body user-form__grid">
+              <p class="user-form__group-help">{{ passwordHelp }}</p>
+
+              <!-- `plRandom`. -->
+              <!--
+                ⚠ THE HELP TEXT NOW STATES THE OUTCOME BEFORE THE DECISION. The measured wording —
+                "Check this box to generate a random password" — was true and incomplete: it did not say
+                that no notification can be sent, which is the part that decides whether the operator
+                should tick it at all.
+              -->
+              <app-form-field
+                label="Random Password"
+                for="user-form-random-password"
+                help="Check this box to generate a random password. It will be shown to you once when the account is created; no notification e-mail can be sent."
+              >
+                <input
+                  id="user-form-random-password"
+                  type="checkbox"
+                  formControlName="randomPassword"
+                />
+              </app-form-field>
+
+              <!--
+                MIGRATION: `maxlength="20"` IS DELIBERATELY NOT REPRODUCED. The measured markup at
+                `User.ascx` L39 and L46 declares `size="12" maxlength="20"`, but that figure mirrors the
+                legacy storage ceiling `[Password] [nvarchar] (20)` in the baseline schema script rather
+                than any rule the legacy applied to a credential — the measured legacy policy declares
+                no maximum at all.
+              -->
+              @if (!form.controls.randomPassword.value) {
+                <app-form-field
+                  label="Password:"
+                  for="user-form-password"
+                  [limit]="credentialMaxLength"
+                  help="Enter a password for this user"
+                  [required]="true"
+                  [error]="messageFor('password')"
+                >
+                  <input
+                    [id]="passwordControlId"
+                    type="password"
+                    autocomplete="new-password"
+                    [attr.maxlength]="credentialMaxLength"
+                    [attr.aria-required]="true"
+                    [attr.aria-invalid]="credentialInvalid('password') ? 'true' : null"
+                    [attr.aria-describedby]="passwordMessage() ? passwordGroupErrorId : null"
+                    [attr.aria-errormessage]="passwordMessage() ? passwordGroupErrorId : null"
+                    formControlName="password"
+                  />
+                </app-form-field>
+
+                <app-form-field
+                  label="Confirm Password:"
+                  for="user-form-confirm-password"
+                  [limit]="credentialMaxLength"
+                  help="Re-Enter the password to confirm you typed it correctly"
+                  [required]="true"
+                  [error]="messageFor('confirmPassword')"
+                >
+                  <input
+                    id="user-form-confirm-password"
+                    type="password"
+                    autocomplete="new-password"
+                    [attr.maxlength]="credentialMaxLength"
+                    [attr.aria-required]="true"
+                    [attr.aria-invalid]="credentialInvalid('confirmPassword') ? 'true' : null"
+                    [attr.aria-describedby]="passwordMessage() ? passwordGroupErrorId : null"
+                    [attr.aria-errormessage]="passwordMessage() ? passwordGroupErrorId : null"
+                    formControlName="confirmPassword"
+                  />
+                </app-form-field>
+              }
+
+              <!--
+                The GROUP-level message, which is what the legacy had too: `valPassword` at `User.ascx`
+                L58-L62 is the single custom validator on the screen, declared with no control to
+                validate precisely because the rule spans two inputs.
+              -->
+              @if (passwordMessage()) {
+                <p class="user-form__group-error" role="alert" [id]="passwordGroupErrorId">
+                  {{ passwordMessage() }}
+                </p>
+              }
+
+              <!--
+                MIGRATION: THE SECURITY CODE FIELD IS DROPPED. `trCaptcha`, `plCaptcha` and `ctlCaptcha`
+                at `User.ascx` L63-L66 rely on the legacy captcha control, one of the 102 excluded files
+                under the legacy control library.
+              -->
+            </div>
+          }
+        </fieldset>
+      }
+      </div>
+
+      <!-- PANEL 2 — MEMBERSHIP. EDIT MODE ONLY, AND READ-ONLY THROUGHOUT. -->
+      @if (isEditMode()) {
+        <fieldset class="user-form__section user-form__membership">
+          <legend class="user-form__legend"><h2>{{ membershipTitle }}</h2></legend>
+
+          <button
+            type="button"
+            class="user-form__section-toggle"
+            [attr.aria-expanded]="membershipExpanded()"
+            [attr.aria-controls]="membershipExpanded() ? 'user-form-section-membership' : null"
+            (click)="toggleMembership()"
+          >
+            <svg viewBox="0 0 8 8" aria-hidden="true" focusable="false">
+              <path d="M1 0 L7 4 L1 8 Z" fill="currentColor" />
+            </svg>
+            {{ membershipExpanded() ? 'Hide' : 'Show' }} membership information
+          </button>
+
+          @if (membershipExpanded()) {
+            <!-- A description list, wrapped one group per row. -->
+            <div id="user-form-section-membership" class="user-form__section-body">
+              <dl>
+                <!--
+                  Rendered as the measured shared wording 'Yes' and 'No' (`Yes.Text` and `No.Text` in
+                  the global resources) rather than through the shared boolean pipe.
+                -->
+                <div class="user-form__membership-row">
+                  <dt class="user-form__membership-term">Authorized:</dt>
+                  <dd class="user-form__membership-value">
+                    @if (isApproved() === true) {
+                      Yes
+                    } @else if (isApproved() === false) {
+                      No
+                    }
+                    <p>Is the User Authorized for the site.</p>
+                  </dd>
+                </div>
+
+                <div class="user-form__membership-row">
+                  <dt class="user-form__membership-term">Created Date:</dt>
+                  <dd class="user-form__membership-value">
+                  <!--
+                    ⚠ QA-20 — EVERY ONE OF THESE FIVE INSTANTS PAINTED NOTHING WHEN IT WAS ABSENT, and this is
+                    the screen where that cost the most. The display pipe answers the empty string for an
+                    absent value, an unparseable one and the legacy null-date sentinel alike, so a value row
+                    on this membership list collapsed to its own label followed by a help sentence and no
+                    value at all — "Last Login Date:" above nothing, which reads as a screen that failed to
+                    load rather than as an account that has never signed in. Both facts are ones an
+                    administrator acts on.
+
+                    THE SHARED AFFORDANCE IS USED VERBATIM, mark and words together, because a per-caller
+                    phrase is exactly the divergence it exists to end: five rows would have become five
+                    wordings. "Not recorded" is the truthful reading of all five states, including the
+                    never-locked-out sentinel — no lock-out has been recorded against the account — and the
+                    row immediately below this list reports the CURRENT locked state separately, so nothing
+                    here has to carry that meaning as well.
+                  -->
+                    @if (hasInstant(createdDate())) {
+                      {{ createdDate() | dateDisplay: 'datetime' }}
+                    } @else {
+                      <app-absent-value />
+                    }
+                    <p>Date this user was created</p>
+                  </dd>
+                </div>
+
+                <div class="user-form__membership-row">
+                  <dt class="user-form__membership-term">Last Activity Date:</dt>
+                  <dd class="user-form__membership-value">
+                    @if (hasInstant(lastActivityDate())) {
+                      {{ lastActivityDate() | dateDisplay: 'datetime' }}
+                    } @else {
+                      <app-absent-value />
+                    }
+                    <p>Date of last activity by this user</p>
+                  </dd>
+                </div>
+
+                <div class="user-form__membership-row">
+                  <dt class="user-form__membership-term">Last Login Date:</dt>
+                  <dd class="user-form__membership-value">
+                    @if (hasInstant(lastLoginDate())) {
+                      {{ lastLoginDate() | dateDisplay: 'datetime' }}
+                    } @else {
+                      <app-absent-value />
+                    }
+                    <p>Date this user last logged in</p>
+                  </dd>
+                </div>
+
+                <div class="user-form__membership-row">
+                  <dt class="user-form__membership-term">Last Password Change:</dt>
+                  <dd class="user-form__membership-value">
+                    @if (hasInstant(lastPasswordChangeDate())) {
+                      {{ lastPasswordChangeDate() | dateDisplay: 'datetime' }}
+                    } @else {
+                      <app-absent-value />
+                    }
+                    <p>Date the user last changed his/her password</p>
+                  </dd>
+                </div>
+
+                <div class="user-form__membership-row">
+                  <dt class="user-form__membership-term">Last Lock-out Date:</dt>
+                  <dd class="user-form__membership-value">
+                    @if (hasInstant(lastLockoutDate())) {
+                      {{ lastLockoutDate() | dateDisplay: 'datetime' }}
+                    } @else {
+                      <app-absent-value />
+                    }
+                    <p>Date this user was last locked out, due to repetitive failed logins</p>
+                  </dd>
+                </div>
+
+                <!--
+                  The legacy ALSO signalled this state with an image, `imgLockedOut` at
+                  `manageusers.ascx` L53, declared `visible="False"` until the account was locked.
+                -->
+                <div class="user-form__membership-row">
+                  <dt class="user-form__membership-term">Locked Out:</dt>
+                  <dd class="user-form__membership-value">
+                    @if (isLockedOut() === true) {
+                      Yes
+                    } @else if (isLockedOut() === false) {
+                      No
+                    }
+                    <p>Is the User Locked Out due to too many failed login attempts</p>
+                  </dd>
+                </div>
+
+                <!--
+                  MIGRATION: the legacy expressed this as one member of a five-value status field
+                  resolved BY PRECEDENCE, so it could report exactly one condition at a time even when
+                  several held at once.
+                -->
+                <div class="user-form__membership-row">
+                  <!-- THE MISSING COLON IS LEGACY-VERBATIM AND IS DELIBERATELY NOT "FIXED". -->
+                  <dt class="user-form__membership-term">Update Password</dt>
+                  <dd class="user-form__membership-value">
+                    @if (mustChangePassword() === true) {
+                      Yes
+                    } @else if (mustChangePassword() === false) {
+                      No
+                    }
+                    <p>Force this user to update their password</p>
+                  </dd>
+                </div>
+
+                <!--
+                  MIGRATION: THE NINTH MEASURED FIELD IS DROPPED. `UserMembership_IsOnLine` ('User Is On
+                  Line:') and the `imgOnline` indicator at `manageusers.ascx` L54 both go, because
+                  users-online is out of scope and no endpoint keeps the value current.
+                -->
+              </dl>
+            </div>
+
+            @if (hasMembershipActions()) {
+              <div class="user-form__membership-actions">
+                @if (canAuthorize()) {
+                  <button type="button" [disabled]="formDisabled()" (click)="onAuthorize()">
+                    Authorize User
+                  </button>
+                }
+                @if (canUnauthorize()) {
+                  <button type="button" [disabled]="formDisabled()" (click)="onUnauthorize()">
+                    UnAuthorize User
+                  </button>
+                }
+                @if (canUnlock()) {
+                  <!--
+                    ⚠ THE LEGACY SENTENCE, BOUND AT LAST. `UserLockedOut.Text` was carried across with its
+                    siblings and then never rendered anywhere - it appeared exactly once in the whole source
+                    tree, as an export nothing imported, and still shipped in the bundle. Dead copy is worse
+                    than absent copy: it cannot be exercised by a specification, so it rots unnoticed while
+                    reading like a delivered feature.
+
+                    Its home is here rather than on the sign-in screen. This is the ADMINISTRATOR's statement
+                    of the account's condition, alongside `SUPER_USER_MESSAGE`, `INVALID_USER_MESSAGE` and
+                    `NOT_AUTHORIZED_MESSAGE` from the same resource family; the advisory the locked-out PERSON
+                    reads is produced by the server on sign-in, where it can state the wait this installation
+                    actually applies. Rendered next to the command that resolves it, and only while there is
+                    something to resolve, so the statement and the remedy are read together.
+                  -->
+                  <p class="user-form__locked-out" role="status">{{ lockedOutMessage }}</p>
+                  <button type="button" [disabled]="formDisabled()" (click)="onUnlock()">
+                    Unlock Account
+                  </button>
+                }
+                @if (canForcePasswordChange()) {
+                  <button
+                    type="button"
+                    [disabled]="formDisabled()"
+                    (click)="onForcePasswordChange()"
+                  >
+                    Force Password Change
+                  </button>
+                }
+              </div>
+            }
+          }
+        </fieldset>
+      }
+    </div>
+
+    <!--
+      The measured `Required.Text` from the global resources, standing in for the two required-marker
+      images at `User.ascx` L40 and L47.
+    -->
+    <p>{{ requiredLegend }}</p>
+
+    <!-- THE ACTION BAR, from `pnlUpdate` at `User.ascx` L71-L79. -->
+    <div class="user-form__actions">
+      <button class="form-action--primary" type="submit" [disabled]="!canSubmit()"
+          [attr.aria-busy]="loading() ? 'true' : null">
+        @if (isCreateMode()) {
+          Create User
+        } @else {
+          Update
+        }
+      </button>
+
+      <!--
+        THE SAFE EXIT. Added rather than ported: the legacy panel offered remove and save and nothing else,
+        while the portal, signup and role editors all offered a cancel, so this screen was the only one of the
+        four an operator could not back out of. `type="button"` keeps it from submitting, so no validator runs
+        and an invalid form cannot disable the way out.
+      -->
+      <button type="button" [disabled]="formDisabled()" (click)="onCancel()">
+        {{ cancelLabel }}
+      </button>
+
+      <!--
+        THE DESTRUCTIVE ACTION, and its visibility is the component's decision alone. `User.ascx.vb`
+        L264-L268 hides it outright while adding and otherwise tests the account against the tenant
+        administrator and the caller's own identity.
+      -->
+      @if (canDelete()) {
+        <button type="button" [disabled]="formDisabled()" (click)="onDeleteRequested()">
+          {{ deleteLabel }}
+        </button>
+      }
+    </div>
+  </form>
+}
+
+<!-- The confirmation, from the shared dialog, which owns its focus trap and its dismissal key. -->
+@if (deleteDialogOpen()) {
+  <!--
+    ⚠ NO `title` IS BOUND, AND THAT IS THE POINT. Every delete confirmation in this application shows
+    the SAME title, which the shared dialog declares as its default; binding one here is how five
+    different titles for one action came about - runtime testing found `Delete`, `Confirm Delete`,
+    `Delete Module`, `Delete Profile Property` and `Delete role group` across the screens.
+  -->
+  <app-confirm-dialog
+    [message]="confirmDeleteMessage"
+    [confirmLabel]="deleteLabel"
+    danger
+    (confirm)="onDeleteConfirmed()"
+    (cancel)="onDeleteCancelled()"
+  />
+}

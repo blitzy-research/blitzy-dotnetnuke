@@ -1,0 +1,11 @@
+<!-- THE FALLBACK VIEW. -->
+<app-page-header [title]="title" />
+
+<app-empty-state [message]="message">
+  <!--
+    A `routerLink` rather than an `href`, so the navigation stays inside the application: a bare `href`
+    would reload the document, and the access token is held in memory only, so reloading would end the
+    session and send the reader to the sign-in screen.
+  -->
+  <a routerLink="/">{{ recoveryLabel }}</a>
+</app-empty-state>

@@ -1,0 +1,448 @@
+<!--
+  `[title]` is a PROPERTY binding and must stay one. The input is declared required and the component
+  nulls `title` on its own host precisely so the value cannot leak out as the global HTML attribute;
+  written as a static attribute it would become a browser tooltip and never reach the input at all.
+-->
+<app-page-header [title]="pageTitle" [subtitle]="pageSubtitle">
+  @if (administersPortal()) {
+    <a class="page-action user-list__page-action" [routerLink]="addUserLink">{{ addUserLabel }}</a>
+
+    <a class="page-action user-list__page-action" [routerLink]="membershipSettingsLink">{{
+      membershipSettingsLabel
+    }}</a>
+
+    <a class="page-action user-list__page-action" [routerLink]="profileDefinitionsLink">{{
+      profileDefinitionsLabel
+    }}</a>
+  }
+</app-page-header>
+
+<!--
+  Gated on an explicit `!== null` comparison rather than on truthiness, in keeping with the rule this
+  screen applies throughout: in this schema minus one and zero are legitimate identifiers rather than
+  synonyms for absence — tenant keys seed at minus one, role, page and module keys seed at zero, and
+  minus one is simultaneously the legacy marker for a missing integer — so truthiness is never a safe
+  stand-in for presence anywhere in this template.
+-->
+@if (policyDegraded()) {
+  <p class="user-list__policy-notice">{{ policyDegradedNotice }}</p>
+}
+
+<app-error-banner [problem]="readFailure()" />
+
+@if (hasReadFailure()) {
+  <div class="user-list__failure">
+    <button
+      type="button"
+      class="user-list__failure-retry"
+      [disabled]="loading()"
+      (click)="reload()"
+    >
+      Try again
+    </button>
+  </div>
+}
+
+<!-- THE SEARCH BAR — `users.ascx` L3-L13, rendered as a layout row rather than as a table. -->
+<div class="user-list__filters">
+    <h2 data-visually-hidden>Filter Accounts</h2>
+
+  <!-- The free-text filter. -->
+  <app-search-input
+    class="user-list__search"
+    [placeholder]="searchPlaceholder"
+    (search)="onSearch($event)"
+  />
+
+  <!--
+    ⚠ THIS IS THE ONE JUSTIFIED BARE CONTROL ON THIS SCREEN. The shared components are page-header,
+    form-field, loading-spinner, pagination, data-table, search-input, confirm-dialog, error-banner and
+    empty-state, and NONE of them covers a native selector.
+  -->
+  <app-form-field
+    class="user-list__search-field"
+    [label]="searchFieldCaption"
+    [for]="searchFieldControlId"
+  >
+    <!-- NOT DISABLED WHILE A REQUEST IS IN FLIGHT, deliberately. -->
+    <select [id]="searchFieldControlId" (change)="onSearchFieldChange($event)">
+      @for (option of searchFieldOptions(); track option.trackKey) {
+        <option [value]="option.value" [selected]="option.value === searchField()">
+          {{ option.label }}
+        </option>
+      }
+    </select>
+  </app-form-field>
+</div>
+
+  <!--
+    ⚠ ONE TAB STOP, NOT TWENTY-SEVEN, AND `role="toolbar"` IS WHAT MAKES THAT LEGIBLE RATHER THAN SURPRISING.
+    Measured before this change: every one of the twenty-seven entries sat in the sequential tab order - on the
+    account listing they were positions 7 to 33 of 82 stops, a third of the screen's whole keyboard traversal
+    for one filter - and a real ArrowRight press with an entry focused left focus exactly where it was, on this
+    strip and on its sibling. The shared roving-focus directive gives exactly one entry `tabindex="0"` and takes
+    it from the rest; the role is what tells a reader the arrow keys apply here at all, which a plain group
+    could not.
+  -->
+<div
+  class="user-list__letters"
+  role="toolbar"
+  appRovingFocus
+  [attr.aria-label]="filterStripLabel"
+>
+  <!--
+    Each letter carries an accessible name that says what pressing it does, because "A" alone tells a
+    reader moving between twenty-seven controls nothing — and the name CONTAINS the visible character,
+    which is what keeps a spoken command matching what is seen.
+  -->
+  @for (affordance of filterAffordances; track affordance) {
+    <button
+      type="button"
+      class="user-list__letter"
+      [attr.aria-pressed]="isFilterApplied(affordance)"
+      [attr.aria-label]="affordance === allFilterLabel ? null : filterStripLabel + ' ' + affordance"
+      (click)="onFilterSelected(affordance)"
+    >
+      {{ affordance }}
+    </button>
+  }
+</div>
+
+<!--
+  The strip above announces the entry in force through `aria-pressed`, and it truthfully announces NONE
+  while a free-text term, an electronic-mail prefix or a profile-property prefix is filtering the
+  listing — no entry on the strip is what is in force.
+-->
+@if (filterDisclosure(); as disclosure) {
+  <p class="user-list__filter-disclosure" role="status" aria-live="polite" aria-atomic="true">{{ disclosure }}</p>
+}
+
+<!--
+  MIGRATION: the legacy grid carried NO caption and no `summary` attribute at all, and there is no
+  caption rule anywhere in the 1030-line legacy stylesheet, so the caption is a net accessibility
+  addition at zero visual cost and no `summary` attribute is emitted.
+-->
+<!-- MIGRATION: the legacy showed no message at all here, so this is a net addition. -->
+<!--
+  ⚠ GATED ON THE LISTING QUESTION HAVING BEEN ANSWERED, not merely on no search being in force. Arriving
+  here clears the criteria, so `noQueryIssued` is momentarily true on EVERY arrival - and the opening read is
+  only decided once the tenant's membership policy has been read, so ungated this notice was announced for a
+  whole round trip before the accounts it denies appeared underneath it.
+-->
+@if (noQueryIssued() && listSettled()) {
+  <p class="user-list__notice" role="status" aria-live="polite">{{ noQueryNotice }}</p>
+}
+
+<!--
+  `[sortBy]` is handed a COLUMN KEY, not the endpoint's field name: the grid compares it against a
+  column key to decide which heading announces itself sorted, and the component projects the store's
+  field name back through its own map to produce it.
+-->
+<app-data-table
+  [columns]="columns()"
+  [rows]="rows()"
+  [totalCount]="totalCount()"
+  [rowOffset]="pageIndex() * pageSize()"
+  [rowKey]="userRowKey"
+  [loading]="listWaiting()"
+  [loadingLabel]="loadingLabel"
+  [failed]="listFailed()"
+  [emptyMessage]="emptyMessage()"
+  [sortBy]="sortBy()"
+  [sortDir]="sortDir()"
+  (sortChange)="onSortChange($event)"
+>
+  <span dataTableCaption>{{ pageTitle }}</span>
+
+  <!--
+    ⚠ THE ZERO-RESULT SURFACE'S WAY FORWARD, and it was empty. This screen opens with no query issued at all,
+    so the FIRST thing a reader sees is an empty table - and the affordances that could fill it were the letter
+    strip above it and nothing inside it. The action offered is the one that matches the reason the table is
+    empty: list every account when nothing has been asked for or a narrowing found nothing, and add an account
+    either way.
+  -->
+  <div dataTableEmptyAction class="user-list__empty-actions">
+    <button type="button" class="user-list__filter-action" (click)="onFilterSelected(allFilterLabel)">
+      {{ showAllAccountsLabel }}
+    </button>
+
+    <a class="user-list__filter-action" [routerLink]="addUserLink">{{ addUserLabel }}</a>
+  </div>
+</app-data-table>
+
+<!--
+  ⚠ A SIBLING BELOW THE GRID, NEVER A FOOTER ROW INSIDE IT. `users.ascx` L82 emitted two line breaks and
+  L83 declared the paging control AFTER the closing grid tag, so the pager was never part of the table.
+  The two line breaks become a spacing token in the paired stylesheet.
+-->
+@if (hasResults()) {
+  <app-pagination
+    [page]="pageIndex()"
+    [pageSize]="pageSize()"
+    [totalCount]="totalCount()"
+    [loading]="loading()"
+      (pageChange)="onPageChange($event)"
+  />
+}
+
+<!-- THE REMOVAL CONFIRMATION. -->
+@if (pendingRemoval() !== null) {
+  <app-confirm-dialog
+    [message]="deleteConfirmMessage()"
+    [confirmLabel]="deleteCommandLabel"
+    [danger]="true"
+    (confirm)="onRemovalConfirmed()"
+    (cancel)="onRemovalCancelled()"
+  />
+}
+
+<!--
+  THE TARGET IS PRECOMPUTED, NOT ASSEMBLED HERE. A router link is compared by IDENTITY, so an array
+  rebuilt on every change-detection pass is a new reference every time and the router re-parses a target
+  that has not changed, once per row, on every pass — which defeats push change detection outright.
+-->
+<!--
+  Withheld by not rendering. A row whose edit command is absent simply has one fewer command, which is
+  what the shared table's projected-template contract already supports.
+-->
+<ng-template #editCommand let-row>
+  @if (administersPortal()) {
+    <a
+      class="user-list__row-action"
+      [routerLink]="editUserLinks()[row.userId]"
+      [attr.aria-label]="editCommandLabel + ' ' + row.username"
+    >
+      <svg
+        class="user-list__icon"
+        aria-hidden="true"
+        focusable="false"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.4"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <path d="M11.2 2.6 L13.4 4.8" />
+        <path d="M12.4 1.6 L14.4 3.6 L5.4 12.6 L2 14 L3.4 10.6 Z" />
+      </svg>
+      <span class="user-list__action-label">{{ editCommandLabel }}</span>
+    </a>
+  }
+</ng-template>
+
+<!--
+  ROW COMMAND TWO — DELETE. Legacy `dnn:imagecommandcolumn commandname="Delete"`, an image button that
+  post-backed into `grdUsers_DeleteCommand`.
+-->
+<ng-template #deleteCommand let-row>
+  @if (administersPortal() && canRemove(row)) {
+    <button
+      type="button"
+      class="user-list__row-action user-list__row-action--danger"
+      [disabled]="saving()"
+      [attr.aria-label]="deleteCommandLabel + ' ' + row.username"
+      (click)="requestRemoval(row)"
+    >
+      <svg
+        class="user-list__icon"
+        aria-hidden="true"
+        focusable="false"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.4"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      >
+        <path d="M2.6 4.4 L13.4 4.4" />
+        <path d="M6 4.4 V2.9 A0.8 0.8 0 0 1 6.8 2.1 L9.2 2.1 A0.8 0.8 0 0 1 10 2.9 V4.4" />
+        <path d="M4 4.4 L4.7 14.4 L11.3 14.4 L12 4.4" />
+        <path d="M6.6 7.2 V11.7" />
+        <path d="M9.4 7.2 V11.7" />
+      </svg>
+      <span class="user-list__action-label">{{ deleteCommandLabel }}</span>
+    </button>
+  }
+</ng-template>
+
+<ng-template #manageRolesCommand let-row>
+  <a
+    class="user-list__row-action"
+    [routerLink]="manageRolesLink"
+    [queryParams]="manageRolesQueryParams(row)"
+    [attr.aria-label]="manageRolesCommandLabel + ' ' + row.username"
+  >
+    <svg
+      class="user-list__icon"
+      aria-hidden="true"
+      focusable="false"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="1.4"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <circle cx="6" cy="5.2" r="2.6" />
+      <path d="M1.6 14 V13 A4.4 4.4 0 0 1 6 8.6 A4.4 4.4 0 0 1 10.4 13 V14" />
+      <path d="M10.7 3.1 A2.2 2.2 0 0 1 10.7 7.4" />
+      <path d="M12 8.9 A4 4 0 0 1 14.4 12.5 V14" />
+    </svg>
+    <span class="user-list__action-label">{{ manageRolesCommandLabel }}</span>
+  </a>
+</ng-template>
+
+<!--
+  ⚠ MIGRATION: `Globals.CloakText` IS NOT PORTED. It converted every character of the address to a
+  numeric code and rebuilt the markup at run time through `document.write` inside an injected script
+  element, as obfuscation against address harvesters.
+-->
+<ng-template #emailCell let-row>
+  @if (emailCells()[row.userId].mailto !== null) {
+    <a class="user-list__email" [href]="emailCells()[row.userId].mailto">{{
+      emailCells()[row.userId].text
+    }}</a>
+  } @else {
+    {{ emailCells()[row.userId].text }}
+  }
+</ng-template>
+
+<!--
+  THE CREATION INSTANT — `users.ascx` L62-L67, `DisplayDate(Membership.CreatedDate)`.
+
+  ⚠ AN ABSENT INSTANT NOW PAINTS THE SHARED MARK RATHER THAN NOTHING — QA-20. The display pipe answers the
+  empty string for an absent value, an unparseable one AND the legacy null-date sentinel alike, so a row with
+  no recorded instant rendered a cell indistinguishable from one that had failed to draw. Both sibling
+  listings already told those two states apart on every row; this one did not, and it is the same grid.
+-->
+<ng-template #createdDateCell let-row>
+  @if (hasInstant(row.createdDate)) {
+    {{ row.createdDate | dateDisplay: 'datetime' }}
+  } @else {
+    <app-absent-value />
+  }
+</ng-template>
+
+<!--
+  THE LAST SIGN-IN INSTANT — `users.ascx` L68-L73, `DisplayDate(Membership.LastLoginDate)`. The same
+  formatter, the same explicit shape and the same absent-value affordance as the cell above, for the same
+  measured reasons.
+
+  ⚠ THIS IS THE COLUMN QA-20 NAMED FIRST, and it is the one where an empty cell was most misleading: an
+  account that has never signed in is a fact an administrator acts on, and it was being reported by an
+  absence of ink. The mark says the value is not recorded and the hidden words say so in language, which is
+  the same answer this grid already gave for an absent address and an absent telephone number in the row
+  beside it.
+-->
+<ng-template #lastLoginCell let-row>
+  @if (hasInstant(row.lastLoginDate)) {
+    {{ row.lastLoginDate | dateDisplay: 'datetime' }}
+  } @else {
+    <app-absent-value />
+  }
+</ng-template>
+
+<!-- THE AUTHORISATION FLAG — `users.ascx` L74-L79. -->
+<ng-template #approvedCell let-row>
+  <!--
+    ⚠ QA-19 — AN UNAUTHORISED ACCOUNT IS NAMED AS A STATE, AND THIS IS A CONSISTENCY CORRECTION. The three
+    listings beside this one each carry a deliberate non-colour vocabulary for a value whose state matters
+    more than its text — an expired portal term, an expired module term, a free role — muted and slanted,
+    with the underlying value still announced. This column distinguished an account that can be used from
+    one that cannot by the one-character difference between `Yes` and `No`, in identical colour, weight and
+    slant, and it was the last of the four carrying no treatment at all.
+
+    THE VISIBLE WORD IS UNCHANGED. `users.ascx` L74-L79 bound the legacy `Authorized` column through a
+    yes/no formatter, and that wording is preserved verbatim through the same shared pipe. What is added is
+    the state treatment around the negative word and the sentence beside it.
+  -->
+  @if (row.isApproved === false) {
+    <span class="user-list__row-state" data-atomic-value>{{ row.isApproved | yesNo }}</span>
+    <span class="user-list__row-mark-description">{{ unauthorisedDescription }}</span>
+  } @else {
+    {{ row.isApproved | yesNo }}
+  }
+  <!--
+    ⚠ U-M1 — THE LOCK-OUT QUALIFIER. The approval word above answers a different question from lock-out,
+    and both are true facts, but an operator reads this column to decide whether an account can be used
+    — and for a locked-out account the honest answer is no while the word above says `Yes`.
+  -->
+  @if (row.isLockedOut === true) {
+    <span class="user-list__row-mark" aria-hidden="true">{{ lockedOutQualifier }}</span>
+    <span class="user-list__row-mark-description">{{ lockedOutDescription }}</span>
+  }
+</ng-template>
+
+<!--
+  ⚠ WHY THIS IS A TEMPLATE COLUMN NOW AND WAS A FORMATTED-TEXT ONE BEFORE. A formatted-text column emits
+  one string; an absent value has to emit a painted mark AND a hidden explanation of it, which is two
+  elements.
+-->
+<!--
+  THE THREE NAME CELLS. One template shape, three columns, because the three columns have exactly the same
+  two problems: a value may be absent, and a value may carry whitespace that HTML collapses.
+
+  Order matters. Absence is reported first and padding second, so a cell never carries two annotations at
+  once - `isNamePadded` returns false for an absent value precisely so this stays true.
+-->
+<ng-template #firstNameCell let-row>
+  @if (isNameAbsent(row.firstName)) {
+    <!-- The shared absent-value rendering, so a row cannot report absence two different ways. -->
+    <app-absent-value />
+  } @else {
+    {{ nameText(row.firstName) }}
+    @if (isNamePadded(row.firstName)) {
+      <span class="user-list__padded-value" aria-hidden="true">{{ paddedValueMark }}</span>
+      <span class="user-list__row-mark-description">{{ paddedValueDescription }}</span>
+    }
+  }
+</ng-template>
+
+<ng-template #lastNameCell let-row>
+  @if (isNameAbsent(row.lastName)) {
+    <!-- The shared absent-value rendering, so a row cannot report absence two different ways. -->
+    <app-absent-value />
+  } @else {
+    {{ nameText(row.lastName) }}
+    @if (isNamePadded(row.lastName)) {
+      <span class="user-list__padded-value" aria-hidden="true">{{ paddedValueMark }}</span>
+      <span class="user-list__row-mark-description">{{ paddedValueDescription }}</span>
+    }
+  }
+</ng-template>
+
+<ng-template #displayNameCell let-row>
+  @if (isNameAbsent(row.displayName)) {
+    <!-- The shared absent-value rendering, so a row cannot report absence two different ways. -->
+    <app-absent-value />
+  } @else {
+    {{ nameText(row.displayName) }}
+    @if (isNamePadded(row.displayName)) {
+      <span class="user-list__padded-value" aria-hidden="true">{{ paddedValueMark }}</span>
+      <span class="user-list__row-mark-description">{{ paddedValueDescription }}</span>
+    }
+  }
+</ng-template>
+
+<ng-template #addressCell let-row>
+  @if (isAddressAbsent(row)) {
+    <!-- The shared absent-value rendering: the same mark, the same colour and the same words as every listing. -->
+    <app-absent-value />
+  } @else {
+    {{ row.address }}
+  }
+</ng-template>
+
+<!--
+  MIGRATION — the legacy defect this cell corrects is recorded on the paired class rather than repeated
+  here: the legacy markup applied the electronic-mail formatter to the telephone number, so a number
+  containing an "@" would have been wrapped in a `mailto:` link.
+-->
+<ng-template #telephoneCell let-row>
+  @if (isTelephoneAbsent(row)) {
+    <app-absent-value />
+  } @else {
+    <span data-atomic-value>{{ row.telephone }}</span>
+  }
+</ng-template>

@@ -1,0 +1,161 @@
+<section class="member-services" aria-labelledby="member-services-heading">
+  <h2 class="member-services__heading" id="member-services-heading">{{ sectionTitle }}</h2>
+
+  <!--
+    Mounted UNCONDITIONALLY and given the document to render, so its live region exists before the first
+    failure arrives; a guarded element would be inserted at the same moment its content changed and the
+    announcement would be lost. Its stylesheet paints nothing while empty.
+  -->
+  <app-error-banner [problem]="problem()" />
+
+  @if (accountKey() === null) {
+    <!--
+      THE HOST HAS NOT RESOLVED AN ACCOUNT YET. No request is issued without an account key, so there is
+      nothing for the server to have refused and nothing to render but this.
+    -->
+    <p class="member-services__notice">{{ accountUnknownMessage }}</p>
+  } @else if (ownership() === 'other') {
+    <!-- THE HOST SUPPLIED SOMEBODY ELSE'S ACCOUNT. -->
+    <p class="member-services__notice">{{ notOwnAccountMessage }}</p>
+  } @else {
+    <p class="member-services__help">{{ servicesHelp }}</p>
+
+    <!--
+      `MemberServices.ascx` L12-L15: a labelled box of fifty characters and a link button captioned
+      `cmdRSVP.Text`.
+    -->
+    <form class="member-services__code" [formGroup]="codeForm" (ngSubmit)="onRedeem()">
+      <app-form-field
+        [label]="codeLabel"
+        for="member-services-code"
+        [help]="codeHelp"
+        [required]="true"
+        [error]="codeMessage()"
+      >
+        <!--
+          ⚠ `aria-invalid` IS BOUND FROM THE SAME EXPRESSION THAT FEEDS `[error]` ABOVE, so the state and
+          the message can never disagree. The shared field contributes this attribute itself when a
+          consumer states nothing, but stating it here is what the other seventy consumer templates in
+          this application do and it makes the relationship legible at the box rather than only in the
+          shared component - and `codeMessage()` is now the single place that knows a refusal naming no
+          field is nonetheless about THIS field.
+        -->
+        <input
+          id="member-services-code"
+          class="member-services__code-input"
+          type="text"
+          formControlName="code"
+          autocomplete="off"
+          [attr.maxlength]="codeMaxLength"
+          [attr.aria-invalid]="codeMessage() ? 'true' : null"
+        />
+      </app-form-field>
+
+      <button type="submit" class="member-services__code-submit form-action--primary" [disabled]="busy()"
+            [attr.aria-busy]="busy() ? 'true' : null">
+        {{ codeSubmit }}
+      </button>
+    </form>
+
+    <!-- THE SUCCESS HALF OF THE LEGACY TWO-MESSAGE REPORT. -->
+    @if (redeemedRoleNames(); as joined) {
+      <div class="member-services__report" role="status" aria-live="polite">
+        <p class="member-services__report-text">{{ codeSuccess }}</p>
+        <ul class="member-services__report-list">
+          @for (roleName of joined; track roleName) {
+            <li>{{ roleName }}</li>
+          }
+        </ul>
+        <button type="button" class="member-services__report-dismiss" (click)="onDismissReport()">
+          Dismiss
+        </button>
+      </div>
+    }
+
+    <!-- THE SERVICES GRID. -->
+    <app-data-table
+      [columns]="columns()"
+      [rows]="services()"
+      [rowKey]="serviceRowKey"
+      [loading]="loading()"
+      [failed]="listFailed()"
+    >
+      <span dataTableCaption>{{ sectionTitle }}</span>
+    </app-data-table>
+  }
+</section>
+
+<!-- ROW COMMAND ONE - SUBSCRIBE, UNSUBSCRIBE OR RENEW. -->
+<ng-template #subscribeCommand let-row>
+  <!--
+    ⚠ THE PAYMENT EXPLANATION IS TESTED FIRST, AND NESTING IT INSIDE `subscriptionOffered` MADE IT
+    UNREACHABLE. The wording exists precisely to say why no command is offered, so gating it on a command
+    being offered was self-defeating: measured against the live API, the three fee-charging services report
+    `subscriptionOffered: false` with `subscriptionRequiresPayment: true`, a combination the old nesting could
+    never render, and all three cells painted blank. A reader saw an empty box beside a priced service with no
+    indication of why they could not subscribe to it.
+
+    Hoisting the test preserves the original reachable case exactly - a row that is both offered and priced
+    still shows the explanation rather than the button - and adds the case that was being dropped.
+  -->
+  @if (row.subscriptionRequiresPayment) {
+    <span class="member-services__unavailable">{{ paymentRequiredLabel }}</span>
+  } @else if (row.subscriptionOffered) {
+    <button
+      type="button"
+      class="member-services__row-action"
+      [disabled]="busy()"
+      [attr.aria-label]="commandName(row)"
+      (click)="onCommand(row)"
+    >
+      {{ commandLabel(row) }}
+    </button>
+  }
+</ng-template>
+
+<!-- ROW COMMAND TWO - USE TRIAL. -->
+<ng-template #trialCommand let-row>
+  @if (row.trialOffered) {
+    <button
+      type="button"
+      class="member-services__row-action"
+      [disabled]="busy()"
+      [attr.aria-label]="trialName(row)"
+      (click)="onTrial(row)"
+    >
+      {{ trialLabel }}
+    </button>
+  } @else {
+    <!--
+      ⚠ QA-24 — THE BRANCH THAT DID NOT EXIST. This column had no `@else`, so seven of the nine rows
+      rendered an empty wrapper: a full-width track occupied by nothing, beside a subscription column that
+      DOES say why it withholds its own command. The sibling treatment is reused verbatim so the two
+      withheld commands in one row read as the same kind of statement.
+    -->
+    <span class="member-services__unavailable">{{ trialNotOfferedLabel }}</span>
+  }
+</ng-template>
+
+<!-- THE EXPIRY CELL. -->
+<ng-template #expiryCell let-row>
+  <!--
+    ⚠ QA-20 — AN OPEN-ENDED SUBSCRIPTION PAINTED NOTHING. The display pipe answers the empty string for an
+    absent instant, so a membership with no expiry rendered a blank cell that read as a rendering failure
+    rather than as the fact it is: nothing recorded against this term. The shared affordance says it in both
+    media, and it is the same one the assignment screen already used for the same two dates.
+
+    ⚠ AND THE ABSENT BRANCH HAS TO BE THE OUTER FALLBACK, WHICH IS WHERE THE FIRST ATTEMPT AT THIS FELL SHORT.
+    It was nested one level in, under `expiryDate !== null`, so it could only answer a NON-NULL date that would
+    not parse - and the API never produces that. The case that actually occurs, a null expiry, fell through
+    every branch and emitted nothing: measured, all nine rows of this grid reported `expiryDate: null` with
+    `isExpired: false`, and all nine cells were empty while occupying a full track. Flattening the conditional
+    so anything that is not an expiry and not a readable date lands on the marker covers both.
+  -->
+  @if (row.isExpired) {
+    {{ expiredLabel }}
+  } @else if (row.expiryDate !== null && hasInstant(row.expiryDate)) {
+    {{ row.expiryDate | dateDisplay }}
+  } @else {
+    <app-absent-value />
+  }
+</ng-template>

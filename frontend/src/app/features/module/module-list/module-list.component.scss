@@ -1,0 +1,220 @@
+@use '../../../../styles/mixins' as mx;
+
+// ROOT
+.module-list {
+  display: grid;
+
+  // THE EXPLICIT FLUID TRACK. See the note on the same declaration in `portal-list.component.scss` for the
+  // measured failure: an implicit single-column track takes an automatic `min-content` minimum, the shared
+  // grid's `min-inline-size: 40rem` therefore sets the track, and this region inflates past the column its
+  // parent offered so the table container's `overflow-x: auto` has nothing to clip.
+  grid-template-columns: var(--grid-track-fluid);
+
+  gap: var(--space-4);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+}
+
+// THE FILTER
+.module-list__search {
+  display: block;
+  max-inline-size: mx.breakpoint('sm');
+}
+
+// THE FAILURE AFFORDANCE ROW
+// The active-filter disclosure - #36. Muted and small: it explains the listing rather than warning about it,
+// and it carries the same two declarations as `.user-list__filter-disclosure` so one statement reads the same
+// on both listings.
+.module-list__filter-disclosure {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.module-list__status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.module-list__action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: var(--target-size-min);
+  min-block-size: var(--target-size-min);
+  padding-block: var(--space-1);
+  padding-inline: var(--space-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background-color: transparent;
+  color: var(--color-primary);
+  font: inherit;
+
+  line-height: var(--line-height-tight);
+
+  text-decoration: none;
+  cursor: pointer;
+
+  @include mx.focus-ring;
+
+  // ⚠ UNGATED, for the reason recorded at length on the equivalent rule in `portal-list.component.scss`.
+  &:hover {
+    // The primary-hover token rather than the legacy hover colour for this affordance: that legacy value is
+    // the very colour the token vocabulary assigns to the danger role and uses for error text, so reusing
+    // it would paint an ordinary action in the colour that means something went wrong.
+    color: var(--color-primary-hover);
+    text-decoration: underline;
+  }
+  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE, and suppression without
+  // replacement is what leaves a control with no visible response at all.
+  &:active {
+    background-color: var(--color-selected);
+  }
+}
+
+// -----------------------------------------------------------------------------
+//  ROW COMMANDS
+// -----------------------------------------------------------------------------
+// Four commands share one cell, so they are kept on one line each and allowed to WRAP rather
+// than overflow when the column track is tight - which is the shared table's documented
+// expectation of a content-sized commands column, and why the column is given an intrinsic
+// width rather than a fixed one. A table cell does not clip, so a cramped command would
+// otherwise paint over the value beside it.
+//
+// A step smaller than the body type, because four commands at full size would out-weigh the
+// data they act on.
+//
+// MIGRATION: the legacy raster command icons have no target equivalent - the only static asset
+// this workspace ships is a favicon - and neither legacy icon carried alternative text, so both
+// reached assistive technology as unnamed graphics. Measured at
+// `Website/admin/Portal/portals.ascx:L21` and `:L22`, where the edit and delete commands are image
+// columns pointing at `~/images/edit.gif` and `~/images/delete.gif` with no alternative text and no
+// heading text of any kind. Text closes that gap outright, and the template additionally qualifies
+// each accessible name with the placement's own title because the commands repeat down the column.
+//
+// MIGRATION: THE LEGACY TYPE SIZES WERE INTERNALLY INCONSISTENT AND ARE NORMALISED ONTO THE SHARED
+// RAMP RATHER THAN REPRODUCED. Within the single measured portal grid, the header, item and
+// alternating-row rules at `Website/Portals/_default/default.css:L131-L171` all declare 10px - four
+// such declarations, and they are the ONLY dimensional-looking literals in that whole block - while
+// the Expires column nested inside that same grid reaches the 11px family instead, via
+// `Website/admin/Portal/portals.ascx:L49` and `:L52` pointing at rules declared at
+// `default.css:L92-L97` and `:L106-L111`. The second measured grid,
+// `Website/admin/Users/users.ascx:L24-L26`, uses the 11px family for its header, item AND
+// alternating rows, so the two grids disagree with each other as well as one disagreeing with
+// itself. There is therefore no single legacy size to preserve: the commands take the step below
+// body type from the shared ramp, which lands between the two legacy figures. The inconsistency is
+// recorded here rather than reproduced, and it is NOT presented as a fix - the Minimal Change
+// Clause forbids opportunistically correcting a legacy defect, and normalising onto a design-system
+// ramp is a consequence of adopting the ramp at all.
+//
+// ⚠ THE TARGET FLOOR IS DECLARED HERE, AND THIS SCREEN IS WHERE ITS ABSENCE BIT HARDEST. The
+// global form partial applies `--target-size-min` through the bare `button` element selector, so
+// the floor was being enforced by ELEMENT TYPE rather than by ROLE: of the four commands in this
+// row only "Delete" is a `<button>`, so only "Delete" inherited it. Runtime measurement found
+// Edit at 38.41 x 24.25 — short on BOTH axes — with Settings at 62.98 x 24.25 and Export at
+// 53.58 x 24.25, against Delete's compliant 53.58 x 44. Thirty of this grid's forty commands
+// missed a floor the token vocabulary names for row actions specifically.
+//
+// `inline-flex` rather than `inline-block`, because a minimum height on an inline-block box
+// leaves its text at the top: the control would measure 44px and still LOOK 24px. Centring on
+// both axes puts the label in the middle of the target. The box stays INLINE-level so the shared
+// grid's column alignment keeps positioning the group.
+//
+// The minimum WIDTH matters here and not on the portal grid, because Edit is the one command in
+// the application whose label is short enough to fall under the floor horizontally as well.
+//
+// No row grows: the destructive sibling already held every actions cell at 44px.
+.module-list__row-command {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: var(--target-size-min);
+  min-block-size: var(--target-size-min);
+  padding-block: var(--space-1);
+  padding-inline: var(--space-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background-color: transparent;
+  color: var(--color-primary);
+  font: inherit;
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+  text-decoration: none;
+  cursor: pointer;
+
+  @include mx.focus-ring;
+
+  // ⚠ UNGATED, for the reason the portal listing's own row-command rule records: a measurement showed the
+  // pointer-capability guard silently disabling the hover treatment, leaving a command inside a data row
+  // with the pointer as its only feedback. The three listing screens now agree, and they agree with the
+  // global button rule, whose hover has never been gated.
+  &:hover {
+    color: var(--color-primary-hover);
+    text-decoration: underline;
+  }
+  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE, and suppression without
+  // replacement is what leaves a control with no visible response at all.
+  &:active {
+    background-color: var(--color-selected);
+  }
+}
+
+// The destructive command. ⚠ COLOUR IS A REINFORCEMENT AND NEVER THE ONLY SIGNAL: the command reads
+// "Delete", its accessible name names the placement, and it opens a confirmation before anything is
+// removed.
+.module-list__row-command--danger {
+  color: var(--color-danger);
+
+  // ⚠ UNGATED, for the reason the portal listing's own row-command rule records: a measurement showed the
+  // pointer-capability guard silently disabling the hover treatment, leaving a command inside a data row
+  // with the pointer as its only feedback. The three listing screens now agree, and they agree with the
+  // global button rule, whose hover has never been gated.
+  // The underline carries this one on every row surface already, so no background is needed here - and adding
+  // one would be a second signal where one suffices. The role and account listings DO need a surface change,
+  // because their glyph commands carry no wording an underline could mark.
+  &:hover {
+    color: var(--color-danger);
+    text-decoration: underline;
+  }
+}
+
+// THE ABSENT-VALUE EXPLANATION
+// Clipped rather than removed, because the em dash beside it is `aria-hidden` and something has to carry
+// the meaning for a reader who cannot see the glyph. The shared mixin keeps the element in the
+// accessibility tree, which neither `display: none` nor `visibility: hidden` would do.
+.module-list__absent-value {
+  @include mx.visually-hidden;
+}
+
+// A STORED CODE THIS CONSOLE CANNOT NAME. Painted in the muted text colour so it reads as a reference
+// rather than as a value, which is exactly how the profile-definition listing paints an unnameable data
+// type. The `help` cursor is what tells a pointer user that the `title` beside it is worth reading; colour
+// alone carries no information here, because the sr-only sibling states the same fact in words.
+.module-list__unnameable-code {
+  color: var(--color-text-muted);
+  cursor: help;
+}
+
+// THE HEADING CELL — A BOUNDED DISPLAY OVER AN UNBOUNDED VALUE
+// The column admits 256 characters and a real module in the measured data uses all of them.
+.module-list__title {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+// THE EXPIRED QUALIFIER — the same treatment the portal listing gives the same state, so one state has one
+// appearance across the application. Danger hue and bold weight, and the weight is what carries it for a
+// reader who perceives no colour: the qualifier is a WORD, so the state is never colour-only.
+.module-list__expired {
+  margin-inline-start: var(--space-1);
+  color: var(--color-danger);
+  font-weight: var(--font-weight-bold);
+  white-space: nowrap;
+}

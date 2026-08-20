@@ -1,0 +1,191 @@
+<!-- THE PAGE TITLE. -->
+<app-page-header title="User Log In" [subtitle]="pageSubtitle" />
+
+<!--
+  ⚠ IF THIS SCREEN DOES NOT RENDER THE REFUSAL, NOBODY DOES. The bearer-token interceptor lists the
+  sign-in endpoint among the anonymous ones, so no credential is attached and no renewal is attempted;
+  the error interceptor then returns early on exactly 401, deliberately, because a sign-in refusal is
+  this screen's to explain and announcing it globally as well would report it twice.
+-->
+<app-error-banner [problem]="bannerProblem()" />
+
+@if (failed()) {
+  <div class="login__failure">
+    <!--
+      ⚠ ONE OWNER PER CATEGORY, AND IT IS WHICHEVER REGION HAS THE BETTER SENTENCE. Where this screen has
+      wording of its own the banner above is handed nothing - see `bannerProblem` - so these paragraphs are
+      the single owner and keep their roles unconditionally. Where the screen has no sentence, neither of
+      them renders and the banner is the owner. Exactly one of the three speaks.
+    -->
+    @if (rateLimited()) {
+      <!--
+        The window the server advertised, counted down. It said "Wait a moment and try again" with no
+        duration and left the button live, so a person could keep submitting into a limiter that counts
+        refused attempts and pushes their own window further out.
+      -->
+      <p class="login__notice" role="status">{{ rateLimitNotice() }}</p>
+    } @else if (signInMessage() !== null) {
+      <p
+        class="login__message"
+        [attr.role]="signInMessageEchoedAtField() ? null : 'alert'"
+        [attr.aria-hidden]="signInMessageEchoedAtField() ? 'true' : null"
+      >
+        {{ signInMessage() }}
+      </p>
+    }
+
+    <!--
+      Dead markup is worse than absent markup: it cannot be exercised by a specification, so it rots
+      unnoticed. The reference is therefore rendered by the shared banner alone, which is the one
+      component that has the document to read it from.
+    -->
+
+    <!--
+      A real `button` with an explicit type, so it can never submit the form below it. It clears the
+      recorded failure and deliberately does NOT retract the verification field: dismissing a message
+      must not withdraw a box the person is being asked to fill in.
+    -->
+    <button class="login__dismiss" type="button" (click)="dismissFailure()">Dismiss</button>
+  </div>
+}
+
+<!--
+  ⚠ THIS SCREEN IS THE ONLY THING THAT RENDERS IT, AND THE STORE SAYS SO IN AS MANY WORDS.
+  `core/state/auth.store.ts` publishes the flag with the note that it "exists so the sign-in screen can
+  say so.
+-->
+@if (revocationOutstanding()) {
+  <p class="login__notice" role="status">{{ revocationMessage }}</p>
+}
+
+<!--
+  ⚠ WHY THIS SCREEN APPEARED. A caller ejected from a screen that needs a signed-in account used to be
+  shown this form with no explanation whatsoever - measured as both live regions empty - so a sign-in prompt
+  arriving unbidden read as a fault rather than as a step, and the address they had asked for was invisible
+  even though it was being remembered.
+
+  `role="status"` rather than `alert`: nothing has gone wrong, and it must not interrupt. It is placed above
+  the form so a screen reader meets it before the boxes it explains, and the derivation withholds it whenever
+  a refusal or a withdrawal notice already occupies this position.
+-->
+@if (ejectionNotice(); as notice) {
+  <p class="login__ejection" role="status">{{ notice }}</p>
+}
+
+<form class="login__form" [formGroup]="form" (ngSubmit)="submit()" novalidate>
+  <div class="login__fields">
+    <!--
+      MIGRATION: the required marker and the required message are NET ADDITIONS. All 37 lines of legacy
+      markup declared no validator control, so the legacy screen posted whatever was typed and let the
+      server refuse it; the MECHANISM changes while the BEHAVIOUR does not, since an empty box still
+      cannot complete a sign-in.
+    -->
+    <app-form-field
+      label="User Name:"
+      help="Enter your User Name below"
+      [for]="controlIds.username"
+      [required]="true"
+      [error]="usernameMessages()"
+    >
+      <input
+        class="login__control"
+        type="text"
+        [id]="controlIds.username"
+        formControlName="username"
+        autocomplete="username"
+        autocapitalize="none"
+        spellcheck="false"
+        required
+        [attr.maxlength]="usernameMaxLength"
+        [attr.aria-invalid]="isRejected('username') ? 'true' : null"
+      />
+    </app-form-field>
+
+    <!--
+      THE VERIFICATION CODE. Legacy `txtVerification`, `Login.ascx:L16`, in the row pair
+      `rowVerification1` / `rowVerification2` that L12 and L15 both declare `visible="false"`.
+    -->
+    @if (verificationRequired()) {
+      <app-form-field
+        label="Verification Code:"
+        help="Enter the verification code. You should have received the verification code on the email address used when registering"
+        [for]="controlIds.verificationCode"
+        [required]="true"
+        [error]="verificationMessages()"
+      >
+        <input
+          class="login__control"
+          type="text"
+          [id]="controlIds.verificationCode"
+          formControlName="verificationCode"
+          autocomplete="off"
+          autocapitalize="none"
+          spellcheck="false"
+          required
+          [attr.aria-invalid]="isRejected('verificationCode') ? 'true' : null"
+        />
+      </app-form-field>
+    }
+
+    <!--
+      `autocomplete="current-password"` is the standard token for this field and is a net addition. It
+      asks the BROWSER's own credential manager to fill the box; no code in this workspace reads,
+      copies, stores or logs the value, and no web storage of any kind is touched.
+    -->
+    <app-form-field
+      label="Password:"
+      help="Enter your Password below"
+      [for]="controlIds.password"
+      [required]="true"
+      [error]="passwordMessages()"
+    >
+      <input
+        class="login__control"
+        type="password"
+        [id]="controlIds.password"
+        formControlName="password"
+        autocomplete="current-password"
+        required
+        [attr.aria-invalid]="isRejected('password') ? 'true' : null"
+      />
+    </app-form-field>
+  </div>
+
+  <!--
+    THE SUBMIT ROW. Legacy `cmdLogin`, `Login.ascx:L34`, captioned from `cmdLogin.Text` in the control's
+    own resource file - "Login" - verbatim.
+  -->
+  <div class="login__actions">
+    <button
+      class="login__submit"
+      type="submit"
+      [disabled]="submitting() || coolingOff()"
+      [attr.aria-busy]="submitting() ? 'true' : null"
+    >
+      Login
+    </button>
+
+    @if (submitting()) {
+      <app-loading-spinner size="small" label="Signing in…" />
+    }
+  </div>
+</form>
+
+<!--
+  ⚠ NET-NEW, AND IT REPLACES SOMETHING THAT WAS REMOVED RATHER THAN ADDING SOMETHING NEW. The legacy screen
+  offered a Password Reminder, and this migration removed password retrieval deliberately - neither endpoint
+  nor screen - because the legacy store was reversibly encrypted with a key committed to source control and
+  the replacement is a one-way hash. Nothing took its place, and runtime testing measured the result: exactly
+  two links in every state of this screen and no pointer of any kind, so a person who could not sign in had
+  no next step available to them anywhere.
+
+  It is a SENTENCE and not a link, because there is no screen to link to and inventing one that answers
+  nothing would be worse than saying plainly who can help. It is static rather than conditional on a
+  failure: someone who cannot remember their password never submits at all, so gating it behind a refusal
+  would hide it from exactly the person who needs it.
+-->
+<p class="login__recovery">
+  Forgotten your password? This site cannot send it to you, because passwords are stored so that nobody -
+  including an administrator - can read them back. Ask an administrator to reset your password or unlock your
+  account.
+</p>

@@ -1,0 +1,71 @@
+@use '../../../../styles/mixins' as mx;
+
+// ROOT
+.portal-alias-list {
+  display: grid;
+  gap: var(--space-4);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+}
+
+.portal-alias-list__status {
+  display: grid;
+  gap: var(--space-2);
+}
+
+// -----------------------------------------------------------------------------
+//  INLINE CREATE / EDIT FORM
+// -----------------------------------------------------------------------------
+.portal-alias-list__edit {
+  display: grid;
+  gap: var(--space-3);
+  max-inline-size: mx.breakpoint('sm');
+}
+
+// COMMAND ROW
+.portal-alias-list__commands {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+// ⚠ THE MEASURED DEFECT: IT HAD NO DESTRUCTIVE TREATMENT AT ALL. Delete sat between Update and Cancel as a
+// bare button, indistinguishable from either, while the confirmation it opens paints its own Delete with a
+// red border and a danger label.
+.portal-alias-list__command--danger {
+  color: var(--color-danger);
+  font-weight: var(--font-weight-bold);
+
+  &:enabled:hover,
+  &:enabled:active {
+    background-color: var(--color-surface);
+    color: var(--color-danger);
+  }
+}
+
+// DELIBERATE NET ADDITIONS, RECORDED RATHER THAN ABSORBED
+// MIGRATION: every spacing value above comes from the shared spacing scale, and that scale is itself a NET
+// ADDITION — the legacy stylesheet has no spacing system, only ad-hoc values.
+
+.portal-alias-list__absent-host {
+  // The mark is data-about-data rather than data, so it is dimmed to the muted step to
+  // keep it from reading as a host name that happens to be one character long.
+  color: var(--color-text-muted);
+}
+// Pf-M1: the words behind the mark. Announced, never painted.
+.portal-alias-list__absent-host-description {
+  @include mx.visually-hidden;
+}
+.portal-alias-list__current-note {
+  // ⚠ Pf-M2 — THE FLOOR IS THE COMMAND'S OWN, and it is measured rather than guessed. Runtime measurement
+  // isolated the delta exactly: both cells pay identical 4px + 4px block padding, so the whole row
+  // difference came from CONTENT height.
+  display: flex;
+  align-items: center;
+  min-block-size: var(--target-size-min);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+}

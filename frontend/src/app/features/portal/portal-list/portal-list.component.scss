@@ -1,0 +1,325 @@
+@use '../../../../styles/mixins' as mx;
+
+// ROOT
+// THE GRID-TO-PAGER SEPARATOR IS A TOKEN GAP, NOT MARKUP. `portals.ascx:L57` is a literal `<br><br>`
+// sitting between the closing grid tag at `:L56` and the paging control at `:L58` - spacing smuggled into
+// the document as content.
+.portal-list {
+  display: grid;
+
+  // THE EXPLICIT FLUID TRACK, and it is load-bearing rather than decorative. An implicit single-column
+  // track carries an AUTOMATIC MINIMUM of `min-content`, so the widest descendant sets the track width and
+  // every sibling is stretched to it.
+  grid-template-columns: var(--grid-track-fluid);
+
+  gap: var(--space-4);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+}
+
+// FILTERS
+// The range and total, above the grid. Muted and small: it repeats what the pager states, for a reader who
+// has not scrolled to it, and must not compete with the grid it introduces.
+.portal-list__range {
+  margin-block: 0 var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.portal-list__filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  align-items: center;
+  justify-content: space-between;
+
+  min-inline-size: 0;
+}
+
+// THE CHIP SEPARATOR IS A FLEXBOX GAP, NOT A PAIR OF NON-BREAKING SPACES. `portals.ascx:L8` closes each
+// repeated hyperlink with a literal `&nbsp;&nbsp;`, so the twenty-seven entries were spaced by content
+// rather than by style - unadjustable, invisible to inspection, and read aloud as text.
+.portal-list__letters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+
+  // The legacy panel did declare `HorizontalAlign="Center"`, and that is recorded rather than reproduced.
+  justify-content: start;
+}
+
+.portal-list__letter {
+  padding-block: var(--space-1);
+  padding-inline: var(--space-2);
+  color: var(--color-primary);
+  font: inherit;
+  line-height: var(--line-height-none);
+  background-color: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+
+  // NO `mx.focus-ring` INCLUDE HERE, AND THE RING IS NOT LOST BY ITS ABSENCE. `_reset.scss`
+  // L296-304 applies that same parameterless mixin to `a, button, input, select, textarea,
+  // summary, [tabindex]:not([tabindex='-1'])`, and this control is a `<button>` - so an include
+  // here re-emitted a byte-identical `:focus-visible` block, differing only in specificity, which
+  // cannot change a computed value when the declarations are the same. Verified as removable
+  // rather than assumed: the mixin takes no arguments (`_mixins.scss` L343), and no rule in the
+  // global layer or this file sets `outline` or `box-shadow` on a button between the reset's
+  // weight and this one - `.page-action` (`_forms.scss` L502) declares neither, and the only
+  // shared `box-shadow` is on `table[data-sticky-head] thead th`. Nothing outranked the reset,
+  // so nothing was holding a line by being restated here.
+  //
+  // The 4 kB component-style budget is what makes the duplication worth removing rather than
+  // merely worth noting, and the sibling comment below states the standing rule: the budget is
+  // never raised to accommodate duplication.
+
+  @include mx.hover {
+    color: var(--color-primary-hover);
+    background-color: var(--color-surface);
+  }
+
+  // The applied entry. Selection is carried by aria-pressed, so it is announced as well as painted and is
+  // never conveyed by colour alone; the surface tint and the weight change give it a second, non-colour cue
+  // for a reader who cannot distinguish the two colours.
+  &[aria-pressed='true'] {
+    color: var(--color-primary);
+    font-weight: var(--font-weight-bold);
+    background-color: var(--color-selected);
+  }
+  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE, and suppression without
+  // replacement is what leaves a control with no visible response at all.
+  &:active {
+    background-color: var(--color-selected);
+  }
+}
+
+// The name filter takes the remaining inline space once the row is wide enough to share.
+.portal-list__search {
+  flex: var(--flex-fill-from-zero);
+  min-inline-size: 0;
+}
+
+// STATUS
+.portal-list__status {
+  display: grid;
+  gap: var(--space-2);
+}
+
+// THE TEXT AFFORDANCES, GROUPED
+// MIGRATION: THE LEGACY HOVER COLOUR IS DELIBERATELY NOT REPRODUCED, AND THE MEASUREMENT IS WHY.
+// default.css:L449-L461 gives `A.CommandButton` its resting and visited colour - the value the token
+// vocabulary now calls --color-primary - but default.css:L462-L466 turns `:hover` RED, and that red is the
+// very same value the vocabulary assigns to the danger role and reuses for error text.
+.portal-list__action,
+.portal-list__row-command,
+.portal-list__record-link,
+.portal-list__alias > a {
+  // THE FOCUS RING ARRIVES FROM THE GLOBAL LAYER FOR ALL FOUR OF THESE, for the reason set out on
+  // `.portal-list__letter` above: `_reset.scss` L296-304 includes the same parameterless
+  // `mx.focus-ring` on `a` and on `button`, and every element carrying these four classes is one or
+  // the other - measured from the template, not assumed: `.portal-list__action` and
+  // `.portal-list__row-command` render as `<a>` or `<button>` depending on whether the affordance
+  // navigates or acts, `.portal-list__record-link` is the row-title `<a>`, and
+  // `.portal-list__alias > a` is an anchor by construction. Re-including the mixin here emitted a
+  // second, byte-identical `:focus-visible` rule, which is the largest single duplication this
+  // stylesheet contained.
+  //
+  // What this rule still owns is the HOVER treatment below, and that genuinely cannot move to the
+  // global layer - it must be emitted once for the set, at this weight, and in this position.
+
+  // ⚠ UNGATED, and the pointer-capability guard was REMOVED after a measurement showed it silently disabled
+  // the hover treatment on this screen while leaving it working on others.
+  //
+  // ⚠ THE DESTRUCTIVE COMMAND IS EXCLUDED, AND THAT EXCLUSION IS LOAD-BEARING RATHER THAN TIDY. Measured
+  // both ways on the same element: with a fine hover-capable pointer the danger override below wins and the
+  // command stays the danger ink, `rgb(176, 0, 0)`, because the two rules tie at (0,3,0) - per MATCHING
+  // COMPOUND, which for
+  // this rule is `.portal-list__row-command:hover` and not the whole four-selector list - and the override
+  // sits later in this file, so source order elects it correctly. With NO fine pointer the override's media
+  // query stops matching and it leaves the cascade ENTIRELY, at which point this rule at (0,3,0) beats the
+  // danger REST rule at (0,2,0) and the command hovers `rgb(37, 86, 154)`: the one colour in the vocabulary
+  // that has to stay unambiguous, spent on a benign hover, on the one command that destroys a tenant.
+  //
+  // A touch device is where that actually reaches a person - it reports no fine pointer, and a tap leaves
+  // STICKY hover behind, which is the precise failure the pointer-capability guard exists to prevent and
+  // which this ungated rule reintroduced for the danger command alone. Excluding the class here fixes every
+  // device at once and changes nothing a fine pointer already did: the override keeps supplying the hover,
+  // and where the override cannot apply the command simply keeps its resting red. The alternative -
+  // un-gating the override to match - was rejected because the exclusion fixes every device at once whereas
+  // un-gating fixes only the fine-pointer case, and because a sticky hover on the one command that destroys a
+  // tenant is the worst place in the product to leave that behaviour.
+  //
+  // ⚠ ONE PREMISE OF THAT REJECTION HAS SINCE CHANGED, AND IT DOES NOT CHANGE THE DECISION. It also cited the
+  // measured contrast cost of the BRIGHT danger token and said the token was fixed by the design vocabulary.
+  // The token was subsequently darkened to `#B00000` and now clears the text minimum on all three row
+  // surfaces, so neither half of that clause holds any more - see MIGRATION_NOTES.md, "The colour vocabulary
+  // is TEN values". The exclusion stands on the two reasons above, which never depended on the ratio.
+  &:not(.portal-list__row-command--danger):hover {
+    color: var(--color-primary-hover);
+    text-decoration: underline;
+  }
+}
+
+.portal-list__alias > a {
+  display: inline-block;
+  min-inline-size: var(--target-size-compact);
+  min-block-size: var(--target-size-compact);
+}
+
+.portal-list__record-link {
+  display: inline-block;
+  min-block-size: var(--target-size-compact);
+
+  // ⚠ THE MEASURED DEFECT THIS CLOSES, AND THE RULE IS THE ONE THE HOST-NAME CELL ALREADY STATES A FEW
+  // RULES DOWN. A 124-character portal title - well within the column's `nvarchar(128)` - is a single
+  // unbreakable word to the line breaker. With no break opportunity to offer, this inline-block grew to
+  // its min-content width and overflowed its 104px track by 941px, painting straight over the Portal
+  // Aliases column and continuing 318px past the table's own right edge. The page did not scroll either
+  // (`doc.scrollWidth` 1265 against a 1280 client width), so nothing revealed what had been painted over.
+  //
+  // `anywhere` RATHER THAN `break-word`, for exactly the reason `.portal-list__alias` records: the two
+  // break identically once a line is being laid out, but only `anywhere` contributes its break
+  // opportunities to INTRINSIC SIZING - and intrinsic sizing is what decides how wide this box wants to be
+  // inside a `table-layout: fixed` track. `break-word` here would still have reported a 941px min-content
+  // width and still overflowed.
+  //
+  // The other two declarations are the companion halves without which the first is inert: the floor stops
+  // the automatic minimum size from re-establishing the min-content width, and the ceiling stops the box
+  // exceeding the track it was given even if a future rule reintroduces an unbreakable run.
+  min-inline-size: 0;
+  max-inline-size: 100%;
+  overflow-wrap: anywhere;
+}
+
+// ACTIONS
+.portal-list__action,
+.portal-list__row-command {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: var(--target-size-min);
+  min-block-size: var(--target-size-min);
+  padding-block: var(--space-1);
+  padding-inline: var(--space-2);
+  color: var(--color-primary);
+  font: inherit;
+
+  line-height: var(--line-height-tight);
+
+  text-decoration: none;
+  background-color: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE, and suppression without
+  // replacement is what leaves a control with no visible response at all.
+  &:active {
+    background-color: var(--color-selected);
+  }
+}
+
+// ROW COMMANDS
+// The two projected command cells. They wrap rather than overflow when the column track is tight, which is
+// the shared table's documented expectation of a content-sized commands column.
+.portal-list__row-command {
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+
+  // Disabled while a deletion is in flight. Both cues are non-colour - the pointer changes
+  // and interaction is refused - so the state does not rely on the reduced contrast alone.
+  &:disabled {
+    color: var(--color-text-muted);
+    text-decoration: none;
+    cursor: not-allowed;
+  }
+  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE, and suppression without
+  // replacement is what leaves a control with no visible response at all.
+  &:active {
+    background-color: var(--color-selected);
+  }
+}
+
+// The destructive command. Colour is a reinforcement and never the only signal: the command
+// reads "Delete", its accessible name names the portal, and it opens a confirmation.
+.portal-list__row-command--danger {
+  color: var(--color-danger);
+
+  // ⚠ THE HOVER KEEPS THE SAME COLOUR, AND CHANGING IT IS WHAT BROKE THE CONTRAST. This text sits below the
+  // large-text threshold, so it needs 4.5:1, and the bright danger token measures 4.00:1 on the plain row,
+  // 3.45:1 on the alternating surface and 2.61:1 on the selected tint - failing on every row background,
+  // and failing worst on the row the operator has actually selected.
+  // ⚠ UNGATED, for the reason the portal listing's own row-command rule records: a measurement showed the
+  // pointer-capability guard silently disabling the hover treatment, leaving a command inside a data row
+  // with the pointer as its only feedback. The three listing screens now agree, and they agree with the
+  // global button rule, whose hover has never been gated.
+  &:hover {
+    color: var(--color-danger);
+    text-decoration: underline;
+  }
+
+  &:disabled {
+    color: var(--color-text-muted);
+    text-decoration: none;
+  }
+}
+
+// HOST NAMES
+// A real list, where the legacy cell was break-separated text inside one label.
+.portal-list__aliases {
+  display: grid;
+  gap: var(--space-1);
+  margin-block: 0;
+  padding-inline-start: 0;
+  list-style: none;
+
+  // ⚠ LOAD-BEARING, AND OMITTING IT RE-OPENS THE OVERFLOW BELOW. A grid item's `min-width` resolves to
+  // `auto`, and `auto` on a grid item is the AUTOMATIC MINIMUM SIZE - the item's own min-content
+  // contribution - so each host-name entry would floor this track at the width of its longest unbreakable
+  // run no matter what the entry itself declares.
+  min-inline-size: 0;
+}
+
+// A host name can be long and the column shares its track with nine others, so it is allowed to break
+// inside a word rather than force the table wider than its container.
+.portal-list__alias {
+  list-style: none;
+
+  // ⚠ `anywhere`, NOT `break-word`, AND THE DIFFERENCE IS THE ENTIRE DEFECT. The two keywords break
+  // identically once a line is being laid out; they differ in what they contribute to INTRINSIC SIZING, and
+  // intrinsic sizing is what a table column is built from.
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+
+  > a {
+    color: var(--color-primary);
+    text-decoration: none;
+  }
+}
+
+// TALLIES AND EXPIRY
+// __new-context the new-window announcement beside each host name __fee-qualifier ⚠ MINOR (money
+// differentiation) - the word behind the negative-fee mark, so the sign is not carried by colour alone
+// (WCAG 1.4.1).
+//
+// ⚠ `__absent-tally` WAS REMOVED FROM THIS GROUP RATHER THAN LEFT IN IT. The two tally cells and the expiry
+// cell now render the shared absent value, which carries its own hidden description, so this screen no longer
+// emits that class anywhere - and a rule matching nothing is dead weight in a stylesheet held to a budget.
+.portal-list__new-context,
+.portal-list__fee-qualifier {
+  @include mx.visually-hidden;
+}
+
+.portal-list__expired,
+.portal-list__fee--negative {
+  color: var(--color-danger);
+  font-weight: var(--font-weight-bold);
+}
+
+// ⚠ THE FEE MARK MUST NOT BE `nowrap`, and that was measured rather than reasoned.
+.portal-list__expired {
+  margin-inline-start: var(--space-1);
+  white-space: nowrap;
+}

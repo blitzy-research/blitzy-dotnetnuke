@@ -1,0 +1,449 @@
+<!-- The page title and the one companion action. -->
+<app-page-header [title]="text.title" [subtitle]="text.subtitle">
+  <a class="page-action membership-settings__header-action" [routerLink]="profileDefinitionsPath">
+    Manage Profile Properties
+  </a>
+</app-page-header>
+
+<!--
+  The shared banner keeps its announcement region in the document at all times and guards only the
+  contents, which is what lets assistive technology observe the region before anything arrives in it;
+  wrapping the element in a condition here would defeat that by inserting the region and its text in the
+  same pass.
+-->
+<app-error-banner [problem]="problem()" />
+
+<!--
+  A SECOND FAILURE SURFACE USED TO SIT HERE, FOR "THE CASE THE BANNER CANNOT COVER", AND THERE IS NO SUCH
+  CASE ANY MORE. It covered a failure carrying no problem document - a response this client could not decode -
+  and the account store now synthesises a well-formed document for exactly that, so the banner above renders
+  it with a title, a severity and a support reference. Two live regions describing one failure was itself a
+  measured defect elsewhere in this application, so the weaker one is removed rather than kept as a spare.
+-->
+
+<!--
+  THE PROVENANCE DISCLOSURE — #6. Says whether the values below are a policy this site STORED or the
+  platform defaults it falls back to.
+-->
+@if (provenanceNotice(); as notice) {
+  <p class="membership-settings__provenance" [attr.data-provenance]="valueProvenance()">
+    {{ notice }}
+  </p>
+}
+@if (loading()) {
+  <!--
+    The policy is being read. The label is what makes the indicator announce anything at all - the
+    shared indicator exposes its status role only while it has label text - and the wording comes from
+    the paired class.
+  -->
+  <app-loading-spinner [label]="text.loadingLabel" />
+} @else if (unconfigured()) {
+  <!--
+    Ordered BEFORE the form and in place of it, which is the whole reason this is a branch of the same
+    chain rather than a note sitting above one: a form of twenty-three controls that provably cannot be
+    saved is a trap, and a note beside it would contradict itself by showing settings while saying there
+    are none to show.
+  -->
+  <p class="membership-settings__unconfigured">
+    This site has no “User Accounts” module, which is where account settings are stored, so there
+    are no settings to show and none can be saved. Add a “User Accounts” module to this site to
+    manage these settings. Until then the account listing uses the default settings.
+  </p>
+} @else {
+  <!--
+    The form replaces the indicator rather than sitting beside it, so the seated defaults are never on
+    screen while the tenant's real policy is still in flight.
+  -->
+  <!--
+    ⚠ `appBlockImplicitSubmit` — ENTER IN A VALUE BOX MUST NOT COMMIT THIS FORM. Thirteen entry controls
+    sit above one real `type="submit"` button, so HTML's implicit-submission rule made a stray Enter
+    anywhere on the screen save the tenant's entire membership policy — including boxes an operator is
+    mid-way through editing. Every command stays fully keyboard-operable, because Enter on a BUTTON is a
+    click and is never suppressed.
+
+    ⚠ AND THIS IS A DOCUMENTED DIVERGENCE, NOT A RESTORATION. On the sibling role editor the same
+    directive restores legacy behaviour, because every command in `editroles.ascx` is an `asp:LinkButton`
+    that renders as an anchor, leaving Enter with no submit control to find. That argument does NOT hold
+    here: this screen's legacy commands are `dnn:commandbutton`
+    (`Website/admin/Users/UserSettings.ascx:L72-L73`), and `CommandButton.CreateChildControls` at
+    `Library/Controls/CommandButton/CommandButton.vb:L259-L273` adds BOTH a `LinkButton` and an
+    `ImageButton` with `icon.Visible = True` — and an `ImageButton` renders `<input type="image">`, which
+    IS a submit control. So Enter may well have submitted in the legacy. What it submitted, though, was
+    never this screen's decision: the legacy wrapped the whole page in one server-side form, so the
+    control Enter actually reached depended on the skin's and every other module's control order. The
+    divergence is therefore from an accident rather than from a designed affordance, and it is recorded in
+    `MIGRATION_NOTES.md` rather than absorbed silently.
+  -->
+  <form
+    appBlockImplicitSubmit
+    class="membership-settings"
+    [formGroup]="form"
+    (ngSubmit)="submit()"
+  >
+    <!--
+      MIGRATION: the legacy toggle was withdrawn from the tab order with a negative tab index at
+      `Website/controls/sectionheadcontrol.ascx` L3, so it was operable by pointer only. That defect is
+      deliberately REVERSED here rather than reproduced.
+    -->
+    <details
+      class="membership-settings__section"
+      open
+      #accountsSection
+      (toggle)="accountsSection.open"
+    >
+      <summary
+        class="membership-settings__section-summary"
+        [attr.aria-expanded]="accountsSection.open"
+      >
+        <h2 class="membership-settings__section-heading">{{ text.sectionHeading }}</h2>
+      </summary>
+
+      <div class="membership-settings__section-body">
+        <fieldset class="membership-settings__columns">
+          <legend class="membership-settings__columns-legend"><h3>{{ text.columnsHeading }}</h3></legend>
+
+          @for (field of columnFields; track field) {
+            <app-form-field
+              class="form-field--inline"
+              [label]="labelFor(field)"
+              [for]="controlId(field)"
+              [required]="isRequired(field)"
+              [error]="errorFor(field)"
+            >
+              <input
+                type="checkbox"
+                [id]="controlId(field)"
+                [formControlName]="field"
+                [attr.aria-required]="isRequired(field) ? 'true' : null"
+                [attr.aria-invalid]="errorFor(field) === null ? null : 'true'"
+              />
+            </app-form-field>
+          }
+        </fieldset>
+
+        <!--
+          THE REMAINING FOURTEEN SETTINGS, in the order the legacy routine declared them: the listing
+          presentation, then the profile defaults, then the three destinations, then the security group.
+          The order is preserved because it is the order an administrator has always read them in.
+        -->
+
+        <!--
+          MIGRATION: the display mode is an integer drawn from a legacy enumeration that was NOT ported
+          as a named type - the contract publishes it as a plain integer - so the choices come from a
+          frozen list on the paired class whose ordinals are the legacy ones.
+        -->
+        <app-form-field
+          [label]="labelFor('displayMode')"
+          [for]="controlId('displayMode')"
+          [required]="isRequired('displayMode')"
+          [help]="helpFor('displayMode')"
+          [error]="errorFor('displayMode')"
+        >
+          <select
+            [id]="controlId('displayMode')"
+            formControlName="displayMode"
+            [attr.aria-required]="isRequired('displayMode') ? 'true' : null"
+            [attr.aria-invalid]="errorFor('displayMode') === null ? null : 'true'"
+          >
+            @for (option of displayModeOptions; track option.value) {
+              <option [ngValue]="option.value">{{ option.label }}</option>
+            }
+          </select>
+        </app-form-field>
+
+        <!-- The pager switch. -->
+        <app-form-field
+          class="form-field--inline"
+          [label]="labelFor('displaySuppressPager')"
+          [for]="controlId('displaySuppressPager')"
+          [required]="isRequired('displaySuppressPager')"
+          [help]="helpFor('displaySuppressPager')"
+          [error]="errorFor('displaySuppressPager')"
+        >
+          <input
+            type="checkbox"
+            [id]="controlId('displaySuppressPager')"
+            formControlName="displaySuppressPager"
+            [attr.aria-required]="isRequired('displaySuppressPager') ? 'true' : null"
+            [attr.aria-invalid]="errorFor('displaySuppressPager') === null ? null : 'true'"
+          />
+        </app-form-field>
+
+        <!-- The page size. -->
+        <app-form-field
+          [label]="labelFor('recordsPerPage')"
+          [for]="controlId('recordsPerPage')"
+          [required]="isRequired('recordsPerPage')"
+          [help]="helpFor('recordsPerPage')"
+          [error]="errorFor('recordsPerPage')"
+        >
+          <input
+            type="number"
+            [id]="controlId('recordsPerPage')"
+            formControlName="recordsPerPage"
+            [attr.min]="minimumRecordsPerPage"
+            [attr.max]="maximumRecordsPerPage"
+            [attr.aria-required]="isRequired('recordsPerPage') ? 'true' : null"
+            [attr.aria-invalid]="errorFor('recordsPerPage') === null ? null : 'true'"
+          />
+        </app-form-field>
+
+        <!-- The profile visibility default. -->
+        <app-form-field
+          [label]="labelFor('profileDefaultVisibility')"
+          [for]="controlId('profileDefaultVisibility')"
+          [required]="isRequired('profileDefaultVisibility')"
+          [help]="helpFor('profileDefaultVisibility')"
+          [error]="errorFor('profileDefaultVisibility')"
+        >
+          <select
+            [id]="controlId('profileDefaultVisibility')"
+            formControlName="profileDefaultVisibility"
+            [attr.aria-required]="isRequired('profileDefaultVisibility') ? 'true' : null"
+            [attr.aria-invalid]="errorFor('profileDefaultVisibility') === null ? null : 'true'"
+          >
+            @for (option of profileVisibilityOptions; track option.value) {
+              <option [ngValue]="option.value">{{ option.label }}</option>
+            }
+          </select>
+        </app-form-field>
+
+        <app-form-field
+          class="form-field--inline"
+          [label]="labelFor('profileDisplayVisibility')"
+          [for]="controlId('profileDisplayVisibility')"
+          [required]="isRequired('profileDisplayVisibility')"
+          [help]="helpFor('profileDisplayVisibility')"
+          [error]="errorFor('profileDisplayVisibility')"
+        >
+          <input
+            type="checkbox"
+            [id]="controlId('profileDisplayVisibility')"
+            formControlName="profileDisplayVisibility"
+            [attr.aria-required]="isRequired('profileDisplayVisibility') ? 'true' : null"
+            [attr.aria-invalid]="errorFor('profileDisplayVisibility') === null ? null : 'true'"
+          />
+        </app-form-field>
+
+        <app-form-field
+          class="form-field--inline"
+          [label]="labelFor('profileManageServices')"
+          [for]="controlId('profileManageServices')"
+          [required]="isRequired('profileManageServices')"
+          [help]="helpFor('profileManageServices')"
+          [error]="errorFor('profileManageServices')"
+        >
+          <input
+            type="checkbox"
+            [id]="controlId('profileManageServices')"
+            formControlName="profileManageServices"
+            [attr.aria-required]="isRequired('profileManageServices') ? 'true' : null"
+            [attr.aria-invalid]="errorFor('profileManageServices') === null ? null : 'true'"
+          />
+        </app-form-field>
+
+        <!--
+          THE THREE REDIRECT DESTINATIONS. A page CHOICE, not a page number: the help text beside each of
+          these promises the operator can "select a page", and until now each offered a bare numeric spinner
+          with nothing on screen to say which numbers were legal. The identifier is still shown, beneath the
+          picker, because it is what the setting stores and an operator comparing this screen against the
+          database needs to see it - but it is now the secondary fact rather than the only one.
+        -->
+        @for (field of redirectFields; track field) {
+          <app-form-field
+            [label]="labelFor(field)"
+            [for]="controlId(field)"
+            [required]="isRequired(field)"
+            [help]="helpFor(field)"
+            [error]="errorFor(field)"
+          >
+            <select
+              [id]="controlId(field)"
+              [formControlName]="field"
+              [attr.aria-required]="isRequired(field) ? 'true' : null"
+              [attr.aria-invalid]="errorFor(field) === null ? null : 'true'"
+              [attr.aria-describedby]="controlId(field) + '-stored'"
+            >
+              <!--
+                Absence is spelled with a NULL here rather than with the legacy -1 sentinel, because this
+                setting's own contract already carries absence as a null on the wire and through the form.
+              -->
+              <option [ngValue]="null">{{ noRedirectLabel }}</option>
+              @for (option of pageOptions(); track option.value) {
+                <option [ngValue]="option.value">{{ option.label }}</option>
+              }
+            </select>
+            <p class="form-note" [id]="controlId(field) + '-stored'">
+              {{ storedPageNote(field) }}
+            </p>
+          </app-form-field>
+        }
+
+        <!--
+          Said once for all three pickers, and only when it is true. The pickers still hold whatever the
+          tenant stored, so this is a reduced affordance rather than a failure - which is why it is a note
+          and not the shared error banner.
+        -->
+        @if (pagesUnavailable()) {
+          <p class="form-note membership-settings__pages-unavailable">
+            {{ text.pagesUnavailableNotice }}
+          </p>
+        }
+
+        <!-- The address validation expression. -->
+        <app-form-field
+          class="form-field--multiline"
+          [label]="labelFor('securityEmailValidation')"
+          [for]="controlId('securityEmailValidation')"
+          [required]="isRequired('securityEmailValidation')"
+          [help]="helpFor('securityEmailValidation')"
+          [error]="errorFor('securityEmailValidation')"
+        >
+          <textarea
+            class="membership-settings__expression"
+            spellcheck="false"
+            [id]="controlId('securityEmailValidation')"
+            formControlName="securityEmailValidation"
+            [attr.maxlength]="maximumSettingLength"
+            [attr.aria-required]="isRequired('securityEmailValidation') ? 'true' : null"
+            [attr.aria-invalid]="errorFor('securityEmailValidation') === null ? null : 'true'"
+          ></textarea>
+        </app-form-field>
+
+        <!--
+          MIGRATION: registration is out of scope as a flow, and this switch is still rendered because
+          the policy contract carries it.
+        -->
+        <app-form-field
+          class="form-field--inline"
+          [label]="labelFor('securityRequireValidProfile')"
+          [for]="controlId('securityRequireValidProfile')"
+          [required]="isRequired('securityRequireValidProfile')"
+          [help]="helpFor('securityRequireValidProfile')"
+          [error]="errorFor('securityRequireValidProfile')"
+        >
+          <input
+            type="checkbox"
+            [id]="controlId('securityRequireValidProfile')"
+            formControlName="securityRequireValidProfile"
+            [attr.aria-required]="isRequired('securityRequireValidProfile') ? 'true' : null"
+            [attr.aria-invalid]="errorFor('securityRequireValidProfile') === null ? null : 'true'"
+          />
+        </app-form-field>
+
+        <!--
+          This field's help text reads "before be logged in", which is ungrammatical and is the shipped
+          legacy wording.
+        -->
+        <app-form-field
+          class="form-field--inline"
+          [label]="labelFor('securityRequireValidProfileAtLogin')"
+          [for]="controlId('securityRequireValidProfileAtLogin')"
+          [required]="isRequired('securityRequireValidProfileAtLogin')"
+          [help]="helpFor('securityRequireValidProfileAtLogin')"
+          [error]="errorFor('securityRequireValidProfileAtLogin')"
+        >
+          <input
+            type="checkbox"
+            [id]="controlId('securityRequireValidProfileAtLogin')"
+            formControlName="securityRequireValidProfileAtLogin"
+            [attr.aria-required]="
+              isRequired('securityRequireValidProfileAtLogin') ? 'true' : null
+            "
+            [attr.aria-invalid]="
+              errorFor('securityRequireValidProfileAtLogin') === null ? null : 'true'
+            "
+          />
+        </app-form-field>
+
+        <!--
+          MIGRATION: the legacy default for this setting was DATA DEPENDENT - it chose the box over the
+          chooser once a tenant held more than a thousand accounts.
+        -->
+        <app-form-field
+          [label]="labelFor('securityUsersControl')"
+          [for]="controlId('securityUsersControl')"
+          [required]="isRequired('securityUsersControl')"
+          [help]="helpFor('securityUsersControl')"
+          [error]="errorFor('securityUsersControl')"
+        >
+          <select
+            [id]="controlId('securityUsersControl')"
+            formControlName="securityUsersControl"
+            [attr.aria-required]="isRequired('securityUsersControl') ? 'true' : null"
+            [attr.aria-invalid]="errorFor('securityUsersControl') === null ? null : 'true'"
+          >
+            @for (option of usersControlOptions; track option.value) {
+              <option [ngValue]="option.value">{{ option.label }}</option>
+            }
+          </select>
+        </app-form-field>
+
+        <!--
+          OPAQUE TEXT. The legacy help text names bracketed substitution tokens and they are described
+          rather than made to work: token replacement is an excluded subsystem, so the value is stored
+          and forwarded unchanged and this screen expands nothing.
+        -->
+        <app-form-field
+          [label]="labelFor('securityDisplayNameFormat')"
+          [for]="controlId('securityDisplayNameFormat')"
+          [required]="isRequired('securityDisplayNameFormat')"
+          [help]="helpFor('securityDisplayNameFormat')"
+          [error]="errorFor('securityDisplayNameFormat')"
+        >
+          <input
+            type="text"
+            spellcheck="false"
+            autocomplete="off"
+            [id]="controlId('securityDisplayNameFormat')"
+            formControlName="securityDisplayNameFormat"
+            [attr.maxlength]="maximumSettingLength"
+            [attr.aria-required]="isRequired('securityDisplayNameFormat') ? 'true' : null"
+            [attr.aria-invalid]="errorFor('securityDisplayNameFormat') === null ? null : 'true'"
+          />
+        </app-form-field>
+      </div>
+    </details>
+
+    <div class="membership-settings__actions">
+      <button
+        class="membership-settings__action form-action--primary"
+        type="submit"
+        [disabled]="canSubmit() === false"
+          [attr.aria-busy]="saving() ? 'true' : null"
+      >
+        {{ text.submitLabel }}
+      </button>
+
+      <button class="membership-settings__action" type="button" (click)="cancel()">
+        {{ text.cancelLabel }}
+      </button>
+
+      @if (saving()) {
+        <!-- The write in flight. -->
+        <app-loading-spinner size="small" [label]="text.savingLabel" />
+      }
+    </div>
+  </form>
+}
+
+<app-member-services [accountId]="ownAccountId()" />
+
+<!--
+  ⚠ THE ONE FIELD ON THIS FORM THAT REWRITES OTHER RECORDS, ASKED ABOUT BEFORE IT DOES SO. A changed
+  display-name format renames every account in the site, replacing display names an operator typed by hand,
+  and it was reported only in the confirmation AFTERWARDS - after 19 accounts had been renamed, with no undo.
+  The sweep is legacy behaviour and is preserved; being told before it happens, and how many records it
+  reaches, is what was missing. Marked as destructive because it destroys authored values, even though the
+  command it stands in front of is a save.
+-->
+@if (rewriteConfirmationOpen()) {
+  <app-confirm-dialog
+    [title]="rewriteTitle"
+    [message]="rewriteWarning()"
+    [confirmLabel]="rewriteConfirmLabel"
+    [danger]="true"
+    (confirm)="onRewriteConfirmed()"
+    (cancel)="onRewriteCancelled()"
+  />
+}

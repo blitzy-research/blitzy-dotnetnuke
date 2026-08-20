@@ -1,0 +1,63 @@
+@use '../../../../styles/mixins' as mx;
+
+// Focus indication is deliberately absent here and must stay absent: _reset.scss applies the shared
+// focus-ring mixin to a superset of the controls this screen can render, so the design system owns focus
+// indication and a feature screen consumes it rather than redeclaring it.
+:host,
+.module-export {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.module-export__form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-inline-size: mx.breakpoint('sm');
+}
+
+// THE RECOVERY CONTROL. Deliberately identical to the sibling import screen's, down to the floored pointer
+// target, so the same failure offers the same affordance in the same place on both screens - which is the
+// whole point of adding it here rather than inventing a second treatment.
+.module-export__recovery {
+  margin-block: var(--space-2) 0;
+}
+
+.module-export__retry {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: var(--target-size-min);
+  min-block-size: var(--target-size-min);
+  padding-block: var(--space-1);
+  padding-inline: var(--space-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background-color: transparent;
+  color: var(--color-primary);
+  font: inherit;
+  line-height: var(--line-height-tight);
+  text-decoration: none;
+  cursor: pointer;
+
+  @include mx.focus-ring;
+
+  &:hover {
+    color: var(--color-primary-hover);
+    text-decoration: underline;
+  }
+
+  &:active {
+    background-color: var(--color-selected);
+  }
+}
+
+// Wrapping is intrinsic and deliberate: on a narrow viewport the second action drops to its own line
+// instead of overflowing, and the gap then supplies the row spacing as well as the column spacing.
+.module-export__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}

@@ -1,0 +1,494 @@
+<!--
+  MIGRATION: this template replaces `Website/admin/Users/ProfileDefinitions.ascx` and, inlined into it,
+  the first step of `Website/admin/Users/EditProfileDefinition.ascx`.
+-->
+
+<!-- The heading and the action bar. -->
+<!--
+  ⚠ THE `createTrigger` REFERENCE IS LOAD-BEARING, NOT DECORATIVE. A confirmed delete destroys the row
+  it acted on, and with it the very button that opened the confirmation dialog.
+-->
+<app-page-header [title]="pageTitle" [subtitle]="pageSubtitle">
+  <button class="page-action" #createTrigger type="button" [disabled]="saving()" (click)="openCreate()">
+    {{ addLabel }}
+  </button>
+</app-page-header>
+
+<!-- `ProfilePropertiesHelp.Text`, verbatim. -->
+<p class="profile-definitions__help">{{ helpText }}</p>
+
+<!--
+  A refused or failed request. The banner is `role="alert"` with `aria-live="assertive"`, so the message
+  is announced without moving focus.
+-->
+<!--
+  Both inputs are bound, and they are ORDERED. A failure carrying a problem document shows the server's
+  own explanation; a failure carrying none — which is what a contract-violating `200` produces, because
+  the decoders run downstream of the interceptor — shows the store's authored summary instead.
+-->
+<app-error-banner [problem]="problem()" />
+
+@if (hasRows()) {
+  <!--
+    ⚠ REPORTED GAP (DL-6): THESE BELONG IN THE TABLE HEADINGS AND CANNOT GO THERE. `BindGrid` L236-L264
+    computed whether every row was already required, and every row already visible, and wrote each
+    verdict onto the corresponding check-box COLUMN HEADER; clicking a header then wrote that value to
+    every row (`ItemCheckedChanged` L474-L483, branching on `e.IsAll`).
+  -->
+  <div class="profile-definitions__bulk">
+    <label class="profile-definitions__bulk-item">
+      <input
+        type="checkbox"
+        [checked]="allRequired()"
+        [disabled]="saving()"
+        (change)="setAllRequired(!allRequired())"
+      />
+      {{ allRequiredLabel }}
+    </label>
+
+    <label class="profile-definitions__bulk-item">
+      <input
+        type="checkbox"
+        [checked]="allVisible()"
+        [disabled]="saving()"
+        (change)="setAllVisible(!allVisible())"
+      />
+      {{ allVisibleLabel }}
+    </label>
+  </div>
+}
+
+<app-data-table
+  [columns]="columns()"
+  [rows]="rows()"
+  [rowKey]="definitionRowKey"
+  [loading]="loading()"
+  [failed]="listFailed()"
+>
+  <span dataTableCaption>{{ gridCaption }}</span>
+</app-data-table>
+
+<!--
+  THE DATA TYPE COLUMN NOTE. Stated once for the column rather than once per row: eight rows each
+  carrying "reference 349, name unavailable" reads as eight faults, whereas one sentence naming the
+  reason reads as the scope decision it actually is. See DATA_TYPE_COLUMN_NOTE for the AAP grounds.
+-->
+<p class="profile-definitions__grid-note">{{ dataTypeColumnNote }}</p>
+
+<!--
+  THE GRID ACTION ROW — `cmdApply` then `cmdRefresh`, in the legacy's own order, separated by a real gap
+  rather than by the literal non-breaking space the legacy used.
+-->
+<p class="profile-definitions__grid-actions">
+  <button
+    type="button"
+    [disabled]="!hasPendingChanges() || saving()"
+    (click)="applyChanges()"
+  >
+    {{ applyLabel }}
+  </button>
+
+  <button type="button" [disabled]="saving()" (click)="refresh()">{{ refreshLabel }}</button>
+
+  @if (hasPendingChanges()) {
+    <span class="profile-definitions__form-hint">
+      {{ dirtyCount() }} unapplied change(s). "{{ refreshLabel }}" discards them.
+    </span>
+  }
+
+  <!--
+    Nothing here is visible, so the screen looks exactly as the legacy grid did. What it restores is the
+    non-visual signal the single-page rewrite removed: `cmdUpdate_Click` L444-L452 set no message label,
+    but it re-bound inside a full post-back, and a screen reader announces a document load.
+  -->
+  <span data-visually-hidden role="status" aria-live="polite">{{ applyAnnouncement() }}</span>
+</p>
+
+<!--
+  Rendered only while open, so its controls are absent from the tab order the rest of the time rather
+  than merely hidden.
+-->
+@if (editorOpen()) {
+  <form [formGroup]="form" (ngSubmit)="submitForm()">
+    <fieldset class="profile-definitions__form">
+      <legend class="profile-definitions__form-legend"><h2>{{ formHeading() }}</h2></legend>
+
+      <!--
+        THE NINE FIELDS, IN `SortOrder` ORDER — name 0, data type 1, category 2, length 3, default value
+        4, expression 5, required 6, visible 7, view order 8.
+      -->
+      <!--
+        ⚠ EVERY HINT IS ASSOCIATED WITH ITS CONTROL, AND NONE OF THEM WAS. Each field prints a sentence
+        explaining what the value means or what shape it must take, and all nine were plain spans sitting
+        beside their control with nothing tying the two together - so the sentence was visible to a sighted
+        reader and invisible to a screen reader, which announces a control's label and description and has
+        no way to know a neighbouring span was meant as one. The hint carries an `id` derived from the
+        control's own, and the control names it in `aria-describedby`.
+
+        ⚠ AND THEY STAY VISIBLE RATHER THAN MOVING INTO THE SHARED FIELD'S `help` DISCLOSURE. That input
+        would have associated them for free, which is why it is worth saying why it is not used: its help
+        text is revealed by a toggle and collapsed by default, so adopting it here would take nine
+        sentences that are on screen today and hide them behind nine button presses. Fixing an
+        accessibility gap by removing information from sight is not a fix. The shared field merges a
+        consumer's own `aria-describedby` tokens with the ones it contributes rather than overwriting them
+        - see `contributedDescriptions` - so both descriptions reach the control.
+      -->
+      <div class="profile-definitions__form-grid">
+        <!--
+          Each field needs its messages twice - for the shared field's `error` input and for the
+          control's own `aria-invalid` - so calling an accessor per binding meant fourteen calls per
+          change-detection pass, each allocating and re-normalising.
+        -->
+        @let messages = fieldMessages();
+
+        <!-- 0. -->
+        <app-form-field
+          [label]="fieldText.propertyName.label"
+          for="profile-definition-name"
+          [required]="true"
+          [error]="messages.propertyName"
+        >
+          <input
+            id="profile-definition-name"
+            [attr.aria-describedby]="'profile-definition-name-hint'"
+            type="text"
+            formControlName="propertyName"
+            autocomplete="off"
+            [attr.maxlength]="50"
+            [attr.readonly]="isEditMode() ? '' : null"
+            [attr.aria-required]="'true'"
+            [attr.aria-invalid]="messages.propertyName.length === 0 ? null : 'true'"
+          />
+          <span class="profile-definitions__form-hint" id="profile-definition-name-hint">{{ fieldText.propertyName.help }}</span>
+        </app-form-field>
+
+        <!--
+          ⚠ REPORTED GAP (DL-8): THIS SHOULD BE A DROP-DOWN AND CANNOT BE. The member carries
+          `Editor("DotNetNuke.UI.WebControls.DNNListEditControl, DotNetNuke")` at L88, which bound a
+          select to the `DataType` list in the shared lists table.
+        -->
+        <app-form-field
+          [label]="fieldText.dataType.label"
+          for="profile-definition-data-type"
+          [required]="true"
+          [error]="messages.dataType"
+        >
+          <input
+            id="profile-definition-data-type"
+            [attr.aria-describedby]="'profile-definition-data-type-hint'"
+            type="number"
+            step="1"
+            formControlName="dataType"
+            [attr.readonly]="isEditMode() ? '' : null"
+            [attr.aria-required]="'true'"
+            [attr.aria-invalid]="messages.dataType.length === 0 ? null : 'true'"
+          />
+          <span class="profile-definitions__form-hint" id="profile-definition-data-type-hint">{{ fieldText.dataType.help }}</span>
+        </app-form-field>
+
+        <!-- 2. -->
+        <app-form-field
+          [label]="fieldText.propertyCategory.label"
+          for="profile-definition-category"
+          [required]="true"
+          [error]="messages.propertyCategory"
+        >
+          <input
+            id="profile-definition-category"
+            [attr.aria-describedby]="'profile-definition-category-hint'"
+            type="text"
+            formControlName="propertyCategory"
+            autocomplete="off"
+            [attr.maxlength]="50"
+            [attr.aria-required]="'true'"
+            [attr.aria-invalid]="messages.propertyCategory.length === 0 ? null : 'true'"
+          />
+          <span class="profile-definitions__form-hint" id="profile-definition-category-hint">
+            {{ fieldText.propertyCategory.help }}
+          </span>
+        </app-form-field>
+
+        <app-form-field
+          [label]="fieldText.length.label"
+          for="profile-definition-length"
+          [required]="true"
+          [error]="messages.length"
+        >
+          <input
+            id="profile-definition-length"
+            [attr.aria-describedby]="'profile-definition-length-hint'"
+            type="number"
+            step="1"
+            formControlName="length"
+            [attr.aria-required]="'true'"
+            [attr.aria-invalid]="messages.length.length === 0 ? null : 'true'"
+          />
+          <span class="profile-definitions__form-hint" id="profile-definition-length-hint">{{ fieldText.length.help }}</span>
+        </app-form-field>
+
+        <!--
+          4. DEFAULT VALUE. A `textarea` rather than a single-line input: the column was widened to
+          `ntext` by `04.05.00:L1593`, so the stored value is effectively unbounded and no length rule
+          applies to it.
+        -->
+        <app-form-field
+          [label]="fieldText.defaultValue.label"
+          for="profile-definition-default-value"
+          [error]="messages.defaultValue"
+        >
+          <textarea
+            id="profile-definition-default-value"
+            [attr.aria-describedby]="'profile-definition-default-value-hint'"
+            rows="2"
+            formControlName="defaultValue"
+          ></textarea>
+          <span class="profile-definitions__form-hint" id="profile-definition-default-value-hint">{{ fieldText.defaultValue.help }}</span>
+        </app-form-field>
+
+        <!-- 5. -->
+        <app-form-field
+          [label]="fieldText.validationExpression.label"
+          for="profile-definition-expression"
+          [error]="messages.validationExpression"
+        >
+          <textarea
+            id="profile-definition-expression"
+            [attr.aria-describedby]="'profile-definition-expression-hint'"
+            rows="2"
+            spellcheck="false"
+            formControlName="validationExpression"
+            [attr.maxlength]="512"
+            [attr.aria-invalid]="messages.validationExpression.length === 0 ? null : 'true'"
+          ></textarea>
+          <span class="profile-definitions__form-hint" id="profile-definition-expression-hint">
+            {{ fieldText.validationExpression.help }}
+          </span>
+        </app-form-field>
+
+        <!-- 6. -->
+        <app-form-field
+          [label]="fieldText.required.label"
+          for="profile-definition-required"
+          [error]="messages.required"
+        >
+          <input id="profile-definition-required" type="checkbox" formControlName="required" [attr.aria-describedby]="'profile-definition-required-hint'" />
+          <span class="profile-definitions__form-hint" id="profile-definition-required-hint">{{ fieldText.required.help }}</span>
+        </app-form-field>
+
+        <app-form-field
+          [label]="fieldText.visible.label"
+          for="profile-definition-visible"
+          [error]="messages.visible"
+        >
+          <input id="profile-definition-visible" type="checkbox" formControlName="visible" [attr.aria-describedby]="'profile-definition-visible-hint'" />
+          <span class="profile-definitions__form-hint" id="profile-definition-visible-hint">{{ fieldText.visible.help }}</span>
+        </app-form-field>
+
+        <!-- 8. VIEW ORDER. -->
+        <app-form-field
+          [label]="fieldText.viewOrder.label"
+          for="profile-definition-view-order"
+          [required]="true"
+          [error]="messages.viewOrder"
+        >
+          <input
+            id="profile-definition-view-order"
+            [attr.aria-describedby]="'profile-definition-view-order-hint'"
+            type="number"
+            step="1"
+            formControlName="viewOrder"
+            [attr.aria-required]="'true'"
+            [attr.aria-invalid]="messages.viewOrder.length === 0 ? null : 'true'"
+          />
+          <span class="profile-definitions__form-hint" id="profile-definition-view-order-hint">{{ fieldText.viewOrder.help }}</span>
+        </app-form-field>
+      </div>
+
+      <!-- THE FORM ACTIONS. -->
+      <div class="profile-definitions__form-actions">
+        <button class="form-action--primary" type="submit" [disabled]="saving()"
+          [attr.aria-busy]="saving() ? 'true' : null">{{ submitLabel() }}</button>
+        <button type="button" [disabled]="saving()" (click)="cancelForm()">
+          {{ cancelLabel }}
+        </button>
+      </div>
+    </fieldset>
+  </form>
+}
+
+<!--
+  Present in the DOM only while a declaration is awaiting confirmation, which is what "open" means for
+  this component. It supplies a focus trap and `Escape` handling that the legacy affordance — a browser
+  `confirm` wired through `imageColumn.OnClickJS` at `Page_Init` L378 — never had.
+-->
+@if (removalTarget() !== null) {
+  <!--
+    ⚠ NO `title` IS BOUND, AND THAT IS THE POINT. Every delete confirmation in this application shows
+    the SAME title, which the shared dialog declares as its default; binding one here is how five
+    different titles for one action came about - runtime testing found `Delete`, `Confirm Delete`,
+    `Delete Module`, `Delete Profile Property` and `Delete role group` across the screens.
+  -->
+  <app-confirm-dialog
+    [message]="removalMessage()"
+    [confirmLabel]="deleteLabel"
+    [danger]="true"
+    (confirm)="confirmRemoval()"
+    (cancel)="cancelRemoval()"
+  />
+}
+
+<!--
+  THE SECOND ASK, AND THE ONLY ONE IN THIS APPLICATION. Removing a profile property takes every answer the
+  portal's accounts have recorded against it, and the API refuses the first attempt precisely so that this
+  dialog can happen: its message is the SERVER'S sentence, which reports how many answers would be destroyed,
+  that the loss is permanent, and to back the table up first.
+
+  No `title` is bound, for the reason given on the dialog above. The confirm label is its own, because
+  "Delete" is what the operator already pressed - this control is the one that means it.
+-->
+@if (cascadeTarget(); as cascade) {
+  <app-confirm-dialog
+    [message]="cascade.message"
+    [confirmLabel]="deletePermanentlyLabel"
+    [danger]="true"
+    (confirm)="confirmCascade()"
+    (cancel)="cancelCascade()"
+  />
+}
+
+<!--
+  Nine templates, captured by static view queries and handed to `app-data-table` as the four action
+  columns' and five template columns' cell renderers.
+-->
+
+<!--
+  This was a NAVIGATION. `Page_Init` L380-L386 built `EditUrl("PropertyDefinitionID", "KEYFIELD",
+  "EditProfileProperty")`, substituted a format placeholder into it and set the command column's
+  `EditMode="URL"`, so the command was a link to a second page carrying the identifier in the query
+  string.
+-->
+<ng-template #editCommand let-row>
+  <!--
+    ⚠ IDENTIFIED SO FOCUS CAN COME BACK HERE WHEN THE EDITOR CLOSES. The editor is a disclosure: closing
+    it destroys the whole block, and focus fell to BODY - so an operator who opened a declaration, changed
+    nothing and pressed Cancel was returned to the top of the document rather than to the row they had
+    been working on. Read by `restoreFocusAfterEditorClose` and by nothing else.
+  -->
+  <button
+    class="profile-definitions__row-action"
+    type="button"
+    [attr.data-edit]="row.propertyDefinitionId"
+    [disabled]="saving()"
+    (click)="openEdit(row)"
+  >
+    <span aria-hidden="true">&#9998;</span>
+    <span data-visually-hidden>{{ editLabel }} {{ row.propertyName }}</span>
+  </button>
+</ng-template>
+
+<!-- ⚠ HIDDEN, NOT DISABLED, FOR FOUR PROPERTIES (DL-7). -->
+<ng-template #deleteCommand let-row>
+  @if (canDelete(row)) {
+    <button
+      class="profile-definitions__row-action profile-definitions__row-action--danger"
+      type="button"
+      [disabled]="saving()"
+      (click)="requestRemoval(row)"
+    >
+      <span aria-hidden="true">&#10005;</span>
+      <span data-visually-hidden>{{ deleteLabel }} {{ row.propertyName }}</span>
+    </button>
+  }
+</ng-template>
+
+<!-- 2-3. MOVE DOWN then MOVE UP — the legacy's own column order. -->
+<!--
+  ⚠ THE REORDER COMMANDS CARRY AN IDENTIFYING ATTRIBUTE SO FOCUS CAN BE PUT BACK ON THEM. Activating one
+  restages two rows, the grid re-renders in the new order, and the button that was activated is destroyed -
+  measured, focus fell all the way to BODY, so a keyboard operator reordering a list lost their place on
+  every single press and had to tab back in from the top of the page to make the next move. Restoring focus
+  needs a way to find the same command on the same declaration once the new order is painted, and the
+  attribute is that way. It is read by `restoreFocusAfterMove` and by nothing else.
+-->
+<ng-template #moveDownCommand let-row>
+  @if (!isLast(row)) {
+    <button
+      class="profile-definitions__row-action"
+      type="button"
+      [attr.data-reorder]="'down:' + row.propertyDefinitionId"
+      [disabled]="saving()"
+      (click)="moveDown(row)"
+    >
+      <span aria-hidden="true">&#8595;</span>
+      <span data-visually-hidden>{{ moveDownLabel }} {{ row.propertyName }}</span>
+    </button>
+  }
+</ng-template>
+
+<ng-template #moveUpCommand let-row>
+  @if (!isFirst(row)) {
+    <button
+      class="profile-definitions__row-action"
+      type="button"
+      [attr.data-reorder]="'up:' + row.propertyDefinitionId"
+      [disabled]="saving()"
+      (click)="moveUp(row)"
+    >
+      <span aria-hidden="true">&#8593;</span>
+      <span data-visually-hidden>{{ moveUpLabel }} {{ row.propertyName }}</span>
+    </button>
+  }
+</ng-template>
+
+<ng-template #dataTypeCell let-row>
+  <span aria-hidden="true" [attr.title]="dataTypeDescription(row)">{{ dataTypeMark(row) }}</span>
+  <span data-visually-hidden>{{ dataTypeDescription(row) }}</span>
+</ng-template>
+
+<!--
+  Monospaced, because one is a regular expression and the other is arbitrary configured text, and both
+  are read character by character. Both are TENANT-AUTHORED and both are INTERPOLATED as text — never
+  bound as markup.
+-->
+<ng-template #defaultValueCell let-row>
+  @if (isAbsent(row.defaultValue)) {
+    <app-absent-value />
+  } @else {
+    <code class="profile-definitions__code">{{ cellText(row.defaultValue) }}</code>
+  }
+</ng-template>
+
+<ng-template #expressionCell let-row>
+  @if (isAbsent(row.validationExpression)) {
+    <app-absent-value />
+  } @else {
+    <code class="profile-definitions__code">{{ cellText(row.validationExpression) }}</code>
+  }
+</ng-template>
+
+<!-- 10-11. -->
+<ng-template #requiredCell let-row>
+  <label class="profile-definitions__bulk-item">
+    <input
+      type="checkbox"
+      [checked]="row.required"
+      [disabled]="saving()"
+      (change)="toggleRequired(row, !row.required)"
+    />
+    <span data-visually-hidden>{{ stateCheckboxName(requiredHeading, row.propertyName) }}</span>
+    <span aria-hidden="true">{{ row.required | yesNo }}</span>
+  </label>
+</ng-template>
+
+<ng-template #visibleCell let-row>
+  <label class="profile-definitions__bulk-item">
+    <input
+      type="checkbox"
+      [checked]="row.visible"
+      [disabled]="saving()"
+      (change)="toggleVisible(row, !row.visible)"
+    />
+    <span data-visually-hidden>{{ stateCheckboxName(visibleHeading, row.propertyName) }}</span>
+    <span aria-hidden="true">{{ row.visible | yesNo }}</span>
+  </label>
+</ng-template>

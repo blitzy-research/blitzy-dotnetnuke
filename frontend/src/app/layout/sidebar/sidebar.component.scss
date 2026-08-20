@@ -1,0 +1,152 @@
+// Sass module scoping is per-file, so this `@use` is what makes `mx.*` available
+// here; a `@use` elsewhere does not.
+@use '../../../styles/mixins' as mx;
+
+:host {
+  display: block;
+
+  // WHICH SHELL ARRANGEMENT IS IN FORCE, PUBLISHED AS A READABLE FACT RATHER THAN RESTATED AS A WIDTH IN
+  // TYPESCRIPT. `0` is the stacked arrangement, in which the rail is a full-width band ABOVE the content;
+  // `1` is the side-by-side arrangement, in which it is a column BESIDE it.
+  --app-sidebar-side-by-side: 0;
+
+  @include mx.respond-above('md') {
+    --app-sidebar-side-by-side: 1;
+  }
+}
+
+// ⚠ THE INLINE SIZE IS NOW DECLARED IN THE SIDE-BY-SIDE STATE ONLY, and the header above no longer tells
+// the whole story.
+.app-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-block: var(--space-3);
+  padding-inline: var(--space-4);
+
+  border-inline-end: var(--border-width) var(--border-style) var(--color-text-muted);
+  background-color: var(--color-surface);
+  color: var(--color-primary);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-base);
+
+  // THE PAINTED SURFACE FILLS THE REGION THE SHELL GAVE IT, and this closes a visible defect rather than
+  // adding an effect.
+  min-block-size: var(--size-full);
+
+  // THE DEFINITE INLINE SIZE, ABOVE THE THRESHOLD ONLY, and that condition is the whole reason this is a
+  // branch. Below it the shell stacks the regions into one column and the rail is a full-width band, so a
+  // definite inline size there would leave the band narrower than the page it sits across.
+  @include mx.respond-above('md') {
+    inline-size: var(--layout-rail-inline-size);
+  }
+}
+
+// Collapsed. The rail keeps its disclosure control and loses only its groups, so the control that
+// re-expands it is never the thing that disappears.
+.app-sidebar--collapsed {
+  gap: 0;
+
+  // ⚠ AND IT GIVES THE TRACK BACK, WHICH IT PREVIOUSLY DID NOT. Measured: collapsing reclaimed exactly
+  // ZERO pixels, because the rule above declares `gap: 0` and nothing else while the definite
+  // `--layout-rail-inline-size` a few rules up stays in force at every width at or above the threshold. The
+  // shell's own column is `auto`, so it faithfully sized itself to a 185-pixel rail that had nothing left in
+  // it - at 768 that is an empty column taking 24% of the viewport and starving `main` to 568 pixels, which
+  // is what forced the listing table to scroll on the very width where the operator had just made room.
+  //
+  // `max-content` rather than a second definite width: what the collapsed rail actually needs is its
+  // disclosure control, and that control's own floor keeps it a legitimate pointer target - so the honest
+  // width is the one its remaining content asks for rather than a number chosen here. The selector matches
+  // the rule above in specificity and follows it in source order, which is what lets it win without a
+  // compound selector or an importance flag.
+  @include mx.respond-above('md') {
+    inline-size: max-content;
+  }
+}
+
+.app-sidebar__toggle {
+  inline-size: var(--size-full);
+  padding-block: var(--space-2);
+  white-space: nowrap;
+}
+
+// ⚠ THE `:not([hidden])` GUARD IS LOAD-BEARING. The paired template hides this region with the `hidden`
+// attribute, which works because the user-agent stylesheet applies `display: none` to it — and a `display`
+// declaration in an author sheet outweighs that, so an unguarded `display: flex` here would leave the
+// groups on screen with `aria-expanded="false"` beside them.
+.app-sidebar__regions:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.app-sidebar__group {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-tight);
+}
+
+.app-sidebar__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+// The divergence itself is real but narrow: the legacy menu was never a list at all, it was
+// provider-rendered markup, so no legacy list is being restyled here. The element is kept as a list item so
+// the list and its length are still announced; only the marker glyph goes.
+.app-sidebar__item {
+  list-style: none;
+}
+
+// The underline is cleared at rest and restored on hover, which is the same divergence the band above
+// records and for the same reason: _reset.scss would otherwise underline every chrome destination
+// permanently, which the legacy chrome demonstrably did not do.
+.app-sidebar__link {
+  // THE POINTER-TARGET FLOOR, AND THIS RAIL WAS THE ONE PLACE IN THE APPLICATION STILL WITHOUT IT. Measured
+  // across all nine destinations: eight rendered 152 by 29, fifteen pixels short of the floor the vocabulary
+  // declares and applies everywhere else - `_forms.scss` puts it on every button on both axes, `_tables.scss`
+  // puts it on every command inside a cell, and both alphabet strips clear it because they are buttons. The
+  // ninth destination measured 152 by 50 and cleared the floor only because its label happens to wrap to two
+  // lines, which is an accident of its wording rather than a rule holding.
+  //
+  // `flex` replaces `block` so the floor has something to centre against: a taller box would otherwise leave
+  // a one-line label sitting at the top of it. The text is a single anonymous flex item, so the wrapping
+  // behaviour the rule below depends on is unchanged, and the two-line destination keeps its intrinsic 50 -
+  // this is a floor, not a fixed height.
+  display: flex;
+  align-items: center;
+  min-block-size: var(--target-size-min);
+
+  padding-block: var(--space-1);
+  padding-inline: var(--space-2);
+  border-radius: var(--radius-sm);
+  color: var(--color-primary);
+  text-decoration: none;
+
+  // The rail's width is intrinsic, so a destination label with no break opportunity — and an administration
+  // console is exactly where an unhyphenated compound label turns up — would otherwise set the rail's
+  // measure by itself and push the content beside it aside.
+  overflow-wrap: break-word;
+
+  @include mx.focus-ring;
+
+  @include mx.hover {
+    color: var(--color-primary-hover);
+    text-decoration: underline;
+  }
+}
+
+// MIGRATION: the current-destination recipe consumes the selected tint, whose ONLY provenance in the legacy
+// stylesheet is the selected-item rule of an out-of-scope legacy menu family — so the value is measured
+// legacy but the family that carried it is not ported, and its class name appears nowhere in this file.
+.app-sidebar__link--active {
+  background-color: var(--color-selected);
+  font-weight: var(--font-weight-bold);
+}

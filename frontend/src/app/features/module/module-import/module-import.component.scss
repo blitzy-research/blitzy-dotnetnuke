@@ -1,0 +1,90 @@
+// MODULE CONTENT IMPORT — component stylesheet
+
+// Only the mixins partial is taken.
+@use '../../../../styles/mixins' as mx;
+
+// THE SCREEN
+// Focus indication is deliberately absent and must stay absent: the reset partial applies the shared
+// focus-ring mixin to a superset of the controls this screen can render, so the design system owns focus
+// and a feature screen consumes it rather than redeclaring it.
+:host,
+.module-import {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+// THE FORM
+// One column of fields with their own rhythm, capped to a comfortable measure. Reading `breakpoint()` for a
+// raw width is the sanctioned use of that function — what is barred is writing a media feature query by
+// hand in a component.
+.module-import__form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-inline-size: mx.breakpoint('sm');
+
+  // The shared field carries its own trailing margin so that it stacks correctly wherever it is placed
+  // unaided.
+  app-form-field {
+    margin-block-end: 0;
+  }
+}
+
+// THE PICKER'S SIZE, STATED
+// Standing context about the control above it, not a message and not a failure, so it takes the muted text
+// colour and the smaller step of the type scale rather than anything that reads as an alert. Every value is
+// a token; nothing here is a literal.
+.module-import__choice-summary {
+  margin-block: calc(var(--space-1) - var(--space-3)) 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+// THE RECOVERY ROW, MOUNTED ONLY WHILE A FAILURE IS REPORTED
+// Its own paragraph rather than a member of the command row below, because it belongs to the failure above
+// it and must not sit among the controls that submit the form.
+.module-import__recovery {
+  margin-block: var(--space-2) 0;
+}
+
+// Deliberately the same command treatment the module listing gives its own retry, down to the floored
+// target size and the focus ring, so one affordance is not two different things on two screens.
+.module-import__retry {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-inline-size: var(--target-size-min);
+  min-block-size: var(--target-size-min);
+  padding-block: var(--space-1);
+  padding-inline: var(--space-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background-color: transparent;
+  color: var(--color-primary);
+  font: inherit;
+  line-height: var(--line-height-tight);
+  text-decoration: none;
+  cursor: pointer;
+
+  @include mx.focus-ring;
+
+  &:hover {
+    color: var(--color-primary-hover);
+    text-decoration: underline;
+  }
+
+  &:active {
+    background-color: var(--color-selected);
+  }
+}
+
+// THE COMMAND ROW
+// A real gap rather than spacing characters, so the separation survives the collapsing of runs of blank
+// text and does not depend on a text node at all.
+.module-import__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}

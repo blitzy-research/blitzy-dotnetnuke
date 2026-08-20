@@ -1,0 +1,200 @@
+# Root ignore rules. backend/ and frontend/ are the new trees; Library/ and
+# Website/ are read-only legacy inputs that must stay fully tracked. Two
+# consequences must be preserved: the legacy trees commit their pre-built bin/
+# assemblies, so build-output patterns are followed by explicit directory
+# negations; and patterns colliding with legacy directory names (packages/,
+# logs/) carry a leading slash, because git folds case wherever core.ignorecase
+# is true and a bare rule would swallow tracked sources.
+
+# -----------------------------------------------------------------------------
+# Build output — required exclusions
+# -----------------------------------------------------------------------------
+[Bb]in/
+[Oo]bj/
+node_modules/
+dist/
+coverage/
+
+# -----------------------------------------------------------------------------
+# Legacy committed binaries — DO NOT ignore
+#
+# Source-less reference assemblies the legacy build links against by HintPath.
+# The negations re-include the DIRECTORIES themselves, because git cannot
+# re-include a file whose parent directory is excluded: `!Website/bin/**` would
+# not work. They must stay AFTER `[Bb]in/` — the last match wins.
+# -----------------------------------------------------------------------------
+!Website/bin/
+!Library/**/bin/
+
+# -----------------------------------------------------------------------------
+# .NET build, test and tooling artefacts
+# -----------------------------------------------------------------------------
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Bb]uild[Ll]og.*
+msbuild.log
+*.user
+*.userosscache
+*.suo
+*.userprefs
+*.dbmdl
+*.log
+.vs/
+artifacts/
+project.lock.json
+
+# Single wildcard on the `coverage*` globs, so they catch coverlet's default
+# names and its format-qualified ones alike.
+TestResults/
+[Tt]est[Rr]esult*/
+*.trx
+*.coverage
+*.coverlet.json
+coverage*.json
+coverage*.xml
+coverage*.info
+
+# -----------------------------------------------------------------------------
+# NuGet
+# -----------------------------------------------------------------------------
+*.nupkg
+*.snupkg
+.nuget/packages/
+
+# The packages.config-era restore folder, anchored to the backend solution: an
+# un-anchored `packages/` also matches legacy source directories on a
+# case-insensitive clone. PackageReference restores into the global cache, so
+# this folder should never appear and the rule is only a guard.
+/backend/packages/*
+!/backend/packages/build/
+
+# EF Core migrations are never ignored. Should a migrations folder be generated
+# under backend/src/, it must be committed.
+
+# -----------------------------------------------------------------------------
+# Node / Angular
+#
+# frontend/package-lock.json must never be ignored: `npm ci` fails outright
+# without a committed lockfile. Never add `package-lock.json` or `*-lock.json`.
+# -----------------------------------------------------------------------------
+.angular/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+*.tsbuildinfo
+.eslintcache
+chrome-profiler-events*.json
+speed-measure-plugin*.json
+
+/frontend/dist/
+/frontend/coverage/
+
+# -----------------------------------------------------------------------------
+# Runtime log directories
+#
+# Anchored for the same case-folding reason as the NuGet rule above: a bare
+# `logs/` would match a legacy directory that has tracked files.
+# -----------------------------------------------------------------------------
+/backend/logs/
+/frontend/logs/
+
+# -----------------------------------------------------------------------------
+# Crash dumps from a refused start
+#
+# The configuration refusals documented in README.md §4 and §12 abort the process
+# rather than exiting gracefully, so on a host whose kernel.core_pattern names a
+# file the kernel writes a multi-hundred-megabyte dump into the aborted process's
+# working directory — `core` where core_uses_pid is 0, `core.<pid>` where it is 1,
+# and `core_<timestamp>` for a dump the .NET tooling writes itself. Measured at
+# 133,844,992 bytes for one refused start, which is exactly the size of mistake a
+# routine `git add -A` should not be able to make.
+#
+# ANCHORED, AND DELIBERATELY NOT WRITTEN AS A BARE `core`. Git applies a pattern
+# containing no slash at every depth and to directories as well as files, so the
+# bare spelling would exclude `frontend/src/app/core/` — a tracked source
+# directory holding the SPA's models, services, interceptors, guards and stores —
+# and every file added there afterwards would silently stop being tracked. The
+# same anchoring reasoning as the NuGet and log rules above, for a worse failure.
+# -----------------------------------------------------------------------------
+/core
+/core.[0-9]*
+/core_[0-9]*
+/backend/**/core
+/backend/**/core.[0-9]*
+/backend/**/core_[0-9]*
+
+# -----------------------------------------------------------------------------
+# IDE and editor state
+# -----------------------------------------------------------------------------
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*.swo
+*~
+
+# -----------------------------------------------------------------------------
+# OS noise
+# -----------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# -----------------------------------------------------------------------------
+# Secrets and local environment overrides
+#
+# Real credentials never enter source control. appsettings.json and its
+# environment overlays are tracked configuration; only *.local.json is ignored.
+# -----------------------------------------------------------------------------
+
+# Every machine-local environment override, at any depth: .env, .env.local,
+# .env.production, .env.development, .env.test, .env.docker.local, and so on.
+# `*.env` covers the dotless spelling some tooling emits (`local.env`,
+# `production.env`) and is retained from the previous revision.
+.env*
+*.env
+!**/.env.example
+
+# Local-only configuration overlays and credential stores.
+appsettings.local.json
+appsettings.*.local.json
+secrets.json
+
+# Private-key and keystore containers. PEM and DER-encoded `.key` files hold
+# raw private keys; PFX/P12/JKS/keystore/P8 are password-protected key stores;
+# the `id_*` and `.ppk` entries are SSH identities.
+*.pem
+*.key
+*.pfx
+*.p12
+*.p8
+*.jks
+*.keystore
+*.ppk
+id_rsa
+id_rsa.*
+id_dsa
+id_dsa.*
+id_ecdsa
+id_ecdsa.*
+id_ed25519
+id_ed25519.*
+
+# Public keys are not secrets, and the `id_*.*` globs above would otherwise
+# swallow the `.pub` half of every SSH key pair.
+!*.pub
+
+# -----------------------------------------------------------------------------
+# Validation evidence produced by the browser automation harness.
+# -----------------------------------------------------------------------------
+# Screenshots, screen recordings and filmstrips written into the working tree by
+# the runtime-validation tooling. They are evidence for a review, not sources the
+# application builds from, and they are large binaries: a single run of the shell
+# checks produced fifteen PNG and WebM files totalling several megabytes. Ignored
+# so that a routine `git add` cannot pull a run's artefacts into history, where
+# they would be permanent and would never be read again.
+blitzy/

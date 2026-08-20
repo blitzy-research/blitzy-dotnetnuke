@@ -1,0 +1,16 @@
+@use './styles/tokens';
+@use './styles/reset';
+@use './styles/layout';
+@use './styles/tables';
+@use './styles/forms';
+
+// MOTION KEYFRAMES
+@keyframes dnn-indeterminate-spin {
+  from {
+    transform: rotate(var(--rotate-none));
+  }
+
+  to {
+    transform: rotate(var(--rotate-full-turn));
+  }
+}

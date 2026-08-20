@@ -1,0 +1,57 @@
+<!--
+  Destructive-action confirmation dialog. The paired class calls `showModal()` on this element, which
+  promotes it to the browser top layer, paints the backdrop and makes the document inert - so neither
+  this template nor the paired stylesheet needs a `z-index` or fixed positioning.
+-->
+<dialog
+  #dialogElement
+  class="confirm-dialog"
+  role="alertdialog"
+  aria-modal="true"
+  [attr.aria-labelledby]="titleId"
+  [attr.aria-describedby]="messageId"
+  (cancel)="onDialogCancel($event)"
+  (click)="onBackdropClick($event)"
+>
+  <!--
+    `alertdialog` deliberately overrides the implicit dialog role so the name and description are
+    announced at once; both ids are published by the class, so two dialogs mounted together cannot
+    collide. `aria-modal` is declared because the class's published template contract requires it.
+  -->
+  <div class="confirm-dialog__panel">
+    <h2 [id]="titleId" class="confirm-dialog__title">{{ title }}</h2>
+    <p [id]="messageId" class="confirm-dialog__message">{{ message }}</p>
+
+    <!--
+      Cancel comes FIRST for two independent reasons: the class focuses it on open so a stray Enter
+      cannot delete anything, and `editroles.ascx` L179-189 already ordered Cancel before Delete.
+    -->
+    <div class="confirm-dialog__actions">
+      <button
+        #cancelButton
+        class="confirm-dialog__button"
+        type="button"
+        [disabled]="settled"
+        (click)="onCancelClick()"
+      >
+        Cancel
+      </button>
+      <button
+        class="confirm-dialog__button"
+        [class.confirm-dialog__button--danger]="danger"
+        type="button"
+        [disabled]="settled"
+        (click)="onConfirmClick()"
+      >
+        <!--
+          Severity never rests on colour alone: this glyph, the bold weight the danger modifier applies,
+          and the affordance's own outcome-naming label. The glyph is hidden from assistive technology
+          so it cannot compete with that label as a naming source nor announce the severity twice.
+        -->
+        @if (danger) {
+          <span aria-hidden="true">⚠ </span>
+        }{{ confirmLabel }}
+      </button>
+    </div>
+  </div>
+</dialog>

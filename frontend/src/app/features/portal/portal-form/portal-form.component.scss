@@ -1,0 +1,94 @@
+// Three responsibilities in particular sit elsewhere and are NOT restated here:
+// portal-form.component.scss - the tenant create-and-edit form.
+
+@use '../../../../styles/mixins' as mx;
+
+// ROOT
+.portal-form {
+  display: grid;
+  gap: var(--space-4);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+}
+
+// THE FORM, AND ITS MEASURE
+// 1: THE LEGACY LAYOUT CONTAINERS BECOME A GRID, AND THEIR FIXED WIDTHS BECOME A CAPPED MEASURE.
+// signup.ascx:L5-L6 opens a container declaring summary="Host Settings Design Table" - the tell that it
+// carried layout, not data - and L10-L11 and L75-L76 nest two more, each describing itself the same way.
+.portal-form__form {
+  display: grid;
+  gap: var(--space-4);
+  max-inline-size: mx.breakpoint('sm');
+}
+
+// SECTIONS
+// ONE DECLARATION ONLY, AND THE OMISSIONS ARE THE POINT. _forms.scss already gives every fieldset its
+// hairline border, its corner radius, its padding and a trailing block margin.
+.portal-form__section {
+  margin-block-end: 0;
+}
+
+// MIGRATION: the divergence this accepts is recorded rather than hidden.
+
+// THE FIELD STACK
+// The fluid track is declared rather than left implicit because a grid track's automatic minimum is its
+// content: one unbroken host name in an alias field would otherwise push the column wider than the form and
+// take the whole screen with it.
+.portal-form__grid {
+  display: grid;
+  grid-template-columns: var(--grid-track-fluid);
+  gap: var(--space-3);
+}
+
+// The wrapper ships a trailing margin of its own, which is the right default for a form that simply stacks
+// fields with no container rhythm. This stack supplies a row gap instead, so the wrapper's margin is
+// withdrawn to leave ONE owner.
+.portal-form__grid > app-form-field {
+  margin-block-end: 0;
+  min-inline-size: 0;
+}
+
+// THE PORTAL-TYPE RADIO GROUP
+.portal-form__choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.portal-form__choice {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+// _forms.scss styles a bare label as a FIELD CAPTION - block, bold, brand-coloured, with a trailing margin
+// - which is correct for a field and wrong for the caption of one radio inside a group that already has its
+// own caption.
+.portal-form__choice > label {
+  margin-block-end: 0;
+  font-weight: var(--font-weight-normal);
+  color: inherit;
+}
+
+// COMMAND ROW
+.portal-form__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+// CLOSING NOTE
+// _reset.scss leaves the browser's flow margins on paragraphs in place on purpose, so without this
+// declaration the form's row gap and the paragraph's own margin would both apply and the note would sit
+// further from the commands than any other pair on the screen.
+.portal-form__note {
+  margin-block: 0;
+}
+
+// MIGRATION - THE REMAINING DIVERGENCES, RECORDED RATHER THAN ABSORBED
+// 3: THE HELP PANEL IS REPRODUCED THROUGH TOKENS, AND NOT BY THIS FILE. The legacy help panel
+// (default.css:L424-L439) is a hairline box on all FOUR sides right, top, left and bottom, the last at L436
+// - with the smallest padding on every side, body-normal weight at the item-title size, and a pale yellow
+// fill.

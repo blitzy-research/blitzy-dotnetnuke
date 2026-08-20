@@ -1,0 +1,142 @@
+// LOAD PATH — FOUR LEVELS, AND WHY THREE FAILS
+
+@use '../../../../styles/mixins' as mx;
+
+// -----------------------------------------------------------------------------
+//  ROOT
+// -----------------------------------------------------------------------------
+// Body type is declared once here and inherited by every region below rather than
+// restated per rule, and it is declared on the component root rather than left to a
+// global base rule so the component is self-sufficient: without it, every legend and
+// label on the screen falls back to the browser's own serif default. It reaches the
+// controls too, because _reset.scss has them inherit `font`, after which _forms.scss
+// sets their own size — which is how the measured legacy proportion survives, body
+// prose one step below control text.
+//
+// An explicit single fluid column rather than the implicit one `display: grid` would
+// otherwise create. The token resolves to a track with a ZERO minimum, and that
+// minimum is the point: an implicit track sizes to its content, so one long unbroken
+// word, or a select whose longest option is long, would widen the track past its
+// container and put a horizontal scrollbar on the whole screen. Stated explicitly, the
+// track can never exceed the space it is given.
+.module-form {
+  display: grid;
+  grid-template-columns: var(--grid-track-fluid);
+  gap: var(--space-4);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+}
+
+.module-form__body {
+  display: grid;
+  grid-template-columns: var(--grid-track-fluid);
+  gap: var(--space-4);
+}
+
+// GROUPS, INCLUDING EXACTLY ONE LEVEL OF NESTING
+// The single fluid column is what makes every field a full-width row, which is the legacy arrangement — one
+// setting per table row — carried across without the table.
+.module-form__group {
+  display: grid;
+  grid-template-columns: var(--grid-track-fluid);
+  gap: var(--space-3);
+  min-inline-size: 0;
+  padding: var(--space-4);
+
+  // ⚠ THE COMPONENT-BOUNDARY TOKEN. These are real `fieldset` elements, so the global rule in `_forms.scss`
+  // already resolves the boundary token - this declaration overrode it and painted `#DCDCDC` at 1.3713:1
+  // against its own white fill, the same defect measured on the role form's section edge. A group edge owes
+  // 3:1 because it is the only thing stating where one group of settings ends and the next begins.
+  border: var(--border-width) var(--border-style) var(--color-border-control);
+  border-radius: var(--radius-md);
+  background-color: var(--color-background);
+}
+
+// EXACTLY ONE LEVEL OF NESTING, and it no longer signals depth through edge WEIGHT.
+//
+// ⚠ THE EDGE COLOUR IS DELIBERATELY NOT OVERRIDDEN HERE ANY MORE. It used to resolve `--color-border-strong`,
+// on the reasoning that a heavier edge reads as subordinate to the lighter one around it. Two things were
+// wrong with that. The weights were 1.3841:1 and 1.3713:1 against their respective fills - a difference of
+// 0.013, which is not a perceptible signal, so the depth cue was notional rather than real. And both values
+// sat below the 3:1 a group edge owes, so the "stronger" token was not strong enough to identify anything
+// either. Depth is carried by the two cues that genuinely differ and always did: the FILL changes from the
+// page background to the secondary surface, and the padding step drops. Both inherit the boundary token now,
+// so the nested group is distinguished by its fill and reaches 3.9149:1 on it.
+.module-form__group--nested {
+  padding: var(--space-3);
+  background-color: var(--color-surface);
+}
+
+// Narrow-viewport relief, and a measured need rather than a reflex.
+@include mx.respond-below('sm') {
+  .module-form__group {
+    padding-inline: var(--space-2);
+  }
+}
+
+.module-form__group-title {
+  padding-inline: var(--space-1);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-primary);
+}
+
+// The sub-group caption steps DOWN to body size and to the muted colour, so the hierarchy is read from
+// weight and colour rather than from size alone. It keeps the bold weight it inherits from the rule above,
+// which is what stops it reading as ordinary prose.
+.module-form__group-title--nested {
+  font-size: var(--font-size-md);
+  color: var(--color-text-muted);
+}
+
+// THE VISIBILITY RADIOGROUP
+// One option per line. The options are phrases rather than single words, so a horizontal row would either
+// truncate them or force the group wider than its column at the narrow widths this screen still has to work
+// at.
+.module-form__choices {
+  display: grid;
+  grid-template-columns: var(--grid-track-fluid);
+  gap: var(--space-2);
+  padding: 0;
+  border: 0;
+  margin: 0;
+}
+
+// A label wrapping its own radio, so the whole phrase is part of the hit target rather than only the
+// control.
+.module-form__choice {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+  margin-block-end: 0;
+}
+
+// THE TWO REPORTED STATES
+// An address that names no module, or a module that no longer exists.
+// COMMANDS — TYPE ONLY, NEVER PLACEMENT
+// THE RELOCATED ACTION BAR. Laid out exactly as the three sibling forms lay theirs out: a wrapping row with
+// the shared inline gap, so the commands stack on a narrow viewport without a breakpoint of their own.
+.module-form__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+// The danger token, which IS the accessible value: it was darkened from the measured legacy `#FF0000` to
+// `#B00000` precisely so a destructive label is legible, and it now measures 7.3787:1 on the page fill and
+// 6.3597:1 on the surface fill. This comment previously named a separate "darker companion for danger TEXT" -
+// no such token has ever existed in this vocabulary, and the rule below has always resolved `--color-danger`;
+// the obligation was discharged by moving that token's value rather than by adding a second red.
+.module-form__action--danger {
+  color: var(--color-danger);
+}
+
+// THE REVERSED-SCHEDULE NOTICE
+.module-form__schedule-notice {
+  margin: var(--space-1) 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-base);
+}

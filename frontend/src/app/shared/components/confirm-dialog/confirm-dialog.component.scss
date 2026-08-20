@@ -1,0 +1,174 @@
+@use '../../../../styles/mixins' as mx;
+
+:host {
+  display: contents;
+}
+
+// The dialog frame. Overrides the user-agent defaults that would otherwise bypass the token vocabulary: the
+// default border, the default inner padding, and the system canvas background and text colour.
+.confirm-dialog {
+  box-sizing: border-box;
+
+  // ⚠ QA-26 — A SETTLED WIDTH, NOT A CAP ALONE. A `<dialog>` with only a maximum is sized by its
+  // content, so every confirmation in the application was as wide as its own sentence and the frame
+  // resized between one destructive prompt and the next. The cap still applies over the top, which is what
+  // keeps the narrow-viewport behaviour exactly as it was.
+  inline-size: var(--dialog-inline-size);
+  max-inline-size: var(--dialog-max-inline-size);
+
+  // ⚠ ANCHORED NEAR THE TOP RATHER THAN CENTRED, AND A MEASUREMENT IS WHY. A modal dialog takes its
+  // position from `margin: auto` against `inset: 0` in the user-agent stylesheet, which centres it in the
+  // viewport - and the centre of the viewport on every listing in this application is the grid. Measured while
+  // confirming the deletion of the FIFTH row: the frame occupied 326.55 by 177 at (469.22, 361.5) and covered
+  // rows two, three, four and the top of row five, so the one record the operator was being asked about was
+  // underneath the question. The dialog now names that record, which is the substantive half of the fix, but
+  // covering the data an operator is verifying is not something a name makes acceptable.
+  //
+  // Only the BLOCK margin is set. `margin: auto` in the user-agent rule is a shorthand, so overriding
+  // `margin-block` leaves `margin-inline: auto` intact and the frame stays horizontally centred - which is
+  // what keeps this a reposition rather than a redesign.
+  margin-block: var(--space-8) auto;
+
+  // The height cap absorbs the offset, so a dialog long enough to reach the cap still fits between the top
+  // margin and the bottom of the viewport instead of being pushed off the end of it.
+  max-block-size: calc(var(--dialog-max-block-size) - var(--space-8));
+
+  padding: 0;
+  border: var(--border-width) var(--border-style) var(--color-primary);
+  border-radius: var(--radius-lg);
+  background-color: var(--color-background);
+  box-shadow: var(--elevation-3);
+  color: inherit;
+  font-family: var(--font-family-base);
+
+  &[open] {
+    display: flex;
+    flex-direction: column;
+  }
+}
+
+// ⚠ QA-26 — THE SCRIM IS THE APPLICATION'S, NOT THE USER AGENT'S. `::backdrop` is unstyled by default,
+// so this was the one surface in the product whose colour came from outside the token vocabulary. It is
+// styled here rather than globally because `::backdrop` matches only the top-layer element it belongs to,
+// and this component owns the only element this application puts in the top layer.
+//
+// `color-mix` against `--color-text` keeps the scrim inside the vocabulary: it is the palette's own black
+// at 55%, so it cannot drift from the palette and it is not a literal. The alpha is the whole point — a
+// scrim that hid the page would hide the record the question names, and the earlier top-anchoring fix in
+// this file exists precisely so that record stays visible.
+.confirm-dialog::backdrop {
+  background-color: var(--dialog-backdrop-color);
+}
+
+// The padded interior, and the element that makes the frame above click-safe. It is a flex column so the
+// message can be the single scrolling region while the action row stays pinned below it, and it owns the
+// vertical rhythm between the three regions.
+.confirm-dialog__panel {
+  display: flex;
+  flex: var(--flex-fill);
+  flex-direction: column;
+  min-block-size: 0;
+  gap: var(--space-4);
+  padding: var(--space-6);
+}
+
+.confirm-dialog__title {
+  margin: 0;
+  overflow-wrap: break-word;
+  color: var(--color-primary);
+  font-size: var(--font-size-xxl);
+  font-weight: var(--font-weight-normal);
+  line-height: var(--line-height-tight);
+}
+
+// The message is the region that scrolls. Scrolling lives here rather than on the panel so that a long
+// message can never push the action row out of view, and the frame's height cap is what ultimately bounds
+// it - the cap constrains the panel, and the panel constrains this.
+.confirm-dialog__message {
+  flex: var(--flex-fill);
+  min-block-size: 0;
+  margin: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  overflow-wrap: break-word;
+  color: inherit;
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-normal);
+  line-height: var(--line-height-base);
+}
+
+// Wrapping rather than overflowing is the entire narrow-screen behaviour of the action row.
+.confirm-dialog__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+// The focus ring is included inside this selector rather than beside it, because the mixin attaches a
+// focus-visible pseudo-class to whichever selector includes it. No focus indicator is suppressed anywhere
+// in this file.
+.confirm-dialog__button {
+  padding-block: var(--space-2);
+  padding-inline: var(--space-4);
+  border: var(--border-width) var(--border-style) var(--color-primary);
+
+  border-radius: var(--radius-sm);
+  background-color: var(--color-background);
+  color: var(--color-primary);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-normal);
+  line-height: var(--line-height-none);
+  cursor: pointer;
+
+  // ⚠ #27 — THE ALWAYS-VISIBLE VARIANT, because this dialog moves focus itself. Opening it puts focus on the
+  // cancelling affordance so an immediate Enter cannot destroy anything - but a dialog opened by CLICKING
+  // leaves the browser's last input modality set to pointer, so `:focus-visible` did not match and the
+  // dialog presented no visible focus at all until the reader pressed Tab. A modal that has taken focus away
+  // from the page must show where it put it.
+  @include mx.focus-ring-always;
+
+  // Pointer and keyboard hover. Enabled only: `:hover` is excluded on a disabled button by the `:enabled`
+  // qualifier, so a disabled control gives no hover feedback that would imply it can be actioned.
+  &:enabled:hover {
+    background-color: var(--color-surface);
+    color: var(--color-primary-hover);
+  }
+
+  &:enabled:active {
+    background-color: var(--color-surface);
+    color: var(--color-primary);
+  }
+
+  &:disabled {
+    // ⚠ THE COMPONENT-BOUNDARY TOKEN. `_forms.scss` already resolves it for `button:disabled` globally; this
+    // component override was reintroducing --color-border, which against the surface fill this same rule sets
+    // measures 1.1819:1 - the faintest pairing in the product, on the buttons of the dialog that deletes a
+    // tenant. While a destructive confirmation is in flight both buttons disable, and at that weight the two
+    // controls stopped being locatable as controls at all rather than merely reading as unavailable.
+    border-color: var(--color-border-control);
+    background-color: var(--color-surface);
+    color: var(--color-text-muted);
+    cursor: not-allowed;
+  }
+}
+
+// Equal in specificity to the base rule and declared after it, so it wins on source order without a
+// compound selector or an importance flag.
+.confirm-dialog__button--danger {
+  border-color: var(--color-danger);
+
+  // The destructive label reads in the vocabulary's danger value rather than in the link colour, so the
+  // border, the label and the word all state one thing.
+  color: var(--color-danger);
+  font-weight: var(--font-weight-bold);
+
+  &:enabled:hover {
+    color: var(--color-danger);
+  }
+
+  &:enabled:active {
+    color: var(--color-danger);
+  }
+}

@@ -1,0 +1,116 @@
+// THE RFC 7807 ERROR SURFACE — component-scoped presentation
+// ZERO HARDCODED VALUES. Every value below is either a design token from `src/styles/_tokens.scss`, a CSS
+// keyword, or one of the six admitted literals (`0`, `none`, `auto`, `inherit`, `currentColor`,
+// `transparent`).
+@use '../../../../styles/mixins' as mx;
+
+:host {
+  display: block;
+}
+
+.error-banner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-block-end: var(--space-4);
+  // Logical insets rather than the physical `padding` shorthand, so the box stays
+  // correct under a right-to-left or vertical writing mode.
+  padding-block: var(--space-3);
+  padding-inline: var(--space-3);
+  border: var(--border-width) var(--border-style) var(--color-border-strong);
+  // THE ACCENT EDGE, and it is a load-bearing cue rather than decoration: it gives each band a distinct
+  // edge weight and edge colour, so the three bands remain distinguishable to a reader who perceives no hue
+  // at all.
+  border-inline-start-width: var(--space-1);
+  border-radius: var(--radius-md);
+  background-color: var(--color-background);
+  box-shadow: var(--elevation-1);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-base);
+  overflow-wrap: break-word;
+
+  // Through the shared breakpoint mixin only, because a component may never write a media query itself —
+  // `_mixins.scss` is the single site where breakpoints are declared, and an unknown step name fails the
+  // build there rather than emitting a query that can never match.
+  @include mx.respond-above('sm') {
+    padding-inline: var(--space-4);
+  }
+}
+
+// THE THREE SEVERITY BANDS
+
+.error-banner[data-severity='danger'] {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
+.error-banner[data-severity='warning'] {
+  border-inline-start-color: var(--color-primary);
+  background-color: var(--color-surface);
+}
+
+.error-banner[data-severity='calm'] {
+  border-color: var(--color-border);
+  border-inline-start-color: var(--color-text-muted);
+  background-color: var(--color-surface);
+}
+
+// =============================================================================
+//  CONTENT
+// =============================================================================
+
+// The severity as a WORD, and the first thing in the box. This is the cue that makes the band perceivable
+// without perceiving the colour, and inside an atomic alert it is announced together with the message.
+.error-banner__severity {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-tight);
+}
+
+.error-banner__title {
+  margin: 0;
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-tight);
+  white-space: pre-line;
+}
+
+.error-banner__message {
+  margin: 0;
+  font-weight: var(--font-weight-normal);
+  white-space: pre-line;
+}
+
+.error-banner__fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  margin-block-start: var(--space-1);
+}
+
+.error-banner__field {
+  margin: 0;
+  color: inherit;
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-bold);
+}
+
+// Each message for the field above it. A description detail carries a large user-agent inline-start margin,
+// which is the indentation that visually associates it with its term; it is replaced by a token inset so
+// the indentation participates in the shared spacing scale rather than being whatever the user agent chose.
+.error-banner__detail {
+  margin: 0;
+  margin-inline-start: var(--space-3);
+  font-weight: var(--font-weight-normal);
+  white-space: pre-line;
+}
+
+.error-banner__trace {
+  margin: 0;
+  margin-block-start: var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-tight);
+}

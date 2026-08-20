@@ -1,0 +1,416 @@
+<app-page-header [title]="title()" [subtitle]="pageSubtitle">
+  <a class="page-action role-assignment__module-action" [routerLink]="['/roles']">{{ text.cancel }}</a>
+</app-page-header>
+
+<!--
+  Bound unconditionally: the banner renders nothing while there is no problem, and it owns its own
+  assertive live region, so wrapping it in control flow would tear that region out of the accessibility
+  tree between failures and lose the announcement.
+-->
+<app-error-banner [problem]="problem()" />
+
+@if (roleUnresolved()) {
+  <p class="role-assignment__unresolved">{{ text.roleUnresolved }}</p>
+} @else {
+  <!--
+    There is NO role picker. `SecurityRoles.ascx.vb:L183-L198` is the proof of what this mode rendered:
+    it put the single role into the dropdown, set the title from `RoleTitle.Text` at `:L193`, and then
+    hid both the dropdown and its label at `:L195` and `:L196`.
+  -->
+  <form class="role-assignment__form" [formGroup]="form" (ngSubmit)="submit()">
+    <div class="role-assignment__fields">
+      <!-- WHICH CONTROL APPEARS HERE IS THE TENANT'S DECISION, not this screen's. -->
+      @if (accountPolicyPending()) {
+        <app-loading-spinner [label]="text.accountPolicyLoading" />
+      } @else if (usersControlMode() === 'combo') {
+        <!--
+          A native select inside the shared wrapper, following the precedent the design decisions set
+          for controls no shared component covers. The wrapper is what carries the
+          label association, the help disclosure and the message region.
+        -->
+        <app-form-field
+          [label]="text.userChoiceLabel"
+          [for]="controlId.user"
+          [help]="text.userChoiceHelp"
+          [error]="userMessages()"
+        >
+          <select
+            class="role-assignment__choices"
+            [id]="controlId.user"
+            [disabled]="accountChoicesLoading()"
+            [attr.aria-invalid]="userMessages().length === 0 ? null : 'true'"
+            (change)="selectAccountChoice($event)"
+          >
+            <option value="">{{ text.userChoicePrompt }}</option>
+            <!--
+              The label is COMPOSED IN THE COMPONENT, including the note an entry carries when this role
+              already holds the account.
+            -->
+            @for (choice of accountChoiceEntries(); track choice.userId) {
+              <option
+                [value]="choice.userId"
+                [selected]="choice.userId === formState().userId"
+              >{{ choice.label }}</option>
+            }
+          </select>
+
+          @if (accountChoicesLoading()) {
+            <app-loading-spinner size="small" [label]="text.accountChoicesLoading" />
+          } @else if (accountChoicesEmpty()) {
+            <p class="role-assignment__lookup-note">{{ text.accountChoicesEmpty }}</p>
+          } @else if (choiceAnnotationIncomplete()) {
+            <!--
+              U21 - The marking is bounded by what has been read, so the bound is stated rather than left
+              to be discovered. The same principle the credential and search screens apply.
+            -->
+            <p class="role-assignment__lookup-note">{{ text.accountChoicesAnnotationPartial }}</p>
+          }
+        </app-form-field>
+      } @else {
+        <!--
+          MIGRATION: the lookup no longer fails silently. On no match the legacy handler simply blanked
+          the box at `:L484` with no message at all.
+        -->
+        <app-form-field
+          [label]="text.userLabel"
+          [for]="userLookup.fieldId"
+          [help]="text.userHelp"
+          [error]="userMessages()"
+        >
+          <app-search-input
+            #userLookup
+            class="role-assignment__lookup"
+            [placeholder]="text.validate"
+            [labelledExternally]="true"
+            (search)="onUserSearch($event)"
+          />
+
+          <!--
+            An unread policy ON ITS OWN says nothing here any more, and deliberately: it no longer
+            decides which control is offered - the legacy's account-count rule does - so it is no longer
+            something to report. See `usersControlMode`.
+          -->
+          @if (accountPolicyDefaultedBySize()) {
+            <p class="role-assignment__lookup-note">{{ accountPolicyDefaultedBySizeMessage }}</p>
+          } @else if (accountPolicyUnavailable()) {
+            <p class="role-assignment__lookup-note">{{ text.accountPolicyUnavailable }}</p>
+          } @else if (accountChoicesUnavailable()) {
+            <p class="role-assignment__lookup-note">{{ text.accountChoicesUnavailable }}</p>
+          }
+
+          @if (userLookupLoading()) {
+            <app-loading-spinner size="small" [label]="text.lookupLoading" />
+          }
+
+          @if (userMatches().length > 0) {
+            <!--
+              THE LIST IS NAMED, AND IT IS DELIBERATELY NOT A LISTBOX OR A COMBOBOX POPUP. Three
+              reasons, and the first is decisive on its own:
+            -->
+            <ul class="role-assignment__matches" [attr.aria-label]="text.matchesLabel">
+              <!--
+                THE ANNOTATED LABEL, AND THE ENTRY STAYS SELECTABLE. Choosing an account that already holds
+                the role is how a membership's dates are AMENDED - the legacy screen prefilled the boxes
+                from the existing row and relabelled its commit button `UpdateRole.Text` for exactly this
+                case - so disabling or hiding these entries would remove the only route to that workflow.
+                What was missing was the marking, not a restriction.
+              -->
+              @for (match of annotatedUserMatches(); track match.userId) {
+                <li class="role-assignment__match">
+                  @if (match.userId === formState().userId) {
+                    <button
+                      class="role-assignment__match-action"
+                      type="button"
+                      aria-pressed="true"
+                      (click)="clearSelectedUser()"
+                    >{{ match.label }}</button>
+                  } @else {
+                    <button
+                      class="role-assignment__match-action"
+                      type="button"
+                      aria-pressed="false"
+                      (click)="selectUser(match)"
+                    >{{ match.label }}</button>
+                  }
+                </li>
+              }
+            </ul>
+          }
+
+          <!-- Standing context, deliberately NOT a live region and NOT inside the field's message slot. -->
+          @if (userLookupSummary() !== null) {
+            <p class="role-assignment__lookup-note">{{ userLookupSummary() }}</p>
+          }
+
+          @if (showNoMatchingUsers()) {
+            <p class="role-assignment__no-matches">{{ text.noMatchingUsers }}</p>
+          }
+        </app-form-field>
+      }
+
+      <!--
+        Each bound was a text box paired with an image link that opened a scripted calendar popup. Both
+        popups are replaced by a native date input inside the shared field wrapper.
+      -->
+      <app-form-field
+        [label]="text.effectiveDateLabel"
+        [for]="controlId.effectiveDate"
+        [help]="text.effectiveDateHelp"
+        [error]="effectiveDateMessages()"
+      >
+        <input
+          class="role-assignment__date"
+          type="date"
+          appNativeDateValidity
+          [id]="controlId.effectiveDate"
+          formControlName="effectiveDate"
+          [min]="earliestDate"
+          [max]="latestDate"
+          [attr.aria-invalid]="effectiveDateMessages().length > 0 ? 'true' : null"
+        />
+      </app-form-field>
+
+      <!--
+        The ordering rule surfaces HERE rather than on the effective bound, because
+        `securityroles.ascx:L47` declared `controltovalidate="txtExpiryDate"`.
+      -->
+      <app-form-field
+        [label]="text.expiryDateLabel"
+        [for]="controlId.expiryDate"
+        [help]="text.expiryDateHelp"
+        [error]="expiryDateMessages()"
+      >
+        <input
+          class="role-assignment__date"
+          type="date"
+          appNativeDateValidity
+          [id]="controlId.expiryDate"
+          formControlName="expiryDate"
+          [min]="earliestDate"
+          [max]="latestDate"
+          [attr.aria-invalid]="expiryDateMessages().length > 0 ? 'true' : null"
+        />
+      </app-form-field>
+    </div>
+
+    <!-- The notification choice is RETAINED, because the assignment contract carries a notify member. -->
+    <div class="role-assignment__notify">
+      <!--
+        ⚠ THE REASON IS VISIBLE AND ASSOCIATED, NOT TUCKED INTO THE HELP DISCLOSURE. This sentence used to
+        be bound as the field's `[help]`, which renders behind a toggle that starts CLOSED - and the control
+        it explains is disabled with the native attribute, so it takes no focus and cannot be tabbed to.
+        Between the two, the only permanently unavailable control on the screen was also the only one whose
+        reason an operator had no route to. The `[help]` binding is REMOVED rather than kept alongside this,
+        so the sentence is stated once rather than twice, and `aria-describedby` names it from the control
+        so it is announced with it.
+      -->
+      <app-form-field
+        [label]="text.notifyLabel"
+        [for]="controlId.notify"
+      >
+        <input
+          class="role-assignment__notify-control"
+          type="checkbox"
+          [id]="controlId.notify"
+          formControlName="notify"
+          [attr.aria-describedby]="controlId.notifyAdvisory"
+        />
+      </app-form-field>
+
+      <p class="role-assignment__advisory" [id]="controlId.notifyAdvisory">{{ text.notifyHelp }}</p>
+    </div>
+
+    <!-- The action RELABELS itself, and only one of the two legacy relabel branches is live in this mode. -->
+    <div class="role-assignment__commands">
+      <button
+        class="role-assignment__submit"
+        type="submit"
+        [disabled]="!canSubmit()"
+          [attr.aria-busy]="saving() ? 'true' : null"
+          [attr.aria-describedby]="selectedAccountAlreadyInRole() ? controlId.alreadyInRoleNote : null"
+      >{{ actionLabel() }}</button>
+
+      <!--
+        WHAT SAVING WILL DO, when the chosen account is already a member. The button relabels itself to
+        "Update User Role" for this case - the legacy did the same, from `UpdateRole.Text` - but a relabelled
+        button only tells an operator who noticed the previous label. The consequence is named instead, and
+        ASSOCIATED with the button so a reader meets it when they reach the control rather than only if they
+        happen to sweep past it.
+
+        The entry that leads here is deliberately still selectable: amending a membership's dates is what
+        choosing an existing member is FOR.
+      -->
+      @if (selectedAccountAlreadyInRole()) {
+        <p class="role-assignment__lookup-note" [id]="controlId.alreadyInRoleNote">{{
+          text.accountAlreadyInRoleNote
+        }}</p>
+      }
+
+      <!--
+        ⚠ WHY THE ACTION IS UNAVAILABLE, NOT MERELY THAT IT IS. A disabled control states that something is
+        wrong and never what, and this form has two independent blockers - no account chosen, and an expiry
+        bound that does not follow its effective bound - which an operator had no way to tell apart. A polite
+        live region, so a reader hears the condition change as they correct it.
+
+        ⚠ THE REGION IS ALWAYS HERE, EMPTY OR NOT, FOR TWO INDEPENDENT REASONS. A live region has to be in the
+        document BEFORE its text changes for that change to be announced reliably; a region that arrives
+        already carrying its sentence is announced inconsistently. And a region that comes and goes takes the
+        row's height with it - measured on this form as the action moving out from under the pointer as the
+        operator reached for it. The shell's own banner and notification regions sit empty in the document for
+        the same reason, so this follows the pattern already established rather than inventing one.
+      -->
+      <p
+        class="role-assignment__blocked"
+        [class.role-assignment__blocked--invalid]="submitBlockedByFailure()"
+        role="status"
+        aria-live="polite"
+      >{{ submitBlockedReason() }}</p>
+    </div>
+  </form>
+
+  <!--
+    The grid is UNSORTED by parity. `securityroles.ascx:L56` declares no `AllowSorting`, so nothing here
+    binds a sort field or a sort direction, nothing handles a sort request and no column is marked
+    sortable.
+  -->
+  <section
+    class="role-assignment__memberships"
+    [attr.aria-busy]="assignmentsLoading() ? 'true' : null"
+  >
+    <!--
+      The ordering inputs are the SOLE source of truth for what the account heading announces and are
+      read from the store, so a heading can never claim an order whose request failed.
+    -->
+    @if (!removalAvailable()) {
+      <p class="role-assignment__notice">{{ text.removalUnavailable }}</p>
+    }
+    <app-data-table
+      [columns]="columns()"
+      [rows]="assignments()"
+      [totalCount]="totalCount()"
+      [rowOffset]="pageIndex() * pageSize()"
+      [rowKey]="assignmentRowKey"
+      [loading]="assignmentsLoading()"
+      [failed]="assignmentsFailed()"
+      [sortBy]="sortColumnKey()"
+      [sortDir]="sortDirection()"
+      (sortChange)="onSortChange($event)"
+    >
+      <!--
+        The caption is a CONSUMER obligation: the shared grid projects it into a real caption element
+        that it carries out of the painted output while keeping it in the accessibility tree.
+      -->
+      <span dataTableCaption>{{ text.caption }}</span>
+    </app-data-table>
+
+    <!--
+      The pager, handed the three facts its contract declares - the page the server reported, the size
+      it applied and the total across every page - and reporting a zero-based index straight back.
+    -->
+    @if (hasResults()) {
+      <app-pagination
+        [loading]="assignmentsLoading()"
+        [page]="pageIndex()"
+        [pageSize]="pageSize()"
+        [totalCount]="totalCount()"
+        (pageChange)="onPageChange($event)"
+      />
+    }
+  </section>
+
+  <!--
+    The removal confirmation was a scripted browser prompt attached to the row command, carrying the
+    global `DeleteItem` wording.
+  -->
+  @if (pendingRemoval() !== null) {
+    <app-confirm-dialog
+      [message]="removalMessage()"
+      [confirmLabel]="text.delete"
+      [danger]="true"
+      (confirm)="confirmRemoval()"
+      (cancel)="cancelRemoval()"
+    />
+  }
+}
+
+<!--
+  The four cell definitions, declared at the TOP LEVEL of this file and outside every control-flow
+  block.
+-->
+<ng-template #roleAssignmentCommandsCell let-row="row">
+  @if (canRemove(row)) {
+    <button
+      class="role-assignment__row-command"
+      type="button"
+      [attr.aria-label]="removalCommandName(row)"
+      (click)="requestRemoval(row)"
+    >{{ text.delete }}</button>
+  }
+</ng-template>
+
+<!--
+  `FormatUser` at `SecurityRoles.ascx.vb:L394-L396` was a LIVE STORED-XSS SINK. It built an anchor by
+  string concatenation and dropped the account's display name into that markup unencoded, so a display
+  name containing markup executed in the administrator's own browser.
+-->
+<ng-template #roleAssignmentUserCell let-row="row">
+  <a class="role-assignment__user-link" [routerLink]="['/users', row.userId]">{{
+    row.displayName
+  }}</a>
+</ng-template>
+
+<!-- An unset bound renders EMPTY and never as a formatted minimum-value date. -->
+<!--
+  MIGRATION — R-M24: THE LIFECYCLE IS QUALIFIED IN WORDS BESIDE THE DATE, WHICH IS A NET ADDITION WITH A
+  MEASURED LEGACY PRECEDENT ON A SIBLING SCREEN. Neither `securityroles.ascx` nor
+  `SecurityRoles.ascx.vb` compares either bound against the clock anywhere, so a membership that lapsed
+  years ago, one that begins years hence and one in force today were drawn identically same colour, same
+  weight, no other mark - on the one screen whose purpose is administering who holds a role.
+-->
+<!--
+  ⚠ THE `&nbsp;` IS LOAD-BEARING, AND THE CHARACTER ITSELF IS THE FIX - R7. Two separate mechanisms had to
+  be defeated here, and the second was only found by measuring the ACCESSIBILITY TREE rather than the DOM.
+
+  FIRST: Angular compiles with `preserveWhitespaces` disabled, and the interpolation below is bound TIGHT to
+  the block that follows it (`}}@if`), so there was no whitespace between the date and its qualifier for the
+  compiler to collapse - it had none to begin with. The cell announced one run-together token, measured as
+  "8/28/2026Pending".
+
+  SECOND, AND THE REASON THIS IS `&nbsp;` RATHER THAN `&ngsp;`: an ordinary space does reach the DOM, but it
+  does NOT always reach the accessibility tree. On the `@else if` branch Angular emits the preceding branch's
+  anchor comment between the date text node and the separator, leaving the separator an ISOLATED
+  whitespace-only text node; Blink builds no text box for such a node, so it never becomes a StaticText node
+  and name-from-contents concatenates with nothing in between. That was MEASURED through the CDP
+  Accessibility domain, in two independent browsers: with `&ngsp;` the `--pending` and `--expired` cells
+  computed "9/20/2027 Pending" and "1/1/2020 Expired" correctly, while `--current` computed
+  "9/20/2027Active" - the exact defect, surviving in the only layer that matters, behind a DOM that looked
+  correct and a spec that read `textContent` and therefore could not see it.
+
+  U+00A0 is not collapsible whitespace, so it always produces a text box and always reaches the tree,
+  wherever Angular chooses to place its anchor comments. It also keeps a date and its qualifier on one line,
+  which is what `white-space: nowrap` on the span already intends.
+-->
+<!--
+  R6: THREE STATES, THREE WORDS, THREE TREATMENTS. Both qualifiers previously shared one class, so the danger
+  colour was applied to a membership that had merely not started yet as well as to one that had lapsed, and
+  colour carried nothing that told them apart. Each word now has its own treatment - and each treatment is
+  accompanied by its own WORD, so the distinction never rests on colour alone.
+-->
+<ng-template #roleAssignmentEffectiveDateCell let-row="row"
+  >@if (isBoundAbsent(row.effectiveDate)) {<app-absent-value />} @else {{{ row.effectiveDate | dateDisplay
+  }}@if (membershipState(row) === 'pending') {&nbsp;<span class="role-assignment__lifecycle role-assignment__lifecycle--pending">{{
+      text.pending
+    }}</span>
+  }}</ng-template
+>
+
+<ng-template #roleAssignmentExpiryDateCell let-row="row"
+  >@if (isBoundAbsent(row.expiryDate)) {<app-absent-value />} @else {{{ row.expiryDate | dateDisplay
+  }}@if (membershipState(row) === 'expired') {&nbsp;<span class="role-assignment__lifecycle role-assignment__lifecycle--expired">{{
+      text.expired
+    }}</span>
+  } @else if (showsInForceQualifier(row)) {&nbsp;<span class="role-assignment__lifecycle role-assignment__lifecycle--current">{{
+      text.current
+    }}</span>
+  }}</ng-template
+>

@@ -1,0 +1,71 @@
+<!--
+  MIGRATION: the legacy laid this screen out as two nested layout tables, and the outer one carried a
+  table-description attribute reading "Edit Roles Design Table" - wording copy-pasted from the role
+  editor, which is a DIFFERENT screen.
+-->
+<section class="role-group-form">
+  <!-- THE HEADING ONLY - nothing is projected into the slot. -->
+  <app-page-header [title]="pageTitle" [subtitle]="pageSubtitle" />
+
+  <!-- BOUND UNCONDITIONALLY, and that is required rather than merely tidy. -->
+  <app-error-banner [problem]="problem()" />
+
+  <!--
+    `novalidate` suppresses the browser's own constraint bubbles so they cannot compete with the ported
+    validator wording, which is the only message this screen ever showed.
+  -->
+  <form class="role-group-form__form" [formGroup]="form" (ngSubmit)="submit()" novalidate>
+    <div class="role-group-form__fields">
+      <!-- FIELD 1 - THE GROUP NAME, the only required value on the screen. -->
+      <app-form-field
+        [label]="roleGroupNameLabel"
+        [for]="roleGroupNameInputId"
+        [required]="true"
+        [help]="roleGroupNameHelp"
+        [error]="roleGroupNameError()"
+      >
+        <input
+          type="text"
+          [formControlName]="roleGroupNameControl"
+          [id]="roleGroupNameInputId"
+          [maxlength]="roleGroupNameMaxLength"
+          [attr.aria-invalid]="roleGroupNameError().length > 0 ? 'true' : null"
+          aria-required="true"
+          autocomplete="off"
+        />
+      </app-form-field>
+
+      <app-form-field
+        [label]="descriptionLabel"
+        [for]="descriptionInputId"
+        [help]="descriptionHelp"
+        [error]="descriptionError()"
+      >
+        <textarea
+          [formControlName]="descriptionControl"
+          rows="4"
+          [id]="descriptionInputId"
+          [maxlength]="descriptionMaxLength"
+          [attr.aria-invalid]="descriptionError().length > 0 ? 'true' : null"
+        ></textarea>
+      </app-form-field>
+    </div>
+
+    <!--
+      The first VALIDATES. The legacy declared its commit link with no validation attribute at all,
+      taking that framework's default of true, and guarded the whole handler behind a page-validity
+      check. Its label read "Update" because that one link served both creating and editing a group;
+      only creating was migrated here, so the label names creating.
+    -->
+    <div class="role-group-form__actions">
+      <button class="form-action--primary" type="submit" [disabled]="submitting()"
+          [attr.aria-busy]="submitting() ? 'true' : null">{{ createActionLabel }}</button>
+      <button type="button" (click)="cancel()">{{ cancelActionLabel }}</button>
+
+      <!-- The one string authored in this template, because the class exposes no member for it. -->
+      @if (submitting()) {
+        <app-loading-spinner size="small" label="Adding role group…" />
+      }
+    </div>
+  </form>
+</section>

@@ -1,0 +1,86 @@
+// Async progress indicator. Owns every dimension and colour of the shared loading indicator, styling
+// exactly the sibling template: the host, its decorative indicator glyph and its optional label text.
+
+@use '../../../../styles/mixins' as mx;
+
+:host {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  vertical-align: middle;
+}
+
+// There is no size-token group, so the spacing scale doubles as the size scale. The base is the medium
+// step, which also covers a missing `data-size`: an attribute binding is dropped on a nullish value, and a
+// dimensionless glyph would be invisible.
+.indicator {
+  box-sizing: border-box;
+  flex: none;
+  inline-size: var(--space-6);
+  block-size: var(--space-6);
+
+  border-radius: var(--radius-round);
+
+  border-width: var(--border-width);
+  border-style: var(--border-style);
+  border-color: var(--color-border);
+
+  // ⚠ THE ACCENT ARC NAMES ITS OWN TOKEN AND NO LONGER INHERITS `currentColor`, and the change is a fix
+  // rather than a preference. Inheriting made the indicator a different colour on every screen it appeared
+  // on: inside the shared grid's placeholder cell it resolved to the muted token, because that cell
+  // declares it, while the same component beside ordinary body text resolved to inherited BLACK - a value
+  // that is not in the colour vocabulary at all. Measured on the portal listing, whose indicator sits
+  // outside the grid. Naming the token makes the one indicator identical everywhere and keeps every value
+  // inside the vocabulary.
+  border-block-start-color: var(--color-text-muted);
+
+  // THE ROTATION, DECLARED EXACTLY ONCE.
+  //
+  // ⚠ THIS FILE USED TO DECLARE IT TWICE, AND THE SECOND DECLARATION FROZE THE INDICATOR ON EVERY SCREEN.
+  // The mixin below binds the animation to the keyframes published in `styles.scss`, under a name that is
+  // GLOBAL and therefore stable. A second, component-local `@keyframes` block was also declared here and
+  // bound by a later `animation-name`, which won the cascade - but emulated view encapsulation rewrites a
+  // component's own keyframes name and left that reference unprefixed, so the winning declaration named a
+  // keyframe list that did not exist. Measured consequence: `animation-play-state` reported `running` and
+  // `animation-duration` reported `1s`, yet Chrome created no `CSSAnimation` at all and `transform` read
+  // `none` in 24 of 24 samples across four seconds of continuous loading state. Nothing reported it - no
+  // console error, no failed request, and the computed style looked healthy.
+  //
+  // The lesson is narrow and worth keeping: a component stylesheet must not declare `@keyframes`, because
+  // the name it writes is not the name that is emitted. Motion keyframes belong in the global stylesheet,
+  // which is where the only one in this application lives.
+  @include mx.indeterminate-spin;
+}
+
+:host([data-size='small']) .indicator {
+  inline-size: var(--space-4);
+  block-size: var(--space-4);
+}
+
+:host([data-size='medium']) .indicator {
+  inline-size: var(--space-6);
+  block-size: var(--space-6);
+}
+
+:host([data-size='large']) .indicator {
+  inline-size: var(--space-7);
+  block-size: var(--space-7);
+  border-width: var(--space-1);
+}
+
+// No `color` is declared, so the label inherits it alongside the accent arc above.
+.label {
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-normal);
+  line-height: var(--line-height-tight);
+  min-inline-size: 0; // long labels wrap instead of widening the host
+  overflow-wrap: break-word;
+}
+
+// ⚠ NO `@keyframes` BLOCK BELONGS IN THIS FILE, AND THE ONE THAT WAS HERE HAS BEEN REMOVED. Emulated view
+// encapsulation rewrites the name of a component's own keyframes but not the `animation-name` that
+// references it, so a component-local rotation is authored, emitted, and then never played. The rotation
+// this component uses is published once in `src/styles.scss` and bound through `mx.indeterminate-spin`
+// above; the reduced-motion guard lives inside that mixin, so the frames are simply never referenced when
+// the reader has asked for less motion.

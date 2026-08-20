@@ -1,0 +1,375 @@
+@use '../../../../styles/mixins' as mx;
+
+:host {
+  display: grid;
+  grid-template-columns: var(--grid-track-fluid);
+  gap: var(--space-4);
+}
+
+// -----------------------------------------------------------------------------
+//  2. PROJECTED TEXT-LINK AFFORDANCES
+// -----------------------------------------------------------------------------
+//  These are the only rules on this screen that genuinely cannot live anywhere
+//  else. Content projected through another component's `ng-content` keeps the
+//  encapsulation of the component that DECLARES it, so app-page-header and
+//  app-data-table can supply the row and its gap but cannot reach inside to style
+//  the links they host. Their appearance is therefore declared here.
+//
+//  MIGRATION: reproduces `.CommandButton` from
+//  Website/Portals/_default/default.css, whose comment at L441 names it the "text
+//  style for buttons and link buttons used in the portal admin pages". Measured at
+//  L450-L472: `A.CommandButton:link`, `:visited` and `:active` all declare
+//  `text-decoration: underline` with the brand navy that this vocabulary tokenises
+//  as the primary colour — the underline is present in ALL FOUR states and only the
+//  ink changes on hover. So the legacy affordance is a TEXT LINK, not a filled
+//  control, and the underline is carried at rest here.
+//  `.StandardButton` — the one filled button in the legacy sheet — is referenced
+//  zero times by these admin screens and is deliberately not reproduced.
+//
+//  The resting underline is also why these links do not depend on colour alone to
+//  be recognisable as links, which is a WCAG 1.4.1 requirement the legacy design
+//  happened to satisfy: _reset.scss sets `text-decoration: none` on anchors at
+//  rest, so without this rule the affordance here would be carried by ink only.
+//
+//  MIGRATION — HOVER INK, a deliberate divergence. `A.CommandButton:hover` measures
+//  pure red at L462-L466, which this vocabulary tokenises as the danger colour and
+//  which `.NormalRed` uses under the comment "text style used for error messages" at
+//  L113. Both candidate values are tokens, so the zero-hardcoded-values rule does
+//  not decide between them; the semantics do. Spending the one colour reserved for
+//  errors on a benign hover would teach a reader that hovering a link is a fault.
+//  That is the whole of the reason now. This comment also cited the red falling
+//  below the 4.5:1 minimum; the danger token has since been darkened to `#B00000`
+//  and clears it, so that clause is withdrawn and the semantic reason - which never
+//  depended on the ratio - stands alone. The hover therefore resolves to the brand hover token, which is
+//  the companion this vocabulary already designates for the brand colour. The same
+//  substitution is made and documented independently in _reset.scss and in
+//  _forms.scss, so the decision is consistent system-wide rather than local.
+//
+//  The hover is applied through the shared hover mixin rather than a bare `:hover`.
+//  That guards it behind a hover-capability query, so a touch device cannot enter
+//  the state on tap and then stay in it — and it also raises this declaration above
+//  the resting rule beside it, which matters: with encapsulation the resting
+//  selector outweighs the global `a:hover`, so a colour set at rest and left to the
+//  global sheet to change would simply never change.
+// ⚠ THE PAGE ACTION WAS REMOVED FROM THIS GROUP, AND THE UNDERLINE IS WHY. Measured across the six
+// screens that render a page action: this rule and its counterpart on the account listing re-added a
+// PERMANENT underline at class weight, so those two screens showed underlined actions at rest while the
+// other four showed none. The shared `page-action` rule reserves the underline for `:hover`, so on these
+// two screens hovering could not be perceived as a state change - the underline was already there. The
+// row action KEEPS it: it sits inside a data cell among plain values, where the underline is the only
+// cue separating a command from the text beside it.
+.role-list__row-action {
+  color: var(--color-primary);
+  text-decoration: underline;
+
+  // ⚠ UNGATED, AND THE POINTER-CAPABILITY GUARD IS WHAT HAD TO GO. Measured on this screen: all three row
+  // commands reported an EMPTY set of changed properties on hover, so the pointer was the only feedback the
+  // operator got from a command that navigates away or destroys a role. The declarations were present and
+  // correct - the guard around them was not being satisfied, so nothing inside it ever applied. The portal
+  // listing removed the same guard for the same measured reason, and its rule says so in the same words; the
+  // decision is now consistent across the two screens rather than differing between them.
+  &:hover {
+    color: var(--color-primary-hover);
+  }
+  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE, and suppression without
+  // replacement is what leaves a control with no visible response at all. It is declared AFTER the hover so
+  // that a pressed control - which is also hovered - paints the press rather than the hover.
+  &:active {
+    background-color: var(--color-selected);
+  }
+}
+
+.role-list__failure {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.role-list__filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  align-items: end;
+}
+
+.role-list__filter-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: end;
+
+  // Measured at exactly 768px, the width at which the shell docks its sidebar and pushes this row's origin
+  // from x=16 to x=392.9: this wrapper computed 375px wide and reached x=767.9 against a 753px content box
+  // - 15px of document overflow, the last md-boundary regression of the four list screens.
+  min-inline-size: 0;
+}
+
+.role-list__filter-select {
+  flex: var(--flex-fill-from-zero);
+  min-inline-size: 0;
+  max-inline-size: mx.breakpoint('sm');
+}
+
+.role-list__filter-action,
+.role-list__command,
+.role-list__row-action,
+.role-list__failure-retry {
+  // Held to its content width inside the stretching failure region above.
+  justify-self: start;
+
+  display: inline-flex;
+  gap: var(--space-1);
+  align-items: center;
+}
+
+// ⚠ THE ROW COMMANDS ALSO WRAP, AND THIS IS THE SECOND HALF OF HOLDING THEM INSIDE THEIR OWN COLUMN.
+// Letting the label stack its words was necessary but not sufficient: the glyph beside it never shrinks, so
+// the command's irreducible width stayed glyph + gap + the longest single word, measured at 11 + 4 + 36.14
+// = 51.14 against a 45.33 content box, and the remaining 5.81 still painted 1.81 into the Name column.
+.role-list__row-action {
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+// A colour change only, and specifically the accessible danger ink rather than the raw legacy red. A
+// destructive command that also moved or resized would be a different affordance in a different place,
+// which is how a reader mis-presses the one command that cannot be undone.
+.role-list__filter-action--danger {
+  color: var(--color-danger);
+}
+
+// The legacy affordances were raster images — `~/images/edit.gif` and `~/images/delete.gif` at `roles.ascx`
+// L11 and L13.
+.role-list__icon {
+  flex: none;
+  inline-size: var(--font-size-md);
+  block-size: var(--font-size-md);
+}
+
+// The label beside that glyph stays VISIBLE. Clipping it would leave a 16-unit icon carrying the entire
+// meaning of a command, one of which destroys a record — and the legacy delete affordance reached assistive
+// technology with no accessible name at all, which is the one gap on this screen worth closing rather than
+// reproducing.
+.role-list__action-label {
+  @include mx.visually-hidden;
+}
+
+// The words behind a decorative mark, and the expansion of a stored frequency character. Both are clipped
+// rather than removed, so they stay in the accessibility tree while contributing nothing to the painted
+// cell — which is the entire point of both: the cell must look exactly as it did.
+.role-list__absent-value {
+  @include mx.visually-hidden;
+}
+
+// A COMMAND THAT IS NOT OFFERED, and the reason it is not. The two roles the portal depends on cannot be
+// edited or destroyed, so their cells carry a dash where the other rows carry a control. The dash is
+// decorative and the sentence behind it is clipped rather than removed, so a reader is told WHY the command
+// is absent while the painted cell stays as quiet as an empty one - a visible sentence in a 52px command
+// track would wrap to several lines and pull every row of the grid taller.
+.role-list__row-action-withheld {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-block-size: var(--target-size-compact);
+  color: var(--color-text-muted);
+}
+
+.role-list__row-action-reason {
+  @include mx.visually-hidden;
+}
+
+// THE STATE WORD IN A WITHHELD COMMAND CELL. Muted and at the small measure like the command labels it
+// stands in for, so the row does not read as if it were shouting a status; it is stating a rule, not
+// reporting a failure, so it must NOT take the danger colour.
+.role-list__row-action-state {
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-tight);
+  white-space: nowrap;
+}
+
+// THE CONDITION BEHIND AN ABSENT COMMAND, sitting in the row of filter controls where that command would be.
+// Muted and at the small measure, because it explains a control rather than being one, and it must not read
+// as a refusal of something the operator just attempted.
+// WHAT THE GRID IS ANSWERING, said in words. Muted and small for the same reason the note below is: it
+// describes the rows rather than being a control, and it sits under the filter row where the operator's
+// attention already is.
+.role-list__filter-disclosure {
+  margin: var(--space-1) 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-tight);
+}
+
+.role-list__search {
+  // The shared control sizes itself; this only stops it stretching to the whole filter row, where it would
+  // push the group selector and its two commands out of reach on a narrow viewport.
+  flex: 0 1 var(--control-inline-size-lg);
+  min-inline-size: 0;
+}
+
+.role-list__filter-note {
+  margin: 0;
+  align-self: center;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-tight);
+  max-inline-size: var(--control-inline-size-lg);
+}
+
+// THE FREE-ROLE STATE, painted as a word rather than as a price. Muted, because it is a state rather than an
+// amount and must not compete with the figures in the rows around it, and italic so the distinction survives
+// for a reader who perceives no colour at all — colour is never the only carrier of meaning here.
+.role-list__fee-state {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+// R3: A NEGATIVE AMOUNT. The danger colour and bold weight the portal listing gives the same state; the word
+// behind it is clipped into `.role-list__absent-value`, so the sign is never carried by colour alone.
+.role-list__fee--negative {
+  color: var(--color-danger);
+  font-weight: var(--font-weight-bold);
+}
+
+// R5: THE RECOVERY FROM AN ADDRESS PAST THE END, rendered inside the grid's own empty row. Styled as this
+// screen's other inline commands are, so it reads as an affordance rather than as part of the sentence.
+.role-list__first-page {
+  padding: 0;
+  color: var(--color-primary);
+  font-weight: var(--font-weight-bold);
+  background: none;
+  border: 0;
+  cursor: pointer;
+
+  @include mx.hover {
+    color: var(--color-primary-hover);
+  }
+}
+
+// A STORED FREQUENCY CODE THIS CONSOLE CANNOT NAME. Muted so it reads as a reference rather than a value,
+// with the `help` cursor announcing that the `title` beside it is worth reading. Colour carries no
+// information on its own here — the sr-only sibling states the same fact in words for every reader.
+.role-list__unnameable-code {
+  color: var(--color-text-muted);
+  cursor: help;
+}
+
+// With the wording clipped, each command is a bare 16-unit glyph — and a 16-unit target is far below the
+// floor. The box is floored on BOTH axes, for the reason the form vocabulary gives: a single-glyph command
+// has almost no intrinsic width, and the inline floor matters as much as the block one.
+.role-list__row-action {
+  min-inline-size: var(--target-size-min);
+  min-block-size: var(--target-size-min);
+  justify-content: center;
+}
+
+.role-list__row-action--danger {
+  padding: 0;
+  color: var(--color-danger);
+  background: none;
+  border: 0;
+  border-radius: 0;
+
+  // ⚠ THIS COMMAND'S HOVER HAD TO BECOME A SURFACE CHANGE, AND THE REASON IS THAT ITS INK CANNOT MOVE. The
+  // colour is pinned: a destructive command must stay in the danger hue, and this vocabulary declares exactly
+  // ONE danger token, so there is no second red to move to. Stripping the background and border at class
+  // weight then left the global button hover - which changes precisely those two - with nothing it could
+  // reach, so the command's hover re-set the colour it already had and changed nothing at all.
+  //
+  // The selected tint is the only token that differs from BOTH row surfaces: the plain row is the background
+  // token and the alternating row is the surface token, so a hover painted in either of those is invisible on
+  // one row in two. The consequence, stated rather than hidden: this one command's hover and press paint the
+  // same tint. That is the lesser fault - a command whose hover cannot be perceived at all is the defect being
+  // fixed, and the press is still carried by the pointer and by the confirmation the command opens.
+  &:hover {
+    color: var(--color-danger);
+    background-color: var(--color-selected);
+  }
+}
+
+.role-list__group-editor {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.role-list__group-editor-fields {
+  display: grid;
+  gap: var(--space-3);
+  max-inline-size: mx.breakpoint('sm');
+  margin-block-end: 0;
+}
+
+.role-list__group-editor-input {
+  inline-size: var(--size-full);
+}
+
+.role-list__group-editor-commands {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+// =============================================================================
+//  DELIBERATE ADDITIONS AND OMISSIONS, RECORDED RATHER THAN ABSORBED
+// =============================================================================
+//
+//  MIGRATION — NET ADDITIONS. Each of the following was measured at exactly zero
+//  occurrences in the 1030-line legacy stylesheet, so none is a translation and all
+//  are recorded as additions: focus indication of any kind (`:focus` and `outline`
+//  both absent), `border-radius`, `box-shadow`, `border-collapse`, and any media
+//  query at all. The spacing scale every gap above resolves to is likewise an
+//  addition rather than a translation — the legacy values are ad hoc and include no
+//  consistent step — and the three near-identical legacy font stacks are consolidated
+//  into one base family, a difference small enough to be imperceptible in use.
+//
+//  MIGRATION — NO MOTION. No transition, no animation and no keyframe rule appears
+//  here, and the hover and press changes are instantaneous. This is not an oversight:
+//  the vocabulary defines no duration or easing token, the legacy sheet declares
+//  motion zero times, and inventing one would be hardcoding a value the design system
+//  has not decided. A consequence worth stating plainly is that there is nothing to
+//  reduce for a reader who prefers reduced motion, so the absence of that query costs
+//  such a reader nothing here.
+//
+//  MIGRATION — NO ZEBRA STRIPING IS ADDED BY THIS FILE. `roles.ascx` L27 and L28 set
+//  the item and alternating-item styles to the SAME class, so this grid had no
+//  alternating treatment to preserve. The shared table conventions do tint even rows
+//  globally; that is the shared partial's decision for every grid in the application
+//  and is reported rather than overridden, because a component reaching up to cancel a
+//  global convention is how a design system stops being one.
+//
+//  MIGRATION — TWO LEGACY DEFECTS ANNOTATED, NEITHER REPRODUCED AND NEITHER REPAIRED
+//  IN LEGACY CODE. The legacy sheet's alternating-item style set its text to red,
+//  which would have rendered ordinary data in the colour reserved for errors; it is
+//  not reproduced, and it is moot here in any case since this grid has no alternating
+//  treatment. Separately, `roles.ascx` L30 selects the error style for the SELECTED
+//  row, so choosing a row coloured it as a fault; the selected row is instead tinted
+//  through the shared table hook, which resolves to the vocabulary's own selection
+//  colour. The dead `DataGrid_SelectedItem`, `DataGrid_Footer` and `DataGrid_Pager`
+//  rules are not carried over — this grid declares no footer template and no paging,
+//  and the pager class is referenced across the codebase yet defined in no stylesheet.
+//
+//  TOKEN GAPS, REPORTED RATHER THAN FILLED WITH A LITERAL. The vocabulary defines no
+//  base text colour and no disabled text colour, so body text here inherits rather
+//  than being set. It defines no heading colour either: the legacy module-title ink
+//  occurs exactly once in the whole legacy sheet and is not among the tokenised
+//  colours, so headings inherit the brand ink the element ramp already gives them.
+//  No fallback argument is written into any `var()` above, because a fallback is a
+//  hardcoded value wearing a token's clothes.
+
+// The 24px floor for the page actions, stated as its OWN rule rather than added to the shared
+// `.role-list__page-action.role-list__row-action` block above.
+.role-list__page-action {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: var(--target-size-min);
+}
+
+// THE ZERO-RESULT SURFACE'S ACTIONS. Laid out as a row that wraps, so two affordances sit side by side on a
+// desktop and stack on a narrow viewport without a breakpoint of their own.
+.role-list__empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+}

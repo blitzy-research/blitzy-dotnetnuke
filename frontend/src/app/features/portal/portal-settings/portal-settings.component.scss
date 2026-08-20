@@ -1,0 +1,377 @@
+// COMPONENT STATUS — COMPILED, ROUTED AND SPECIFIED
+
+@use '../../../../styles/mixins' as mx;
+
+
+//  ROOT
+:host {
+  display: block;
+}
+
+.portal-settings {
+  display: grid;
+  gap: var(--space-4);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+
+  // ⚠ THE SCREEN'S MEASURE LIVES HERE, ON THE ONE REGION EVERY PART OF THE SCREEN IS INSIDE. The note on
+  // `.portal-settings__panel` records why the panel and the tab strip were capped together - two regions of
+  // one screen at different widths read as unrelated - and capping them individually left the HEADER out by
+  // exactly that argument.
+  max-inline-size: mx.breakpoint('lg');
+}
+
+.portal-settings__tablist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  border-block-end: var(--border-width) var(--border-style) var(--color-text-muted);
+
+  // ⚠ #24 — NO CAP IS DECLARED HERE, DELIBERATELY. A local copy of the panel's measure, carried so the
+  // two share an edge, is a second definition of one edge; the measure comes from the one cap on
+  // `.portal-settings`, which every part of the screen - this strip, the panel, the failure surface and
+  // the page header - is inside.
+}
+
+.portal-settings__tab {
+  background-color: transparent;
+  border-color: transparent;
+  font-size: var(--font-size-lg);
+}
+
+.portal-settings__tab:enabled {
+  @include mx.hover {
+    border-inline-color: var(--color-primary-hover);
+    border-block-start-color: var(--color-primary-hover);
+  }
+}
+
+// A tab holding fields the server rejected. Marked with a glyph AND a word, never with colour alone: the
+// whole point of the marker is to be perceivable, and a tint that carried the meaning by itself would fail
+// the operators most likely to need it. The sentence the glyph stands for is hidden with the global
+// `data-visually-hidden` attribute this application already uses for exactly that, rather than a rule of its
+// own here - the same treatment, declared once, and this stylesheet is against a size budget.
+.portal-settings__tab--errored,
+.portal-settings__tab-error-marker {
+  color: var(--color-danger);
+}
+
+// ⚠ THE WEIGHT IS ON THE GLYPH AND NOT ON THE LABEL, deliberately. Bold is already this strip's SELECTED
+// treatment, so bolding an errored tab's label made two different states look alike.
+.portal-settings__tab-error-marker {
+  margin-inline-start: var(--space-1);
+  font-weight: var(--font-weight-bold);
+}
+
+// Selected state, keyed on the ARIA attribute rather than on a presentational class. That satisfies the
+// --color-selected consumption contract structurally: the tint can never be painted without the state also
+// being exposed to assistive technology, because the attribute IS the selector.
+.portal-settings__tab[aria-selected='true'] {
+  font-weight: var(--font-weight-bold);
+  background-color: var(--color-selected);
+  border-block-end-color: var(--color-primary);
+}
+
+// ⚠ THE COMPONENT-BOUNDARY TOKEN ON ALL FOUR UNAVAILABLE VARIANTS BELOW, NOT THE DECORATIVE ONE. A tab and a
+// disclosure toggle are both controls, and WCAG 1.4.11 covers the visual information that identifies a
+// component AND ITS STATE - so an unavailable control's edge is exactly the case it names, not decoration.
+// At --color-border these edges measured 1.3713:1 on the page fill and 1.1819:1 on the surface fill, i.e. the
+// faintest values anywhere in the product, on the controls a reader most needs to be able to find in order to
+// understand why they cannot use them. The muted ink and the cursor stay as the non-colour cues; they report
+// the state, whereas the edge reports that there is a control there at all.
+.portal-settings__tab:disabled {
+  color: var(--color-text-muted);
+  border-color: var(--color-border-control);
+  cursor: not-allowed;
+}
+
+// Unavailable, ARIA form — kept focusable and in the tab order on purpose, so a keyboard user reaches it
+// and hears it announced rather than finding it missing.
+.portal-settings__tab[aria-disabled='true'] {
+  color: var(--color-text-muted);
+  border-color: var(--color-border-control);
+  pointer-events: none;
+}
+
+// _reset.scss already rings `button` and `summary` on:focus-visible.
+.portal-settings__tab,
+.portal-settings__toggle {
+  @include mx.focus-ring;
+  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE BOTH RULES ABOVE SUPPRESS THE GLOBAL ONE by painting their
+  // background transparent, and suppression without replacement is what leaves a control with no visible
+  // response at all. This is the ONLY press declaration for either control: it is declared after the
+  // selected-state rule and paints the same tint, so restating it at heavier specificity - which this file
+  // did twice for the tab alone - changed nothing it did not already do.
+  &:active {
+    background-color: var(--color-selected);
+  }
+}
+
+// TAB PANEL
+.portal-settings__panel {
+  display: grid;
+  gap: var(--space-4);
+
+  min-inline-size: 0;
+}
+
+// The per-group help paragraph, BasicSettingsHelp / AdvancedSettingsHelp in
+// Website/admin/Portal/App_LocalResources/SiteSettings.ascx.resx.
+.portal-settings__intro {
+  margin-block: 0;
+  color: var(--color-text-muted);
+  line-height: var(--line-height-base);
+}
+
+.portal-settings__section {
+  display: grid;
+  gap: var(--space-3);
+}
+
+// ⚠ ONLY THE FRAME AND THE TRAILING PADDING GO, AND THE MEASURED DEFECT THIS CLOSES IS THE JUMP AT THE
+// MOMENT OF EXPANSION. This used to zero the padding outright and shorten the trailing margin, so opening a
+// section restored 12px of padding on all four sides and lengthened its margin - which moved the section's own
+// HEAD down and to the right, out from under the pointer that had just clicked it, and moved everything below
+// it by more than the panel that had appeared. Keeping the block-start and inline padding identical in both
+// states means expanding a section changes exactly one thing: the panel now occupying the space beneath its
+// head. The frame still goes, which is what the note below is about - a closed group must not read as an
+// empty box.
+.portal-settings__section--collapsed {
+  border-color: transparent;
+  border-radius: 0;
+  padding-block-end: 0;
+}
+
+.portal-settings__toggle {
+  // ⚠ A COLLAPSED SECTION MUST BE DISTINGUISHABLE FROM AN EMPTY ONE, AND IT WAS NOT. `--collapsed` above
+  // removes this section's frame and padding so a closed group does not read as an empty box, but that left
+  // the head itself as nothing but a bold underlined title - and a reviewer measuring this screen read the
+  // two closed groups as "two completely empty fieldsets", reporting 0 form controls and 26px of height,
+  // because there was no sighted cue that they open at all.
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  text-align: start;
+  background-color: transparent;
+  border-color: transparent;
+  border-block-end-color: var(--color-text-muted);
+  padding-inline: 0;
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-primary);
+
+  svg {
+    flex: none;
+    inline-size: var(--space-2);
+    block-size: var(--space-2);
+  }
+
+  // Collapsed the caret points along the inline axis, expanded it points down the block axis. The state is
+  // read from the `aria-expanded` attribute the template already binds, so the rotation cannot drift out of
+  // step with what assistive technology is told.
+  &[aria-expanded='true'] svg {
+    transform: rotate(var(--rotate-quarter-turn));
+  }
+  cursor: pointer;
+}
+
+// The legacy section head had no hover, press or unavailable treatment to carry across, because its head
+// was not itself the control — the collapse affordance was a separate icon, and the head was static text.
+.portal-settings__toggle:not([disabled]):not([aria-disabled='true']) {
+  @include mx.hover {
+    color: var(--color-primary-hover);
+    border-block-end-color: var(--color-primary-hover);
+  }
+}
+
+.portal-settings__toggle:not([disabled]):not([aria-disabled='true']):active {
+  background-color: var(--color-selected);
+  border-radius: var(--radius-sm);
+}
+
+// Unavailable, native form. Muted ink, a softened rule beneath, and the cursor as
+// the second non-colour cue.
+.portal-settings__toggle[disabled] {
+  color: var(--color-text-muted);
+  border-block-end-color: var(--color-border-control);
+  cursor: not-allowed;
+}
+
+// Unavailable, ARIA form — focusable and announced rather than absent. No `cursor` and no `:hover` hold,
+// for the reason the global layer documents.
+.portal-settings__toggle[aria-disabled='true'] {
+  color: var(--color-text-muted);
+  border-block-end-color: var(--color-border-control);
+  pointer-events: none;
+}
+
+//  FIELD GRID — replaces the layout tables
+.portal-settings__grid {
+  display: grid;
+  gap: var(--space-3);
+
+  box-sizing: border-box;
+}
+
+// The always-present shell that a collapsed section head names. It contributes no box of its own, so an
+// open group lays out exactly as it did when the grid was the section's direct child.
+.portal-settings__body {
+  display: contents;
+}
+
+// ⚠ `hidden` MUST BE RESTATED, BECAUSE AN AUTHOR `display` BEATS THE USER-AGENT ONE. The attribute's whole
+// effect is `display: none` from the UA stylesheet, which any author declaration of `display` overrides — and
+// both the shell above and the tab panel declare one. Without this, a closed section and an unselected tab
+// would carry the attribute, be removed from the accessibility tree, and still occupy the page.
+.portal-settings__body[hidden],
+.portal-settings__panel[hidden] {
+  display: none;
+}
+
+// The legacy fields sat in a two-column table, a width="150" label cell beside a 325 or 300 pixel control
+// cell.
+.portal-settings__grid > app-form-field {
+  display: block;
+  min-inline-size: 0;
+}
+
+// ⚠ #24 / #08 — THE TWO-COLUMN ARRANGEMENT IS DRIVEN BY THE MEASURE A FIELD NEEDS, NOT BY THE VIEWPORT.
+// This was a plain `respond-above('lg')` media block, and it asked the wrong question: whether the viewport
+// is wide, rather than whether a column can actually hold a field. At exactly 1024px the two answers
+// diverged badly. The grid took two columns of 377px, a two-column field spends
+// `--field-label-inline-size` (150px) on its label and `--space-4` (16px) on its gap, so the control track
+// collapsed to 211px - NARROWER than the 247px the same control gets at 320px, and 59px short of the
+// 252px of ink the longest administrator option needs. The clipping was therefore WORST in the middle of
+// the range and a 320/768/1440 sweep passed straight over it.
+//
+// Sizing the columns from `--field-two-column-measure` - label column plus gap plus the widest control step
+// - makes a starved track impossible by construction: the grid takes two columns only where two genuinely
+// fit and otherwise drops to one, so the control track never falls below the widest step while the layout
+// has room for it. `min(100%, ...)` keeps the floor from exceeding the grid itself, which would push the
+// columns past the panel and turn a clipped name into a sideways-scrolling form.
+// `--field-two-column-measure` is the label column plus the shared field's column gap plus the widest
+// control step, composed once in _tokens.scss so this screen and any other cannot disagree about it.
+.portal-settings__grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--field-two-column-measure)), 1fr));
+}
+
+// Spans whatever the grid resolved to, so this holds in the one-column arrangement as well as the two.
+.portal-settings__field--wide {
+  grid-column: 1 / -1;
+}
+
+// ⚠ #08 — AT THE NARROWEST WIDTHS THE FIELDS TAKE ALMOST THE SECTION'S WHOLE MEASURE. Below `sm` every
+// field is stacked, so a control's width IS the grid's width, and the measure is genuinely scarce: at a
+// 320px viewport the page offers 305px, the shell spends 32px on its own inset and this fieldset another
+// 24px on padding, leaving 247px - against the 252px of ink (231.77px of text plus a 20.23px native arrow)
+// that the longest administrator option needs.
+//
+// ⚠ QA-21 — AND THE FIRST ANSWER TO THAT WENT TOO FAR. It withdrew the fieldset's inline padding from the
+// grid with `margin-inline: calc(-1 * var(--space-3))`, which cancelled the padding EXACTLY: measured at
+// both 320px and 375px, on all seven fieldsets, every label and every control rendered at x=17 - flush
+// against the inside of the 1px border, with no gutter whatsoever - while the `<legend>`, which the browser
+// positions at the padding edge and which no margin on the grid can move, stayed at x=29. So the fields
+// stuck out 12px to the LEFT of the caption naming them, and the group read as unframed. Fourteen of
+// fourteen gutter measurements were 0px against the border and -12px against the padding box.
+//
+// Narrowing the PADDING instead of cancelling it keeps both properties: the legend and the fields move
+// together, so they stay aligned, and the gutter is a real one from the spacing scale. Fourteen of fourteen
+// gutter measurements at 320px and 375px, across both tabs and all seven fieldsets, now read exactly one
+// step, with the legend and the first control and the first label all sharing an x.
+//
+// ⚠ IT IS THE SMALLEST STEP AND NOT THE SECOND, AND THE ARITHMETIC THAT SAID OTHERWISE WAS WRONG. Two
+// steps was tried first on the strength of "273px of fieldset less 2px of border and 16px of padding leaves
+// 255px against the 252px required". That sum omitted the select's OWN box: below `sm` the control keeps
+// 4px of inline padding a side and 1px of border a side, so the 255px it was given became a 245px content
+// box, and 245px less the 20.23px native arrow left 224.77px for 231.77px of text. Measured on the running
+// screen the administrator picker painted `Setup Administrator (setup_admi` and cut the closing `n)`.
+// The true requirement is 231.77 + 20.23 + 8 + 2 = 262px, which one step clears at 263px and two steps
+// does not.
+//
+// ⚠ AND ONE PIXEL IS NOT A MARGIN, WHICH IS WHY THE GUTTER IS NOT THE WHOLE ANSWER. This option is
+// operator data - a display name and a login name together - so a name three characters longer defeats any
+// gutter this screen could choose. `_forms.scss` therefore has selects report the loss with an ellipsis, so
+// a value too long for ANY width reads as truncated rather than as complete. This gutter restores the fit
+// for the data that can fit; that rule tells the truth about the data that cannot.
+@include mx.respond-below('sm') {
+  .portal-settings__section {
+    padding-inline: var(--space-1);
+  }
+}
+
+.portal-settings__control {
+  display: grid;
+  gap: var(--space-1);
+
+  // ⚠ #24 — GRID-ITEM HARDENING. This wrapper is the item the shared field's control track places, so its
+  // automatic minimum size is its own min-content contribution: without this floor, a value with a long
+  // unbreakable run pins the track wider than the column and the excess propagates all the way out to the
+  // document.
+  min-inline-size: 0;
+}
+
+// The two narrow steps. Applied to the wrapper, so whichever control it holds is
+// capped with it. Everything else fills the track.
+.portal-settings__control--medium {
+  max-inline-size: var(--control-inline-size-md);
+}
+
+.portal-settings__control--narrow {
+  max-inline-size: var(--control-inline-size-sm);
+}
+
+// ⚠ THE WIDEST STEP, and the only one expressed as a resolved measure rather than as a ceiling over a
+// stretched slot. The administrator selector's options carry a display name and a login name together, and
+// a fixed measure cannot fit them: the longest real option measured 231.77px of text against a 144px slot,
+// so the selected administrator was clipped mid-word at EVERY viewport - no width made it readable, because
+// the measure never depended on the viewport in the first place.
+//
+// `inline-size: min(100%, ...)` gives the slot a floor AND a ceiling in one declaration, which a lone
+// `min-inline-size` could not. The ceiling matters as much as the floor: with the grid now dropping to one
+// column wherever two would starve the track, a field can be 766px wide, and a stretched slot would have
+// rendered a 600px select for one person's name beside 96px fee fields. The `min(100%, ...)` form also
+// keeps the slot inside the column that holds it, because a bare length on a grid item overflows its track
+// rather than being clamped by it - which would trade a clipped name for a sideways-scrolling form. The
+// resolved measure is the legacy control cell, `width="325"` at Website/admin/Portal/SiteSettings.ascx.
+.portal-settings__control--name {
+  inline-size: min(100%, var(--control-inline-size-lg));
+}
+
+.portal-settings__control > :is([type='checkbox'], [type='radio']) {
+  justify-self: start;
+}
+
+// HOST-LOCK NOTICE The advisory that sits with the Banners choice group when the setting is held at host
+// level.
+.portal-settings__notice {
+  margin-block: 0;
+  color: var(--color-text-muted);
+  font-weight: var(--font-weight-normal);
+
+  // Measured before this rule, at 768: the readout's longest unbreakable run `AD77F0F4BEBB` gave it
+  // 105.05px of min-content inside a 70.06px track. Nothing about the painted value changes - a GUID that
+  // fits on one line still renders on one line.
+  overflow-wrap: anywhere;
+}
+
+// A READ-ONLY VALUE STATED AS TEXT, which is what a field renders in place of its box when there is no
+// value to put in one. The paragraph's default block margins are removed so the field's own vertical rhythm
+// is the only thing spacing it, exactly as the input it replaces was spaced.
+.portal-settings__readonly-value {
+  margin-block: 0;
+  align-self: center;
+}
+
+.portal-settings__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  padding-block-start: var(--space-2);
+}
+
+// DELIBERATE DIVERGENCES, RECORDED RATHER THAN ABSORBED
+// The legacy section-head toggle carried `tabIndex="-1"`, placing the ONLY control that expands a section
+// outside the tab order — a keyboard user could not reach it at all. The target reverses this: the head is
+// a natively focusable element carrying `aria-expanded`, and it is given a visible focus ring.

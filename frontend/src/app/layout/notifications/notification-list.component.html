@@ -1,0 +1,61 @@
+<!-- THE APPLICATION'S NOTIFICATION SURFACE. -->
+
+<!-- A PERSISTENT live region: the element is always in the document and only its contents change. -->
+<div
+  class="notification-list"
+  role="status"
+  aria-live="polite"
+  aria-atomic="false"
+  [attr.aria-label]="regionLabel"
+>
+  @for (entry of visibleEntries(); track entry.id) {
+    <!--
+      Tracked by the service's own identifier, which it documents as never reissued for the lifetime of
+      the service — not even after a dismissal or a clear.
+    -->
+    <div class="notification-list__item" [attr.data-severity]="entry.severity">
+      <!--
+        The severity as a WORD. Not decoration: it is the cue that makes the band perceivable without
+        perceiving the colour, and it is read out with the message.
+      -->
+      <p class="notification-list__severity">{{ labelFor(entry.severity) }}</p>
+
+      <!-- The sentence. -->
+      <p class="notification-list__message">{{ entry.message }}</p>
+
+      <!--
+        The visible glyph is a multiplication sign — the typographic character rather than the letter x
+        — and it is `aria-hidden`, because a screen reader announcing "multiplication sign" says nothing
+        useful.
+      -->
+      <button
+        type="button"
+        class="notification-list__dismiss"
+        [attr.aria-label]="dismissLabel"
+        (click)="dismiss(entry.id)"
+      >
+        <span aria-hidden="true">&times;</span>
+      </button>
+    </div>
+  }
+
+  @if (hiddenCount() > 0) {
+    <!--
+      HOW MANY ARE NOT SHOWN. Rendered inside the live region, so it is announced with the entries
+      rather than as a separate interruption, and worded as a count rather than as an affordance because
+      there is nothing to activate: dismissing the entries above brings the hidden ones into view.
+    -->
+    <p class="notification-list__overflow">{{ hiddenCount() }} earlier not shown</p>
+  }
+
+  @if (canClearAll()) {
+    <!--
+      CLEARING EVERYTHING AT ONCE. Offered only from the second entry onwards - with one message on
+      screen the per-entry control is already the shorter route - and rendered LAST so it can never sit
+      between two messages or move one under a reader who is mid-sentence.
+    -->
+    <button type="button" class="notification-list__clear-all" (click)="clearAll()">
+      {{ clearAllLabel }}
+    </button>
+  }
+</div>

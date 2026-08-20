@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+
+    <!--
+      The encoding declaration is the first element in the head and nothing - not even a comment -
+      precedes it: the parser must find it inside the first 1024 bytes, and a comment above it spends
+      part of that budget for no benefit.
+    -->
+
+    <title>DotNetNuke Administration</title>
+
+    <!-- The last group is not an omission. -->
+
+    <!--
+      ⚠ IT STAYS AT THE ROOT EVEN THOUGH A CHILD PORTAL IS ADDRESSED BENEATH A PATH SEGMENT, and the two
+      facts do not conflict.
+    -->
+    <base href="/">
+
+    <!--
+      Without this the layout is decided by a mobile browser's fallback viewport - roughly 980 logical
+      pixels, scaled down to fit - which silently defeats every breakpoint the shared mixins declare,
+      because the media queries never see the real device width.
+    -->
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <!--
+      Referrer policy is stated in the document rather than left to the browser default, so that
+      navigating away from an administration screen cannot leak a path carrying a tenant, account or
+      page identifier to a third-party origin.
+    -->
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+
+    <!-- MIGRATION: the icon is STATIC and the legacy per-portal mechanism is not ported. -->
+    <link rel="icon" type="image/x-icon" href="favicon.ico">
+
+    <!--
+      A note for whoever revisits the crawler directive: it is reproduced exactly as the legacy portal
+      declared it and is inert in practice, because a crawler fetching this document receives an empty
+      mount point and every API route behind it requires a bearer token.
+    -->
+    <meta name="RESOURCE-TYPE" content="DOCUMENT">
+    <meta name="DISTRIBUTION" content="GLOBAL">
+    <meta name="ROBOTS" content="INDEX, FOLLOW">
+    <meta name="REVISIT-AFTER" content="1 DAYS">
+    <meta name="RATING" content="GENERAL">
+
+    <!--
+      Nothing in this head links the compiled global styles or the application modules, and the absence
+      is the point. The legacy StylePlaceholder and CSS pair was filled at runtime by ManageStyleSheets,
+      which assembled an ordered, cached cascade on every request and ran twice per page.
+    -->
+  </head>
+
+  <!-- No class, no inline style and no theme attribute on the body element. -->
+  <body>
+    <!--
+      The element name is not a free choice: angular.json sets the workspace selector prefix, the root
+      component declares the matching selector, and src/main.ts bootstraps that component into this
+      element.
+    -->
+    <app-root></app-root>
+
+    <!--
+      The markup reuses the global surface classes only - the width cap, the panel and its padded slot -
+      so the message is legible without one line of new or inline style, and stays legible even if the
+      global style bundle fails to load.
+    -->
+    <noscript>
+      <div class="layout-container">
+        <div class="panel">
+          <div class="panel__body">
+            <h1>JavaScript must be enabled</h1>
+            <p>
+              This administration console renders every screen in the browser - portals and
+              their aliases, pages, modules, users, roles and permissions. With JavaScript
+              turned off the page stays empty and no administration task can be completed.
+            </p>
+            <p>
+              Enable JavaScript for this address and reload the page. If a browser extension
+              or a managed browser policy is blocking it, ask whoever administers this
+              installation to allow scripting for this site.
+            </p>
+          </div>
+        </div>
+      </div>
+    </noscript>
+  </body>
+</html>

@@ -1,0 +1,408 @@
+<section class="portal-form">
+  <!--
+    No action projects into the header slot: the legacy screen declared its two commands at L113-L114,
+    OUTSIDE both containers and after them, so they are the form's own action row and are authored
+    there.
+  -->
+  <!-- ⚠ THE HEADER NOW CARRIES TWO THINGS IT DID NOT: an identity and a way out sideways. -->
+  <app-page-header [title]="heading()" [subtitle]="portalName()">
+    @if (nothingToShow()) {
+      <!--
+        THE ONE WAY OUT, in the slot the two sibling actions vacated. ⚠ WITHHOLDING THEM IS HALF THE
+        POINT: both address the portal by its identifier, so on a portal that has gone they were two
+        links that could only fail, and a reader following one arrived at a second dead screen.
+      -->
+      <a class="page-action portal-form__sibling" routerLink="/portals">{{ recoveryLabel }}</a>
+    } @else {
+      @if (settingsLink(); as settings) {
+        <a class="page-action portal-form__sibling" [routerLink]="settings">{{
+          settingsLinkLabel
+        }}</a>
+      }
+
+      @if (aliasesLink(); as aliases) {
+        <a class="page-action portal-form__sibling" [routerLink]="aliases">{{
+          aliasesLinkLabel
+        }}</a>
+      }
+    }
+  </app-page-header>
+
+  <!-- The failure surface. Renders nothing when there is no problem document. -->
+  <app-error-banner [problem]="problem()" />
+
+  @if (addressUnreadable()) {
+    <!--
+      The address carries something that is not a portal identifier. Stated by the banner above - the
+      application's one assertive owner for a refusal - and recovered through the header, so the state is
+      one statement rather than two.
+    -->
+  } @else if (isEditMode()) {
+    <!--
+      EDIT MODE RENDERS THREE CONTROLS, AND THE COUNT IS DELIBERATE. The update contract declares no
+      alias member - a portal's host names are a sub-resource with a screen of their own - the portal
+      type is decided once at provisioning, and the legacy edit screen never carried an administrator
+      block at all.
+    -->
+    <form class="portal-form__form" [formGroup]="editForm" (ngSubmit)="onSubmit()">
+      @if (loading()) {
+        <app-loading-spinner size="large" label="Loading portal…" />
+      } @else if (canEdit()) {
+        <fieldset class="portal-form__section">
+          <legend class="portal-form__legend"><h2>Portal Setup</h2></legend>
+
+          <div class="portal-form__grid">
+            <app-form-field
+              label="Title:"
+              for="portal-form-title"
+              help="Give your site a title."
+              [error]="editMessageFor('title')"
+              [limit]="limits.title"
+            >
+              <input
+                id="portal-form-title"
+                type="text"
+                formControlName="title"
+                [maxlength]="limits.title"
+                [attr.aria-invalid]="editMessageFor('title') !== null"
+                autocomplete="off"
+              />
+            </app-form-field>
+
+            <!-- See annotation 7: a plain multi-line box, at the measured row count. -->
+            <app-form-field
+              label="Description:"
+              for="portal-form-description"
+              help="Enter a description for your site."
+              [error]="editMessageFor('description')"
+              [limit]="limits.description"
+            >
+              <textarea
+                id="portal-form-description"
+                rows="3"
+                formControlName="description"
+                [maxlength]="limits.description"
+                [attr.aria-invalid]="editMessageFor('description') !== null"
+              ></textarea>
+            </app-form-field>
+
+            <!--
+              "Keywords:" with a LOWER-CASE `w`. The markup attribute at `signup.ascx:L60` reads
+              "KeyWords:" and the resource value reads "Keywords:"; the resource value wins, because
+              that is what the running application displayed.
+            -->
+            <app-form-field
+              label="Keywords:"
+              for="portal-form-keywords"
+              help="Enter some keywords separated by a comma.  These are added to the Html page as MetaData and help Search Engines index your site."
+              [error]="editMessageFor('keywords')"
+              [limit]="limits.keywords"
+            >
+              <textarea
+                id="portal-form-keywords"
+                rows="3"
+                formControlName="keywords"
+                [maxlength]="limits.keywords"
+                [attr.aria-invalid]="editMessageFor('keywords') !== null"
+              ></textarea>
+            </app-form-field>
+          </div>
+        </fieldset>
+      }
+
+      <!--
+        ⚠ WITHHELD ENTIRELY WHEN THE PORTAL IS NOT THERE. Measured at runtime: the bar rendered anyway, with
+        a DISABLED "Update" and an enabled "Cancel", on a screen whose record does not exist - a dead
+        affordance beside a disabled one. The header's recovery link is the one thing to do in that state.
+      -->
+      @if (nothingToShow() === false) {
+        <div class="portal-form__actions">
+          <button
+            class="form-action--primary"
+            type="submit"
+            [disabled]="!canSubmit()"
+            [attr.aria-busy]="saving()"
+          >
+            {{ submitLabel() }}
+          </button>
+
+          <button type="button" [disabled]="saving()" (click)="onCancel()">
+            {{ cancelLabel }}
+          </button>
+
+          @if (saving()) {
+            <app-loading-spinner size="small" label="Saving…" />
+          }
+        </div>
+      }
+    </form>
+  } @else {
+    <form class="portal-form__form" [formGroup]="createForm" (ngSubmit)="onSubmit()">
+      <fieldset class="portal-form__section">
+        <legend class="portal-form__legend"><h2>Portal Setup</h2></legend>
+
+        <div class="portal-form__grid">
+          <!--
+            THE VALUES ARE LOAD-BEARING DATA, NOT LABELS. `signup.ascx:L34-L35` declares them as "P" and
+            "C", and every legacy branch tests them literally, so they are bound from the component's
+            typed pairs rather than written here as bare string attributes - a bare attribute would not
+            be checked against the control's type.
+          -->
+          <app-form-field
+            label="Portal Type:"
+            help="There are two types of portals which can be created using this application (see the Module Help available on the Action Menu for more details)."
+            [error]="createMessageFor('portalType')"
+          >
+            <div class="portal-form__choices">
+              @for (choice of portalTypeChoices; track choice.value) {
+                <span class="portal-form__choice">
+                  <input
+                    type="radio"
+                    name="portalType"
+                    formControlName="portalType"
+                    [id]="'portal-form-portal-type-' + choice.value"
+                    [value]="choice.value"
+                  />
+                  <label [attr.for]="'portal-form-portal-type-' + choice.value">{{
+                    choice.label
+                  }}</label>
+                </span>
+              }
+            </div>
+          </app-form-field>
+
+          <!-- The ALIAS control, labelled "Portal Alias:" - the legacy `txtPortalName` box. -->
+          <app-form-field
+            label="Portal Alias:"
+            for="portal-form-alias"
+            [required]="true"
+            help="Enter the Alias for this Portal"
+            [error]="createMessageFor('alias')"
+            [limit]="limits.alias"
+          >
+            <input
+              id="portal-form-alias"
+              type="text"
+              formControlName="alias"
+              aria-required="true"
+              [maxlength]="limits.alias"
+              [attr.aria-invalid]="createMessageFor('alias') !== null"
+              autocomplete="off"
+            />
+          </app-form-field>
+
+          <!-- The NAME control, labelled "Title:". -->
+          <app-form-field
+            label="Title:"
+            for="portal-form-title"
+            help="Give your site a title."
+            [error]="createMessageFor('title')"
+            [limit]="limits.title"
+          >
+            <input
+              id="portal-form-title"
+              type="text"
+              formControlName="title"
+              [maxlength]="limits.title"
+              [attr.aria-invalid]="createMessageFor('title') !== null"
+              autocomplete="off"
+            />
+          </app-form-field>
+
+          <!-- See annotation 7. -->
+          <app-form-field
+            label="Description:"
+            for="portal-form-description"
+            help="Enter a description for your site."
+            [error]="createMessageFor('description')"
+            [limit]="limits.description"
+          >
+            <textarea
+              id="portal-form-description"
+              rows="3"
+              formControlName="description"
+              [maxlength]="limits.description"
+              [attr.aria-invalid]="createMessageFor('description') !== null"
+            ></textarea>
+          </app-form-field>
+
+          <!-- Lower-case `w`, and the double space in the help sentence. -->
+          <app-form-field
+            label="Keywords:"
+            for="portal-form-keywords"
+            help="Enter some keywords separated by a comma.  These are added to the Html page as MetaData and help Search Engines index your site."
+            [error]="createMessageFor('keywords')"
+            [limit]="limits.keywords"
+          >
+            <textarea
+              id="portal-form-keywords"
+              rows="3"
+              formControlName="keywords"
+              [maxlength]="limits.keywords"
+              [attr.aria-invalid]="createMessageFor('keywords') !== null"
+            ></textarea>
+          </app-form-field>
+        </div>
+      </fieldset>
+
+      <!--
+        THE ADMINISTRATOR BLOCK, RENDERED ONLY WHILE CREATING - which is structural rather than
+        conditional, because it sits inside the creation branch and the edit form declares no control
+        any of these six fields could bind to.
+      -->
+      <fieldset class="portal-form__section">
+        <legend class="portal-form__legend"><h2>Security Settings</h2></legend>
+
+        <div class="portal-form__grid">
+          <app-form-field
+            label="First Name:"
+            for="portal-form-first-name"
+            [required]="true"
+            help="Enter your first name."
+            [error]="createMessageFor('firstName')"
+            [limit]="limits.firstName"
+          >
+            <input
+              id="portal-form-first-name"
+              type="text"
+              formControlName="firstName"
+              aria-required="true"
+              [maxlength]="limits.firstName"
+              [attr.aria-invalid]="createMessageFor('firstName') !== null"
+              autocomplete="off"
+            />
+          </app-form-field>
+
+          <app-form-field
+            label="Last Name:"
+            for="portal-form-last-name"
+            [required]="true"
+            help="Enter your last name."
+            [error]="createMessageFor('lastName')"
+            [limit]="limits.lastName"
+          >
+            <input
+              id="portal-form-last-name"
+              type="text"
+              formControlName="lastName"
+              aria-required="true"
+              [maxlength]="limits.lastName"
+              [attr.aria-invalid]="createMessageFor('lastName') !== null"
+              autocomplete="off"
+            />
+          </app-form-field>
+
+          <app-form-field
+            label="Username:"
+            for="portal-form-username"
+            [required]="true"
+            help="Enter a username for the Administrator Account for this site."
+            [error]="createMessageFor('username')"
+            [limit]="limits.username"
+          >
+            <input
+              id="portal-form-username"
+              type="text"
+              formControlName="username"
+              aria-required="true"
+              [maxlength]="limits.username"
+              [attr.aria-invalid]="createMessageFor('username') !== null"
+              autocomplete="off"
+            />
+          </app-form-field>
+
+          <!--
+            The password pair. `signup.ascx:L94` and `L100` declare `textmode="password"` and
+            `maxlength="20"`.
+          -->
+          <app-form-field
+            label="Password:"
+            for="portal-form-password"
+            [required]="true"
+            help="Enter a password for the Administrator Account for this site."
+            [error]="createMessageFor('password')"
+            [limit]="limits.password"
+          >
+            <input
+              id="portal-form-password"
+              type="password"
+              formControlName="password"
+              aria-required="true"
+              [maxlength]="limits.password"
+              [attr.aria-invalid]="createMessageFor('password') !== null"
+              autocomplete="new-password"
+            />
+          </app-form-field>
+
+          <!--
+            The confirmation is CLIENT-ONLY: neither the fifteen-parameter legacy call nor the request
+            contract declares a member for it, so it is compared and discarded.
+          -->
+          <app-form-field
+            label="Confirm:"
+            for="portal-form-confirm"
+            [required]="true"
+            help="Repeat your password to confirm it was typed correctly."
+            [error]="createMessageFor('confirm')"
+            [limit]="limits.confirm"
+          >
+            <input
+              id="portal-form-confirm"
+              type="password"
+              formControlName="confirm"
+              aria-required="true"
+              [maxlength]="limits.confirm"
+              [attr.aria-invalid]="createMessageFor('confirm') !== null"
+              autocomplete="new-password"
+            />
+          </app-form-field>
+
+          <app-form-field
+            label="Email:"
+            for="portal-form-email"
+            [required]="true"
+            help="Enter an email address for the Administrator Account for this site."
+            [error]="createMessageFor('email')"
+            [limit]="limits.email"
+          >
+            <input
+              id="portal-form-email"
+              type="text"
+              formControlName="email"
+              aria-required="true"
+              [maxlength]="limits.email"
+              [attr.aria-invalid]="createMessageFor('email') !== null"
+              autocomplete="off"
+            />
+          </app-form-field>
+        </div>
+      </fieldset>
+
+      <!-- The action row. -->
+      <div class="portal-form__actions">
+        <button
+          class="form-action--primary"
+          type="submit"
+          [disabled]="!canSubmit()"
+          [attr.aria-busy]="saving()"
+        >
+          {{ submitLabel() }}
+        </button>
+
+        <button type="button" [disabled]="saving()" (click)="onCancel()">
+          {{ cancelLabel }}
+        </button>
+
+        @if (saving()) {
+          <app-loading-spinner size="small" label="Saving…" />
+        }
+      </div>
+
+      <!-- THE CLOSING NOTE, RE-AUTHORED AS REAL MARKUP - annotation 5. -->
+      <p class="portal-form__note">
+        <strong>*Note:</strong> Once your portal is created, you will need to login using
+        the Administrator information specified above.
+      </p>
+    </form>
+  }
+</section>

@@ -1,0 +1,66 @@
+# Build-context hygiene for a frontend-rooted context. Both shipped images build from the
+# repository root, so the root .dockerignore is what Docker consults for them and this list
+# applies only when a build is invoked against this directory. Only generated, transient and
+# machine-local material is listed - nothing `npm ci`, `ng build` or `ng test` reads - and
+# there are no negation entries, so no later line can shadow an earlier one.
+
+# The frontend image runs `npm ci` inside its build stage, so a host tree copied in would ship
+# wrong-platform native bindings and defeat the deterministic lockfile install.
+**/node_modules/
+
+**/dist/
+**/.angular/
+out-tsc/
+**/*.tsbuildinfo
+
+**/coverage/
+**/.nyc_output/
+karma-results*
+chrome-profiler-events*.json
+speed-measure-plugin*.json
+
+**/*.log
+npm-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.eslintcache
+.npm/
+
+# Version-control metadata, enumerated rather than globbed so that no `.git*` wildcard can
+# reach an asset under public/.
+.git/
+.gitignore
+.gitattributes
+
+.vscode/
+.idea/
+**/*.swp
+**/*.swo
+**/*~
+**/.DS_Store
+**/Thumbs.db
+**/ehthumbs.db
+**/Desktop.ini
+
+# Machine-local environment overrides and credentials. `**/.env*` closes that family at every
+# depth, and it requires a basename beginning with a literal dot - so the workspace's real
+# committed configuration under src/environments/ is deliberately NOT matched and the
+# production build keeps every file it needs.
+.env*
+*.pem
+*.key
+*.pfx
+*.p12
+*.p8
+*.jks
+*.keystore
+*.ppk
+**/.env*
+**/*.pem
+**/*.key
+**/*.pfx
+**/*.p12
+**/*.p8
+**/*.jks
+**/*.keystore
+**/*.ppk

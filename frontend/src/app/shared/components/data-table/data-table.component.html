@@ -1,0 +1,422 @@
+<!-- THE ONE REAL TABLE IN THIS APPLICATION. -->
+
+<!--
+  THE SCROLLING REGION, AND IT NOW DECLARES ITSELF AS ONE.
+
+  ⚠ THIS CONTAINER USED TO SCROLL WITHOUT SAYING SO, and everything it should have said was already written
+  down elsewhere: `styles/_tables.scss` publishes a `[data-table-scroll]` contract - focus ring, and a
+  below-md rule relaxing the table's minimum width - and NO template in the application emitted the
+  attribute, so every line of that contract was dead. Measured at 375px: the container was 326px wide, the
+  table stayed at its 640px floor, seven columns sat off screen, and the region had `tabindex="-1"`, no role
+  and no accessible name - reachable by pointer only.
+
+  All four attributes below are conditional on the region ACTUALLY overflowing, which the component measures
+  with a resize observer. A listing that fits contributes no tab stop and no landmark, which is why the
+  condition exists rather than a blanket declaration.
+-->
+<!--
+  ⚠ THE SCROLLING REGION IS FOCUSABLE AND NAMED ONLY WHILE IT IS ACTUALLY CLIPPING, and every one of these
+  three attributes is conditional for that reason. Measured on the account listing: at 1280 the container's
+  scroll width and client width were both 1046, so nothing was hidden, while at 375 they were 648 against
+  326 - 322 pixels and four whole columns unreachable. The container carried no `tabindex`, no `role` and no
+  accessible name, so it was absent from the tab order and a keyboard user could not scroll it at all,
+  although arrow keys demonstrably worked once focus was forced into it. Naming it unconditionally would
+  instead put an unusable focus stop in every listing at every width.
+
+  The `data-table-scroll` attribute, by contrast, is UNCONDITIONAL: `styles/_tables.scss` publishes a
+  `[data-table-scroll]` contract carrying the focus ring and the scroll behaviour, and no template emitted
+  the attribute, so every line of that block was dead. The styling therefore always applies; the landmark,
+  the name and the tab stop are emitted only when there is something to scroll.
+
+  The name is BORROWED FROM THE CAPTION rather than authored here, so the region and the table it wraps can
+  never describe themselves differently, and so a caption a feature already supplies is not duplicated.
+-->
+<div
+  class="data-table__container"
+  data-table-scroll
+  [attr.tabindex]="isHorizontallyScrollable() ? 0 : null"
+  [attr.role]="isHorizontallyScrollable() ? 'region' : null"
+  [attr.aria-labelledby]="isHorizontallyScrollable() ? captionId : null"
+  [attr.data-identity-pinned]="identityPinned() ? 'true' : null"
+>
+  <!--
+    THE PAINTED OVERFLOW CUE, AND IT IS THE HALF OF THIS REGION'S SELF-DESCRIPTION THAT WAS MISSING.
+    The attributes above already tell assistive technology there is a scrollable region and give a keyboard
+    user a stop to reach it. A SIGHTED reader was told nothing: measured on all six listings at 320px and
+    375px, no painted text inside any table container mentioned scrolling and no scrollbar was rendered, so a
+    968px table inside a 271px scrollport simply looked like a grid that ended at the container's edge.
+
+    It states the COUNT of columns still to come rather than "scroll for more", because the count is the part
+    a reader cannot infer from a clipped edge. Rendered only while something is actually hidden, and hidden
+    from assistive technology because the region already announces itself by name and role - a second
+    announcement of the same fact is noise, not redundancy.
+  -->
+  @if (hiddenColumnCount() > 0) {
+    <p class="data-table__overflow-cue" aria-hidden="true">
+      {{ overflowCueText() }}
+    </p>
+  }
+  <!--
+    THE SINGLE ANNOUNCING REGION ON A LISTING, and it now carries the ORDER as well as the count - see
+    `resultSummary` for why the order is folded in here rather than announced from a region of its own.
+    The comment this replaces described the row count as reporting the current page; it reports the match
+    set, and `ariaRowCount` records why that was reversed.
+  -->
+  <p class="data-table__result-status" role="status" aria-live="polite" aria-atomic="true">
+    {{ resultSummary() }}
+  </p>
+
+  <!--
+    THE REFETCH INDICATOR, AND IT EXISTS BECAUSE THE ROWS STAY ON SCREEN.
+    A read that arrives while rows are already displayed - a page turn, a sort, a filter change, the
+    re-read after a delete - deliberately keeps them, and reports itself through `aria-busy` on the table
+    below. That is correct for a screen reader and INVISIBLE to everyone else: measured against a six-second
+    filter change, the previous rows sat there for the whole request with no cue of any kind, so the screen
+    looked settled while its contents were stale. This strip is the seen half of the same report, and it
+    carries the SAME component and the SAME label as the first-read placeholder so that a screen has one
+    loading vocabulary rather than two.
+  -->
+  @if (showRefetchIndicator()) {
+    <p class="data-table__refetch" aria-hidden="true">
+      <app-loading-spinner size="small" [label]="loadingLabel" />
+    </p>
+  }
+
+  <!--
+    ⚠ A WAY PAST THE ROW COMMANDS, OFFERED ONLY WHEN THERE IS ENOUGH TO PASS. Measured on the account
+    listing: THIRTY consecutive row-command stops - ten rows of three, uninterrupted, because a row's username
+    is plain text rather than a link - and the first stop after them was the pager. The one skip affordance on
+    the page bypasses the fourteen header and sidebar stops and none of these.
+
+    A BUTTON RATHER THAN A FRAGMENT LINK, and that is not a style choice: an `href="#..."` inside a routed
+    application is a navigation, so the affordance would push a fragment onto the address and hand the router
+    a URL change for something that is purely a focus move.
+  -->
+  @if (offersRowSkip()) {
+    <button class="data-table__skip" type="button" (click)="skipPastRows()">
+      {{ rowSkipLabel }}
+    </button>
+  }
+
+  <table
+    class="data-table"
+    [attr.aria-rowcount]="ariaRowCount()"
+    [attr.aria-busy]="ariaBusy()"
+    [style.min-inline-size]="tableMinInlineSize()"
+  >
+    <caption class="data-table__caption" data-visually-hidden [id]="captionId">
+      <ng-content select="[dataTableCaption]">Data table</ng-content>
+    </caption>
+
+    <!--
+      Track sizes live here and nowhere else, so NO CELL EVER CARRIES A SIZE. This is also what makes
+      row windowing safe: under a fixed table layout the columns resolve from this group rather than
+      from cell content, so a row that is not currently rendered cannot shift the columns as it scrolls
+      into the window.
+    -->
+    @if (columnWidths().length > 0) {
+      <colgroup>
+        @for (columnTrack of columnWidths(); track columnTrack.key) {
+          <col [style.inline-size]="columnTrack.width" />
+        }
+      </colgroup>
+    }
+
+    <thead>
+      <tr class="data-table__header-row" [attr.aria-rowindex]="headerRowIndex">
+        @for (cell of headerCells(); track cell.key) {
+          <!--
+            Column scope is what lets assistive technology name a cell by its column as a reader moves
+            across a row.
+          -->
+          <th
+            scope="col"
+            class="data-table__header"
+            [attr.data-align]="cell.align"
+            [attr.data-atomic]="cell.atomic ? 'true' : null"
+            [attr.data-row-identity]="cell.rowHeader ? 'true' : null"
+            [attr.aria-sort]="cell.ariaSort"
+          >
+            @if (cell.sortable) {
+              <!--
+                A REAL BUTTON inside the heading, not a heading with a click handler. Chosen over an
+                activatable heading deliberately: a button is focusable by default, is announced as
+                operable, and answers both Enter and Space with no key handling written here at all.
+              -->
+              <!--
+                `aria-label` STATES THE ACTION AND CONTAINS THE VISIBLE LABEL VERBATIM. The heading text
+                alone names the column and not what pressing it does, so a reader landing here heard
+                only "Module Title, button".
+              -->
+              <!--
+                THE CONTROL IS MARKED UNAVAILABLE WHILE A READ IS IN FLIGHT, AND ALSO OVER AN EMPTY RESULT.
+                The second half fixes a measured defect: the sort controls stayed live and focusable above a
+                table with no rows, so activating one reordered nothing, announced nothing, and asked the
+                server for an ordering of the empty set the reader was already looking at. `aria-disabled`
+                rather than `disabled` for the reason the stylesheet records - the platform blurs an element
+                the instant it becomes natively disabled, which dropped focus to the document body.
+              -->
+              <button
+                class="data-table__sort"
+                type="button"
+                [attr.aria-label]="cell.sortLabel"
+                [attr.aria-disabled]="sortUnavailable() ? 'true' : null"
+                (click)="activateSort(cell)"
+              >
+                <span
+                  class="data-table__label"
+                  [class.data-table__label--hidden]="cell.labelVisible === false"
+                  >{{ cell.label }}</span
+                >
+
+                <!--
+                  ⚠ THE SPAN IS RENDERED UNCONDITIONALLY AND ONLY ITS CONTENT IS CONDITIONAL, BECAUSE
+                  THE BOX HAS TO BE RESERVED. Measured with the span behind an `@if`: activating a sort
+                  grew the button under the pointer — the Title heading went 44.000 -> 46.469 px and
+                  re-centred 1.234 px to the left, and Start Date went 70.859 -> 86.750 px, a 15.891 px
+                  jump.
+                -->
+                <span class="data-table__sort-indicator" aria-hidden="true">
+                  @if (cell.sorted) {
+                    @if (cell.ariaSort === 'ascending') {
+                      &#x25B2;
+                    } @else {
+                      &#x25BC;
+                    }
+                  }
+                </span>
+              </button>
+            } @else {
+              <span
+                class="data-table__label"
+                [class.data-table__label--hidden]="cell.labelVisible === false"
+                >{{ cell.label }}</span
+              >
+            }
+          </th>
+        }
+      </tr>
+    </thead>
+
+    <!--
+      THE PAGER IS A SIBLING OF THIS TABLE, NEVER A ROW INSIDE IT, so no foot row is emitted here and
+      the shared pagination component is referenced nowhere in this file.
+    -->
+    <tbody class="data-table__body">
+      <!-- WAITING WINS OVER EMPTY, and the emptiness test counts explicitly. -->
+      <!--
+        THE PLACEHOLDER REPLACES THE ROWS ONLY WHEN THERE ARE NO ROWS TO REPLACE. A read that arrives
+        while rows are on screen - a page turn, a sort, a filter change, the re-read after a delete -
+        keeps them and reports its progress through `aria-busy` on the table instead.
+      -->
+      @if (showWaitingPlaceholder()) {
+        <!--
+          ONE SPANNING CELL rather than a skeleton row of empty cells, so a screen reader reads a single
+          status instead of a row of blanks, the heading context stays on screen, and the markup stays
+          valid.
+        -->
+        <tr [attr.aria-rowindex]="messageRowIndex">
+          <td class="data-table__message" data-placeholder [attr.colspan]="columnSpan()">
+            <!--
+              ⚠ THE WRAPPER IS PINNED TO THE SCROLLPORT, NOT TO THE CELL, and all three message states share
+              it for the same reason - see `messageViewportInlineSize` in the paired class for the measurement
+              that made it necessary.
+
+              THE LABEL IS THE CALLER'S, because "Loading…" alone does not say what is being loaded. Every
+              listing passes its own noun, so the announcement a screen reader hears names the collection.
+            -->
+            <div class="data-table__message-viewport" [style.inline-size.px]="messageViewportInlineSize()">
+              <app-loading-spinner [label]="loadingLabel" />
+            </div>
+          </td>
+        </tr>
+      } @else if (showFailurePlaceholder()) {
+        <!--
+          ⚠ NOT THE EMPTY STATE. The empty state asserts that nothing exists, which is a claim nobody is
+          entitled to make after a read that failed. This row states only what is true - the records could
+          not be read - and leaves the REASON to the caller's own error banner, which is where the problem
+          document, its support reference and any retry control live.
+        -->
+        <tr [attr.aria-rowindex]="messageRowIndex">
+          <td class="data-table__message" data-placeholder [attr.colspan]="columnSpan()">
+            <div class="data-table__message-viewport" [style.inline-size.px]="messageViewportInlineSize()">
+              <p class="data-table__unread">{{ recordsUnreadMessage }}</p>
+            </div>
+          </td>
+        </tr>
+      } @else if (isEmpty()) {
+        <!--
+          ⚠ THE EMPTY STATE BELONGS INSIDE THE TABLE, AND THIS ROW IS WHY. A consumer that renders its own
+          panel INSTEAD of the table destroys the `role="status"` region above along with it, so narrowing a
+          listing to nothing announces nothing at all - the one transition most in need of a report. Keeping
+          it here means the region survives and says "No records found." The message and the action are the
+          consumer's to supply, so a screen with its own wording and its own recovery affordance no longer
+          has to choose between them and being announced.
+        -->
+        <tr [attr.aria-rowindex]="messageRowIndex">
+          <td class="data-table__message" data-placeholder [attr.colspan]="columnSpan()">
+            <!--
+              ⚠ THE ZERO-RESULT SURFACE NOW CARRIES A SENTENCE AND A WAY FORWARD, and it carried neither. The
+              shared empty state has an action slot precisely so a reader who has narrowed a listing to nothing
+              is not left at a dead end, and this grid rendered it with the slot empty and the message left at
+              its generic default - so on the listings whose empty state comes from HERE rather than from the
+              feature, there was nothing to clear, nothing to add and nothing explaining which of the two had
+              happened. Both are the caller's to supply: only the feature knows why its listing is empty and
+              what the reader may do about it.
+
+              The wrapper is pinned to the scrollport for the reason the waiting row above records.
+            -->
+            <div class="data-table__message-viewport" [style.inline-size.px]="messageViewportInlineSize()">
+              <app-empty-state [message]="emptyMessage">
+                <ng-content select="[dataTableEmptyAction]" />
+              </app-empty-state>
+            </div>
+          </td>
+        </tr>
+      } @else {
+        <!--
+          THE TWO SPACERS HOLD THE SCROLLABLE HEIGHT OF THE ROWS THAT ARE NOT RENDERED, so the document
+          keeps its true length and the scrollbar its true proportions while only the rows near the
+          viewport exist in the DOM. Each is a valid single-cell row spanning every column, is hidden
+          from assistive technology - it represents no record - and collapses to nothing when windowing
+          is not engaged, which is the ordinary case for every paged screen in this application.
+        -->
+        @if (leadingSpacerHeight() > 0) {
+          <tr aria-hidden="true" class="data-table__spacer">
+            <td [attr.colspan]="columnSpan()" [style.block-size.px]="leadingSpacerHeight()"></td>
+          </tr>
+        }
+
+        <!--
+          ⚠ TRACKED THROUGH A METHOD SO A FEATURE CAN NAME ITS RECORD'S IDENTITY. The fallback inside
+          `trackBodyRow` is the row OBJECT, which is what this expression named directly before, so a
+          listing that supplies no `rowKey` renders exactly as it did.
+        -->
+        @for (bodyRow of renderedRows(); track trackBodyRow(bodyRow)) {
+          <tr
+            class="data-table__row"
+            [attr.tabindex]="rowsSelectable() ? 0 : null"
+            [attr.aria-rowindex]="bodyRow.ariaRowIndex"
+            [attr.aria-selected]="rowsSelectable() ? bodyRow.row === selectedRow() : null"
+            [class.data-table__row--selected]="rowsSelectable() && bodyRow.row === selectedRow()"
+            (click)="activateRowFromPointer(bodyRow.row, $event)"
+            (keydown)="activateRowFromKeyboard(bodyRow.row, $event)"
+          >
+            @for (cell of bodyRow.cells; track cell.key) {
+              @switch (cell.kind) {
+                @case ('actions') {
+                  <!--
+                    The commands column replaces the legacy image-command column, and EVERY COMMAND NOW
+                    CARRIES AN ACCESSIBLE NAME. Roughly half of the legacy commands carried none at all
+                    - both commands in the portal listing, the delete command in the role listing, the
+                    two reordering commands in the profile-property listing and all three commands in
+                    the account listing were unlabelled images.
+                  -->
+                  <td
+                    class="data-table__cell data-table__cell--actions"
+                    [attr.data-align]="cell.align"
+                    (click)="blockRowActivation($event)"
+                    (keydown)="blockRowActivation($event)"
+                  >
+                    <!--
+                      The commands are laid out by this wrapper, not by the cell. A cell made into a
+                      flex container stops being a table cell and drops out of the row's layout
+                      altogether, so the flex context has to live one level in.
+                    -->
+                    <div class="data-table__actions">
+                      @if (cell.template !== null && cell.context !== null) {
+                        <ng-container
+                          [ngTemplateOutlet]="cell.template"
+                          [ngTemplateOutletContext]="cell.context"
+                        />
+                      }
+                    </div>
+                  </td>
+                }
+                @case ('template') {
+                  <!--
+                    Rich cell content arrives as a REAL ANGULAR TEMPLATE supplied by the feature and
+                    rendered through an outlet - never as injected markup.
+                  -->
+                  @if (cell.rowHeader) {
+                    <th
+                      scope="row"
+                      class="data-table__cell"
+                      [attr.data-align]="cell.align"
+                      [attr.data-atomic]="cell.atomic ? 'true' : null"
+                    >
+                      @if (cell.template !== null && cell.context !== null) {
+                        <ng-container
+                          [ngTemplateOutlet]="cell.template"
+                          [ngTemplateOutletContext]="cell.context"
+                        />
+                      }
+                    </th>
+                  } @else {
+                    <td
+                      class="data-table__cell"
+                      [attr.data-align]="cell.align"
+                      [attr.data-atomic]="cell.atomic ? 'true' : null"
+                    >
+                      @if (cell.template !== null && cell.context !== null) {
+                        <ng-container
+                          [ngTemplateOutlet]="cell.template"
+                          [ngTemplateOutletContext]="cell.context"
+                        />
+                      }
+                    </td>
+                  }
+                }
+                @default {
+                  <!--
+                    Cell text, heading text and the caption are interpolated as PLAIN TEXT and nothing
+                    else. This is parity, not caution.
+                  -->
+                  <!-- The row header switch; see the note in the template branch above. -->
+                  @if (cell.rowHeader) {
+                    <th
+                      scope="row"
+                      class="data-table__cell"
+                      [attr.data-align]="cell.align"
+                      [attr.data-atomic]="cell.atomic ? 'true' : null"
+                    >
+                      {{ cell.text }}
+                    </th>
+                  } @else {
+                    <td
+                      class="data-table__cell"
+                      [attr.data-align]="cell.align"
+                      [attr.data-atomic]="cell.atomic ? 'true' : null"
+                    >
+                      {{ cell.text }}
+                    </td>
+                  }
+                }
+              }
+            }
+          </tr>
+        }
+      }
+        @if (trailingSpacerHeight() > 0) {
+          <tr aria-hidden="true" class="data-table__spacer">
+            <td [attr.colspan]="columnSpan()" [style.block-size.px]="trailingSpacerHeight()"></td>
+          </tr>
+        }
+      </tbody>
+  </table>
+
+  <!--
+    THE LANDING POINT. It carries wording rather than being an empty marker, so a reader who uses the
+    affordance above is told where they arrived; it is out of the tab order, so it costs nothing to anyone who
+    does not, and the next press of Tab from here continues into whatever follows the table.
+  -->
+  @if (offersRowSkip()) {
+    <span
+      class="data-table__skip-target"
+      data-visually-hidden
+      tabindex="-1"
+      [id]="skipTargetId"
+      >{{ rowSkipTargetLabel }}</span
+    >
+  }
+</div>

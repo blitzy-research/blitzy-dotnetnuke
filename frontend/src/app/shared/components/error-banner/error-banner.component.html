@@ -1,0 +1,74 @@
+<!--
+  MIGRATION: the accessibility contract below is 100% NET-NEW, with no legacy precedent to carry across.
+  Measured over BOTH legacy trees, `aria-live` appears in 0 files, `role="alert"` in 0 files, and ANY
+  `aria-` attribute in 0 files.
+-->
+
+<!--
+  A PERSISTENT live region. The wrapper is always in the document and only its contents change, because
+  a region inserted at the same moment as its first message is announced inconsistently across screen
+  readers - and the first message is the one that matters.
+-->
+<div
+  class="error-banner-live"
+  role="alert"
+  aria-live="assertive"
+  aria-atomic="true"
+  tabindex="-1"
+>
+  @if (hasProblem()) {
+    <!--
+      The severity is carried as a data attribute on THIS element rather than on the host, so the live
+      region stays free of it and keeps painting nothing while empty.
+    -->
+    <div class="error-banner" [attr.data-severity]="severity()">
+      <!--
+        The severity as a WORD, and it is not decoration: it is the cue that makes the band perceivable
+        without perceiving the colour, and it is announced along with the message.
+      -->
+      <p class="error-banner__severity">{{ severityLabel() }}</p>
+
+      @if (hasTitle()) {
+        <!--
+          The problem TYPE, shown only when it says something the sentence below does not. This is the
+          legacy Heading-and-Message pairing that the excluded renderer's three-argument
+          `AddModuleMessage` overload took, with the heading here and the message below.
+        -->
+        <p class="error-banner__title">{{ title() }}</p>
+      }
+
+      <!--
+        The sentence describing this occurrence, and never blank: the class resolves it as the
+        document's detail, then its title, then wording chosen from the status itself.
+      -->
+      <p class="error-banner__message">{{ message() }}</p>
+
+      @if (hasFieldErrors()) {
+        <!--
+          A description list pairs each label with its messages, which is exactly the name-to-values
+          relationship the data has. A flat list would lose which message belongs to which field as soon
+          as a field has more than one.
+        -->
+        <dl class="error-banner__fields" aria-label="Problem details">
+          @for (group of fieldErrors(); track trackByField($index, group)) {
+            <dt class="error-banner__field">{{ labelFor(group.field) }}</dt>
+            <!-- Tracked by POSITION, not by message text. -->
+            @for (fieldMessage of group.messages; track $index) {
+              <dd class="error-banner__detail">{{ fieldMessage }}</dd>
+            }
+          }
+        </dl>
+      }
+
+      @if (hasSupportReference()) {
+        <!--
+          The server's own identifier for this request, and the ONLY diagnostic shown. It is quotable in
+          a support report and means nothing to anyone without the server's logs, which is exactly why
+          it is safe to show where a stack trace was not - and equally why the line SAYS WHAT IT IS FOR
+          rather than labelling it `Reference:` and leaving the reader to guess.
+        -->
+        <p class="error-banner__trace">{{ referenceLead }} {{ supportReference() }}.</p>
+      }
+    </div>
+  }
+</div>

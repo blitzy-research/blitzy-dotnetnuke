@@ -1,0 +1,191 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Hosts the real API request pipeline in process, which is why the API's Program class is public and
+    partial in the global namespace. Every test class here must carry [Trait("Category", "Integration")],
+    because that is what the "Category=Integration" filter selects.
+
+    ⚠ NOT EVERY SUITE HERE STARTS A HOST, AND THAT IS DELIBERATE RATHER THAN UNTIDY. Security/,
+    Infrastructure/, Services/ and Validation/ hold suites whose subject is a single internal
+    Infrastructure component driven with SUBSTITUTED collaborators - a recording logger, a mutable clock,
+    a fabricated provider fault - which is a fact no resolved instance can express, because the
+    substitution IS the fact. They live in this project because AAP 0.5.2.2 gives DnnMigration.UnitTests
+    a single edge to Application, so a suite there cannot name an Infrastructure type at all; the
+    Infrastructure assembly is reachable from here through this project's own single edge to the API, and
+    that assembly's InternalsVisibleTo grant names THIS assembly. They carry the Integration trait like
+    every other class here, which is correct: they run against production types rather than against
+    contracts, and the filter that selects them is the one that selects everything in this project.
+
+    Test-database strategy: every run uses a real SQL Server, and TestDatabaseFactory needs NO PREPARATION
+    to find one, because the acceptance gates are run verbatim. Order: a truthy DNN_TESTS_USE_MSSQL starts
+    a throwaway container; otherwise DNN_TEST_SQLSERVER names an existing server; otherwise a falsey
+    DNN_TESTS_USE_MSSQL fails closed; otherwise a reachable container runtime is discovered and used;
+    otherwise the run fails closed with one actionable diagnosis.
+
+    No fixture selects the InMemory or Sqlite provider, and none can: the credential store answers
+    "unavailable" on any provider that is not SQL Server, the accounts these tests sign in as live in the
+    external aspnet_* tables no model-driven creation could produce, a query root arrives through
+    FromSqlInterpolated, and the persistence suite asserts declared column types against the relational
+    catalogue. Both references are retained because AAP 0.6.1 approves them, but they are deliberately
+    unexercised. Recorded in MIGRATION_NOTES.md.
+
+    Analyzer hazard: xunit.analyzers ships transitively with xunit and its xUnit#### rules are warnings,
+    which the inherited warnings-as-errors policy promotes to build errors. Fix them in the test - never add
+    an xUnit#### code to a NoWarn property, to backend/.editorconfig or to a new config file. The one that
+    bites most often is the ban on blocking a Task inside a test, so every test method is `async Task`,
+    never `async void`.
+
+    Only one provider may be applied to a single DbContextOptions, so a fixture must REMOVE the existing
+    provider registration before adding its own rather than layering one on top.
+
+    The package list is closed: it is the set AAP 0.6.1 approves, plus TWO security pins.
+
+    SSH.NET is pinned to 2026.0.0 to clear GHSA-q939-rpr3-3284 (high), which covers EVERY earlier release -
+    the advisory's fixed-version boundary is 2026.0.0 itself, so no lower version clears it. The vulnerable
+    version arrives transitively and is selected by nothing this repository asks for:
+    Testcontainers.MsSql 3.10.0 -> Testcontainers 3.10.0 -> SSH.NET 2023.0.0.
+
+    Why pin a package this suite never calls. The advisory is an arbitrary file write performed by
+    ScpClient while recursively downloading server-named files, and three independent facts put it out of
+    reach here: no code in backend/ CALLS into SSH.NET - the name appears only in this note and in the pin's
+    own guard, Infrastructure/SecurityPinTests.cs, which reads the shipped file's metadata without
+    referencing a type from it; Testcontainers 3.10.0's own assembly references only the Renci.SshNet
+    namespace and the SshClient type, and does NOT reference ScpClient at all; and the SSH path exists in
+    that library to reach a REMOTE Docker endpoint, while this suite talks to a local daemon. The pin is
+    therefore not a fix for an exploitable hole - it removes a vulnerable IDENTITY from the restore graph,
+    which is what a dependency-integrity review is entitled to require, and it does so without waiting on a
+    library upgrade that AAP 0.6.4 forbids. Upgrading Testcontainers.MsSql to 4.13.0 is the alternative the
+    advisory data suggests and is explicitly among the versions that plan checked and rejected.
+
+    ⚠ DO NOT DELETE THE SSH.NET REFERENCE BECAUSE IT LOOKS UNUSED. It IS unused, and that is the point: it
+    exists solely to win version resolution over the transitive 2023.0.0. Removing it restores the vulnerable
+    version with no compilation error anywhere. SecurityPinTests fails if that happens, and guards the
+    SQLitePCLRaw pin above for the same reason.
+
+    Why the jump across three release years is safe. The only surface that has to survive it is SshClient,
+    for the reason above, and the container route was exercised end to end after the pin - a real SQL Server
+    container provisioned, migrated and served the suite - rather than the compatibility being argued from
+    version numbers. 2026.0.0 ships lib/net8.0, so no framework fallback is involved either.
+
+    THE LOCK FILE MOVED DELIBERATELY FOR THIS. packages.lock.json is otherwise left alone, and locked-mode
+    restore is what makes these tests reproducible; adding this reference necessarily rewrites the SSH.NET
+    entries, so the file was regenerated once, on purpose, and locked-mode restore was then re-run to prove
+    determinism survived. Treat any FURTHER lock-file churn as accidental.
+
+    SQLitePCLRaw.bundle_e_sqlite3 is pinned to 2.1.12 to clear CVE-2025-6965 (GHSA-2m69-gcr7-jv3q, high),
+    which covers SQLitePCLRaw.lib.e_sqlite3 through 2.1.11; Microsoft.EntityFrameworkCore.Sqlite 8.0.29
+    selects the vulnerable 2.1.6 and no patched release exists on that line. The bundle is pinned rather
+    than lib.e_sqlite3 alone so core, provider and lib move together and the native family cannot skew. A
+    direct PackageReference wins resolution outright, which is safe only because nothing opens a SQLite
+    connection - no UseSqlite call exists anywhere in the repository, so the native asset is never loaded.
+    If a fixture ever does adopt Sqlite, re-validate this pin against it and prefer aligning the EF Core
+    version over deepening the pin.
+
+    Testcontainers.MsSql stays at the plan's 3.10.0 rather than 4.13.0, which AAP 0.6.4 lists among the
+    versions checked and rejected; the 3.10.0 route was verified at runtime against this host's Docker
+    Engine rather than assumed compatible.
+
+    Microsoft.Data.SqlClient carries a direct pin at 5.2.3 (AAP 0.6.1) because without it the SQL Server
+    provider resolves an older 5.1.x line transitively. Its reasoning sits beside the reference in
+    DnnMigration.Infrastructure.csproj.
+  -->
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="FluentAssertions" Version="6.12.2" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="8.0.29" />
+    <!--
+      DECLARED HERE BECAUSE IT NO LONGER ARRIVES TRANSITIVELY, and that is deliberate on both sides.
+      DnnMigration.Infrastructure references the design-time package with PrivateAssets="all" so it cannot
+      reach the API's publish output - the production image was carrying the EF design-time assembly and the
+      whole Roslyn compiler surface behind it. This suite still needs the COMPILE reference, because
+      DnnDbContextFactoryTests asserts that the factory implements IDesignTimeDbContextFactory<DnnDbContext>,
+      and asserting it through reflection on a string type name instead would be a weaker test of the same
+      thing. A test project is never published, so declaring it here adds nothing to any shipped artefact.
+    -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.29" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="8.0.29" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="8.0.29" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="Moq" Version="4.20.72" />
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.12" />
+    <!--
+      Security pin only - nothing in this suite calls SSH.NET. See the note above for why the reference
+      exists, why the vulnerable code path is unreachable, and why upgrading Testcontainers is not the
+      instrument used here.
+    -->
+    <PackageReference Include="SSH.NET" Version="2026.0.0" />
+    <PackageReference Include="Testcontainers.MsSql" Version="3.10.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <!--
+    The three schema scripts are embedded rather than copied so that the suite carries its
+    own database definition inside the test assembly and cannot be run against a
+    half-provisioned directory. DnnSchema.sql holds the mapped legacy tables;
+    MembershipSchema.sql holds the external aspnet_* objects that no mapped entity type
+    describes and that AAP 0.7.1.3 shows the legacy DDL chain only ever ALTERs;
+    HostSettingsSchema.sql holds the HostSettings table, which is likewise unmapped and is
+    read through IHostSettingsService rather than through an entity type.
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="Schema\DnnSchema.sql" />
+    <EmbeddedResource Include="Schema\MembershipSchema.sql" />
+    <EmbeddedResource Include="Schema\HostSettingsSchema.sql" />
+    <!--
+      TerminalSchema.manifest is not provisioning DDL: it is the INDEPENDENT ORACLE the three
+      scripts above are measured against, derived from the legacy upgrade chain rather than from
+      anything this solution emits. It is embedded so that the comparison cannot silently degrade
+      into "no manifest, no assertion" - TerminalSchema refuses to load without it.
+    -->
+    <EmbeddedResource Include="Schema\TerminalSchema.manifest" />
+    <!--
+      THE OPERATOR'S OWN SCRIPT, EMBEDDED FROM WHERE IT LIVES RATHER THAN COPIED. MIGRATION: SEC-05.
+      docker/sql/refresh-token-store.sql is the deployment step that provisions the shared refresh-token
+      table, which the running API used to create for itself and now only probes for. Linking the file
+      here - rather than keeping a second copy under Schema\ - is what makes the suite's evidence worth
+      anything: the table the SQL-store tests exercise is created by the exact bytes an operator runs, so
+      the shape the store expects and the shape a deployment gets cannot drift apart without a test
+      failing. A duplicated script would have made the tests pass while production stayed unprovisioned,
+      which is the class of defect the "THREE SCRIPTS, AND NO FOURTH" note in TestDatabaseFactory records.
+    -->
+    <EmbeddedResource Include="..\..\..\docker\sql\refresh-token-store.sql"
+                      LogicalName="DnnMigration.IntegrationTests.Schema.RefreshTokenStoreSchema.sql" />
+    <!--
+      THE PROXY'S RESPONSE-HEADER POLICY, LINKED FOR THE SAME REASON. MIGRATION: INFO-02.
+      docker/security-headers.conf is the single declaration of every response-level policy the proxy
+      states, and its value is that it has one copy with nine consumers - a header added to it reaches
+      every served path, and a header deleted from it disappears from all of them at once. That makes it
+      worth asserting, and worth asserting FROM WHERE IT LIVES: a copy under a test folder could keep a
+      fact green while the file an operator ships lost the line. Linked, not duplicated, exactly as the
+      refresh-token script above.
+    -->
+    <EmbeddedResource Include="..\..\..\docker\security-headers.conf"
+                      LogicalName="DnnMigration.IntegrationTests.Deployment.SecurityHeaders.conf" />
+  </ItemGroup>
+
+  <!--
+    Exactly one project reference: Application, Infrastructure and Domain arrive
+    transitively through the API, and naming them would blur the dependency
+    direction the reference graph exists to enforce.
+
+    Microsoft.AspNetCore.Mvc.Testing supplies the ASP.NET Core framework
+    reference needed to host the API in process, so this project stays on
+    Microsoft.NET.Sdk and adds no FrameworkReference of its own.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\DnnMigration.Api\DnnMigration.Api.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,24 @@
+// The one rendering of an absent value. Two declarations, and both answer a measured inconsistency.
+
+@use '../../../../styles/mixins' as mx;
+
+:host {
+  // Inline, so the mark sits in the text flow of whatever cell or field it replaces a value in and takes that
+  // context's alignment without this file restating it.
+  display: inline;
+}
+
+.absent-value__mark {
+  // ⚠ THE MARK IS MUTED, NOT INHERITED, and the difference was visible. Inherited, the dash took the colour of
+  // whatever text enclosed it - body-text black in most cells - so an absent value looked exactly as emphatic
+  // as a recorded one, and two listings that both used a dash rendered it in two different colours. The muted
+  // token is the vocabulary's own word for "present but secondary", which is precisely what this mark is.
+  color: var(--color-text-muted);
+}
+
+// Announced and never seen. The shared mixin rather than `display: none` or `visibility: hidden`, because both
+// of those remove the element from the accessibility tree as well as from sight - which would silence the very
+// words this element exists to say.
+.absent-value__description {
+  @include mx.visually-hidden;
+}

@@ -1,0 +1,23 @@
+<div class="page-header">
+  <div class="page-header__text">
+    <h1 class="page-header__title">{{ title }}</h1>
+
+    <!--
+      A truthiness guard rather than a presence check: an omitted, empty or whitespace-only value
+      renders nothing at all, instead of a blank paragraph that would occupy vertical space and add a
+      node carrying no accessible name to the accessibility tree.
+    -->
+    @if (subtitle) {
+      <p class="page-header__subtitle">{{ subtitle }}</p>
+    }
+  </div>
+
+  <!--
+    THE SLOT MUST STAY ON ITS OWN LINE. The paired stylesheet suppresses this wrapper with an
+    empty-element selector, and that selector tolerates a comment child - the compiler's own projection
+    anchor - but not a space-only text child, which the compiler strips by default.
+  -->
+  <div class="page-header__actions">
+    <ng-content />
+  </div>
+</div>

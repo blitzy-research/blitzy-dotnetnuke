@@ -1,0 +1,353 @@
+<!--
+  There is no field list in this template and there cannot be one: the property set is declared by the
+  tenant and arrives from the API, so every label, bound, requirement and pattern is bound from data.
+-->
+
+<!--
+  Every string rendered here is interpolated plain text, and that is a security boundary rather than a
+  stylistic preference.
+-->
+
+<!--
+  The supporting line is the mode-dependent control title the legacy framework drew for the module:
+  "Manage Profile" against "View Profile".
+-->
+<app-page-header
+  [title]="pageTitle()"
+  [subtitle]="subheading() ?? (mode() === 'view' ? 'View Profile' : 'Manage Profile')"
+/>
+
+<!--
+  The failure surface, rendered above the content so it is the first thing after the heading and is
+  never scrolled past. The shared banner owns the live region, the severity and the per-field breakdown,
+  and renders nothing when there is no problem, so it needs no guard.
+-->
+<app-error-banner [problem]="problem()" />
+
+<!--
+  ⚠ WHY THE CALLER IS HERE, WHICH THIS SCREEN USED TO LEAVE UNSAID. A caller owing required profile
+  details is landed here by the gate rather than arriving by choice, and the gate's own message is a
+  transient one that is gone by the time they start typing. Without a standing explanation on the screen
+  itself, the landing was indistinguishable from an ordinary visit while every other address was refused.
+
+  Polite rather than assertive: it describes the state of the screen they are already on, and it is rendered
+  on arrival rather than in response to an action.
+-->
+<!--
+  ⚠ A STANDING EXPLANATION, DELIBERATELY NOT A LIVE REGION. The guard that sent the caller here already
+  announces the redirect once through the transient-message surface, and a `role="status"` region carrying
+  the same fact would be a second announcement of one action - exactly the defect corrected for the sign-in
+  screen. `role="note"` matches the idiom this workspace already uses for a standing explanation of an
+  unexpected landing (`module-settings__administered`): it is reachable and semantically marked, and it
+  announces nothing.
+-->
+@if (landedForRemediation()) {
+  <p class="user-profile__remediation" role="note">{{ remediationExplanation }}</p>
+}
+
+<!-- The legacy layout table becomes a CSS grid stack, in both modes. -->
+@if (addressUnreadable()) {
+<!--
+  ⚠ THIS BRANCH SITS BEFORE THE EMPTY-PROPERTIES BRANCH, AND THE ORDER MATTERS. `hasProperties()` is
+  false in two unrelated situations - the tenant declares none, and nothing was ever fetched - and an
+  unreadable identifier produces the second, because no request is issued for a key that cannot be
+  parsed.
+-->
+  <p class="user-profile__notice">{{ unreadableAddressMessage }}</p>
+} @else if (showLoadingPlaceholder()) {
+<!--
+  ⚠ GATED ON THERE BEING NOTHING TO REPLACE, and the measured defect this closes is that it was not. A
+  successful save RE-READS the profile, so this branch was re-entered immediately after every save and the
+  whole form - every label, every value just typed, the visibility selectors and both actions - was replaced
+  by this indicator until the confirming read landed. A read that arrives while fields are on screen keeps
+  them and reports itself through `aria-busy` and the status line beside the actions instead.
+-->
+  <app-loading-spinner label="Loading profile…" />
+} @else if (!hasProperties()) {
+<!--
+  Reached when the tenant declares no profile property at all, which is a legitimate configuration
+  rather than a failure - hence an empty state and not an error banner. The message names the screen
+  that fixes it in prose rather than importing a route from a sibling feature folder.
+-->
+  <app-empty-state [message]="noPropertiesMessage" />
+} @else if (exceedsSubmissionLimit()) {
+<!-- The form is withheld deliberately, and this branch sits before both content branches. -->
+  <app-empty-state [message]="tooManyPropertiesNotice()" />
+} @else if (mode() === 'view') {
+<!--
+  VIEW MODE, which is what `ViewProfile.ascx` asked for: two legacy pages were one control in two
+  configurations, and they are ONE component in two modes for that reason.
+-->
+  <div class="user-profile">
+    @if (withheldProperties().length > 0) {
+      <!--
+        U13 - The declaration withholds these from the account's own owner, exactly as legacy did. Saying
+        so keeps the form from reading as the whole profile; their stored values are carried by every write.
+      -->
+      <p class="user-profile__withheld">
+        This site keeps {{ withheldProperties().length }} further profile
+        {{ withheldProperties().length === 1 ? 'detail' : 'details' }} that are not shown here. Saving this
+        form leaves {{ withheldProperties().length === 1 ? 'it' : 'them' }} unchanged.
+      </p>
+    }
+
+    <div class="user-profile__groups">
+      @for (section of sections(); track section.key) {
+        <fieldset class="user-profile__group">
+          <legend>
+            <h2>
+            <button
+              type="button"
+              class="user-profile__toggle"
+              [attr.aria-expanded]="!isCollapsed(section.key)"
+              [attr.aria-controls]="!isCollapsed(section.key) ? sectionBodyId(section.key) : null"
+              (click)="toggleSection(section.key)"
+            >
+<!--
+  A geometric marker rather than a raster asset: no legacy image is carried across, and the quarter turn
+  that indicates the expanded state is applied by the stylesheet through `aria-expanded`, so the
+  affordance and the announcement can never disagree.
+-->
+              <svg
+                class="user-profile__toggle-icon"
+                viewBox="0 0 8 8"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <path d="M1 0 L7 4 L1 8 Z" fill="currentColor" />
+              </svg>
+              {{ section.heading }}
+            </button>
+            </h2>
+          </legend>
+
+          @if (!isCollapsed(section.key)) {
+<!--
+  A description list, so the association between a property name and its value is structural and
+  survives with no styling at all.
+-->
+            <dl [id]="sectionBodyId(section.key)" class="user-profile__values">
+              @for (value of section.values; track value.definition.propertyDefinitionId) {
+                <dt>{{ labelFor(value) }}</dt>
+                <dd class="user-profile__value">{{ displayValue(value) }}</dd>
+              }
+            </dl>
+          }
+        </fieldset>
+      }
+    </div>
+  </div>
+} @else {
+  <form
+    class="user-profile"
+    [formGroup]="form()"
+    [attr.aria-busy]="busy() ? 'true' : null"
+    (ngSubmit)="onSubmit()"
+  >
+    @if (unmetRequired().length > 0) {
+      <!--
+        U12 - A MANDATORY PROPERTY DECLARED LAST SAT ~2400px BELOW THE FOLD WITH NOTHING POINTING TO IT.
+        Focus already moves to the first invalid control on a refused submit; what was missing was any way
+        to reach an unmet requirement BEFORE submitting, which is when the caller actually needs it.
+      -->
+      <div class="user-profile__outstanding">
+        <h2 class="user-profile__outstanding-heading">Still required</h2>
+        <ul class="user-profile__outstanding-list">
+          @for (value of unmetRequired(); track value.definition.propertyDefinitionId) {
+            <li>
+              <button type="button" class="user-profile__outstanding-link" (click)="reach(value)">
+                {{ reachLabel(value) }}
+              </button>
+            </li>
+          }
+        </ul>
+      </div>
+    }
+
+    @if (withheldProperties().length > 0) {
+      <!--
+        U13 - The declaration withholds these from the account's own owner, exactly as legacy did. Saying
+        so keeps the form from reading as the whole profile; their stored values are carried by every write.
+      -->
+      <p class="user-profile__withheld">
+        This site keeps {{ withheldProperties().length }} further profile
+        {{ withheldProperties().length === 1 ? 'detail' : 'details' }} that are not shown here. Saving this
+        form leaves {{ withheldProperties().length === 1 ? 'it' : 'them' }} unchanged.
+      </p>
+    }
+
+    <div class="user-profile__groups">
+<!--
+  Two of this screen's resource keys contain a space, and both are handled explicitly rather than left
+  to fail silently.
+-->
+      @for (section of sections(); track section.key) {
+<!--
+  A grouped field set with a caption, the target equivalent of the legacy `groupByMode="Section"` with
+  `groupHeaderIncludeRule="True"`. No shared component covers a captioned field grouping, so the
+  grouping is expressed in native markup instead.
+-->
+        <fieldset class="user-profile__group">
+          <legend>
+<!--
+  The legacy collapse control carried `tabindex="-1"` on both its image button and its help affordance,
+  so a keyboard user could not reach it at all. It is a real button here with no tab index of its own,
+  which reverses an accessibility defect at no visual cost.
+-->
+<!--
+  ⚠ THE SECTION CAPTION IS A HEADING HERE TOO, AND IN THIS BRANCH ALONE IT WAS NOT. The view branch above
+  wraps the identical control in `<h2>`; this one - the EDIT branch, which is where an operator spends the
+  time - emitted a bare button inside the legend. So the same screen presented its own structure two
+  different ways depending on which mode it was in: viewing a profile gave a screen-reader user a heading
+  per section to navigate by, and editing the same profile gave them none, leaving the page with only its
+  `h1` and the "Still required" heading. A caption that names a group of fields is a heading in both modes
+  or in neither. Level 2 matches the view branch and sits directly under the page's single `h1`, so no
+  level is skipped.
+-->
+            <h2>
+            <button
+              type="button"
+              class="user-profile__toggle"
+              [attr.aria-expanded]="!isCollapsed(section.key)"
+              [attr.aria-controls]="!isCollapsed(section.key) ? sectionBodyId(section.key) : null"
+              (click)="toggleSection(section.key)"
+            >
+              <svg
+                class="user-profile__toggle-icon"
+                viewBox="0 0 8 8"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <path d="M1 0 L7 4 L1 8 Z" fill="currentColor" />
+              </svg>
+              {{ section.heading }}
+            </button>
+            </h2>
+          </legend>
+
+<!--
+  A collapsed stack is REMOVED, not hidden: the user agent's `[hidden] { display: none }` rule is weaker
+  than any author rule and `.user-profile__fields` declares `display: grid`, so a hidden stack would
+  remain visible.
+-->
+          @if (!isCollapsed(section.key)) {
+            <div [id]="sectionBodyId(section.key)" class="user-profile__fields">
+              @for (value of section.values; track value.definition.propertyDefinitionId) {
+                @if (valueControl(value); as control) {
+<!--
+  Requiredness is taken from the DECLARATION's own flag, never from the presence of a `.Required`
+  message, so a property the tenant added is treated exactly like a seeded one.
+-->
+
+<!--
+  The legacy help affordance sat INSIDE the label element with a negative tab index, so clicking the
+  help icon also focused the control and a keyboard user could not reach it.
+-->
+                  <!--
+                    ⚠ `form-field--stacked` IS NOT A STYLE CHOICE, IT IS U-M7's FIX, AND IT IS APPLIED
+                    HERE AND NOT TO THE VISIBILITY FIELD BELOW ON PURPOSE. The label on THIS field is
+                    `labelFor(value)` — a property name authored by the tenant, of unbounded length.
+                  -->
+                  <app-form-field
+                    class="form-field--stacked"
+                    [label]="labelFor(value)"
+                    [for]="controlId(value)"
+                    [required]="value.definition.required"
+                    [limit]="maxLengthFor(value)"
+                    [help]="helpFor(value)"
+                    [error]="errorsFor(value)"
+                  >
+                    @if (isMultiline(value)) {
+<!--
+  TWO KINDS OF PROPERTY REACH THIS BRANCH. One is the seeded rich-text property, which arrives with a
+  declared length of zero and is recognised by name rather than by its unreadable data-type integer. The
+  other is any property the tenant allowed several hundred characters for, which is prose by size.
+-->
+                      <textarea
+                        [id]="controlId(value)"
+                        [rows]="multilineRowsFor(value)"
+                        [formControl]="control"
+                        [attr.maxlength]="maxLengthFor(value)"
+                        [attr.aria-required]="value.definition.required ? 'true' : null"
+                        [attr.aria-invalid]="hasError(value) ? 'true' : null"
+                      ></textarea>
+                    } @else {
+                      <!--
+                        The null-date sentinel renders as NOTHING. The legacy null contract defines it
+                        as the minimum date value and it survives on the wire, so a date nobody ever set
+                        would otherwise appear as `01/01/0001` as though somebody had chosen it.
+                      -->
+                      <input
+                        type="text"
+                        [id]="controlId(value)"
+                        [formControl]="control"
+                        [attr.maxlength]="maxLengthFor(value)"
+                        [attr.aria-required]="value.definition.required ? 'true' : null"
+                        [attr.aria-invalid]="hasError(value) ? 'true' : null"
+                      />
+                    }
+                    @if (isSeededFromDefault(value)) {
+                      <!--
+                        U14 - The value shown was seeded from the tenant's declared default because this
+                        account has no stored answer at all. Two accounts whose answer serialises
+                        identically as "" DID render differently, and this is what makes which of the two
+                        you are looking at legible.
+                      -->
+                      <span class="user-profile__seeded">
+                        <span aria-hidden="true">&#8226;</span>
+                        Suggested by this site; not yet saved for this account.
+                      </span>
+                    }
+                  </app-form-field>
+
+                  @if (visibilityOffered()) {
+                    @if (visibilityControl(value); as visibility) {
+                      <div class="user-profile__visibility">
+                        <app-form-field label="Visible to" [for]="visibilityId(value)">
+<!--
+  `ngValue` rather than `value`: the control holds a number, and a plain value binding would write the
+  option back as a string, so the submitted visibility would stop matching the codes the API declares.
+-->
+                          <select [id]="visibilityId(value)" [formControl]="visibility">
+                            @for (option of visibilityOptions; track option.code) {
+                              <option [ngValue]="option.code">{{ option.label }}</option>
+                            }
+                          </select>
+                        </app-form-field>
+                      </div>
+                    }
+                  }
+                }
+              }
+            </div>
+          }
+        </fieldset>
+      }
+    </div>
+
+    <div class="user-profile__actions">
+<!--
+  The legacy button declared no `causesvalidation` attribute, which defaults to true so the update DID
+  validate, and it does here: an invalid form is not submitted and instead reveals the messages for
+  controls the operator never visited.
+-->
+      <button class="form-action--primary" type="submit" [disabled]="busy()"
+          [attr.aria-busy]="busy() ? 'true' : null">
+        {{ saving() ? 'Saving…' : 'Update' }}
+      </button>
+      <button type="button" [disabled]="busy()" (click)="onReset()">Cancel</button>
+<!--
+  ⚠ ONE LIVE REGION, AND THE INDICATOR INSIDE IT CARRIES NO LABEL OF ITS OWN. The shared spinner renders its
+  own visible label AND claims `role="status"` when given one, so labelling it here would nest one live region
+  inside another and announce a single transition twice. The sentence belongs to this region; the ring is a
+  decorative indicator beside it.
+-->
+      @if (busyMessage(); as pending) {
+        <p class="user-profile__pending" role="status" aria-live="polite">
+          <app-loading-spinner size="small" label="" />
+          {{ pending }}
+        </p>
+      }
+    </div>
+  </form>
+}

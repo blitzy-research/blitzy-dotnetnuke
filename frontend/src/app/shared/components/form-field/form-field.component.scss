@@ -1,0 +1,378 @@
+// form-field — the shared labelled-control block
+// declared at Website/admin/Users/UserSettings.ascx L20, L43 and L63, User.ascx L10, Membership.ascx L10
+// and EditProfileDefinition.ascx L27.
+
+@use '../../../../styles/mixins' as mx;
+
+// The two-column arrangement, shared by the wide-viewport default at the foot of this file and by the
+// always-inline variant.
+@mixin two-column-field {
+  .form-field {
+    display: grid;
+
+    // ⚠ QA-24 — THE CAPTION COLUMN IS CAPPED AT A SHARE OF THE FIELD, NOT ONLY AT A LENGTH. The
+    // declaration was `minmax(0, var(--field-label-inline-size))` against a fluid second track, and with
+    // one `fr` track the fixed one always takes its full growth limit and the fluid one absorbs the
+    // shortfall alone. Measured on the membership screen at 768px, where that screen widens the shared
+    // caption track to 300px: the field is 534px wide, so the caption took 300px and the VALUE collapsed
+    // to 218px - narrower than the caption describing it, and the redirect pickers rendered "No redirect
+    // (stay on th". The term/value relationship reads backwards at that point.
+    //
+    // 45% keeps the value column the wider of the two at every width, and it changes NOTHING wherever
+    // 45% of the field already exceeds the declared caption size - for a 300px caption that is any field
+    // from 667px wide, so every measurement at 1024 and above is untouched.
+    grid-template-columns:
+      minmax(0, min(var(--field-label-inline-size), 45%))
+      var(--grid-track-fluid);
+    column-gap: var(--space-4);
+
+    // The label sits on the same text baseline as the first line of the control
+    // beside it, rather than on the control's box edge.
+    align-items: baseline;
+  }
+
+  .form-field__label-row {
+    grid-column: 1;
+  }
+
+  .form-field__control {
+    grid-column: 2;
+  }
+
+  // Help and error text align under the CONTROL rather than under the label, because they describe the
+  // control. Placed in the label column they would read as describing the label instead.
+  .form-field__help,
+  .form-field__errors {
+    grid-column: 2;
+  }
+}
+
+// The rhythm below the field sits on the host rather than on the inner block. Component styles are
+// encapsulated, so a margin declared on `.form-field` could never be overridden by the screen that places
+// the field, whereas one on the host element can be.
+:host {
+  display: block;
+  margin-block-end: var(--space-4);
+
+  min-inline-size: 0;
+}
+
+// The stacked arrangement is authored unconditionally and the two-column one is layered on at the foot of
+// the file. That is mobile-first, and it is the direction _mixins.scss documents as the default so that
+// queries across the workspace cannot overlap.
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+// The caption's own row. ⚠ IT NO LONGER SHARES THE LINE WITH THE HELP AFFORDANCE, and that is why the
+// shrink workaround below is gone rather than merely unused. The affordance moved to the control wrapper for
+// the focus-order reason set out on it in the template, which hands this row's single remaining child the
+// whole measured label column back: the previous arrangement let flex resolve the column's shortfall by
+// SHRINKING both items before it would break a line, so a field with help handed its label text roughly
+// 99px of the 150px column and a two-word caption reflowed onto two lines. With one child there is no
+// shortfall to resolve, so `flex-wrap` had nothing left to wrap and is removed rather than left to read as
+// though it were still holding that line.
+.form-field__label-row {
+  display: flex;
+
+  // ⚠ THE ROW NO LONGER WRAPS, AND THIS REVERSES A DELIBERATE EARLIER CHOICE — QA-11. Wrapping was chosen so
+  // that a shortfall in the label column moved the HELP AFFORDANCE to its own line and left the label text
+  // the full width, rather than shrinking the label to roughly 99px of a 150px column and reflowing a
+  // two-word caption. Measured, that trade turned out to be the wrong way round: 43 of 60 role cells put
+  // Help on a line of its own, and on several rows it landed BELOW the control it was explaining — an
+  // explanation orphaned from the thing it explains, which is worse than a caption on two lines.
+  //
+  // With `nowrap` the shortfall is absorbed by the label instead: the caption is a block, so its TEXT wraps
+  // inside its own box while the affordance stays beside it, aligned to the caption's first baseline. A
+  // two-line label with its Help attached at the top right is exactly the arrangement the finding asks for.
+  flex-wrap: nowrap;
+
+  align-items: baseline;
+  gap: var(--space-2);
+  min-inline-size: 0;
+}
+
+// `margin: 0` is load-bearing rather than tidiness: the global `label` rule carries `margin-block-end:
+// var(--space-1)`, and that inset would stack on top of this block's own `gap` — the exact doubling the
+// `gap` exists to prevent.
+.form-field__label {
+  display: block;
+  margin: 0;
+  min-inline-size: 0;
+  color: var(--color-primary);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-base);
+  overflow-wrap: anywhere;
+}
+
+// ⚠ THE POINTER-TARGET FLOOR FOR A LABEL THAT DOES NOT WRAP ITS CONTROL. The global choice-control rules in
+// `_forms.scss` reach a label two ways - `label:has(input)` when the label CONTAINS the box, and `input +
+// label` when the label FOLLOWS it - and this component's arrangement is neither: the label is rendered
+// BEFORE the control and in a different element, associated only by `for`. So a checkbox field's label had
+// no floor at all and stood at its line height, measured well under the 24 that WCAG 2.2 SC 2.5.8 binds -
+// even though pressing the words toggles the control, which is exactly what makes the label part of the
+// activation target. Applied to a label that addresses a control (`for` is present) so a caption naming a
+// whole region, which activates nothing, is not padded for no reason.
+.form-field__label[for] {
+  // ⚠ THE FLOOR IS A MINIMUM HEIGHT AND NOT A FLEX BOX, AND THE DIFFERENCE IS MEASURABLE. Laying the caption
+  // out as a flex container turns its text into an anonymous flex item, which stops the caption breaking into
+  // line boxes of its own - so at a narrow measure the caption stopped wrapping and the help affordance was
+  // pushed BELOW the whole caption instead of staying beside its first line, which is the arrangement the
+  // label row's `nowrap` exists to produce. A minimum block size satisfies the activation target on its own:
+  // the target is the label's box, and pressing anywhere in it toggles the control it addresses.
+  min-block-size: var(--target-size-min);
+}
+
+.form-field__required {
+  margin-inline-start: var(--space-1);
+  color: var(--color-danger);
+}
+
+// The word that gives the marker glyph a meaning for a reader who cannot see it. The mixin removes it from
+// view while keeping it in the accessibility tree, so the glyph and the word are one indicator expressed
+// twice rather than two competing ones.
+.form-field__required-text {
+  @include mx.visually-hidden;
+}
+
+// `.CommandButton`, default.css L442-447, is the nearest legacy analogue and it is a TEXT LINK, not a
+// filled button — it declares only the family, the 11px step and normal weight, and its four anchor states
+// at L450, L456, L462 and L468 declare nothing but `text-decoration: underline` and a colour.
+.form-field__help-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+
+  // Never absorbs the row's free space, so the label keeps it.
+  flex: none;
+
+  padding: 0;
+
+  background-color: transparent;
+  border: none;
+  color: var(--color-primary);
+
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-normal);
+  line-height: var(--line-height-base);
+
+  cursor: pointer;
+
+  // Re-applied deliberately after the reset above.
+  @include mx.focus-ring;
+
+  // Additive decoration only, withdrawn on a device with no fine pointer so that a tap cannot leave the
+  // affordance stuck in a hovered state.
+  @include mx.hover {
+    color: var(--color-primary-hover);
+  }
+  // ⚠ THE PRESS STATE IS RESTATED HERE BECAUSE THIS RULE SUPPRESSES THE GLOBAL ONE, and suppression without
+  // replacement is what leaves a control with no visible response at all.
+  &:active {
+    background-color: var(--color-selected);
+  }
+}
+
+// MIGRATION: the spacing scale is a NET ADDITION — the legacy stylesheet has no spacing system at all and
+// no 4px step anywhere — so the glyph is sized from that scale rather than from a measured dimension.
+.form-field__help-icon {
+  flex: none;
+  inline-size: var(--space-4);
+  block-size: var(--space-4);
+}
+
+// MIGRATION: the control chrome is a NET ADDITION with no fidelity owed. `.NormalTextBox` declares a
+// family, a size and a weight and nothing else — no border, no padding, no background and no width — so the
+// legacy text box was drawn entirely by browser default chrome.
+.form-field__control {
+  display: flex;
+  flex-flow: row wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-inline-size: 0;
+}
+
+// The measured legacy help panel, restored in full.
+.form-field__help {
+  margin: 0;
+  padding: var(--space-1);
+
+  // ⚠ THE BORDER NAMES A TOKEN AND NO LONGER INHERITS `currentColor`. Inherited, it computed BLACK — a value
+  // outside the closed colour vocabulary entirely — because this panel opens inside ordinary body text rather
+  // than beside a muted or branded run.
+  //
+  // THE COMPONENT-BOUNDARY TOKEN, AND THIS IS THE SECOND MEASURED CORRECTION TO THE SAME EDGE. This panel is
+  // filled with the secondary surface, and so is the role form's Advanced section — so inside that section the
+  // panel was drawn on a fill identical to its own container, leaving a 1px edge and a 12%-black shadow as the
+  // only things separating them. The first correction moved that edge from #DCDCDC to #CCCCCC, which was the
+  // right diagnosis and an insufficient remedy: #CCCCCC measures 1.61:1 on the page background and 1.38:1 on
+  // the secondary surface, so "barely raised" was improved rather than fixed. A disclosure panel exists to be
+  // recognised as separate from what it explains, which makes its edge information needed to identify a
+  // component — 3:1 territory, not decoration — and --color-border-control reads 4.5422:1 and 3.9149:1 on the
+  // two fills this panel can open on.
+  border: var(--border-width) var(--border-style) var(--color-border-control);
+  border-radius: var(--radius-sm);
+  background-color: var(--color-surface);
+  color: inherit;
+
+  // THE MIDDLE STEP OF THE ELEVATION SCALE, AND ITS CONSUMER. A help panel is a transient disclosure
+  // surface: it opens over the form it explains, so it belongs above the inline surfaces that carry step one
+  // (the error banner and the notifications) and below the modal dialog that carries step three. Naming it
+  // here is what makes the declared three-step scale a real three-step scale rather than two steps and a
+  // spare, and it costs no layout: a shadow paints outside the border box without displacing anything.
+  box-shadow: var(--elevation-2);
+
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-normal);
+  line-height: var(--line-height-base);
+
+  overflow-wrap: break-word;
+  white-space: pre-line;
+}
+
+// The messages of one field, grouped so that the live region and the description reference are one element
+// rather than one per message. A column with a `gap`, so two simultaneous messages are separated by the
+// shared token and never run together.
+.form-field__errors {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-inline-size: 0;
+}
+
+.form-field__error {
+  margin: 0;
+  color: var(--color-danger);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-base);
+  overflow-wrap: break-word;
+  white-space: pre-line;
+}
+
+// MIGRATION: the multi-line variant, for the 19 `TextMode="MultiLine"` controls across the in-scope
+// screens.
+:host(.form-field--multiline) {
+  .form-field__control {
+    align-items: stretch;
+  }
+}
+
+// `.NormalDisabled`, default.css L100-103, declares `color: Silver` over the 11px normal body rule at
+// L92-97.
+:host(.form-field--disabled) {
+  .form-field__label {
+    color: var(--color-text-muted);
+    cursor: not-allowed;
+  }
+
+  .form-field__help-toggle {
+    color: var(--color-text-muted);
+  }
+}
+
+// Above the breakpoint the label sits beside its control, which is the arrangement every legacy admin
+// screen used. Below it the stacked arrangement above applies unchanged.
+@include mx.respond-above('md') {
+  @include two-column-field;
+
+  :host(.form-field--multiline) .form-field__label-row {
+    align-self: start;
+  }
+
+  // The always-stacked variant — U-M7. The mirror image of `.form-field--inline`: where that one keeps the
+  // two-column arrangement at every width, this one keeps the STACKED arrangement at every width, and it
+  // exists for a field whose label is not application text.
+  :host(.form-field--stacked) .form-field {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-1);
+  }
+}
+
+// ⚠ THIS BLOCK MUST STAY LAST IN THE FILE. The `md` media query above re-applies the shared two-column
+// arrangement to every field, and the choice layout below has to win over it at every width — that is the
+// whole point of the variant. It wins on specificity too, but source order is what makes it unarguable, so
+// nothing may be appended after this point.
+// THE ALWAYS-BESIDE VARIANT — and every one of its thirteen call sites wraps a CHECKBOX. Measured across the
+// application: `form-field--inline` appears on six membership settings, five module settings and two role
+// settings, and in all thirteen the projected control is `input type="checkbox"`. It is, in practice, the
+// CHOICE-FIELD layout, and it is defined here as one.
+//
+// ⚠ IT NO LONGER USES THE FIXED LABEL TRACK, AND THAT TRACK WAS THE ROOT CAUSE OF TWO SEPARATE FINDINGS.
+//
+//  · QA-06: the membership screen widens the shared label track to 300px for its long captions, and these
+//    switches sat in a two- or three-column grid whose cells are around 350px. A 300px label track inside a
+//    350px cell leaves the box roughly 30px from the NEXT setting's caption and about 300px from its own, so
+//    4 to 6 of the 14 switches read as belonging to the wrong label, and at 1024px three of them sat in the
+//    fieldset's right padding entirely.
+//  · QA-13: the same fixed `150px 128px` grid was kept at 375px, where the checkbox was measured stranded at
+//    x=199 while its own caption began at x=33.
+//
+// The track is now sized to the CAPTION, so the box always sits one spacing step after the words it belongs
+// to — at every width, in every cell, and regardless of what the screen sets the shared label track to. This
+// is the wrapping-label arrangement the profile-definitions bulk switches already use, expressed through the
+// shared field so that the label association, the help affordance and the error region all still come from
+// one place.
+//
+// GRID RATHER THAN FLEX, and that is the guarantee: a flex row would resolve a shortfall by wrapping the box
+// onto the next line, which is the separation this exists to prevent. A grid row cannot wrap, so the caption
+// absorbs the shortfall by reflowing inside its own `minmax(0, max-content)` track and the box stays put.
+:host(.form-field--inline) {
+  // ⚠ QA-24 — THE THIRD TRACK IS WHAT STOPS THE HELP PANEL RESIZING THE CAPTION, AND `min-inline-size: 0`
+  // ALONE DID NOT. A grid item that spans several tracks contributes its intrinsic size to those tracks, so
+  // the panel - whose sentence is far longer than any switch caption - drove the sizing of the
+  // content-measured caption track it spans. Zeroing its MINIMUM removed only half of that: measured in the
+  // 350px cell this arrangement is designed for, opening the help still moved the box, now 40px to the LEFT,
+  // because the panel's MAX-content contribution pushed the pair past the cell and the caption track, whose
+  // floor is 0, absorbed the shortfall.
+  //
+  // CSS Grid resolves this properly: an item spanning a track with a FLEXIBLE sizing function does not
+  // contribute to the intrinsic sizing of the content-measured tracks it also spans. A third `1fr` track
+  // therefore both absorbs the panel and takes it out of the caption's sizing altogether - and it absorbs
+  // the row's slack, which is what `justify-content: start` was doing before.
+  //
+  // GRID RATHER THAN FLEX remains the guarantee, for the reason set out above: a flex row would answer a
+  // shortfall by wrapping the box onto the next line, which is the separation this arrangement exists to
+  // prevent.
+  .form-field {
+    display: grid;
+    grid-template-columns: minmax(0, max-content) minmax(0, max-content) minmax(0, 1fr);
+    column-gap: var(--space-2);
+    row-gap: var(--space-1);
+    align-items: baseline;
+  }
+
+  .form-field__label-row {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .form-field__control {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  // Both span the full width rather than sitting under the control, because here the control column is one
+  // checkbox wide: a help panel or an error indented to start after the caption would have almost no measure
+  // to render in.
+  //
+  // ⚠ QA-24 — AND BOTH ARE FLOORED AT ZERO, WHICH IS WHAT STOPS OPENING HELP MOVING THE CHECKBOX. A grid
+  // item's automatic minimum size is its own min-content contribution, and a spanning item distributes that
+  // contribution across the tracks it spans - so these two, whose caption-length sentences are far longer
+  // than a switch caption, inflated the content-sized track above. Measured on the membership screen:
+  // opening the help of `Suppress Pager?` widened track 1 from 115.16px to 176.953px and jogged the
+  // checkbox and its own Help button 61.79px to the RIGHT, so the control moved out from under the pointer
+  // that had just opened the explanation. `min-inline-size: 0` withdraws the contribution; the panels still
+  // span the full field and simply wrap inside whatever measure the row already had.
+  .form-field__help,
+  .form-field__errors {
+    grid-column: 1 / -1;
+
+    min-inline-size: 0;
+  }
+}

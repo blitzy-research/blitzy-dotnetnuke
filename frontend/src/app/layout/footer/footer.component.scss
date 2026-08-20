@@ -1,0 +1,28 @@
+// -----------------------------------------------------------------------------
+//  Host — the shell's contentinfo grid item
+// -----------------------------------------------------------------------------
+:host {
+  display: block;
+}
+
+// The band
+// The hairline colour is the muted-text token, not the primary one.
+footer {
+  padding-block: var(--space-3);
+  padding-inline: var(--space-4);
+  border-block-start: var(--border-width) var(--border-style) var(--color-text-muted);
+  background-color: var(--color-surface);
+  color: var(--color-primary);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-base);
+  text-align: end;
+}
+
+// The notice
+// The paragraph's user-agent block margin is removed because the band's own padding owns the vertical
+// rhythm; leaving it would double the space and push the intrinsic height past the measured legacy band.
+p {
+  margin: 0;
+}

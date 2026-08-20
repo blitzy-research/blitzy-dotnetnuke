@@ -1,0 +1,204 @@
+# =============================================================================
+# TLS overlay for the DnnMigration topology.
+#
+#   docker compose -f docker/docker-compose.yml \
+#                  -f docker/docker-compose.tls.yml \
+#                  --env-file docker/.env up -d
+#
+# WHY AN OVERLAY AND NOT AN EDIT. docker/docker-compose.yml is the topology the
+# migration plan supplies verbatim (AAP 0.9.3) and the one the end-to-end
+# validation gate drives: it publishes the API on 8080 so the gate can probe
+# `http://localhost:8080/health` directly, and the front end on 4200 over plain
+# HTTP. That topology is correct for validation and is NOT the production
+# posture. This overlay converts it into the production posture without editing
+# the file the plan freezes, and every difference is one of the four the review
+# asked for:
+#
+#   1. TLS is terminated at the front end. docker/nginx.tls.conf.template is mounted
+#      into the image's template directory, rendered from DNN_PUBLIC_HOST by the
+#      image's own entrypoint into the include directory nginx.conf already scans,
+#      and the certificate pair is mounted read-only beside it.
+#   2. Port 80 keeps listening (the container health probe needs it) and browser
+#      traffic for the deployment's own server name is redirected to 443 by the
+#      mounted block.
+#   3. The API's published port is WITHDRAWN, so the API is reachable only from
+#      the compose network - the front end proxies to it by service name. This
+#      is what "keep the API on an internal network" means here, and it is
+#      exactly why it cannot live in the base file: withdrawing the port would
+#      make the plan's own gate command fail.
+#   4. Forwarded-header trust is switched on and scoped to the compose network,
+#      so the API honours X-Forwarded-Proto and X-Forwarded-For from this proxy
+#      and from nothing else. Without this the API cannot know a request arrived
+#      over TLS, and its rate limiter partitions every caller behind the proxy
+#      into one budget.
+#
+# WHAT THE DEPLOYMENT MUST SUPPLY (in docker/.env, see .env.example). Both are
+# REQUIRED: compose refuses to create a container when either is unset or blank, so
+# the failure arrives before anything serves rather than as a certificate mismatch
+# or a rejected request later.
+#     DNN_PUBLIC_HOST            the public host name browsers address. ONE input,
+#                                four consumers: the TLS server_name, the port-80
+#                                redirect's scope, the API's AllowedHosts entry and
+#                                the API's permitted browser origin
+#     TLS_CERTIFICATE_DIRECTORY  host directory holding fullchain.pem and privkey.pem,
+#                                valid for DNN_PUBLIC_HOST
+# NOTHING inside a tracked file has to be edited. Every consumer of the public host
+# name derives it from the one variable, so a deployment cannot end up with a
+# redirect scoped to a name no browser sends, a certificate that matches no
+# server_name, or an API that host-filters its own traffic away.
+# =============================================================================
+version: '3.8'
+
+services:
+  api:
+    # Withdraws the published port declared in the base file, so Kestrel is reachable
+    # only on the internal network and no bearer credential can bypass the proxy by
+    # addressing it directly.
+    #
+    # ⚠ `ports: []` WOULD NOT DO THIS. List-valued service keys MERGE by union in
+    #   the compose spec, so an empty sequence contributes nothing and the base file's
+    #   127.0.0.1:8080 publish would survive the overlay untouched, with nothing
+    #   failing to say so. `!reset` is what REMOVES an inherited key; `!override` on
+    #   the front end below is what REPLACES an inherited list rather than adding to
+    #   it. Both are verified by reading `docker compose config` for the overlaid
+    #   project: api publishes nothing, front end publishes 80 and 443 and not 4200,
+    #   and the base file on its own is unchanged.
+    ports: !reset []
+    environment:
+      # Redirect plain HTTP to HTTPS inside the API as well, so a request that
+      # somehow reaches Kestrel without traversing the proxy is refused rather
+      # than served. The health endpoint is exempt in the pipeline itself, so the
+      # container probe still succeeds over plain HTTP on the loopback address.
+      Https__RedirectEnabled: "true"
+      # Https__RedirectPort, and the spelling is load-bearing. The application reads
+      # Https:RedirectPort - published as the constant
+      # ApplicationBuilderExtensions.HttpsRedirectPortSectionName and validated at start-up by
+      # ServiceCollectionExtensions.AddTransportSecurity - so an Https__Port entry here binds to
+      # nothing at all. It stayed invisible only because the base settings default the port to 443
+      # and this overlay publishes 443: any deployment terminating TLS on another port had its
+      # setting silently ignored and every redirect named 443. One spelling, everywhere.
+      Https__RedirectPort: "443"
+      # Trusted-proxy configuration is deliberately NOT restated here. The base
+      # compose file already names the front-end container's exact address in
+      # Proxy__KnownProxies__0, which is the narrowest trust that works and the
+      # only one that is correct: the compose subnet also contains the network
+      # gateway, and a caller reaching the published API port directly is
+      # source-translated to that gateway - so trusting the subnet would trust a
+      # directly reachable caller as if it were the proxy.
+      #
+      # HOST FILTERING AND THE BROWSER ORIGIN, BOTH DERIVED FROM THE ONE PUBLIC HOST
+      # NAME, so the API's host filter, the mounted server block's server_name and the
+      # certificate cannot disagree. Configured independently they do: a deployment
+      # that moved only its cross-origin policy would leave its real host absent from
+      # the host filter, and every request would be refused with 400 by a control
+      # nobody had configured wrongly.
+      #
+      # The loopback entries are retained deliberately: the container's own HEALTHCHECK
+      # addresses http://localhost:8080/health, and host filtering applies to it too -
+      # dropping them would report the container unhealthy for its whole life and hold
+      # the front end behind `condition: service_healthy` for ever.
+      #
+      # The API refuses to START when this names a reserved example domain
+      # (Api/Extensions/ServiceCollectionExtensions.cs), so a deployment that copies the
+      # template's illustration verbatim fails closed at start-up instead of serving
+      # traffic under a name nothing else agrees on. Compose refuses even earlier when
+      # the variable is unset or blank.
+      AllowedHosts: ${DNN_PUBLIC_HOST:?DNN_PUBLIC_HOST must be the public host name browsers address, e.g. admin.acme.example - it becomes the TLS server_name, this AllowedHosts entry and the permitted browser origin, and the certificate must be valid for it};localhost;127.0.0.1
+      # The single browser origin the API admits cross-origin, over TLS, at the same
+      # name. FRONTEND_ORIGIN is deliberately NOT read here: two variables that must
+      # agree are two variables that can disagree, and the base topology's own
+      # FRONTEND_ORIGIN default (http://localhost:4200, for a workstation dev server)
+      # would be a cleartext origin in a TLS deployment.
+      Cors__AllowedOrigins__0: https://${DNN_PUBLIC_HOST}
+
+  frontend:
+    # !override REPLACES the base list - without the tag, the base file's
+    # 127.0.0.1:4200:80 would remain published alongside these two. See the note on
+    # the api service.
+    #
+    # THIS is the only topology that publishes on a public interface, and it is the
+    # only one that may: the base file binds the front end to the loopback address
+    # because it speaks plain HTTP, and cleartext that carries a sign-in credential
+    # has no business on a routable interface. Here the listener on 443 is encrypted
+    # and the listener on 80 exists only to redirect a browser to it.
+    ports: !override
+      - "80:80"
+      - "443:443"
+    environment:
+      # THE ONE PUBLIC IDENTITY OF THIS DEPLOYMENT. It is rendered into the mounted
+      # server block's two `server_name` directives by the nginx image's own
+      # entrypoint, and the api service above derives its AllowedHosts and its
+      # cross-origin allow-list from the SAME variable - so a deployment cannot end
+      # up with a redirect scoped to one name, a certificate for another and an API
+      # that refuses both. Compose refuses to create a container while it is unset or
+      # blank (see the api service, which requires the same variable), and the API
+      # refuses to start on a reserved example domain.
+      DNN_PUBLIC_HOST: ${DNN_PUBLIC_HOST:?DNN_PUBLIC_HOST must be the public host name browsers address, e.g. admin.acme.example - it becomes the TLS server_name, the API AllowedHosts entry and the permitted browser origin, and the certificate must be valid for it}
+      # Where the rendered file must land: the directory docker/nginx.conf already
+      # scans with `include /etc/nginx/tls/*.conf`. The default is
+      # /etc/nginx/conf.d/, which this image's main configuration does not include at
+      # all, so leaving it unset would render the file somewhere nothing reads and
+      # serve plain HTTP only - with no error anywhere. The directory itself is
+      # created by docker/frontend.Dockerfile, because the entrypoint skips rendering
+      # when it is not writable.
+      NGINX_ENVSUBST_OUTPUT_DIR: /etc/nginx/tls
+      # Confines substitution to names beginning DNN_. Without a filter the
+      # entrypoint hands envsubst EVERY environment variable, so any nginx variable
+      # sharing a name with one would be replaced - a class of failure that would
+      # appear as a configuration syntax error at start-up, or worse as a silently
+      # emptied directive.
+      NGINX_ENVSUBST_FILTER: "^DNN_"
+    volumes:
+      # The server block, as a TEMPLATE. The image's entrypoint
+      # (/docker-entrypoint.d/20-envsubst-on-templates.sh) renders every
+      # /etc/nginx/templates/*.template into the output directory named above before
+      # nginx starts, so mounting this file plus the certificate pair is the whole
+      # activation step - no tracked file is edited and no image is rebuilt.
+      - ./nginx.tls.conf.template:/etc/nginx/templates/nginx.tls.conf.template:ro
+      # The certificate pair, in a directory the *.conf glob cannot match, and
+      # REQUIRED rather than defaulted: a fallback path meant a deployment that
+      # forgot it got an nginx that could not start, reported through a certificate
+      # error rather than through the missing setting that caused it. The
+      # certificate must be valid for DNN_PUBLIC_HOST above.
+      - ${TLS_CERTIFICATE_DIRECTORY:?TLS_CERTIFICATE_DIRECTORY must be a host directory holding fullchain.pem and privkey.pem valid for DNN_PUBLIC_HOST}:/etc/nginx/tls/certificates:ro
+    # SEC-12. ONE ADDITION THE BASE FILE'S HARDENING MAKES NECESSARY HERE, and without it
+    # this overlay FAILS SILENTLY rather than loudly - which is why it is measured and not
+    # reasoned about.
+    #
+    # The base file makes the container's root filesystem read-only. This overlay asks the
+    # image's entrypoint to RENDER a template into /etc/nginx/tls, so that directory has to
+    # be writable. Measured with the base hardening and no tmpfs here:
+    #
+    #     20-envsubst-on-templates.sh: ERROR: /etc/nginx/templates exists, but
+    #     /etc/nginx/tls is not writable
+    #
+    # and then - this is the dangerous part - the entrypoint printed "Configuration complete;
+    # ready for start up" and nginx STARTED, with no TLS server block rendered and no error
+    # after that line. A deployment would have been serving plain HTTP on port 80 and nothing
+    # at all on 443, with a healthy-looking container.
+    #
+    # The tmpfs below is therefore load-bearing, and the certificate bind above nests INSIDE
+    # it. That combination was verified rather than assumed: Docker mounts the shorter
+    # destination first, so /etc/nginx/tls/certificates lands on top of the tmpfs and both
+    # survive - measured, the directory then held `certificates` AND the rendered
+    # `nginx.tls.conf`, and an HTTPS request on 443 returned the application document.
+    # noexec and nosuid: it holds a rendered configuration file, never code.
+    tmpfs:
+      - /etc/nginx/tls:uid=101,gid=101,mode=0770,noexec,nosuid
+    #
+    # ⚠ OPERATOR-VISIBLE CONSEQUENCE OF THE UNPRIVILEGED PROXY - READ THIS BEFORE DEPLOYING.
+    # The base file runs this container as uid 101 instead of as a root master, so the PRIVATE
+    # KEY IS NOW READ BY UID 101 rather than by root. A key file that is root-owned and mode
+    # 0600 - the shape a certificate tool produces by default, and the shape that worked
+    # before - makes nginx refuse to start:
+    #
+    #     [emerg] cannot load certificate key "/etc/nginx/tls/certificates/privkey.pem":
+    #     BIO_new_file() failed (SSL: ... Permission denied ...)
+    #
+    # Measured, both ways: root-owned 0600 failed exactly as above, and the same container
+    # started and served HTTPS once the pair was readable by uid 101. So the directory named
+    # by TLS_CERTIFICATE_DIRECTORY must grant read access to uid 101 - `chown 101:101` on the
+    # pair, or a group the file grants read to and 101 belongs to. This is the standard
+    # requirement of every unprivileged nginx image and is documented in docker/.env.example
+    # beside the setting itself; it is stated here as well because this is the file that
+    # introduces it.

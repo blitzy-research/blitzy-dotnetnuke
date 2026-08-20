@@ -1,0 +1,251 @@
+@use '../../../../styles/mixins' as mx;
+
+// ROOT — THE HOST IS THE LAYOUT CONTAINER
+:host {
+  display: grid;
+  grid-template-columns: var(--grid-track-fluid);
+  gap: var(--space-4);
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-tight);
+}
+
+.role-assignment__module-action {
+  white-space: nowrap;
+}
+
+// THE UNRESOLVED-ROLE MESSAGE
+// The ink is the vocabulary's accessible danger token rather than the measured pure red. That substitution
+// is the token file's own decision, recorded there with the contrast measurement, and is consumed rather
+// than re-decided here.
+.role-assignment__unresolved {
+  max-inline-size: mx.breakpoint('md');
+  margin: 0;
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-danger);
+  overflow-wrap: break-word;
+}
+
+// REGION ONE — THE ASSIGNMENT FORM
+.role-assignment__form {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.role-assignment__fields {
+  display: grid;
+  gap: var(--space-3);
+}
+
+// THE ACCOUNT LOOKUP AND ITS MATCHES
+// These three are SIBLINGS INSIDE THE SHARED FIELD WRAPPER'S CONTROL SLOT, which is a wrapping flex row
+// with a gap — an arrangement that exists so a legacy field holding several controls side by side still
+// reflows.
+.role-assignment__lookup,
+.role-assignment__matches,
+.role-assignment__no-matches,
+.role-assignment__lookup-note,
+.role-assignment__choices {
+  flex-basis: var(--size-full);
+  min-inline-size: 0;
+}
+
+// The match list is rendered IN PLACE rather than as a floating layer. A layer would need a stacking
+// context, a dismissal rule, a scroll trap and a focus contract of its own, none of which any shared
+// component provides, and the screen has room to show the matches inline.
+.role-assignment__matches {
+  display: grid;
+  gap: var(--space-1);
+  padding: 0;
+  margin: 0;
+}
+
+// The item is left UNDECORATED deliberately. The global form vocabulary already paints every button with a
+// surface fill, a brand border, the small radius and padding, so a filled, rounded item wrapping a filled,
+// bordered, rounded button would draw the same affordance twice.
+.role-assignment__match {
+  display: grid;
+  justify-items: start;
+  list-style: none;
+}
+
+.role-assignment__match-action {
+  max-inline-size: var(--size-full);
+  overflow-wrap: break-word;
+  text-align: start;
+}
+
+// The selected match is the one whose control reports a pressed state, so the treatment keys off that
+// attribute rather than off a class the template would have to keep in step with it — selection is then
+// impossible to render inconsistently with what a screen reader announces.
+.role-assignment__match-action[aria-pressed='true'] {
+  font-weight: var(--font-weight-bold);
+  background-color: var(--color-selected);
+}
+
+// A search that matched nobody says so; the legacy screen did not — it looked the account up by name and,
+// on no match, simply blanked the box with no message at all.
+.role-assignment__no-matches {
+  margin: 0;
+  color: var(--color-text-muted);
+}
+
+// Standing context under the offered matches — how many of a larger match set are being shown, or that the
+// search stopped short of exhausting it, or that the name box is standing in for a dropdown the tenant
+// asked for.
+.role-assignment__lookup-note {
+  margin: 0;
+  color: var(--color-text-muted);
+}
+
+// WHY A CONTROL ON THIS SCREEN CANNOT BE USED. Deliberately a class of its own rather than a second
+// `lookup-note`: the two say different kinds of thing - one bounds a search result, the other explains a
+// permanently unavailable control - and sharing a class made every specification that asserted "no lookup
+// note is shown" also assert "no control has a stated reason". Same muted treatment, so nothing changes
+// for the eye.
+.role-assignment__advisory {
+  margin: var(--space-1) 0 0;
+  color: var(--color-text-muted);
+}
+
+// The dropdown the tenant's account policy can ask for instead of the name box.
+.role-assignment__choices {
+  max-inline-size: mx.breakpoint('sm');
+}
+
+// THE MEMBERSHIP BOUNDS
+.role-assignment__date {
+  max-inline-size: var(--field-label-inline-size);
+}
+
+// THE NOTIFY CHOICE
+.role-assignment__notify {
+  display: grid;
+  justify-items: start;
+}
+
+.role-assignment__notify-control {
+  flex: none;
+}
+
+// THE COMMAND ROW — AND THE ONE RESPONSIVE DECISION THIS FILE OWNS
+// THE ALIGNMENT IS THE MEASURED BAND, RECOVERED. The legacy action sat inside the control band, level with
+// the controls and never beneath the labels.
+.role-assignment__commands {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+
+  @include mx.respond-above('md') {
+    padding-inline-start: calc(var(--field-label-inline-size) + var(--space-4));
+  }
+}
+
+// THE CONDITION BEHIND A DISABLED ACTION. Muted and small: it explains the control rather than being one, and
+// it must not read as a refusal of something the operator already attempted.
+//
+// ⚠ THE ROW'S HEIGHT MUST NOT DEPEND ON WHETHER THIS SENTENCE HAS ANYTHING TO SAY, AND TWO THINGS TOGETHER ARE
+// WHAT MAKE THAT TRUE. Neither alone is enough, and each was measured failing on its own:
+//
+//   * A floor on the ROW is inert. The action beside this is a full-height button, so the row already stands
+//     taller than any floor small enough to be worth declaring, and the floor never binds.
+//   * A floor on THIS BOX alone is inert too, because below the medium step the row's height is not decided by
+//     this box's height at all - it is decided by whether the wrapping row WRAPS, which is an inline-size
+//     question. An empty sentence measures nought wide, so the row un-wrapped when the condition fell silent
+//     and the action jumped up by a whole line as the operator reached for it. Measured: 67px with a sentence,
+//     44px without one, at both 375 and 768.
+//
+// So the box claims a WHOLE LINE unconditionally - `flex-basis` of the full measure, the same device
+// `.user-form__locked-out` uses for the same reason one screen over, and for the same second reason: a
+// sentence sitting in the queue beside a button reads as a label for that button. The wrap decision is then
+// identical in every state because it no longer depends on the text, and the block reservation keeps that line
+// occupied while the sentence is empty. Height is constant at every width, and the arrangement is the same at
+// every width rather than flipping at a breakpoint.
+.role-assignment__blocked {
+  flex-basis: var(--size-full);
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-tight);
+  min-block-size: calc(var(--font-size-xs) * var(--line-height-tight));
+}
+
+// A FAULT, PAINTED AS ONE. The same muted grey served both 'you have not chosen an account yet' and 'the
+// expiry you entered precedes its effective bound', so a mistake was indistinguishable from an unfinished
+// step. This is the design vocabulary's validation colour, and it is never the only carrier of the
+// distinction: the wording differs, and the field the fault belongs to is marked in its own right.
+.role-assignment__blocked--invalid {
+  color: var(--color-danger);
+}
+
+// MIGRATION: a net addition with a stated substitution. The measured legacy command-button class is 11px at
+// NORMAL weight, which the form vocabulary already resolves, and the legacy screen distinguished this
+// particular action by hanging an icon on it.
+.role-assignment__submit {
+  font-weight: var(--font-weight-bold);
+}
+
+// REGION TWO — THE MEMBERSHIPS LISTING
+.role-assignment__memberships {
+  display: grid;
+  grid-template-columns: var(--grid-track-fluid);
+  gap: var(--space-2);
+  padding-block-start: var(--space-4);
+  border-block-start: var(--border-width) var(--border-style) var(--color-text-muted);
+}
+
+// THE TWO PROJECTED GRID CELLS
+// The removal command therefore keeps to its own content width — it sits in a grid cell and must not
+// stretch it — and its single-word label must not break across two lines inside a narrow column.
+.role-assignment__row-command {
+  display: inline-flex;
+  gap: var(--space-1);
+  align-items: center;
+  white-space: nowrap;
+}
+
+// An account's display name is externally supplied and unbounded — it is the value the legacy formatter
+// concatenated into markup unencoded — so it is the cell most likely to exceed its column. Breaking within
+// the word keeps it inside the row instead of pushing a horizontal scroll onto the whole grid.
+.role-assignment__user-link {
+  overflow-wrap: break-word;
+}
+
+.role-assignment__notice {
+  max-inline-size: mx.breakpoint('md');
+  margin-block: 0 var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+}
+
+// ⚠ `nowrap` IS SAFE HERE ONLY BECAUSE ALL THREE QUALIFIERS ARE SINGLE WORDS, and that is why all three are.
+.role-assignment__lifecycle {
+  margin-inline-start: var(--space-1);
+  white-space: nowrap;
+}
+
+// R6: ONE TREATMENT PER STATE. A single shared class gave a membership that has not started yet the same
+// danger colour as one that has lapsed, so the two adverse-looking rows were indistinguishable and the colour
+// carried no information. Each state now reads differently AND states its own word, so nothing here depends
+// on colour being perceived.
+//
+// A LAPSED term is the adverse state, and keeps the treatment it had.
+.role-assignment__lifecycle--expired {
+  color: var(--color-danger);
+  font-weight: var(--font-weight-bold);
+}
+
+// A term that has not begun is SCHEDULED rather than wrong, so it takes the brand colour: prominent enough
+// to be noticed, and plainly not an error.
+.role-assignment__lifecycle--pending {
+  color: var(--color-primary);
+  font-weight: var(--font-weight-bold);
+}
+
+// A term IN FORCE is the ordinary case and reads quietly, so stating it on every such row informs without
+// competing with the two states that need attention.
+.role-assignment__lifecycle--current {
+  color: var(--color-text-muted);
+}

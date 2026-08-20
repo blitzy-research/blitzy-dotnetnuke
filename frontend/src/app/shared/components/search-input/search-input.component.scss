@@ -1,0 +1,104 @@
+@use '../../../../styles/mixins' as mx;
+
+:host {
+  display: block;
+
+  @include mx.respond-above('md') {
+    max-inline-size: mx.breakpoint('sm');
+  }
+}
+
+.search-input__label {
+  display: block;
+  margin-block-end: var(--space-1);
+
+  font-weight: var(--font-weight-bold);
+  color: var(--color-primary);
+
+  overflow-wrap: break-word;
+}
+
+.search-input__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+// The field's base chrome - family, size, border, padding and background - comes from the global form
+// layer, which reaches this markup because emulated encapsulation scopes component styles without shielding
+// elements from global element selectors.
+.search-input__field {
+  // Take the free space in the row and — the load-bearing half of this pair — permit shrinking below the
+  // intrinsic width of the value being typed.
+  flex: var(--flex-fill-from-zero);
+  min-inline-size: 0;
+
+  // The shared mixin draws the indicator on `:focus-visible` only, and as an outline rather than a border
+  // or a shadow, so a pointer user sees no change and the indicator cannot reflow the field it marks.
+  @include mx.focus-ring;
+}
+
+// The explicit `transparent` and `none` below are not redundancy: they exist to
+// defeat the filled appearance a bare button would otherwise inherit from the
+// global form layer, leaving the chrome-less text affordance this control needs.
+.search-input__submit {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+
+  flex: none;
+
+  padding-block: var(--space-1);
+  padding-inline: var(--space-2);
+
+  background-color: transparent;
+  border: none;
+  color: var(--color-primary);
+
+  cursor: pointer;
+
+  // The hover colour diverges. The legacy hover for an admin link button resolved to the value the token
+  // set now carries under the danger role, so reusing it for a benign search would signal a destructive
+  // action; the token whose role is the hover companion to the brand colour is used instead.
+  &:enabled:hover {
+    color: var(--color-primary-hover);
+  }
+
+  &:enabled:active {
+    background-color: var(--color-selected);
+  }
+
+  @include mx.focus-ring;
+}
+
+.search-input__submit-icon {
+  flex: none;
+  inline-size: var(--space-4);
+  block-size: var(--space-4);
+}
+
+// Colour is never the sole indicator of this state: the native `disabled` attribute always accompanies it,
+// so assistive technology and keyboard users are served independently of the contrast the token resolves
+// to.
+.search-input__field:disabled,
+.search-input__submit:disabled {
+  // MIGRATION: the muted-text token, where the legacy disabled style measured the
+  // named colour `Silver`. That colour is not in the vocabulary, and it measured 1.57 to 1 against the
+  // surface it is paired with
+  // here — so far below the 4.5-to-1 minimum that a disabled control's text was
+  // effectively unreadable. The muted token measures 4.73 to 1 on that surface and
+  // passes AA outright, so this treatment relies on no exemption. Matches the
+  // global disabled treatment in _forms.scss section 8 exactly.
+  color: var(--color-text-muted);
+  cursor: not-allowed;
+}
+
+
+// The advisory. Muted rather than alarming: an adjusted term is a remark about the search, not a failure of
+// it, and the search it describes did run.
+.search-input__advisory {
+  margin-block: var(--space-1) 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  overflow-wrap: anywhere;
+}

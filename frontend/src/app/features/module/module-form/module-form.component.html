@@ -1,0 +1,480 @@
+<!--
+  `novalidate` suppresses the browser's own validation bubbles. It is load-bearing rather than
+  defensive: the component answers a missing page or a missing definition with a specific ported
+  sentence, and a native bubble would preempt that sentence with the browser's own wording.
+-->
+<form class="module-form" novalidate [formGroup]="form" (ngSubmit)="submit()">
+  <!--
+    The heading. ⚠ THE COMMANDS USED TO LIVE IN HERE AND NOW DO NOT. Measured across the four screens that
+    create or amend a record, this was the only one that put its saving command in the page header, and the only
+    one that made it a borderless link-like affordance rather than a button - so the same row of commands read
+    as a different species in a different place from its three siblings. They now sit at the foot of the form,
+    where the legacy command panel sat and where the other three screens put theirs.
+  -->
+  <app-page-header [title]="heading()" [subtitle]="subheading()">
+    <!--
+      THE ONE WAY OUT, and it only appears when there is nothing else to do here. Placed in the header
+      slot every screen already uses for its sibling actions, so a reader who arrives at four different
+      dead addresses finds the way back in one place. It is a real route rather than a sentence telling
+      the reader to navigate: the previous wording said "Return to the module list" and offered nothing
+      to press.
+    -->
+    @if (nothingToShow()) {
+      <a class="page-action" routerLink="/modules">{{ recoveryLabel }}</a>
+    }
+  </app-page-header>
+
+  <!--
+    THE REFUSAL SURFACE, RENDERED UNCONDITIONALLY AND DELIBERATELY SO. The shared banner keeps its live
+    region in the document at all times and puts its own emptiness test inside it, because a live region
+    has to exist before its content arrives in order to be announced.
+  -->
+  <app-error-banner [problem]="problem()" />
+
+  @if (addressUnreadable()) {
+    <!--
+      The address carries something that is not a module identifier. THE BANNER ABOVE IS THE
+      PRESENTATION, and this branch renders nothing beneath it so the state is one statement rather than
+      two - the same treatment a refused read gets, and now the same treatment a missing record gets.
+    -->
+  } @else if (readRefused()) {
+    <!--
+      THE READ WAS REFUSED, OR FAILED. The banner above IS the presentation, and this branch exists to
+      render nothing beneath it - which is what makes the refusal one statement rather than two.
+    -->
+  } @else if (moduleMissing()) {
+    <!--
+      A readable identifier that resolved to nothing: a stale bookmark, or a module already removed. A
+      legitimate state, reported as such rather than as a fault, and distinguished from "still reading"
+      by the component before it is ever true here. Stated by the banner, recovered through the header.
+    -->
+  } @else if (isEditMode() && loading()) {
+    <!-- Reading the addressed module. -->
+    <app-loading-spinner size="medium" label="Loading module…" />
+  } @else {
+    <div class="module-form__body">
+      <!-- MODULE SETTINGS - the facts that are the same on every page the module appears on. -->
+      <fieldset class="module-form__group">
+        <legend class="module-form__group-title"><h2>Module Settings</h2></legend>
+
+        <!-- Legacy `dshDetails` / `tblDetails`, L22-L52. -->
+        <fieldset class="module-form__group module-form__group--nested">
+          <legend class="module-form__group-title module-form__group-title--nested">
+            Basic Settings
+          </legend>
+
+          @if (definitionSelectable()) {
+            <!--
+              THE DEFINITION, CHOSEN ONCE. There is no legacy counterpart for this control: the legacy
+              screen was edit-only and the definition was already fixed, which is why it rendered the
+              name in a box that could not be typed into.
+            -->
+            <app-form-field
+              [label]="labels.moduleDefId"
+              [help]="hints.moduleDefId"
+              [required]="true"
+              [error]="errorsFor('moduleDefId')"
+              for="module-form-module-def"
+            >
+              <select
+                id="module-form-module-def"
+                formControlName="moduleDefId"
+                [attr.aria-invalid]="errorsFor('moduleDefId').length > 0"
+                [attr.aria-required]="true"
+                [attr.aria-busy]="definitionsLoading()"
+              >
+                <option [ngValue]="null">Not Specified</option>
+                @for (definition of definitions(); track definition.moduleDefId) {
+                  <option [ngValue]="definition.moduleDefId">{{ definition.friendlyName }}</option>
+                }
+              </select>
+            </app-form-field>
+          } @else {
+            <!--
+              MIGRATION: `readonly` rather than `disabled`. A disabled control is removed from the tab
+              order and skipped by assistive technology, so the legacy field could not be reached or
+              read at all; a read-only one is focusable and is announced with its value.
+            -->
+            <app-form-field
+              [label]="labels.friendlyName"
+              [help]="hints.friendlyName"
+              for="module-form-friendly-name"
+            >
+              <input
+                id="module-form-friendly-name"
+                type="text"
+                readonly
+                [value]="definitionName()"
+              />
+            </app-form-field>
+          }
+
+          <!--
+            THE INSTANCE TITLE. `txtTitle` carries NO length attribute and NO validator of any kind, and
+            both of those absences are reproduced faithfully.
+          -->
+          <app-form-field
+            [label]="labels.moduleTitle"
+            [help]="hints.moduleTitle"
+            [error]="errorsFor('moduleTitle')"
+            for="module-form-title"
+          >
+            <!--
+              `maxlength` mirrors the column the heading lands in. An assist rather than the rule: a
+              pasted overflow is still refused by the validator and again by the server.
+            -->
+            <input
+              id="module-form-title"
+              type="text"
+              [attr.maxlength]="titleMaxLength"
+              formControlName="moduleTitle"
+              [attr.aria-invalid]="errorsFor('moduleTitle').length > 0"
+            />
+
+            <!--
+              WHAT A BLANK HEADING MEANS. The heading is optional on every tier and stays optional: the
+              legacy markup declares no presence validator on `txtTitle`, both server validators gate
+              their only title rule on the value being non-empty, and the column is nullable.
+            -->
+            @if (titleFallbackNotice() !== null) {
+              <p class="module-form__schedule-notice" aria-live="polite">{{ titleFallbackNotice() }}</p>
+            }
+          </app-form-field>
+
+          <!--
+            MIGRATION: THE EMPHASIS IN THE LEGACY CAPTION IS DROPPED, NOT RENDERED.
+            `InheritPermissions.Text` wraps two of its words in bold tags, and the component holds the
+            plain-text reduction.
+          -->
+          <app-form-field
+            [label]="labels.inheritViewPermissions"
+            [help]="hints.inheritViewPermissions"
+            [error]="errorsFor('inheritViewPermissions')"
+            for="module-form-inherit-view-permissions"
+          >
+            <input
+              id="module-form-inherit-view-permissions"
+              type="checkbox"
+              formControlName="inheritViewPermissions"
+              [attr.aria-invalid]="errorsFor('inheritViewPermissions').length > 0"
+            />
+          </app-form-field>
+        </fieldset>
+
+        <!--
+          Legacy `dshSecurity` / `tblSecurity`, L54-L92. Caption from `Security.Text`, whose value is
+          'Advanced Settings' - the MARKUP at L54 says "Security Settings" and the resource file
+          disagrees.
+        -->
+        <fieldset class="module-form__group module-form__group--nested">
+          <legend class="module-form__group-title module-form__group-title--nested">
+            Advanced Settings
+          </legend>
+
+          <app-form-field
+            [label]="labels.allTabs"
+            [help]="administersPortal() ? hints.allTabs : allTabsWithheldHint"
+            [error]="errorsFor('allTabs')"
+            for="module-form-all-tabs"
+          >
+            <input
+              id="module-form-all-tabs"
+              type="checkbox"
+              formControlName="allTabs"
+              [attr.aria-invalid]="errorsFor('allTabs').length > 0"
+            />
+          </app-form-field>
+
+          <!--
+            HEADER AND FOOTER TEXT. `txtHeader` and `txtFooter`, both `textmode="MultiLine"` with
+            `rows="6"`.
+          -->
+          <app-form-field
+            [label]="labels.header"
+            [help]="hints.header"
+            [error]="errorsFor('header')"
+            for="module-form-header"
+          >
+            <textarea
+              id="module-form-header"
+              rows="6"
+              formControlName="header"
+              [attr.aria-invalid]="errorsFor('header').length > 0"
+            ></textarea>
+          </app-form-field>
+
+          <app-form-field
+            [label]="labels.footer"
+            [help]="hints.footer"
+            [error]="errorsFor('footer')"
+            for="module-form-footer"
+          >
+            <textarea
+              id="module-form-footer"
+              rows="6"
+              formControlName="footer"
+              [attr.aria-invalid]="errorsFor('footer').length > 0"
+            ></textarea>
+          </app-form-field>
+
+          <!--
+            MIGRATION: A NATIVE DATE CONTROL REPLACES A FREE-TEXT BOX PLUS A CALENDAR LINK. The legacy
+            pair was a text box carrying `maxlength="11"` beside a `cmdStartCalendar` hyperlink that
+            opened a picker popup.
+          -->
+          <app-form-field
+            [label]="labels.startDate"
+            [help]="hints.startDate"
+            [error]="errorsFor('startDate')"
+            for="module-form-start-date"
+          >
+            <!--
+              `min` and `max` are the storable range of the column behind the field, so a date picker
+              offers only dates the server can keep.
+            -->
+            <input
+              id="module-form-start-date"
+              type="date"
+              [attr.min]="dateMinimum"
+              [attr.max]="dateMaximum"
+              formControlName="startDate"
+              [attr.aria-invalid]="errorsFor('startDate').length > 0"
+            />
+          </app-form-field>
+
+          <app-form-field
+            [label]="labels.endDate"
+            [help]="hints.endDate"
+            [error]="errorsFor('endDate')"
+            for="module-form-end-date"
+          >
+            <input
+              id="module-form-end-date"
+              type="date"
+              [attr.min]="dateMinimum"
+              [attr.max]="dateMaximum"
+              formControlName="endDate"
+              [attr.aria-invalid]="errorsFor('endDate').length > 0"
+            />
+
+            @if (scheduleReversed()) {
+              <p class="module-form__schedule-notice" aria-live="polite">{{ reversedScheduleNotice }}</p>
+            }
+          </app-form-field>
+        </fieldset>
+      </fieldset>
+
+      <!-- PAGE SETTINGS - the facts that belong to THIS placement of the module on THIS page. -->
+      <fieldset class="module-form__group">
+        <legend class="module-form__group-title"><h2>Page Settings</h2></legend>
+
+        <!-- Legacy `dshAppearance` / `tblAppearance`, L108-L176. -->
+        <fieldset class="module-form__group module-form__group--nested">
+          <legend class="module-form__group-title module-form__group-title--nested">
+            Basic Settings
+          </legend>
+
+          <!-- THE TITLE-BAR ICON. `ctlIcon`. -->
+          <app-form-field
+            [label]="labels.iconFile"
+            [help]="hints.iconFile"
+            [error]="errorsFor('iconFile')"
+            for="module-form-icon-file"
+          >
+            <input
+              id="module-form-icon-file"
+              type="text"
+              [attr.maxlength]="iconMaxLength"
+              formControlName="iconFile"
+              [attr.aria-invalid]="errorsFor('iconFile').length > 0"
+            />
+          </app-form-field>
+
+          <!-- HOW THE PLACEMENT IS PRESENTED. `cboVisibility`. -->
+          <app-form-field
+            #visibilityField
+            [label]="labels.visibility"
+            [help]="hints.visibility"
+            [error]="errorsFor('visibility')"
+          >
+            <div
+              class="module-form__choices"
+              role="radiogroup"
+              [attr.aria-labelledby]="visibilityField.labelId()"
+            >
+              @for (choice of visibilityChoices; track choice.value) {
+                <label class="module-form__choice" [for]="'module-form-visibility-' + choice.value">
+                  <input
+                    [id]="'module-form-visibility-' + choice.value"
+                    type="radio"
+                    name="visibility"
+                    formControlName="visibility"
+                    [attr.aria-invalid]="errorsFor('visibility').length > 0"
+                    [value]="choice.value"
+                  />
+                  {{ choice.label }}
+                </label>
+              }
+            </div>
+          </app-form-field>
+
+          <!-- SHOW THE PLACEMENT'S CONTAINER. `chkDisplayTitle`. -->
+          <app-form-field
+            [label]="labels.displayTitle"
+            [help]="hints.displayTitle"
+            [error]="errorsFor('displayTitle')"
+            for="module-form-display-title"
+          >
+            <input
+              id="module-form-display-title"
+              type="checkbox"
+              formControlName="displayTitle"
+              [attr.aria-invalid]="errorsFor('displayTitle').length > 0"
+            />
+          </app-form-field>
+
+          @if (cacheTimeOffered()) {
+            <!--
+              HOW LONG THIS PLACEMENT'S OUTPUT MAY BE CACHED. `txtCacheTime`, which sat inside
+              `rowCache`, a row the code-behind could hide.
+            -->
+            <app-form-field
+              [label]="labels.cacheTime"
+              [help]="hints.cacheTime"
+              [error]="errorsFor('cacheTime')"
+              for="module-form-cache-time"
+            >
+              <input
+                id="module-form-cache-time"
+                type="text"
+                inputmode="numeric"
+                maxlength="6"
+                autocomplete="off"
+                formControlName="cacheTime"
+                [attr.aria-invalid]="errorsFor('cacheTime').length > 0"
+              />
+            </app-form-field>
+          }
+        </fieldset>
+
+        <!--
+          Legacy `dshOther` / `tblOther`, L178-L195. Caption from `OtherSettings.Text`, whose value is
+          'Advanced Settings' - byte-identical to `Security.Text` above, the legacy author's second
+          duplication, likewise reproduced rather than corrected.
+        -->
+        <fieldset class="module-form__group module-form__group--nested">
+          <legend class="module-form__group-title module-form__group-title--nested">
+            Advanced Settings
+          </legend>
+
+          @if (isEditMode()) {
+            <!-- THE TWO PORTAL-WIDE INSTRUCTIONS. `chkDefault` and `chkAllModules`. -->
+            <app-form-field
+              [label]="labels.setAsDefaultSettings"
+              [help]="hints.setAsDefaultSettings"
+              [error]="errorsFor('setAsDefaultSettings')"
+              for="module-form-set-as-default-settings"
+            >
+              <input
+                id="module-form-set-as-default-settings"
+                type="checkbox"
+                formControlName="setAsDefaultSettings"
+                [attr.aria-invalid]="errorsFor('setAsDefaultSettings').length > 0"
+              />
+            </app-form-field>
+
+            <app-form-field
+              [label]="labels.applyToAllModules"
+              [help]="hints.applyToAllModules"
+              [error]="errorsFor('applyToAllModules')"
+              for="module-form-apply-to-all-modules"
+            >
+              <input
+                id="module-form-apply-to-all-modules"
+                type="checkbox"
+                formControlName="applyToAllModules"
+                [attr.aria-invalid]="errorsFor('applyToAllModules').length > 0"
+              />
+            </app-form-field>
+          }
+
+          <!-- THE PAGE. `cboTab`, an `asp:dropdownlist` bound over `TabName` and `TabId`. -->
+          <app-form-field
+            [label]="labels.tabId"
+            [help]="hints.tabId"
+            [required]="true"
+            [error]="errorsFor('tabId')"
+            for="module-form-tab"
+          >
+            <select
+              id="module-form-tab"
+              formControlName="tabId"
+              [attr.aria-invalid]="errorsFor('tabId').length > 0"
+              [attr.aria-required]="true"
+              [attr.aria-busy]="tabsLoading()"
+            >
+              <option [ngValue]="null">Not Specified</option>
+              @for (page of pageOptions(); track page.value) {
+                <option [ngValue]="page.value">{{ page.label }}</option>
+              }
+            </select>
+          </app-form-field>
+        </fieldset>
+      </fieldset>
+    </div>
+  }
+
+  <!--
+    THE ACTION BAR, at the foot of the form. The three commands keep their legacy wording and their legacy
+    validation semantics exactly: save validates the page, and abandon and remove do not - which is what
+    `type="button"` reproduces, since a click that cannot submit runs no validator, marks nothing touched, and
+    is not disabled by an invalid form.
+  -->
+  <!--
+    ⚠ THE WHOLE BAR IS WITHHELD WHEN THERE IS NOTHING TO ACT ON, not just the submit. Measured at runtime:
+    on a module that does not exist the submit was correctly withheld but Cancel survived, so the screen
+    still rendered a form wrapper carrying one affordance for a record that is not there. The one thing a
+    reader can do in that state is leave, and the header's recovery link is what offers it.
+  -->
+  @if (nothingToShow() === false && readRefused() === false) {
+    <div class="module-form__actions">
+      <button
+        class="form-action--primary"
+        type="submit"
+        [disabled]="busy()"
+        [attr.aria-busy]="busy() ? 'true' : null"
+      >
+        {{ saveLabel() }}
+      </button>
+
+      <button type="button" (click)="cancel()">{{ cancelLabel }}</button>
+
+      @if (canDelete()) {
+        <button class="module-form__action--danger" type="button" (click)="requestRemoval()">
+          {{ deleteLabel }}
+        </button>
+      }
+    </div>
+  }
+</form>
+
+<!--
+  Presence in the document IS the open state: the shared dialog has no visibility input by design, and
+  opens itself modally when it is created. So it is created only while the component reports a pending
+  removal, and destroying it is what closes it.
+-->
+@if (removalConfirmVisible()) {
+  <!--
+    ⚠ NO `title` IS BOUND, AND THAT IS THE POINT. Every delete confirmation in this application shows
+    the SAME title, which the shared dialog declares as its default; binding one here is how five
+    different titles for one action came about - runtime testing found `Delete`, `Confirm Delete`,
+    `Delete Module`, `Delete Profile Property` and `Delete role group` across the screens.
+  -->
+  <app-confirm-dialog
+    [message]="deleteConfirmMessage"
+    [confirmLabel]="deleteLabel"
+    [danger]="true"
+    (confirm)="confirmRemoval()"
+    (cancel)="cancelRemoval()"
+  />
+}

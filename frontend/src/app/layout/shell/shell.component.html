@@ -1,0 +1,77 @@
+<!--
+  STRUCTURAL CONTRACT — exactly five element children of the component host, in this order, each
+  carrying the grid area published by `src/styles/_layout.scss`:
+-->
+
+<!-- MIGRATION: view state and the postback form are eliminated. -->
+
+<!-- The table-based pane layout is replaced by a CSS grid. -->
+
+<!-- The excluded skin-object vocabulary is deliberately not composed. -->
+
+<!-- The document envelope is reallocated, not dropped. -->
+
+<!--
+  MIGRATION: skin-load diagnostics are not reproduced. A failure was caught, surfaced only to portal or
+  page administrators behind an explicit membership check (L230, whose L231 comment reads "only display
+  the error to administrators"), html-encoded and logged.
+-->
+
+<!-- MIGRATION: the localisation mechanism is not ported. -->
+
+<!--
+  MIGRATION: the skip link is a NET ADDITION with no legacy counterpart. The legacy checkout contains no
+  skip link, no accessibility attribute of any kind, no explicit landmark annotation on any page or user
+  control, and no main element — so this is not a translation of anything, and it has no visual cost.
+-->
+<a
+  class="shell__skip-link"
+  [href]="skipLinkTarget()"
+  (click)="focusMainRegion($event)"
+  >Skip to main content</a
+>
+
+<!-- THE THREE BINDINGS BELOW ARE THE WHOLE OF THE SESSION SEAM, AND EACH FORM IS LOAD-BEARING. -->
+<app-header
+  class="shell__header"
+  [applicationName]="applicationName"
+  [userName]="userName()"
+  [accountProfileLink]="accountProfileLink()"
+  [accountPasswordLink]="accountPasswordLink()"
+  [signingOut]="signingOut()"
+  (signOut)="onSignOut()"
+/>
+
+<app-sidebar
+  class="shell__sidebar"
+  [hostAccount]="hostAccount()"
+  [administersTenant]="administersTenant()"
+  [editsContent]="editsContent()"
+/>
+
+<!--
+  MIGRATION: the main landmark is a NET ADDITION. No legacy page emitted one; the legacy content region
+  was the hidden table cell at index.ascx L91, whose class `portal.css` L27 also defines with an empty
+  body.
+-->
+<main
+  [id]="mainRegionId"
+  class="shell__main"
+  [class.shell__main--message-reserved]="reservesNotificationSpace()"
+  tabindex="-1"
+>
+  <!--
+    The application's notification surface, mounted here rather than as a sixth shell region for two
+    reasons.
+  -->
+  <app-notification-list />
+
+  <!--
+    This single outlet replaces the single server placeholder at `Default.aspx` L25 — a one-for-one
+    substitution of the application's sole injection point. Where the legacy page resolved a control and
+    added it imperatively on every request, the router resolves the screen declaratively and lazily.
+  -->
+  <router-outlet />
+</main>
+
+<app-footer class="shell__footer" />

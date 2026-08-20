@@ -1,0 +1,62 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="coverlet.collector" Version="6.0.4">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Moq" Version="4.20.72" />
+    <PackageReference Include="FluentAssertions" Version="6.12.2" />
+  </ItemGroup>
+
+  <!--
+    EXACTLY ONE PROJECT REFERENCE, AND IT IS THE WHOLE OF THIS PROJECT'S GRAPH.
+
+    AAP 0.5.2.2 draws this project with a single edge to Application, and that is what is declared
+    below. Domain arrives transitively, so the domain, service, validator, mapper and serialisation
+    suites placed here by AAP 0.4.1.1 compile against everything they need.
+
+    NO EDGE TO DnnMigration.Infrastructure, BY DESIGN. AAP 0.5.2.2 is unambiguous about this
+    project's graph, so an edge to Infrastructure is a divergence rather than a reconciliation - and
+    no coverage depends on one, because the thirteen suites that name an Infrastructure type live in
+    DnnMigration.IntegrationTests - Security/{LoggingAuditSink,AuditLogRendering,
+    LegacyCredentialVerifier,JwtTokenServiceBehavior,DatabaseHealthCheck,RefreshTokenStoreBehavior},
+    Infrastructure/{StoreFailureClassification,ConnectionStringValidation,DuplicateKeyTranslation,
+    DatabaseHealthCheck}, Services/{LoggingAuditSink,ModuleBusinessControllerFactory} and
+    Validation/LegacyCredentialOptions - where the Infrastructure assembly is reachable through that
+    project's own single edge to the API, and every one of them carries the
+    [Trait("Category", "Integration")] that project requires.
+
+    WHAT STAYS HERE. Public-contract and shape suites, which is what a project with this graph can
+    honestly assert: the Domain entities and their sentinel boundaries, the Application services
+    against substituted repositories, the FluentValidation rules, the hand-written mappers, the
+    serialisation converters, and the reflected contract shapes of the Domain service abstractions -
+    IPasswordHasher, IClock, ISecurityDiagnostics and their kin. Those files name no implementation
+    type at all, which is why they compile without the removed edge.
+
+    WHAT THIS PROJECT MUST NOT DO. It must not reimplement a component and then assert that its own
+    double behaves as specified; that is a tautology which stays green while the shipped type breaks.
+    A suite that needs the real thing resolves it from the composed container in
+    DnnMigration.IntegrationTests, through AddInfrastructure, which asserts the registration as well
+    as the behaviour.
+
+    Do not add DnnMigration.Infrastructure back, do not ask for an InternalsVisibleTo grant, and do
+    not add DnnMigration.Api. The Api layer is the integration project's subject, it is where the
+    hosted pipeline and the authorisation policies live, and a unit test that started a host would
+    stop being one.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\DnnMigration.Application\DnnMigration.Application.csproj" />
+  </ItemGroup>
+
+</Project>

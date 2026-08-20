@@ -1,0 +1,143 @@
+<!--
+  EVERY STRING THIS TEMPLATE DISPLAYS IS INTERPOLATED PLAIN TEXT, AND THAT IS A SECURITY BOUNDARY RATHER
+  THAN A STYLISTIC PREFERENCE. Measured across the 37 in-scope `App_LocalResources` resource files: of
+  1111 entries, 76 carry an HTML tag and 29 open with break markup.
+-->
+<div class="form-field">
+  <div class="form-field__label-row">
+    <!-- THE CAPTION, IN ONE PLACE, RENDERED INTO ONE OF TWO ELEMENTS. -->
+    <ng-template #captionContent>
+      {{ labelText() }}
+      @if (required) {
+        <!--
+          MIGRATION: a net addition. The legacy screens expressed requiredness only through a validator
+          that rendered nothing until a postback failed, so there is no legacy marker convention to
+          carry across.
+        -->
+        <span class="form-field__required">
+          <span aria-hidden="true">{{ requiredMarker }}</span>
+          <span class="form-field__required-text">{{ requiredText }}</span>
+        </span>
+      }
+    </ng-template>
+
+    @if (labelFor() !== null) {
+      <label class="form-field__label" [id]="labelId()" [attr.for]="labelFor()">
+        <ng-container [ngTemplateOutlet]="captionContent" />
+      </label>
+    } @else {
+      <span class="form-field__label" [id]="labelId()">
+        <ng-container [ngTemplateOutlet]="captionContent" />
+      </span>
+    }
+
+  </div>
+
+  <div
+    class="form-field__control"
+    role="group"
+    [attr.aria-labelledby]="groupLabelledBy()"
+    [attr.aria-describedby]="describedBy()"
+  >
+    <ng-content />
+
+    <!--
+      ⚠ THE HELP AFFORDANCE SITS AFTER THE CONTROL IT DESCRIBES, AND ITS POSITION IS A FOCUS-ORDER
+      DECISION RATHER THAN A LAYOUT ONE. It used to be the second child of the label row, so sequential
+      focus reached "Help" before every field - on a screen carrying fourteen of them that doubled the
+      stops between one control and the next, and a person tabbing to a field was interrupted by an
+      affordance describing a field they had not arrived at yet.
+
+      THERE IS NO LEGACY ORDER BEING BROKEN BY THIS. `Website/controls/labelcontrol.ascx` L3-L4 puts
+      `tabindex="-1"` on BOTH the help link button AND its image, so the legacy affordance was deliberately
+      outside the tab order altogether and a keyboard user could never open help at all. Keeping it
+      reachable is this port's improvement on that; placing it after the control is what stops the
+      improvement from costing something.
+
+      Placing it HERE rather than after the whole field is what makes the change free. This wrapper is a
+      baseline-aligned wrapping flex row, so the affordance joins the row the control already occupies: it
+      keeps its inline position beside a control, adds no height to any field, cannot overlap a long label,
+      and - decisively - leaves the caption exactly where it was, so nothing changes about the order in
+      which a screen reader reads a field's name relative to its control.
+    -->
+    @if (hasHelp()) {
+      <!--
+        THE `aria-controls` DECISION, stated explicitly because there are two valid answers and only one
+        is used here.
+      -->
+      <button
+        class="form-field__help-toggle"
+        type="button"
+        [attr.aria-expanded]="helpExpanded()"
+        [attr.aria-controls]="helpControls()"
+        [attr.aria-labelledby]="helpToggleLabelledBy()"
+        (click)="toggleHelp()"
+      >
+        <svg
+          class="form-field__help-icon"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <circle cx="8" cy="8" r="6.25" />
+          <circle cx="8" cy="4.9" r="0.85" fill="currentColor" stroke="none" />
+          <path d="M8 7.4v4.1" />
+        </svg>
+        <span class="form-field__help-toggle-text" [id]="helpToggleTextId()">{{
+          helpToggleText
+        }}</span>
+      </button>
+    }
+  </div>
+
+  @if (hasLimit()) {
+    <!--
+      THE TYPING BOUND, STATED WHERE IT IS HEARD AND NOT SEEN. Permanently present rather than conditional
+      on anything the reader does, because `aria-describedby` above names it and a description that points
+      at an absent element is dropped by some assistive technology and read as empty by others. Visually
+      hidden because the same sentence is repeated inside the help disclosure, where a sighted reader looks.
+    -->
+    <p class="form-field__limit" data-visually-hidden [id]="limitId()">{{ limitText() }}</p>
+  }
+
+  <!--
+    ⚠ QA-21 / QA-24 — THE FAILURE COMES BEFORE THE INSTRUCTION, AND IT USED TO COME AFTER IT. The help
+    disclosure was emitted first, so opening Help INSERTED 35px of explanation between a control and the
+    reason it had just been refused: measured on the portal settings screen, a validation message ended up
+    151.5px below the bottom edge of the box it described, and on the membership screen the same +35px
+    displacement was measured on every field. A message that far from its control is not adjacent to it in
+    any sense a reader would recognise, and the message is the urgent one of the two.
+
+    Ordering them this way also makes the visual order match the reading order, which the previous
+    arrangement did only while Help was closed.
+  -->
+  @if (hasError()) {
+    <!--
+      The region is removed when the field becomes valid rather than emptied or hidden, so it neither
+      occupies space nor lingers in the accessibility tree.
+    -->
+    <!--
+      `aria-errormessage` is deliberately NOT added alongside the description. It would name the same
+      region a second time, and the two mechanisms together make several screen readers announce the
+      reason twice; the description is the one with dependable support.
+    -->
+    <div class="form-field__errors" [id]="errorId()" role="alert">
+      @for (message of errorMessages(); track $index) {
+        <p class="form-field__error" [id]="errorMessageId($index)">{{ message }}</p>
+      }
+    </div>
+  }
+
+  @if (helpExpanded()) {
+    <!--
+      MIGRATION: that break element is NOT reproduced. It was vertical spacing expressed as content, and
+      spacing here is the stylesheet's spacing scale instead; this template emits no break element
+      anywhere.
+    -->
+    <p class="form-field__help" [id]="helpId()">{{ helpText() }}</p>
+  }
+</div>
